@@ -58,8 +58,9 @@ def simulate_tick(rng: random.Random, attack_probability: float = 0.25) -> int:
 class RuntimeSimulator:
     """Background thread emitting simulated runtime events every N seconds."""
 
-    def __init__(self, interval: float = 10.0, seed: int | None = None):
+    def __init__(self, interval: float = 15.0, seed: int | None = None, attack_probability: float = 0.05):
         self.interval = interval
+        self.attack_probability = attack_probability
         self.rng = random.Random(seed)
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -83,6 +84,6 @@ class RuntimeSimulator:
     def _run(self) -> None:
         while not self._stop.wait(self.interval):
             try:
-                simulate_tick(self.rng)
+                simulate_tick(self.rng, self.attack_probability)
             except Exception:  # never let the simulator die
                 log.exception("simulator tick failed")

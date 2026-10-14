@@ -25,14 +25,16 @@ type GNode = { id: string; name: string; type: string; sensitive_data?: boolean;
 type GEdge = { source: string; target: string; type: string; paths: string[] };
 
 /** Layered left-to-right layout: column = shortest hop distance from the Internet node. */
-function layout(nodes: GNode[], paths: AttackPath[]) {
+function layout(nodes: GNode[], edges: GEdge[], paths: AttackPath[]) {
   const depth = new Map<string, number>([["internet", 0]]);
   for (const p of paths) {
     p.steps.forEach((s, i) => depth.set(s.asset_id, Math.min(depth.get(s.asset_id) ?? 99, i + 1)));
   }
-  // Push sensitive-data targets to the right-most column so the story reads left to right.
+  // Push terminal nodes (path targets with no outgoing edge) to the right-most column
+  // so every path reads left to right and ends on the data it reaches.
   const maxDepth = Math.max(...depth.values());
-  for (const n of nodes) if (n.sensitive_data && n.type !== "identity") depth.set(n.id, Math.max(depth.get(n.id) ?? 0, maxDepth));
+  const hasOut = new Set(edges.map((e) => e.source));
+  for (const n of nodes) if (!hasOut.has(n.id)) depth.set(n.id, maxDepth);
   const cols = new Map<number, GNode[]>();
   for (const n of nodes) {
     const d = depth.get(n.id) ?? 0;
@@ -49,7 +51,7 @@ function layout(nodes: GNode[], paths: AttackPath[]) {
 }
 
 function Graph({ nodes, edges, paths, selected, onNode }: { nodes: GNode[]; edges: GEdge[]; paths: AttackPath[]; selected: string | null; onNode: (id: string) => void }) {
-  const { pos, width, height } = useMemo(() => layout(nodes, paths), [nodes, paths]);
+  const { pos, width, height } = useMemo(() => layout(nodes, edges, paths), [nodes, edges, paths]);
   const sel = paths.find((p) => p.id === selected);
   const onPath = new Set(sel ? ["internet", ...sel.steps.map((s) => s.asset_id)] : []);
   return (

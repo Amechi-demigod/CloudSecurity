@@ -289,7 +289,7 @@ def _kv_purge(a):
     resource_type="aks_cluster",
     description="Without RBAC every authenticated identity has broad access to the cluster.",
     remediation="Recreate the cluster with --enable-rbac (RBAC cannot be enabled in place).",
-    compliance=["CIS Azure 8.x", "CIS AKS 4.1.1"],
+    compliance=["CIS AKS 4.1.1"],
 )
 def _aks_rbac(a):
     return {"rbac_enabled": False} if _p(a, "rbac_enabled") is False else None
@@ -360,7 +360,7 @@ def _id_priv(a):
     resource_type="subscription",
     description="More than 3 principals hold the Owner role on the subscription.",
     remediation="Reduce standing Owner assignments; use PIM for just-in-time elevation.",
-    compliance=["CIS Azure 1.x (Owners <= 3)"],
+    compliance=["CIS Azure 1.x"],
 )
 def _sub_owners(a):
     n = int(_p(a, "owner_count", 0) or 0)

@@ -30,7 +30,11 @@ class Settings:
     simulation_mode: bool = field(default_factory=lambda: _bool("SIMULATION_MODE", True))
     simulator_enabled: bool = field(default_factory=lambda: _bool("SIMULATOR_ENABLED", True))
     simulator_interval_seconds: float = field(
-        default_factory=lambda: float(os.getenv("SIMULATOR_INTERVAL_SECONDS", "10"))
+        default_factory=lambda: float(os.getenv("SIMULATOR_INTERVAL_SECONDS", "15"))
+    )
+    # Probability that a simulator tick also plays out an attack scenario.
+    simulator_attack_probability: float = field(
+        default_factory=lambda: float(os.getenv("SIMULATOR_ATTACK_PROBABILITY", "0.05"))
     )
     seed: int = field(default_factory=lambda: int(os.getenv("SEED", "42")))
 

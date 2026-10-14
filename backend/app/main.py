@@ -26,7 +26,9 @@ async def lifespan(app: FastAPI):
     if s.simulation_mode:
         seed_if_empty(s.seed)
         if s.simulator_enabled:
-            app.state.simulator = RuntimeSimulator(interval=s.simulator_interval_seconds)
+            app.state.simulator = RuntimeSimulator(
+                interval=s.simulator_interval_seconds, attack_probability=s.simulator_attack_probability
+            )
             app.state.simulator.start()
             log.info("Runtime simulator started (every %.0fs)", s.simulator_interval_seconds)
     yield

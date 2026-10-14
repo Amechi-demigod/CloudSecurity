@@ -100,6 +100,7 @@ export default function DashboardPage() {
                     strokeWidth={1}
                     radius={i === 0 ? [3, 3, 0, 0] : 0}
                     name={s[0].toUpperCase() + s.slice(1)}
+                    isAnimationActive={false}
                   />
                 ))}
               </BarChart>
@@ -113,7 +114,7 @@ export default function DashboardPage() {
                 <XAxis type="number" hide />
                 <YAxis type="category" dataKey="severity" {...axis} width={70} tickFormatter={(s: string) => s[0].toUpperCase() + s.slice(1)} />
                 <Tooltip cursor={{ fill: "var(--color-surface-2)" }} />
-                <Bar dataKey="count" name="Findings" radius={[0, 4, 4, 0]} barSize={22}>
+                <Bar dataKey="count" name="Findings" radius={[0, 4, 4, 0]} barSize={22} isAnimationActive={false}>
                   {findings.map((f) => (
                     <Cell key={f.severity} fill={SEV_COLOR[f.severity]} />
                   ))}
