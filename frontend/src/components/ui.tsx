@@ -1,15 +1,5 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import type { Severity } from "../api";
-
-export const SEVERITIES: Severity[] = ["critical", "high", "medium", "low"];
-
-export const SEV_COLOR: Record<string, string> = {
-  critical: "var(--color-sev-critical)",
-  high: "var(--color-sev-high)",
-  medium: "var(--color-sev-medium)",
-  low: "var(--color-sev-low)",
-  info: "var(--color-ink-3)",
-};
+import { useEffect, useRef, type InputHTMLAttributes, type ReactNode } from "react";
+import { SEV_COLOR } from "../lib/format";
 
 const SEV_ICON: Record<string, string> = { critical: "!!", high: "!", medium: "~", low: "-", info: "i" };
 
@@ -100,15 +90,31 @@ export function Select({ value, onChange, options, label }: { value: string; onC
   );
 }
 
-export function Button({ children, onClick, disabled, variant = "default", title }: { children: ReactNode; onClick?: () => void; disabled?: boolean; variant?: "default" | "primary"; title?: string }) {
-  const cls =
-    variant === "primary"
-      ? "bg-accent text-white hover:brightness-110"
-      : "border border-line bg-surface-2 text-ink hover:bg-line";
+export function Button({
+  children,
+  onClick,
+  disabled,
+  variant = "default",
+  title,
+  type = "button",
+}: {
+  children: ReactNode;
+  onClick?: () => void;
+  disabled?: boolean;
+  variant?: "default" | "primary" | "danger";
+  title?: string;
+  type?: "button" | "submit";
+}) {
+  const cls = {
+    primary: "bg-accent text-white hover:brightness-110",
+    danger: "border border-sev-critical/60 bg-sev-critical/10 text-ink hover:bg-sev-critical/20",
+    default: "border border-line bg-surface-2 text-ink hover:bg-line",
+  }[variant];
   return (
     <button
+      type={type}
       title={title}
-      className={`rounded px-3 py-1.5 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-50 ${cls}`}
+      className={`rounded px-3 py-1.5 text-sm font-medium transition focus:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-50 ${cls}`}
       onClick={onClick}
       disabled={disabled}
     >
@@ -136,62 +142,6 @@ export function Empty({ children }: { children: ReactNode }) {
 export function ErrorNote({ error }: { error: string | null }) {
   if (!error) return null;
   return <div className="mb-3 rounded border border-sev-critical/60 bg-sev-critical/10 px-3 py-2 text-sm text-ink">{error}</div>;
-}
-
-export const fmtTime = (iso: string) => new Date(iso).toLocaleString();
-export const fmtAgo = (iso: string) => {
-  const s = Math.round((Date.now() - new Date(iso).getTime()) / 1000);
-  if (s < 60) return `${Math.max(s, 0)}s ago`;
-  if (s < 3600) return `${Math.round(s / 60)}m ago`;
-  if (s < 86400) return `${Math.round(s / 3600)}h ago`;
-  return `${Math.round(s / 86400)}d ago`;
-};
-
-export const TYPE_LABEL: Record<string, string> = {
-  vm: "Virtual machine",
-  storage_account: "Storage account",
-  aks_cluster: "AKS cluster",
-  pod: "Pod",
-  sql_server: "SQL server",
-  sql_database: "SQL database",
-  nsg: "Network security group",
-  identity: "Identity",
-  key_vault: "Key Vault",
-  function_app: "Function app",
-  subscription: "Subscription",
-  internet: "Internet",
-};
-
-/** Fetch data with loading/error state; optionally re-poll every `intervalMs`. */
-export function useApi<T>(fn: () => Promise<T>, deps: unknown[] = [], intervalMs?: number) {
-  const [data, setData] = useState<T | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const fnRef = useRef(fn);
-  fnRef.current = fn;
-
-  const reload = useCallback(async () => {
-    try {
-      const d = await fnRef.current();
-      setData(d);
-      setError(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    setLoading(true);
-    reload();
-    if (!intervalMs) return;
-    const t = setInterval(reload, intervalMs);
-    return () => clearInterval(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, deps);
-
-  return { data, error, loading, reload };
 }
 
 export function Drawer({ open, onClose, title, children }: { open: boolean; onClose: () => void; title: ReactNode; children: ReactNode }) {
@@ -235,6 +185,91 @@ export function Table({ head, children }: { head: ReactNode[]; children: ReactNo
         </thead>
         <tbody className="divide-y divide-line/60">{children}</tbody>
       </table>
+    </div>
+  );
+}
+
+/** Accessible modal dialog: focus moves in on open, Escape / backdrop closes, focus is restored on close. */
+export function Modal({ open, onClose, title, children }: { open: boolean; onClose: () => void; title: string; children: ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const closeRef = useRef(onClose);
+  useEffect(() => {
+    closeRef.current = onClose;
+  }, [onClose]);
+  useEffect(() => {
+    if (!open) return;
+    const prev = document.activeElement as HTMLElement | null;
+    const first = ref.current?.querySelector<HTMLElement>("input, select, textarea, button");
+    first?.focus();
+    const h = (e: KeyboardEvent) => {
+      if (e.key === "Escape") closeRef.current();
+      if (e.key === "Tab" && ref.current) {
+        const items = Array.from(
+          ref.current.querySelectorAll<HTMLElement>("input, select, textarea, button, a[href]"),
+        ).filter((el) => !el.hasAttribute("disabled"));
+        if (items.length === 0) return;
+        const [a, z] = [items[0], items[items.length - 1]];
+        if (e.shiftKey && document.activeElement === a) {
+          e.preventDefault();
+          z.focus();
+        } else if (!e.shiftKey && document.activeElement === z) {
+          e.preventDefault();
+          a.focus();
+        }
+      }
+    };
+    window.addEventListener("keydown", h);
+    return () => {
+      window.removeEventListener("keydown", h);
+      prev?.focus();
+    };
+  }, [open]);
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4" onClick={onClose}>
+      <div
+        ref={ref}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        className="w-full max-w-md rounded-lg border border-line bg-surface-1 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <header className="flex items-center justify-between border-b border-line px-5 py-3">
+          <h2 className="text-base font-semibold">{title}</h2>
+          <button className="rounded text-ink-3 hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent" onClick={onClose} aria-label="Close">
+            ✕
+          </button>
+        </header>
+        <div className="p-5">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+/** Labelled text input used by forms. */
+export function Field({
+  label,
+  id,
+  hint,
+  ...props
+}: { label: string; id: string; hint?: string } & InputHTMLAttributes<HTMLInputElement>) {
+  return (
+    <div>
+      <label htmlFor={id} className="mb-1 block text-sm font-medium text-ink-2">
+        {label}
+      </label>
+      <input
+        id={id}
+        {...props}
+        aria-describedby={hint ? `${id}-hint` : undefined}
+        className="block w-full rounded border border-line bg-surface-2 px-3 py-1.5 text-sm text-ink focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/40"
+      />
+      {hint && (
+        <p id={`${id}-hint`} className="mt-1 text-xs text-ink-3">
+          {hint}
+        </p>
+      )}
     </div>
   );
 }

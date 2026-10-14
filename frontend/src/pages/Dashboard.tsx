@@ -1,7 +1,9 @@
 import { Link } from "react-router-dom";
 import { Bar, BarChart, CartesianGrid, Cell, LabelList, ResponsiveContainer, Tooltip, XAxis, YAxis, Legend } from "recharts";
 import { api } from "../api";
-import { Card, ErrorNote, PageHeader, SEV_COLOR, SEVERITIES, SeverityBadge, Stat, useApi } from "../components/ui";
+import { Card, ErrorNote, PageHeader, SeverityBadge, Stat } from "../components/ui";
+import { SEV_COLOR, SEVERITIES } from "../lib/format";
+import { useApi } from "../lib/useApi";
 
 const axis = { stroke: "var(--color-ink-3)", fontSize: 11, tickLine: false, axisLine: false } as const;
 

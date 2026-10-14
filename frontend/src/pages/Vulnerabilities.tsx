@@ -1,7 +1,9 @@
 import { useState } from "react";
 import { api } from "../api";
 import AssetDrawer from "../components/AssetDrawer";
-import { Card, ErrorNote, PageHeader, RiskBar, Select, SeverityBadge, Stat, Table, Tag, TYPE_LABEL, useApi } from "../components/ui";
+import { Card, ErrorNote, PageHeader, RiskBar, Select, SeverityBadge, Stat, Table, Tag } from "../components/ui";
+import { TYPE_LABEL } from "../lib/format";
+import { useApi } from "../lib/useApi";
 
 export default function Vulnerabilities() {
   const [scope, setScope] = useState("in_use");

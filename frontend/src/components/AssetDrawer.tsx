@@ -1,5 +1,7 @@
 import { api } from "../api";
-import { Drawer, ErrorNote, RiskBar, SeverityBadge, Tag, TYPE_LABEL, fmtAgo, useApi } from "./ui";
+import { Drawer, ErrorNote, RiskBar, SeverityBadge, Tag } from "./ui";
+import { TYPE_LABEL, fmtAgo } from "../lib/format";
+import { useApi } from "../lib/useApi";
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (

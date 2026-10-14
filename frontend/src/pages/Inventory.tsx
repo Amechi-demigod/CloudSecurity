@@ -1,7 +1,9 @@
 import { useState } from "react";
 import { api } from "../api";
 import AssetDrawer from "../components/AssetDrawer";
-import { Card, Empty, ErrorNote, PageHeader, RiskBar, Select, Table, Tag, TYPE_LABEL, useApi } from "../components/ui";
+import { Card, Empty, ErrorNote, PageHeader, RiskBar, Select, Table, Tag } from "../components/ui";
+import { TYPE_LABEL } from "../lib/format";
+import { useApi } from "../lib/useApi";
 
 export default function Inventory() {
   const [type, setType] = useState("");

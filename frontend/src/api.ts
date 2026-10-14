@@ -188,12 +188,73 @@ export interface Health {
   azure_configured: boolean;
 }
 
-const BASE = import.meta.env.VITE_API_BASE ?? "";
+export type Role = "admin" | "analyst" | "viewer";
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+export interface User {
+  id: string;
+  email: string;
+  name: string;
+  role: Role;
+  is_active: boolean;
+  created_at: string;
+  last_login_at: string | null;
+  locked_until: string | null;
+  failed_login_count: number;
+}
+
+export interface SessionInfo {
+  user: User;
+  csrf_token: string;
+  expires_at: string;
+  idle_timeout_minutes: number;
+}
+
+export interface AuditEntry {
+  id: number;
+  timestamp: string;
+  action: string;
+  actor_id: string | null;
+  actor_email: string | null;
+  target: string | null;
+  ip: string | null;
+  detail: Record<string, unknown>;
+}
+
+const BASE = import.meta.env.VITE_API_BASE ?? "";
+const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+
+/** Error carrying the HTTP status, so callers can tell 401/403 from other failures. */
+export class ApiError extends Error {
+  readonly status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
+// Session-wide state set by the auth provider. The CSRF token is kept in memory
+// only (never in localStorage) and sent on every state-changing request.
+let csrfToken: string | null = null;
+let onUnauthorized: (() => void) | null = null;
+let onForbidden: ((message: string) => void) | null = null;
+
+export function setCsrfToken(token: string | null) {
+  csrfToken = token;
+}
+
+export function setAuthHandlers(h: { unauthorized: () => void; forbidden: (message: string) => void }) {
+  onUnauthorized = h.unauthorized;
+  onForbidden = h.forbidden;
+}
+
+async function request<T>(path: string, init?: RequestInit & { skipAuthHandling?: boolean }): Promise<T> {
+  const method = (init?.method ?? "GET").toUpperCase();
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (!SAFE_METHODS.has(method) && csrfToken) headers["X-CSRF-Token"] = csrfToken;
   const res = await fetch(`${BASE}${path}`, {
     ...init,
-    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+    credentials: "same-origin",
+    headers: { ...headers, ...((init?.headers as Record<string, string>) ?? {}) },
   });
   if (!res.ok) {
     let detail = res.statusText;
@@ -203,8 +264,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       /* ignore */
     }
-    throw new Error(`${res.status}: ${detail}`);
+    if (!init?.skipAuthHandling) {
+      if (res.status === 401) onUnauthorized?.();
+      if (res.status === 403) {
+        const msg = `Not permitted: ${detail}`;
+        onForbidden?.(msg);
+        throw new ApiError(403, msg);
+      }
+    }
+    throw new ApiError(res.status, detail || `HTTP ${res.status}`);
   }
+  if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
 }
 
@@ -218,6 +288,30 @@ function qs(params: Record<string, string | number | boolean | undefined | null>
 }
 
 export const api = {
+  // --- auth ---
+  me: () => request<SessionInfo>("/api/auth/me", { skipAuthHandling: true }),
+  login: (email: string, password: string) =>
+    request<SessionInfo>("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+      skipAuthHandling: true,
+    }),
+  logout: () => request<void>("/api/auth/logout", { method: "POST", skipAuthHandling: true }),
+  changePassword: (current_password: string, new_password: string) =>
+    request<void>("/api/auth/change-password", {
+      method: "POST",
+      body: JSON.stringify({ current_password, new_password }),
+    }),
+  // --- admin ---
+  users: () => request<User[]>("/api/users"),
+  createUser: (u: { email: string; name: string; role: Role; password: string }) =>
+    request<User>("/api/users", { method: "POST", body: JSON.stringify(u) }),
+  updateUser: (id: string, patch: Partial<Pick<User, "name" | "role" | "is_active">>) =>
+    request<User>(`/api/users/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  resetPassword: (id: string, password: string) =>
+    request<User>(`/api/users/${id}/reset-password`, { method: "POST", body: JSON.stringify({ password }) }),
+  auditLog: (f: { action?: string; limit?: number } = {}) => request<AuditEntry[]>(`/api/audit-log${qs(f)}`),
+  // --- platform ---
   health: () => request<Health>("/api/health"),
   dashboard: () => request<Dashboard>("/api/dashboard"),
   assets: (f: Record<string, string | boolean | undefined> = {}) => request<AssetSummary[]>(`/api/assets${qs(f)}`),
