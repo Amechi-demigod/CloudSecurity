@@ -1,0 +1,10 @@
+Name:	nginx
+Umask:	0022
+State:	S (sleeping)
+Tgid:	4242
+Ngid:	0
+Pid:	4242
+PPid:	1
+TracerPid:	0
+Uid:	33	33	33	33
+Gid:	0	0	0	0

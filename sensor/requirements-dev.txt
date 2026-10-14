@@ -1,0 +1,4 @@
+# The sensor itself has no runtime dependencies (stdlib only).
+# Optional: python3-bpfcc (distro package) for --ebpf.
+pytest>=7
+pydantic>=2   # only used by tests/test_compat.py to mirror the backend model

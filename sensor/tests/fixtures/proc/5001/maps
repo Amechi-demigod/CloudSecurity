@@ -1,0 +1,10 @@
+55d0c0a00000-55d0c0a01000 r--p 00000000 08:01 131 /usr/bin/python3.11
+7f1c00000000-7f1c00021000 rw-p 00000000 00:00 0 
+7f1c10000000-7f1c10200000 r-xp 00000000 08:01 200 /usr/lib/x86_64-linux-gnu/libc.so.6
+7f1c10400000-7f1c10500000 r-xp 00000000 08:01 201 /usr/lib/x86_64-linux-gnu/libssl.so.3
+7f1c10600000-7f1c10700000 r-xp 00000000 08:01 202 /usr/local/lib/python3.11/site-packages/numpy/core/_multiarray_umath.cpython-311-x86_64-linux-gnu.so
+7f1c10800000-7f1c10900000 r-xp 00000000 08:01 203 /usr/local/lib/python3.11/site-packages/numpy.libs/libopenblas64_p-r0-0cf96a72.3.23.dev.so
+7f1c10a00000-7f1c10b00000 r-xp 00000000 08:01 204 /opt/app/libcustom-2.4.1.so (deleted)
+7f1c10c00000-7f1c10c01000 r--p 00000000 00:00 0                          [vvar]
+7ffd00000000-7ffd00021000 rw-p 00000000 00:00 0                          [stack]
+7f1c10d00000-7f1c10d01000 r--s 00000000 08:01 205 /usr/lib/locale/locale-archive

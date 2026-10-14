@@ -1,0 +1,12 @@
+C:Q1abc=
+P:musl
+V:1.2.4-r2
+F:lib
+R:ld-musl-x86_64.so.1
+R:libc.musl-x86_64.so.1
+
+P:libcrypto3
+V:3.1.4-r5
+F:usr/lib
+R:libcrypto.so.3
+

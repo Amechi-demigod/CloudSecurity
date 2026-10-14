@@ -1,0 +1,162 @@
+# CNAPP runtime sensor - Kubernetes DaemonSet (observe-only)
+#
+#   kubectl apply -f sensor/deploy/daemonset.yaml
+#   kubectl -n cnapp-system create secret generic runtime-sensor \
+#       --from-literal=api-token=<RUNTIME_INGEST_TOKEN>
+#
+# Privilege model (default = /proc polling mode):
+#   hostPID: true          - see every process on the node
+#   runAsUser: 0           - read /proc/<pid>/{exe,maps,fd} of other users
+#   capabilities: drop ALL, add SYS_PTRACE (needed only for the kernel's ptrace
+#                 *access check* on /proc reads; the sensor never calls ptrace())
+#                 and DAC_READ_SEARCH (traverse ~/.ssh etc. for inotify watches)
+#   host paths are mounted read-only; readOnlyRootFilesystem; no privilege escalation
+#   no hostNetwork: per-netns TCP tables are read via /proc/<pid>/net/tcp
+#
+# eBPF mode (optional, see the commented lines in the container spec):
+#   image built with WITH_EBPF=true, SENSOR_EBPF=on, add BPF + PERFMON (kernel >= 5.8)
+#   and SYS_ADMIN (bcc still needs it for kprobes/perf on most kernels), seccomp
+#   Unconfined, and mount /sys/kernel/debug, /lib/modules and /usr/src read-only.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cnapp-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: runtime-sensor
+  namespace: cnapp-system
+---
+# Read-only: lets the sensor map container IDs -> pod/namespace on its node.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cnapp-runtime-sensor
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cnapp-runtime-sensor
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cnapp-runtime-sensor
+subjects:
+  - kind: ServiceAccount
+    name: runtime-sensor
+    namespace: cnapp-system
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: runtime-sensor
+  namespace: cnapp-system
+data:
+  SENSOR_API_URL: "http://cnapp-backend.cnapp-system.svc:8000/api/runtime/events"
+  SENSOR_COLLECTORS: "process,network,file,library"
+  SENSOR_POLL_INTERVAL: "2"
+  SENSOR_LIBRARY_INTERVAL: "120"
+  SENSOR_EBPF: "off"
+  SENSOR_PAYLOAD_FORMAT: "cnapp-mvp"
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: runtime-sensor
+  namespace: cnapp-system
+  labels:
+    app.kubernetes.io/name: runtime-sensor
+    app.kubernetes.io/part-of: cnapp
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: runtime-sensor
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 10%
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: runtime-sensor
+        app.kubernetes.io/part-of: cnapp
+    spec:
+      serviceAccountName: runtime-sensor
+      hostPID: true
+      hostNetwork: false
+      priorityClassName: system-node-critical
+      tolerations:
+        - operator: Exists          # run on every node, including tainted ones
+      terminationGracePeriodSeconds: 15
+      containers:
+        - name: sensor
+          image: cnapp/runtime-sensor:0.1.0
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: runtime-sensor
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: SENSOR_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: SENSOR_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: runtime-sensor
+                  key: api-token
+                  optional: true
+            - name: SENSOR_PROC_ROOT
+              value: /host/proc
+            - name: SENSOR_HOST_ROOT
+              value: /host
+            - name: SENSOR_SYS_ROOT
+              value: /host/sys
+          securityContext:
+            runAsUser: 0
+            runAsNonRoot: false
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              drop: ["ALL"]
+              add: ["SYS_PTRACE", "DAC_READ_SEARCH"]
+              # eBPF mode: add: ["SYS_PTRACE", "DAC_READ_SEARCH", "BPF", "PERFMON", "SYS_ADMIN", "SYS_RESOURCE"]
+              # and set seccompProfile.type: Unconfined (bpf() is blocked by RuntimeDefault)
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 300m
+              memory: 256Mi
+          volumeMounts:
+            - { name: host-proc, mountPath: /host/proc, readOnly: true }
+            - { name: host-sys, mountPath: /host/sys, readOnly: true }
+            - { name: host-etc, mountPath: /host/etc, readOnly: true }
+            - { name: host-root-home, mountPath: /host/root, readOnly: true }
+            - { name: host-home, mountPath: /host/home, readOnly: true }
+            # eBPF mode only:
+            # - { name: debugfs, mountPath: /sys/kernel/debug, readOnly: true }
+            # - { name: lib-modules, mountPath: /lib/modules, readOnly: true }
+            # - { name: usr-src, mountPath: /usr/src, readOnly: true }
+      volumes:
+        - { name: host-proc, hostPath: { path: /proc } }
+        - { name: host-sys, hostPath: { path: /sys } }
+        - { name: host-etc, hostPath: { path: /etc } }
+        - { name: host-root-home, hostPath: { path: /root, type: DirectoryOrCreate } }
+        - { name: host-home, hostPath: { path: /home, type: DirectoryOrCreate } }
+        # - { name: debugfs, hostPath: { path: /sys/kernel/debug } }
+        # - { name: lib-modules, hostPath: { path: /lib/modules } }
+        # - { name: usr-src, hostPath: { path: /usr/src } }

@@ -1,0 +1,10 @@
+Name:	tricky) name
+Umask:	0022
+State:	S (sleeping)
+Tgid:	6001
+Ngid:	0
+Pid:	6001
+PPid:	1
+TracerPid:	0
+Uid:	0	0	0	0
+Gid:	0	0	0	0
