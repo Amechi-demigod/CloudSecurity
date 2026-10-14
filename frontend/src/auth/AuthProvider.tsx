@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { api, setAuthHandlers, setCsrfToken, type Role, type User } from "../api";
+import { ApiError, api, setAuthHandlers, setCsrfToken, type Role, type User } from "../api";
 import { AuthContext, hasRole, type AuthState } from "./context";
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -22,8 +22,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setCsrfToken(s.csrf_token);
         setUser(s.user);
       })
-      .catch(() => {
-        if (!cancelled) setUser(null);
+      .catch((e) => {
+        if (cancelled) return;
+        // The backend says "Session expired" when a cookie was sent but is no longer valid.
+        if (e instanceof ApiError && e.status === 401 && /expired/i.test(e.message)) setSessionExpired(true);
+        setUser(null);
       });
     return () => {
       cancelled = true;
