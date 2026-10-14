@@ -24,7 +24,7 @@ class UserResolver:
         self.path = os.path.join(host_root, "etc/passwd")
         self.ttl = ttl
         self._cache: Dict[int, str] = {}
-        self._loaded = 0.0
+        self._loaded: Optional[float] = None  # monotonic() can be < ttl right after boot
 
     def _load(self) -> None:
         self._cache = {}
@@ -41,7 +41,7 @@ class UserResolver:
     def lookup(self, uid: Optional[int]) -> Optional[str]:
         if uid is None:
             return None
-        if time.monotonic() - self._loaded > self.ttl:
+        if self._loaded is None or time.monotonic() - self._loaded > self.ttl:
             self._load()
         return self._cache.get(uid, str(uid))
 
@@ -87,7 +87,7 @@ class K8sEnricher:
         self.refresh = refresh
         self._by_container: Dict[str, Tuple[str, str, str, str]] = {}
         self._by_uid: Dict[str, Tuple[str, str]] = {}
-        self._last = 0.0
+        self._last: Optional[float] = None  # monotonic() can be < refresh right after boot
         self._failures = 0
 
     def _fetch(self) -> None:
@@ -120,7 +120,7 @@ class K8sEnricher:
         self._by_container, self._by_uid = by_container, by_uid
 
     def _maybe_refresh(self) -> None:
-        if not self.use_api or time.monotonic() - self._last < self.refresh:
+        if not self.use_api or (self._last is not None and time.monotonic() - self._last < self.refresh):
             return
         self._last = time.monotonic()
         try:

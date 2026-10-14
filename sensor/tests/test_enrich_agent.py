@@ -80,3 +80,21 @@ def test_agent_end_to_end_dry_run(fake_proc, rootfs, monkeypatch):
     py = next(e for e in events if e["event_type"] == "process_exec" and e["process"]["pid"] == 5001)
     assert "hunter2" not in json.dumps(py)
     assert py["container_id"] == "b" * 64
+
+
+def test_user_resolver_loads_right_after_boot(rootfs, monkeypatch):
+    """time.monotonic() is seconds since boot; a fresh node/CI runner may be < ttl."""
+    import runtime_sensor.enrich as enrich
+    monkeypatch.setattr(enrich.time, "monotonic", lambda: 12.0)
+    assert UserResolver(str(rootfs)).lookup(33) == "www-data"
+
+
+def test_k8s_enricher_fetches_right_after_boot(monkeypatch):
+    import runtime_sensor.enrich as enrich
+    monkeypatch.setattr(enrich.time, "monotonic", lambda: 1.0)
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.0.0.1")
+    k = K8sEnricher("node-1", use_api=True)
+    calls = []
+    monkeypatch.setattr(k, "_fetch", lambda: calls.append(1))
+    k._maybe_refresh()
+    assert calls == [1]
