@@ -1,0 +1,51 @@
+# CNAPP runtime sensor - systemd unit for VMs / bare metal
+#
+#   sudo install -d /opt/runtime-sensor /etc/runtime-sensor
+#   sudo cp -r sensor/runtime_sensor /opt/runtime-sensor/
+#   sudo install -m 600 sensor/deploy/sensor.env.example /etc/runtime-sensor/sensor.env   # then edit
+#   sudo cp sensor/deploy/runtime-sensor.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now runtime-sensor
+[Unit]
+Description=CNAPP runtime security sensor (observe-only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/runtime-sensor/sensor.env
+Environment=PYTHONPATH=/opt/runtime-sensor PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 -m runtime_sensor
+Restart=on-failure
+RestartSec=5
+
+# uid 0 is needed to read other users' /proc/<pid>/{exe,maps,fd};
+# every capability except the two read-only ones below is removed.
+User=root
+CapabilityBoundingSet=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
+AmbientCapabilities=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
+# eBPF mode (SENSOR_EBPF=on) needs instead:
+# CapabilityBoundingSet=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH CAP_BPF CAP_PERFMON CAP_SYS_ADMIN CAP_SYS_RESOURCE
+# and remove MemoryDenyWriteExecute / ProtectKernelTunables below.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadOnlyPaths=/
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+MemoryMax=256M
+CPUQuota=25%
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

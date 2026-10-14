@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cnapp-runtime-sensor"
+version = "0.1.0"
+description = "Observe-only Linux runtime security sensor for the CNAPP platform"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []  # stdlib only
+
+[project.optional-dependencies]
+# bcc is normally installed from the distro (python3-bpfcc), not from PyPI.
+dev = ["pytest>=7", "pydantic>=2"]
+
+[project.scripts]
+runtime-sensor = "runtime_sensor.agent:main"
+
+[tool.setuptools.packages.find]
+include = ["runtime_sensor*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
