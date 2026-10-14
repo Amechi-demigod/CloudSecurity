@@ -39,6 +39,10 @@ SENSITIVE_TAG_KEYS = {"data_classification", "data-classification", "dataclassif
 NON_SENSITIVE_VALUES = {"public", "none", "non-sensitive", "nonsensitive", "general"}
 
 READ_PREFIXES = ("list", "get")
+# Some list*/get* operations are POSTs that return secrets (storage keys, SAS
+# tokens, AKS kubeconfigs, publishing profiles...). A posture scanner never
+# needs them, so they are blocked even though their names look read-only.
+SECRET_MARKERS = ("key", "credential", "secret", "sas", "connection_string", "publishing", "token", "password")
 
 
 class ReadOnlyViolation(PermissionError):
@@ -55,6 +59,8 @@ class _ReadOnlyOperations:
     def __getattr__(self, name: str) -> Any:
         if not name.startswith(READ_PREFIXES):
             raise ReadOnlyViolation(f"Blocked non read-only Azure call: {self._path}.{name}")
+        if any(m in name.lower() for m in SECRET_MARKERS):
+            raise ReadOnlyViolation(f"Blocked secret-returning Azure call: {self._path}.{name}")
         return getattr(self._ops, name)
 
 
@@ -66,6 +72,11 @@ class ReadOnlyClient:
         self._name = name
 
     def __getattr__(self, name: str) -> Any:
+        if name.startswith("_"):
+            # never expose the raw pipeline / send_request escape hatches
+            raise AttributeError(f"private Azure client attribute not exposed: {self._name}.{name}")
+        if name in {"send_request", "close"}:
+            raise ReadOnlyViolation(f"Blocked raw Azure client call: {self._name}.{name}")
         return _ReadOnlyOperations(getattr(self._client, name), f"{self._name}.{name}")
 
 
@@ -400,8 +411,10 @@ class AzureConnector(Connector):
                     try:
                         full = rm.resources.get_by_id(r.id, api_version="2023-01-01")
                         https_only = _g(full, "properties", "httpsOnly")
-                    except Exception:
-                        pass
+                    except ReadOnlyViolation:
+                        raise
+                    except Exception as exc:  # noqa: BLE001 - optional enrichment
+                        log.debug("function app detail for %s unavailable: %s", r.id, exc)
                     add(AssetRecord(id=rid, name=r.name, type="function_app", region=r.location,
                                     resource_group=_rg(r.id), tags=dict(r.tags or {}), internet_exposed=True, **base,
                                     properties={"kind": kind, "https_only": https_only,
@@ -411,8 +424,10 @@ class AzureConnector(Connector):
                     try:
                         full = rm.resources.get_by_id(r.id, api_version="2023-01-31")
                         principal = _g(full, "properties", "principalId")
-                    except Exception:
-                        pass
+                    except ReadOnlyViolation:
+                        raise
+                    except Exception as exc:  # noqa: BLE001 - optional enrichment
+                        log.debug("identity detail for %s unavailable: %s", r.id, exc)
                     add(AssetRecord(id=rid, name=r.name, type="identity", region=r.location,
                                     resource_group=_rg(r.id), tags=dict(r.tags or {}), **base,
                                     properties={"principal_id": principal, "principal_type": "UserAssigned",

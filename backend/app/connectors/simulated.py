@@ -109,7 +109,7 @@ def generate_environment(seed: int = 42) -> CollectionResult:
 
         # ---------------------------------------------------------------- identities
         identities = []
-        for i, (nm, roles, scope) in enumerate([
+        for _i, (nm, roles, scope) in enumerate([
             (f"id-{env}-automation", ["Contributor"], "subscription"),
             (f"id-{env}-reader", ["Reader"], "subscription"),
             (f"id-{env}-backup", ["Storage Blob Data Contributor"], "resource"),
@@ -359,7 +359,8 @@ def _ctr(asset: dict) -> dict | None:
     if asset["type"] != "pod":
         return None
     p = asset.get("properties") or {}
-    return {"id": hashlib.sha1(asset["id"].encode()).hexdigest()[:12], "name": asset["name"].rsplit("-", 2)[0],
+    cid = hashlib.sha1(asset["id"].encode(), usedforsecurity=False).hexdigest()[:12]
+    return {"id": cid, "name": asset["name"].rsplit("-", 2)[0],
             "image": p.get("image"), "pod": asset["name"], "namespace": p.get("namespace")}
 
 
@@ -487,7 +488,7 @@ SCENARIOS = [
 
 def pick_scenario(rng: random.Random, asset: dict):
     pool = [(f, w) for f, w in SCENARIOS if f is not scenario_container_shell or asset["type"] == "pod"]
-    fns, weights = zip(*pool)
+    fns, weights = zip(*pool, strict=True)
     return rng.choices(fns, weights=weights, k=1)[0]
 
 

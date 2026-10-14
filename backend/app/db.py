@@ -42,7 +42,26 @@ def init_engine(url: str) -> Engine:
     from . import models  # noqa: F401  (register tables)
 
     Base.metadata.create_all(engine)
+    _add_missing_columns(engine)
     return engine
+
+
+def _add_missing_columns(eng: Engine) -> None:
+    """Minimal additive migration: create_all() never alters existing tables, so
+    add nullable columns introduced after a database was first created."""
+    from sqlalchemy import inspect, text
+
+    insp = inspect(eng)
+    with eng.begin() as conn:
+        for table in Base.metadata.sorted_tables:
+            if not insp.has_table(table.name):
+                continue
+            existing = {c["name"] for c in insp.get_columns(table.name)}
+            for col in table.columns:
+                if col.name not in existing and col.nullable:
+                    ddl = col.type.compile(dialect=eng.dialect)
+                    # identifiers come from our own ORM metadata, never from user input
+                    conn.execute(text(f'ALTER TABLE "{table.name}" ADD COLUMN "{col.name}" {ddl}'))
 
 
 def get_session() -> Session:

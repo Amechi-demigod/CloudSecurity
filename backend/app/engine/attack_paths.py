@@ -133,7 +133,7 @@ def compute_attack_paths(
         edges += [{"source": path[i], "target": path[i + 1], "type": edge_types[i]} for i in range(len(path) - 1)]
         title = "Internet -> " + " -> ".join(assets[p]["name"] for p in path)
         best[key] = AttackPath(
-            id=hashlib.sha1(f"{path[0]}|{path[-1]}".encode()).hexdigest()[:12],
+            id=hashlib.sha1(f"{path[0]}|{path[-1]}".encode(), usedforsecurity=False).hexdigest()[:12],
             title=title,
             score=score,
             severity=_severity(score),

@@ -8,7 +8,7 @@ properties.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -17,7 +17,7 @@ from .db import Base
 
 
 def utcnow() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 def new_id() -> str:
@@ -103,6 +103,9 @@ class Vulnerability(Base):
     exploit_available: Mapped[bool] = mapped_column(Boolean, default=False)
     # Runtime context ------------------------------------------------------
     in_use: Mapped[bool] = mapped_column(Boolean, default=False)  # package loaded at runtime
+    # "sensor" when set by a runtime sensor library_loaded event (expires without heartbeat)
+    in_use_source: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    in_use_last_seen: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     internet_exposed: Mapped[bool] = mapped_column(Boolean, default=False)
     sensitive_data_access: Mapped[bool] = mapped_column(Boolean, default=False)
     risk_score: Mapped[float] = mapped_column(Float, default=0.0, index=True)

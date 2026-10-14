@@ -1,5 +1,6 @@
 from app import config
 from app.connectors.base import AssetRecord, CollectionResult, Connector
+from tests.conftest import AUTH
 
 
 def test_health_and_dashboard(client):
@@ -67,7 +68,7 @@ def test_runtime_ingest_creates_alert_with_timeline(client):
         {"asset_id": asset["id"], "event_type": "network_connection",
          "network": {"direction": "outbound", "dst_ip": "198.51.100.7", "dst_port": 9001}},
     ]
-    r = client.post("/api/runtime/events", json=batch)
+    r = client.post("/api/runtime/events", json=batch, headers=AUTH)
     assert r.status_code == 202, r.text
     body = r.json()
     assert body["accepted"] == 2 and body["alerts_triggered"] >= 2
@@ -83,17 +84,62 @@ def test_runtime_ingest_creates_alert_with_timeline(client):
 
 
 def test_runtime_ingest_validation_and_schema(client):
-    assert client.post("/api/runtime/events", json={"event_type": "teleport"}).status_code == 422
+    assert client.post("/api/runtime/events", json={"event_type": "teleport"}, headers=AUTH).status_code == 422
+    assert client.post("/api/runtime/events", json="nope", headers=AUTH).status_code == 422
+    too_long = {"event_type": "process_exec", "process": {"name": "x" * 1000}}
+    assert client.post("/api/runtime/events", json=too_long, headers=AUTH).status_code == 422
+    bad_port = {"event_type": "network_connection", "network": {"dst_ip": "1.2.3.4", "dst_port": 70000}}
+    assert client.post("/api/runtime/events", json=bad_port, headers=AUTH).status_code == 422
     schema = client.get("/api/runtime/schema").json()
-    assert "event_type" in schema["properties"]
+    assert "event_type" in schema["legacy"]["properties"]
+    assert "schema_version" in schema["v1"]["properties"]
 
 
 def test_runtime_ingest_token(client, monkeypatch):
-    monkeypatch.setattr(config.settings, "runtime_ingest_token", "s3cret")
+    monkeypatch.setattr(config.settings, "ingest_api_token", "s3cret")
     ev = {"event_type": "file_access", "file": {"path": "/tmp/x"}}
-    assert client.post("/api/runtime/events", json=ev).status_code == 401
-    assert client.post("/api/runtime/events", json=ev, headers={"Authorization": "Bearer wrong"}).status_code == 401
-    assert client.post("/api/runtime/events", json=ev, headers={"Authorization": "Bearer s3cret"}).status_code == 202
+    url = "/api/runtime/events"
+    assert client.post(url, json=ev).status_code == 401
+    assert client.post(url, json=ev, headers={"Authorization": "Bearer wrong"}).status_code == 401
+    assert client.post(url, json=ev, headers={"Authorization": "Basic s3cret"}).status_code == 401
+    assert client.post(url, json=ev, headers={"Authorization": "Bearer s3cret"}).status_code == 202
+    assert client.post(url, json=ev, headers={"Authorization": "bearer s3cret"}).status_code == 202
+
+
+def test_runtime_ingest_fails_closed_without_token(client, monkeypatch):
+    monkeypatch.setattr(config.settings, "ingest_api_token", None)
+    ev = {"event_type": "file_access", "file": {"path": "/tmp/x"}}
+    assert client.post("/api/runtime/events", json=ev, headers=AUTH).status_code == 503
+    monkeypatch.setattr(config.settings, "ingest_allow_unauthenticated", True)
+    assert client.post("/api/runtime/events", json=ev).status_code == 202
+
+
+def test_ingest_token_env_var_names(monkeypatch):
+    monkeypatch.setenv("INGEST_API_TOKEN", "primary")
+    assert config.Settings().ingest_api_token == "primary"
+    monkeypatch.setenv("INGEST_API_TOKEN", "")
+    monkeypatch.setenv("RUNTIME_INGEST_TOKEN", "legacy")
+    assert config.Settings().ingest_api_token == "legacy"
+
+
+def test_request_body_size_limit(client):
+    big = [{"event_type": "file_access", "file": {"path": "/tmp/" + "a" * 4000}}] * 400  # ~1.7 MB
+    r = client.post("/api/runtime/events", json=big, headers=AUTH)
+    assert r.status_code == 413
+
+
+def test_max_events_per_request(client, monkeypatch):
+    monkeypatch.setattr(config.settings, "max_events_per_request", 2)
+    ev = {"event_type": "file_access", "file": {"path": "/tmp/x"}}
+    assert client.post("/api/runtime/events", json=[ev] * 3, headers=AUTH).status_code == 413
+
+
+def test_future_timestamps_are_clamped(client):
+    ev = {"event_type": "file_access", "file": {"path": "/tmp/x"}, "timestamp": "2999-01-01T00:00:00Z",
+          "sensor_id": "clock-skew"}
+    assert client.post("/api/runtime/events", json=ev, headers=AUTH).status_code == 202
+    got = client.get("/api/runtime/events", params={"source": "sensor"}).json()
+    assert got and all(not e["timestamp"].startswith("2999") for e in got)
 
 
 def test_attack_paths_endpoints(client):

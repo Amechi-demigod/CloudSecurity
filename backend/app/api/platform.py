@@ -79,7 +79,7 @@ def run_scan(body: ScanRequest):
 
 
 @router.get("/scans", response_model=list[ScanRunOut])
-def list_scans(db: Session = Depends(get_db), limit: int = 20):
+def list_scans(db: Session = Depends(get_db), limit: int = Query(20, ge=1, le=200)):
     return list(db.scalars(select(ScanRun).order_by(ScanRun.started_at.desc()).limit(limit)))
 
 

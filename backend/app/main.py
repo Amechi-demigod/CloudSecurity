@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from . import config, db
 from .api import inventory, platform, runtime, vulns
+from .security import BodySizeLimitMiddleware
 from .services.simulation import RuntimeSimulator, seed_if_empty
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -37,6 +38,8 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
+    if "*" in config.settings.cors_origins:
+        log.warning("CORS_ORIGINS contains '*': any website can read this API from a browser")
     app = FastAPI(
         title="CloudSecurity CNAPP",
         version="0.1.0",
@@ -48,8 +51,9 @@ def create_app() -> FastAPI:
         CORSMiddleware,
         allow_origins=config.settings.cors_origins,
         allow_methods=["GET", "POST", "PATCH"],
-        allow_headers=["*"],
+        allow_headers=["Authorization", "Content-Type"],
     )
+    app.add_middleware(BodySizeLimitMiddleware, max_bytes=config.settings.max_request_bytes)
     for r in (platform.router, inventory.router, vulns.router, runtime.router):
         app.include_router(r)
     return app

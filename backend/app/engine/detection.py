@@ -256,15 +256,38 @@ def _imds(e):
     return None
 
 
+SENSOR_HINT_RULE_ID = "CDR-009"
+
+
+@detection(
+    id=SENSOR_HINT_RULE_ID,
+    title="Suspicious activity reported by runtime sensor",
+    severity="high",
+    mitre_tactic="Execution",
+    mitre_technique_id="T1204",
+    mitre_technique_name="User Execution",
+    description="The node-local runtime sensor flagged this event as high severity (see its detection tags) "
+    "and no more specific backend rule matched.",
+)
+def _sensor_hint(e):
+    labels = e.get("labels") or {}
+    if labels.get("severity_hint") in {"high", "critical"}:
+        return f"sensor severity {labels['severity_hint']}; tags: {labels.get('tags') or '-'}"[:300]
+    return None
+
+
 def evaluate_event(event: dict[str, Any]) -> list[tuple[DetectionRule, str]]:
     out = []
     for r in DETECTION_RULES:
         try:
             reason = r.match(event)
-        except Exception:
+        except Exception:  # noqa: BLE001 - a buggy rule must never break ingestion
             reason = None
         if reason:
             out.append((r, reason))
+    # The sensor-hint rule is a fallback only.
+    if len(out) > 1:
+        out = [(r, why) for r, why in out if r.id != SENSOR_HINT_RULE_ID]
     return out
 
 

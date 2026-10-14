@@ -12,12 +12,16 @@ os.environ.update({
     "DATABASE_URL": "sqlite://",
     "SIMULATION_MODE": "true",
     "SIMULATOR_ENABLED": "false",
+    "INGEST_API_TOKEN": "test-ingest-token",
     "RUNTIME_INGEST_TOKEN": "",
+    "INGEST_ALLOW_UNAUTHENTICATED": "false",
 })
 for k in ("AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET", "AZURE_SUBSCRIPTION_IDS"):
     os.environ.pop(k, None)
 
 from app import config, db  # noqa: E402
+
+AUTH = {"Authorization": "Bearer test-ingest-token"}
 
 
 @pytest.fixture()

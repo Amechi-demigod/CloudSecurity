@@ -223,3 +223,30 @@ def test_real_sdk_clients_are_wrapped_read_only(kind, group, read_op, write_op):
     assert callable(getattr(getattr(client, group), read_op))
     with pytest.raises(ReadOnlyViolation):
         getattr(getattr(client, group), write_op)
+
+
+@pytest.mark.parametrize("kind,group,secret_op", [
+    ("storage", "storage_accounts", "list_keys"),
+    ("storage", "storage_accounts", "list_account_sas"),
+    ("containerservice", "managed_clusters", "list_cluster_admin_credentials"),
+    ("containerservice", "managed_clusters", "list_cluster_user_credentials"),
+])
+def test_secret_returning_list_calls_are_blocked(kind, group, secret_op):
+    """list_keys & co. are POSTs that return secrets; a posture scan must never call them."""
+    pytest.importorskip("azure.mgmt.storage")
+    from app.connectors.azure import AzureClientFactory
+
+    client = AzureClientFactory(MagicMock())(kind, SUB)
+    with pytest.raises(ReadOnlyViolation):
+        getattr(getattr(client, group), secret_op)
+
+
+def test_raw_request_escape_hatch_blocked():
+    pytest.importorskip("azure.mgmt.storage")
+    from app.connectors.azure import AzureClientFactory
+
+    client = AzureClientFactory(MagicMock())("storage", SUB)
+    with pytest.raises(ReadOnlyViolation):
+        client.send_request
+    with pytest.raises(AttributeError):
+        client._pipeline

@@ -1,7 +1,7 @@
 """Runtime event ingestion + detection -> alerts."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -27,21 +27,35 @@ def summarize(e: dict[str, Any]) -> str:
                 f"-> {n.get('dst_ip', '?')}:{n.get('dst_port', '?')}")
     if t == "file_access":
         return f"{p.get('name', '?')} {f.get('operation', 'read')} {f.get('path', '?')}"
+    if t == "library_loaded":
+        lib = e.get("library") or {}
+        ver = f" {lib['version']}" if lib.get("version") else ""
+        return f"loaded {lib.get('package') or '?'}{ver} ({lib.get('path', '?')})"[:500]
     if t == "privilege_escalation":
         pr = e.get("privilege") or {}
         return f"{p.get('name', '?')} uid {pr.get('from_uid', '?')} -> {pr.get('to_uid', 0)} ({pr.get('method', '?')})"
     return t or "event"
 
 
-def ingest_event(db: Session, event: dict[str, Any], source: str = "sensor") -> tuple[RuntimeEvent, list[Alert]]:
+# Sensor clocks can drift; never let an event claim to be from the future
+# (it would pin alerts to the top of every list forever).
+MAX_CLOCK_SKEW = timedelta(minutes=5)
+
+
+def ingest_event(db: Session, event: dict[str, Any], source: str = "sensor",
+                 event_id: str | None = None) -> tuple[RuntimeEvent, list[Alert]]:
     ts = event.get("timestamp")
     if isinstance(ts, str):
         ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
     if isinstance(ts, datetime) and ts.tzinfo is not None:
-        ts = ts.astimezone(timezone.utc).replace(tzinfo=None)  # store naive UTC
-    ts = ts or utcnow()
+        ts = ts.astimezone(UTC).replace(tzinfo=None)  # store naive UTC
+    now = utcnow()
+    ts = ts or now
+    if ts > now + MAX_CLOCK_SKEW:
+        ts = now
     data = {k: v for k, v in event.items() if k not in {"timestamp"} and v is not None}
     ev = RuntimeEvent(
+        **({"id": event_id} if event_id else {}),
         timestamp=ts,
         asset_id=event.get("asset_id"),
         event_type=event["event_type"],

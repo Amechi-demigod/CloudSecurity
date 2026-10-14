@@ -1,7 +1,6 @@
 import itertools
 
-from app.engine.risk import (cvss_severity, noise_reduction, overall_risk_score, priority_for,
-                             vuln_risk_score)
+from app.engine.risk import cvss_severity, noise_reduction, overall_risk_score, priority_for, vuln_risk_score
 
 
 def test_max_and_min_scores():

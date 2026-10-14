@@ -38,8 +38,20 @@ class Settings:
     )
     seed: int = field(default_factory=lambda: int(os.getenv("SEED", "42")))
 
-    # Optional shared secret required on POST /api/runtime/events (sensor ingest).
-    runtime_ingest_token: str | None = field(default_factory=lambda: os.getenv("RUNTIME_INGEST_TOKEN") or None)
+    # Shared secret required on POST /api/runtime/events (sensor ingest) as
+    # "Authorization: Bearer <token>". The sensor sends it from SENSOR_API_TOKEN.
+    # RUNTIME_INGEST_TOKEN is accepted as a legacy alias.
+    ingest_api_token: str | None = field(
+        default_factory=lambda: os.getenv("INGEST_API_TOKEN") or os.getenv("RUNTIME_INGEST_TOKEN") or None
+    )
+    # Ingest is fail-closed: with no token configured the endpoint returns 503
+    # unless this is explicitly enabled (local development only).
+    ingest_allow_unauthenticated: bool = field(
+        default_factory=lambda: _bool("INGEST_ALLOW_UNAUTHENTICATED", False)
+    )
+    # Hard cap on request body size (bytes) for every endpoint.
+    max_request_bytes: int = field(default_factory=lambda: int(os.getenv("MAX_REQUEST_BYTES", str(1024 * 1024))))
+    max_events_per_request: int = field(default_factory=lambda: int(os.getenv("MAX_EVENTS_PER_REQUEST", "1000")))
 
     cors_origins: list[str] = field(
         default_factory=lambda: _list("CORS_ORIGINS") or ["http://localhost:5173", "http://127.0.0.1:5173"]

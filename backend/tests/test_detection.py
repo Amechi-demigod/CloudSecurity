@@ -63,7 +63,7 @@ def test_specific_matchers():
 def test_ingest_correlates_repeated_hits_into_one_alert(session):
     session.add(Asset(id="vm-1", name="vm-1", type="vm"))
     session.flush()
-    t0 = utcnow()
+    t0 = utcnow() - timedelta(hours=3)  # future timestamps are clamped to "now"
     for i in range(3):
         ingest_event(session, {"asset_id": "vm-1", "event_type": "network_connection", "timestamp": t0 + timedelta(minutes=i),
                                "network": {"direction": "outbound", "dst_ip": "185.220.101.47", "dst_port": 443}})

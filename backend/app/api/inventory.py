@@ -11,8 +11,16 @@ from ..db import get_db
 from ..engine import posture
 from ..engine.detection import DETECTION_RULES
 from ..models import Alert, Asset, Finding, Relationship, Vulnerability, utcnow
-from ..schemas import (AlertOut, AssetOut, AssetRef, AssetSummary, FindingOut, FindingUpdate, RelationshipOut,
-                       VulnerabilityOut)
+from ..schemas import (
+    AlertOut,
+    AssetOut,
+    AssetRef,
+    AssetSummary,
+    FindingOut,
+    FindingUpdate,
+    RelationshipOut,
+    VulnerabilityOut,
+)
 
 router = APIRouter(prefix="/api", tags=["inventory"])
 SEV_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}

@@ -1,59 +1,115 @@
 """Runtime events (sensor ingest + feed) and CDR alerts."""
 from __future__ import annotations
 
-import hmac
 from datetime import datetime, timedelta
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi.exceptions import RequestValidationError
+from pydantic import Discriminator, Tag, TypeAdapter, ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import config
 from ..db import get_db
 from ..models import Alert, AlertEvent, Asset, RuntimeEvent
-from ..schemas import (AlertDetail, AlertOut, AlertUpdate, AssetOut, IngestResult, RuntimeEventIn, RuntimeEventOut,
-                       TimelineEntry)
+from ..schemas import (
+    AlertDetail,
+    AlertOut,
+    AlertUpdate,
+    AssetOut,
+    IngestResult,
+    RuntimeEventIn,
+    RuntimeEventOut,
+    SensorEventV1,
+    TimelineEntry,
+)
+from ..security import require_ingest_token
 from ..services.runtime import ingest_event
+from ..services.sensor import AssetResolver, apply_library_loaded, expire_stale_in_use, normalize_v1
 
 router = APIRouter(prefix="/api", tags=["runtime"])
 TIMELINE_CONTEXT = timedelta(minutes=10)
 
 
-def _check_token(authorization: str | None) -> None:
-    token = config.settings.runtime_ingest_token
-    if not token:
-        return
-    supplied = (authorization or "").removeprefix("Bearer ").strip()
-    if not hmac.compare_digest(supplied, token):
-        raise HTTPException(401, "invalid or missing sensor token")
+def _event_kind(v: Any) -> str:
+    return "v1" if isinstance(v, dict) and "schema_version" in v else "legacy"
 
 
-@router.post("/runtime/events", response_model=IngestResult, status_code=202)
-def ingest_runtime_events(
-    events: RuntimeEventIn | list[RuntimeEventIn],
-    db: Session = Depends(get_db),
-    authorization: str | None = Header(None),
-):
-    """Ingest one event or a batch from a runtime sensor (eBPF agent, Falco bridge, ...).
+AnyEvent = Annotated[
+    Annotated[RuntimeEventIn, Tag("legacy")] | Annotated[SensorEventV1, Tag("v1")],
+    Discriminator(_event_kind),
+]
+_EVENTS = TypeAdapter(list[AnyEvent])
 
-    If RUNTIME_INGEST_TOKEN is set, send `Authorization: Bearer <token>`.
+
+def _unpack(payload: Any) -> list[Any]:
+    """Accept a single event, a JSON array, or a sensor envelope {"events": [...]}."""
+    if isinstance(payload, dict) and isinstance(payload.get("events"), list):
+        return payload["events"]
+    if isinstance(payload, dict):
+        return [payload]
+    if isinstance(payload, list):
+        return payload
+    raise RequestValidationError([{"type": "model_type", "loc": ("body",), "input": None,
+                                   "msg": "expected an event object, an array of events or {\"events\": [...]}"}])
+
+
+@router.post("/runtime/events", response_model=IngestResult, status_code=202,
+             dependencies=[Depends(require_ingest_token)])
+def ingest_runtime_events(payload: Any = Body(...), db: Session = Depends(get_db)):
+    """Ingest runtime-sensor events.
+
+    Body: one event, a JSON array of events, or `{"events": [...]}` (sensor envelope).
+    Each event is either the native sensor schema v1.0 (has `schema_version`, see
+    sensor/EVENT_SCHEMA.md) or the legacy `RuntimeEventIn` shape. Requires
+    `Authorization: Bearer <INGEST_API_TOKEN>`.
     """
-    _check_token(authorization)
-    batch = events if isinstance(events, list) else [events]
-    if len(batch) > 1000:
-        raise HTTPException(413, "max 1000 events per request")
-    alert_ids: list[str] = []
-    for e in batch:
-        _, alerts = ingest_event(db, e.model_dump(exclude_none=True), source="sensor")
-        alert_ids += [a.id for a in alerts]
+    raw = _unpack(payload)
+    limit = config.settings.max_events_per_request
+    if len(raw) > limit:
+        raise HTTPException(413, f"max {limit} events per request")
+    try:
+        events = _EVENTS.validate_python(raw)
+    except ValidationError as exc:
+        raise RequestValidationError(exc.errors(include_url=False, include_context=False)) from None
+
+    resolver = AssetResolver(db)
+    alert_ids: set[str] = set()
+    duplicates = in_use_updates = 0
+    seen: set[str] = set()
+    for e in events:
+        if isinstance(e, RuntimeEventIn):
+            _, alerts = ingest_event(db, e.model_dump(exclude_none=True), source="sensor")
+            alert_ids.update(a.id for a in alerts)
+            continue
+        event_id = e.event_id.replace("-", "").lower()[:32] if e.event_id else None
+        if event_id and (event_id in seen or db.get(RuntimeEvent, event_id) is not None):
+            duplicates += 1
+            continue
+        if event_id:
+            seen.add(event_id)
+        asset_id = resolver.resolve(e)
+        normalized = normalize_v1(e, asset_id)
+        if e.event_type == "library_loaded":
+            flipped = apply_library_loaded(db, asset_id, normalized.get("library") or {})
+            in_use_updates += flipped
+            if not flipped:
+                # Hourly heartbeats for already-known / irrelevant libraries are not
+                # stored, so they don't flood the runtime event feed.
+                continue
+        _, alerts = ingest_event(db, normalized, source="sensor", event_id=event_id)
+        alert_ids.update(a.id for a in alerts)
+    expire_stale_in_use(db)
     db.commit()
-    return IngestResult(accepted=len(batch), alerts_triggered=len(alert_ids), alert_ids=sorted(set(alert_ids)))
+    return IngestResult(accepted=len(events), alerts_triggered=len(alert_ids), alert_ids=sorted(alert_ids),
+                        duplicates=duplicates, in_use_updates=in_use_updates)
 
 
 @router.get("/runtime/schema")
 def runtime_event_schema():
-    """JSON schema of the sensor event payload."""
-    return RuntimeEventIn.model_json_schema()
+    """JSON schemas of the accepted sensor event payloads (native v1.0 and legacy)."""
+    return {"v1": SensorEventV1.model_json_schema(), "legacy": RuntimeEventIn.model_json_schema()}
 
 
 @router.get("/runtime/events", response_model=list[RuntimeEventOut])
@@ -61,10 +117,13 @@ def list_events(
     db: Session = Depends(get_db),
     asset_id: str | None = None,
     event_type: str | None = None,
+    source: str | None = Query(None, description="simulated | sensor"),
     since: datetime | None = None,
-    limit: int = Query(100, le=1000),
+    limit: int = Query(100, ge=1, le=1000),
 ):
     stmt = select(RuntimeEvent)
+    if source:
+        stmt = stmt.where(RuntimeEvent.source == source)
     if asset_id:
         stmt = stmt.where(RuntimeEvent.asset_id == asset_id)
     if event_type:

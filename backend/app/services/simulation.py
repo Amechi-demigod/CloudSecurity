@@ -9,8 +9,7 @@ from datetime import timedelta
 from sqlalchemy import func, select
 
 from .. import db as dbmod
-from ..connectors.simulated import (SimulatedConnector, benign_events, generate_history, pick_scenario,
-                                    workload_dicts)
+from ..connectors.simulated import SimulatedConnector, benign_events, generate_history, pick_scenario, workload_dicts
 from ..models import Asset, utcnow
 from .ingest import ingest_collection
 from .runtime import ingest_event

@@ -1,0 +1,17 @@
+target-version = "py311"
+line-length = 130
+
+[lint]
+select = ["E", "F", "W", "I", "B", "UP", "S"]
+ignore = [
+    "B008",  # FastAPI Depends()/Query() in defaults is idiomatic
+    "S101",  # assert is fine in tests / invariants
+    "S311",  # random is used for the simulator, not crypto
+    "S104",  # binding 0.0.0.0 inside containers
+]
+
+[lint.per-file-ignores]
+"tests/**" = ["S", "B"]
+# The simulator deliberately contains attacker-style strings (/tmp payloads) and
+# builds per-subscription closures that are only called inside the loop.
+"app/connectors/simulated.py" = ["S108", "B023"]
