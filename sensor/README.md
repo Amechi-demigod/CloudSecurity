@@ -93,7 +93,7 @@ Every flag has an environment variable default. Run `python3 -m runtime_sensor -
 | `SENSOR_EBPF` | `--ebpf auto\|on\|off` | `auto` (uses eBPF if root and bcc are present) |
 | `SENSOR_DRY_RUN` | `--dry-run` | false |
 | `SENSOR_DETECTIONS` | `--no-detections` | enabled |
-| `SENSOR_PAYLOAD_FORMAT` | `--payload-format cnapp-mvp\|list\|envelope` | `cnapp-mvp` |
+| `SENSOR_PAYLOAD_FORMAT` | `--payload-format cnapp-mvp\|list\|envelope` | `list` |
 | `SENSOR_WATCH_PATHS` | `--watch PATH[:reads]` (repeatable) | built-in sensitive path list |
 | `SENSOR_PROC_ROOT` / `SENSOR_HOST_ROOT` / `SENSOR_SYS_ROOT` | `--proc-root` / `--host-root` / `--sys-root` | `/proc`, `/`, `/sys` (`/host/...` in the container image) |
 | `NODE_NAME` | `--node-name` | unset (set via the downward API on k8s) |
@@ -141,12 +141,13 @@ The manifest uses only the privileges it needs:
 
 ## Mapping to the platform ingest endpoint
 
-The backend on `feature/cnapp-mvp` exposes `POST /api/runtime/events`. It accepts one event or a JSON array of up to 1000 events, with optional `Authorization: Bearer $RUNTIME_INGEST_TOKEN`.
+The backend exposes `POST /api/runtime/events`. It accepts native schema v1.0 events (a JSON array, a single event or the `envelope` format) as well as the legacy `cnapp-mvp` shape, up to 1000 events and 1 MiB per request. It requires `Authorization: Bearer $INGEST_API_TOKEN` (fail-closed: 503 if the backend has no token configured).
 
-- Set `SENSOR_API_URL=http://<backend>:8000/api/runtime/events` and `SENSOR_API_TOKEN=$RUNTIME_INGEST_TOKEN`.
-- The default `--payload-format cnapp-mvp` translates native v1.0 events into the backend's current `RuntimeEventIn` model (`network_connection`, `privilege_escalation`, `container{}`, `labels{}`). The backend's CDR rules (reverse shell, miner, shell-in-container, sensitive file access and so on) fire on them unchanged. See the mapping table in [EVENT_SCHEMA.md](EVENT_SCHEMA.md#cnapp-mvp-mapping).
-- `library_loaded` events have no backend field yet, so they're skipped in `cnapp-mvp` mode. Once the backend accepts schema v1.0, switch to `--payload-format list` to feed loaded package and version data into the "vulnerability in use at runtime" prioritization.
-- `cloud.resource_id` becomes `asset_id`. Set `SENSOR_CLOUD_RESOURCE_ID` to the inventory asset ID (for example the Azure ARM ID) so events attach to the right asset.
+- Set `SENSOR_API_URL=http://<backend>:8000/api/runtime/events` and `SENSOR_API_TOKEN` to the backend's `INGEST_API_TOKEN`.
+- The default `--payload-format list` sends native v1.0 events. The backend maps them onto its detection engine (`network_connect`/`network_accept` -> `network_connection`, `privilege_change` -> `privilege_escalation`, `k8s`/`container_id` -> container context), de-duplicates on `event_id`, and raises CDR-009 for events the sensor marks `high`/`critical` that no backend rule covers.
+- `library_loaded` events set the vulnerability "in use at runtime" flag on the matching asset (package name + version, with distro/soname aliases such as `libssl3` -> `openssl`). The flag expires if the hourly heartbeat stops for 3 hours. Only heartbeats that flip a vulnerability are stored as runtime events.
+- `--payload-format cnapp-mvp` is still supported for older backends (see [EVENT_SCHEMA.md](EVENT_SCHEMA.md#cnapp-mvp-mapping)); it drops `library_loaded`.
+- Asset matching: the backend links an event to an inventory asset by Kubernetes pod name (+ namespace), then `cloud.resource_id` (set `SENSOR_CLOUD_RESOURCE_ID` to the ARM ID), then the VM name matching `host`.
 - Error handling: 429 and 5xx responses and network errors are retried with exponential backoff and jitter (up to `SENSOR_MAX_RETRIES`). Other 4xx responses drop the batch and log a warning. When the queue is full, the oldest events are dropped and counted (`stats` are logged at shutdown).
 
 ## Limitations

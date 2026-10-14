@@ -30,7 +30,7 @@ DEFAULT_API_URL = "http://localhost:8000/api/runtime/events"
 # envelope  = {"sensor_id", "sensor_version", "sent_at", "events": [native v1.0 events]}
 # cnapp-mvp = JSON array translated to the current backend RuntimeEventIn shape (see compat.py)
 PAYLOAD_FORMATS = ("cnapp-mvp", "list", "envelope")
-DEFAULT_PAYLOAD_FORMAT = "cnapp-mvp"
+DEFAULT_PAYLOAD_FORMAT = "list"  # native schema v1.0; the backend accepts it directly
 
 
 class SendError(Exception):

@@ -211,7 +211,7 @@ class RuntimeEventIn(BaseModel):
     file: FileInfo | None = None
     privilege: PrivilegeInfo | None = None
     container: ContainerInfo | None = None
-    labels: Annotated[dict[Short, Short], Field(max_length=64)] | None = None
+    labels: Annotated[dict[Short, Annotated[str, Field(max_length=2048)]], Field(max_length=64)] | None = None
 
 
 # --- native runtime-sensor schema v1.0 (sensor/EVENT_SCHEMA.md) ---------------

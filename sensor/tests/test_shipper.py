@@ -38,18 +38,36 @@ def test_batches_and_headers():
     assert s.stats["sent"] == 5
 
 
-def test_default_format_is_backend_compatible_list():
+def test_default_format_is_native_list():
     post = FakePost()
     s = Shipper(post=post)
+    s.enqueue(RuntimeEvent(event_type="network_connect", sensor_id="s", host="h"))
+    s.flush()
+    sent = post.calls[0][1][0]
+    assert sent["event_type"] == "network_connect" and sent["schema_version"] == "1.0"
+
+
+def test_compat_format_translates_event_types():
+    post = FakePost()
+    s = Shipper(post=post, payload_format="cnapp-mvp")
     s.enqueue(RuntimeEvent(event_type="network_connect", sensor_id="s", host="h"))
     s.flush()
     assert post.calls[0][1][0]["event_type"] == "network_connection"
 
 
-def test_library_only_batch_is_skipped_in_compat_mode():
+def test_library_events_are_sent_in_native_mode():
     from runtime_sensor.schema import LibraryInfo
     post = FakePost()
     s = Shipper(post=post)
+    s.enqueue(RuntimeEvent(event_type="library_loaded", library=LibraryInfo(path="/lib/libz.so.1")))
+    s.flush()
+    assert post.calls[0][1][0]["event_type"] == "library_loaded"
+
+
+def test_library_only_batch_is_skipped_in_compat_mode():
+    from runtime_sensor.schema import LibraryInfo
+    post = FakePost()
+    s = Shipper(post=post, payload_format="cnapp-mvp")
     s.enqueue(RuntimeEvent(event_type="library_loaded", library=LibraryInfo(path="/lib/libz.so.1")))
     s.flush()
     assert post.calls == [] and s.stats["skipped_unsupported"] == 1

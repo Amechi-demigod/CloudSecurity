@@ -106,8 +106,8 @@ A `library_loaded` event means the library is **mapped into a live process right
 
 | Format | Body | Use when |
 |---|---|---|
-| `cnapp-mvp` (default) | JSON array translated to the backend's current `RuntimeEventIn` model (see [`runtime_sensor/compat.py`](runtime_sensor/compat.py)) | talking to `backend/` as it exists on `feature/cnapp-mvp` |
-| `list` | JSON array of native v1.0 events | the backend accepts schema v1.0 natively |
+| `cnapp-mvp` | JSON array translated to the backend's current `RuntimeEventIn` model (see [`runtime_sensor/compat.py`](runtime_sensor/compat.py)) | talking to `backend/` as it exists on `feature/cnapp-mvp` |
+| `list` (default) | JSON array of native v1.0 events | the backend accepts schema v1.0 natively (it does since the integration branch) |
 | `envelope` | `{"sensor_id", "sensor_version", "sent_at", "events": [...]}` | the backend wants batch metadata |
 
 Headers: `Content-Type: application/json`, `Authorization: Bearer <SENSOR_API_TOKEN>` (when set), `X-Sensor-Id`, `User-Agent: cnapp-runtime-sensor/<version>`.
@@ -124,4 +124,4 @@ Headers: `Content-Type: application/json`, `Authorization: Bearer <SENSOR_API_TO
 | `cloud.resource_id` | `asset_id` |
 | `severity_hint`, `tags`, `event_id`, `host`, `k8s.node`, `cloud.provider` | `labels` (string map) |
 
-**Integration TODO:** to use the "vulnerability loaded at runtime" signal, the backend needs to accept `library_loaded` (native `list` format) and match `library.package`/`library.version` (plus `container_id` → image / `cloud.resource_id` → VM) against its vulnerability findings to set `in_use`.
+**Backend integration:** the backend accepts native v1.0 events and matches `library.package`/`library.version` on the resolved asset (k8s pod, `cloud.resource_id`, or VM by `host`) against its vulnerability records to set `in_use` (see `backend/app/services/sensor.py`).

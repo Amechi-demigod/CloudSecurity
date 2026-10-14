@@ -46,10 +46,14 @@ PACKAGE_ALIASES = {
 
 def normalize_package(name: str | None) -> str:
     n = (name or "").strip().lower().replace("_", "-")
-    if n in PACKAGE_ALIASES:
-        return PACKAGE_ALIASES[n]
-    stripped = re.sub(r"[-.]?\d+(?:[.-]\d+)*$", "", n)  # libssl3 -> libssl, libnghttp2-14 -> libnghttp2
-    return PACKAGE_ALIASES.get(stripped, n)
+    # try the name as-is, then without an soname suffix (libnghttp2-14 -> libnghttp2),
+    # then without trailing digits (libssl3 -> libssl)
+    for cand in (n, re.sub(r"-\d+(?:\.\d+)*$", "", n)):
+        if cand in PACKAGE_ALIASES:
+            return PACKAGE_ALIASES[cand]
+        if cand.startswith("lib") and re.sub(r"\d+$", "", cand) in PACKAGE_ALIASES:
+            return PACKAGE_ALIASES[re.sub(r"\d+$", "", cand)]
+    return n
 
 
 def version_matches(observed: str | None, vulnerable: str | None) -> bool:
@@ -170,6 +174,7 @@ def apply_library_loaded(db: Session, asset_id: str | None, library: dict[str, A
 def expire_stale_in_use(db: Session) -> int:
     """Drop sensor-set in-use flags with no library_loaded heartbeat for IN_USE_TTL."""
     cutoff = utcnow() - IN_USE_TTL
+    db.flush()  # sessions run with autoflush=False; make pending heartbeats visible to the query
     n = 0
     for v in db.scalars(select(Vulnerability).where(Vulnerability.in_use.is_(True),
                                                     Vulnerability.in_use_source == "sensor",
