@@ -101,7 +101,7 @@ export ADMIN_EMAIL=you@example.com ADMIN_PASSWORD='choose-a-long-passphrase'
 uvicorn app.main:app --reload --port 8000
 ```
 
-Frontend (Node 20+), in a second terminal:
+Frontend (Node 22.15+; the ESLint config uses `module.registerHooks`), in a second terminal:
 
 ```bash
 cd frontend
@@ -246,7 +246,7 @@ The UI hides or disables actions the signed-in role cannot perform; the API enfo
 - Passwords are hashed with **Argon2id** (`argon2-cffi`) and must be 12 to 256 characters.
 - Failed sign-ins always return the same `Invalid email or password` message, and unknown or inactive accounts still run a dummy hash verification so response times do not reveal which emails exist.
 - After `LOGIN_MAX_FAILURES` (5) consecutive wrong passwords an account is locked for `LOGIN_LOCKOUT_MINUTES` (15). Admins can unlock early with *Reset password*.
-- Each client IP gets `LOGIN_RATE_LIMIT` (20) attempts per `LOGIN_RATE_WINDOW_SECONDS` (300); above that, login returns 429. The limiter is in-memory (single process, like the rest of the MVP).
+- Each client IP gets `LOGIN_RATE_LIMIT` (20) attempts per `LOGIN_RATE_WINDOW_SECONDS` (300); above that, login returns 429. The limiter is in-memory (single process, like the rest of the MVP). Behind a proxy (Vite dev server, nginx, Codespaces) every request comes from the proxy's address unless `TRUST_PROXY_HEADERS=true`, so the limit is then effectively shared by all clients; per-account lockout still applies individually.
 - Changing your password signs out your other sessions; an admin password reset or deactivation signs out all of that user's sessions.
 
 ### Sessions and CSRF
