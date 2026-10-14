@@ -10,6 +10,7 @@ A cloud security platform MVP inspired by runtime-first CNAPPs such as Upwind. I
 - **Dashboard**: overall risk score, findings by severity, top risks, alerts over time and a compliance summary.
 - **Simulated data mode (on by default)**: a seeded "Contoso" environment across three Azure-style subscriptions, plus a background simulator that emits live runtime events.
 - **Real Azure posture connector (opt-in, read-only)**: uses the azure-identity and azure-mgmt-* SDKs. A "Run scan" button merges the results into the same model with `source="azure"`.
+- **Login, sessions and role-based access control**: every API endpoint and page requires sign-in (viewer, analyst or admin roles), with an admin Users page and an audit log. See [Authentication & access control](#authentication--access-control).
 - **Pluggable connectors** and a documented **runtime sensor ingest API** so a real eBPF sensor, AWS or GCP can be added later.
 
 ## Architecture
@@ -46,9 +47,12 @@ flowchart LR
 ```
 backend/
   app/
-    main.py              FastAPI app, lifespan (seeding + simulator)
+    main.py              FastAPI app, lifespan (seeding + simulator + bootstrap admin)
     config.py            env-var settings
-    models.py            Asset, Relationship, Finding, Vulnerability, RuntimeEvent, Alert, ScanRun
+    auth.py              password hashing, sessions, CSRF, RBAC dependencies, audit helper
+    cli.py               `python -m app.cli create-user | reset-password`
+    models.py            Asset, Relationship, Finding, Vulnerability, RuntimeEvent, Alert, ScanRun,
+                         User, UserSession, AuditLog
     schemas.py           Pydantic v2 schemas (includes the runtime event schema)
     engine/
       posture.py         declarative CSPM rules + CIS mappings
@@ -61,7 +65,7 @@ backend/
       azure.py           read-only Azure scanner (ReadOnlyClient guard)
     services/            ingest, runtime, scans, simulation, analytics
     api/                 routers
-  tests/                 pytest suite (65 tests)
+  tests/                 pytest suite (API, auth/RBAC, engines, sensor end-to-end)
 frontend/                React + Vite + TypeScript + Tailwind + Recharts
 docker-compose.yml
 ```
@@ -71,7 +75,7 @@ docker-compose.yml
 ### With Docker
 
 ```bash
-cp .env.example .env        # optional; defaults to simulated mode
+cp .env.example .env        # then set ADMIN_EMAIL and ADMIN_PASSWORD (12+ characters)
 docker compose up --build
 ```
 
@@ -81,8 +85,8 @@ To also run the runtime sensor against the Docker host (Linux only), set `INGEST
 docker compose --profile sensor up --build
 ```
 
-- UI: http://localhost:5173
-- API docs: http://localhost:8000/docs
+- UI: http://localhost:5173 (sign in with `ADMIN_EMAIL` / `ADMIN_PASSWORD`)
+- API docs (after signing in to the UI; cookies are shared across localhost ports): http://localhost:8000/api/docs
 
 ### Without Docker
 
@@ -92,6 +96,8 @@ Backend (Python 3.11+):
 cd backend
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
+# First admin (only used while the users table is empty). Or use the CLI below.
+export ADMIN_EMAIL=you@example.com ADMIN_PASSWORD='choose-a-long-passphrase'
 uvicorn app.main:app --reload --port 8000
 ```
 
@@ -106,8 +112,8 @@ npm run dev                 # http://localhost:5173 (proxies /api to :8000)
 Run the tests and the production build:
 
 ```bash
-cd backend && pytest
-cd frontend && npm run build
+cd backend && pytest && ruff check .
+cd frontend && npm run lint && npm run build
 ```
 
 On first start, simulated mode seeds the database (`backend/cnapp.db`) and backfills 24 hours of runtime events. To start fresh, delete the DB file.
@@ -127,6 +133,16 @@ On first start, simulated mode seeds the database (`backend/cnapp.db`) and backf
 | `MAX_REQUEST_BYTES` | `1048576` | Request body limit for every endpoint (413 above it) |
 | `MAX_EVENTS_PER_REQUEST` | `1000` | Max events per ingest request |
 | `CORS_ORIGINS` | `http://localhost:5173` | Comma-separated allowed origins |
+| `ADMIN_EMAIL` / `ADMIN_PASSWORD` | | Create this admin on startup **only if no users exist**. Password must be 12+ characters. There is no default password |
+| `ADMIN_NAME` | `Administrator` | Display name for the bootstrap admin |
+| `COOKIE_SECURE` | `true` | Mark the session cookie `Secure`. Leave on for https and Codespaces; see [Cookies](#session-cookie-settings) |
+| `SESSION_MAX_AGE_HOURS` | `8` | Absolute session lifetime |
+| `SESSION_IDLE_MINUTES` | `30` | Sign out after this long without any API activity |
+| `SESSION_COOKIE_NAME` | `cnapp_session` | Session cookie name |
+| `LOGIN_MAX_FAILURES` / `LOGIN_LOCKOUT_MINUTES` | `5` / `15` | Lock an account for 15 minutes after 5 consecutive wrong passwords |
+| `LOGIN_RATE_LIMIT` / `LOGIN_RATE_WINDOW_SECONDS` | `20` / `300` | Max login attempts per client IP per window (429 above it) |
+| `TRUST_PROXY_HEADERS` | `false` | Take the client IP from the right-most `X-Forwarded-For` entry. Only enable when the backend is reachable *only* through your proxy |
+| `API_DOCS_PUBLIC` | `false` | Serve `/api/docs` and `/api/openapi.json` without login |
 | `AZURE_TENANT_ID` | | Entra ID tenant |
 | `AZURE_CLIENT_ID` | | Service principal app ID |
 | `AZURE_CLIENT_SECRET` | | Service principal secret |
@@ -187,6 +203,100 @@ What the scanner checks:
 Relationships come from NICs (VM↔NSG), VM identities, and RBAC role assignments (identity → data store). Data stores are marked sensitive through tags such as `data-classification`, `classification`, `sensitivity` or `data`. Key vaults and SQL are always treated as sensitive.
 
 **Read-only guarantee:** every SDK client is wrapped in `ReadOnlyClient`, which only allows `list*` and `get*` operations and raises `ReadOnlyViolation` on anything else (`begin_*`, `create*`, `update`, `delete`, ...). Tests enforce this, and the Reader role enforces it again on the Azure side.
+
+## Authentication & access control
+
+Every `/api/*` endpoint requires a signed-in user, except:
+
+- `GET /api/health` (liveness probe),
+- `POST /api/auth/login`,
+- `POST /api/runtime/events`, which keeps its own `Authorization: Bearer <INGEST_API_TOKEN>` sensor authentication (user sessions are not accepted there).
+
+The interactive API docs moved to `/api/docs` (`/api/openapi.json`), so they work through the frontend's `/api` proxy, and they also require sign-in unless `API_DOCS_PUBLIC=true`. `/docs` redirects there.
+
+### First sign-in (bootstrap admin)
+
+No user and no password is ever seeded. Create the first admin in one of two ways:
+
+1. **Environment variables**: set `ADMIN_EMAIL` and `ADMIN_PASSWORD` (12+ characters) before starting the backend. The admin is created at startup **only when the users table is empty**; afterwards the variables are ignored (you can, and should, remove `ADMIN_PASSWORD` once you have signed in and changed the password).
+2. **CLI** (prompts for the password twice, so it never lands in shell history):
+
+   ```bash
+   cd backend
+   python -m app.cli create-user --email you@example.com --name "Your Name" --role admin
+   python -m app.cli reset-password --email you@example.com   # also unlocks and reactivates
+   ```
+
+   With Docker: `docker compose exec backend python -m app.cli create-user --email you@example.com --role admin`.
+
+Then open the UI, sign in, and add other users under **Administration → Users**.
+
+### Roles
+
+| Role | Can |
+|---|---|
+| `viewer` | Read everything: dashboard, inventory, findings, vulnerabilities, threats, attack paths, connectors, scan history |
+| `analyst` | Viewer, plus suppress / resolve / reopen findings, acknowledge / resolve alerts, and run connector scans |
+| `admin` | Everything, including user management (create, change role, deactivate, reset password), the audit log and connector settings |
+
+The UI hides or disables actions the signed-in role cannot perform; the API enforces the same rules (403). The last active admin cannot be demoted or deactivated.
+
+### Passwords, lockout and rate limiting
+
+- Passwords are hashed with **Argon2id** (`argon2-cffi`) and must be 12 to 256 characters.
+- Failed sign-ins always return the same `Invalid email or password` message, and unknown or inactive accounts still run a dummy hash verification so response times do not reveal which emails exist.
+- After `LOGIN_MAX_FAILURES` (5) consecutive wrong passwords an account is locked for `LOGIN_LOCKOUT_MINUTES` (15). Admins can unlock early with *Reset password*.
+- Each client IP gets `LOGIN_RATE_LIMIT` (20) attempts per `LOGIN_RATE_WINDOW_SECONDS` (300); above that, login returns 429. The limiter is in-memory (single process, like the rest of the MVP).
+- Changing your password signs out your other sessions; an admin password reset or deactivation signs out all of that user's sessions.
+
+### Sessions and CSRF
+
+- Sign-in creates a row in the server-side `user_sessions` table and sets a random 256-bit token in the `cnapp_session` cookie (`HttpOnly`, `SameSite=Lax`, `Path=/`, `Secure` unless `COOKIE_SECURE=false`). Only the SHA-256 of the token is stored.
+- Sessions end after `SESSION_MAX_AGE_HOURS` (8 h, absolute) or `SESSION_IDLE_MINUTES` (30 min) without API activity. **Sign out** revokes the session server-side, so a copied cookie stops working.
+- **CSRF** uses a synchronizer token: each session has its own random CSRF token, returned by `POST /api/auth/login` and `GET /api/auth/me` and kept in memory by the frontend (never in `localStorage`). Every `POST`/`PATCH`/`PUT`/`DELETE` authenticated by the cookie must send it in the `X-CSRF-Token` header, otherwise 403. A cross-site page cannot read the token, cannot send a custom header without a CORS preflight (which is not granted), and `SameSite=Lax` already keeps the cookie off cross-site sub-requests. `POST /api/auth/login` only accepts `application/json`, which a cross-site HTML form cannot send, to prevent login CSRF.
+- When the session expires the UI returns to the sign-in page with a "session expired" notice and, after signing in, back to the page you were on. A 403 shows a "Not permitted" banner.
+
+### Audit log
+
+`audit_log` records sign-in success and failure (with the reason: unknown user, bad password, locked, inactive, rate limited), sign-out, password changes and resets, user creation and changes (with before/after values), the bootstrap admin, and analyst actions (finding and alert status changes, scans). Admins can browse it under **Administration → Audit log** or `GET /api/audit-log`.
+
+### Session cookie settings
+
+The browser only ever talks to the frontend origin: the Vite dev server (`npm run dev`) and the bundled nginx both proxy `/api` to the backend. The session cookie is therefore **same-origin** and no CORS or third-party-cookie setup is needed.
+
+| How you open the UI | `COOKIE_SECURE` |
+|---|---|
+| `https://…` (production, GitHub Codespaces) | `true` (default) |
+| `http://localhost:5173` | `true` works in Chrome, Edge and Firefox, which treat `localhost` as a secure context. If your browser drops the cookie (you get sent back to the sign-in page right after signing in), set `false` |
+| `http://<some-ip-or-hostname>` (plain http, not localhost) | `false` (local testing only) |
+
+If you serve the UI from a different origin than the API (not the default), add that origin to `CORS_ORIGINS`; credentials are allowed for listed origins (never for `*`).
+
+### Running in GitHub Codespaces
+
+1. In the codespace terminal, start the backend with a bootstrap admin:
+
+   ```bash
+   cd backend
+   python -m venv .venv && source .venv/bin/activate
+   pip install -r requirements-dev.txt
+   ADMIN_EMAIL=you@example.com ADMIN_PASSWORD='choose-a-long-passphrase' \
+     uvicorn app.main:app --reload --port 8000
+   ```
+
+2. In a second terminal, start the frontend:
+
+   ```bash
+   cd frontend
+   npm ci
+   npm run dev
+   ```
+
+   Codespaces opens forwarded ports as `https://<codespace>-5173.app.github.dev`. Vite rejects unknown `Host` headers, so the config allows `.app.github.dev` automatically when the `CODESPACES` env var is `true` (it is inside a codespace). Elsewhere, or if you have overridden it, start Vite with `__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS=.app.github.dev npm run dev`.
+
+3. Open the **5173** port from the *Ports* tab (you do not need to forward or expose 8000: Vite proxies `/api` to it inside the codespace) and sign in with `ADMIN_EMAIL` / `ADMIN_PASSWORD`.
+
+Keep `COOKIE_SECURE=true` (the default): the browser sees the forwarded URL as https, so it stores the `Secure` cookie even though the hop from the Codespaces proxy to Vite and on to uvicorn is plain http. The cookie has no `Domain` attribute, so it is bound to your codespace's 5173 hostname only.
 
 ## Runtime sensor event schema
 
@@ -249,7 +359,7 @@ A dormant vulnerability can never score above 20. An in-use, exposed vulnerabili
 - No secrets are committed. Only `.env.example` is tracked; `.env`, `*.pem`, `*.key` and local DB files are git-ignored.
 - The Azure connector is strictly read-only (Reader role plus the code-level guard).
 - The sensor ingest endpoint requires a bearer token (`INGEST_API_TOKEN`) and is disabled when none is set. Request bodies are capped (`MAX_REQUEST_BYTES`) and every event field is length and range checked.
-- The rest of the MVP API (dashboards, `PATCH` on findings and alerts, `POST /api/scans`) has **no user authentication**. Run it locally or behind an authenticating reverse proxy.
+- Every other API endpoint requires a signed-in user with the right role (see [Authentication & access control](#authentication--access-control)): Argon2id passwords, server-side sessions in an `HttpOnly` / `SameSite=Lax` / `Secure` cookie, CSRF tokens on state-changing requests, account lockout, per-IP login rate limiting and an audit log.
 - The Azure guard also blocks `list*`/`get*` operations that return secrets (`list_keys`, SAS tokens, AKS credentials).
 - Do not commit the SQLite DB if you have run real scans; it contains your cloud inventory.
 
@@ -260,10 +370,11 @@ A dormant vulnerability can never score above 20. An in-use, exposed vulnerabili
 - **DSPM**: data discovery and classification instead of tag-based sensitivity.
 - **API security**: discovery of exposed APIs and runtime API traffic analysis.
 - **CI/CD shift-left**: IaC scanning and image scanning in pipelines, linked to the runtime findings.
-- Authentication, RBAC and multi-tenancy; Postgres; a real vulnerability scanner feed (for example Trivy or Grype); more CIS controls.
+- SSO (OIDC/SAML), MFA and multi-tenancy; Postgres; a real vulnerability scanner feed (for example Trivy or Grype); more CIS controls.
 
 ## Limitations (MVP)
 
 - Vulnerability data and runtime events in simulated mode are synthetic. The Azure connector covers posture only; it has no runtime or CVE data.
 - CIS control numbers are approximate mappings for illustration.
-- SQLite and in-process background threads mean a single process; this is not built for scale.
+- SQLite and in-process background threads mean a single process; this is not built for scale. The login rate limiter is in-memory too, so it resets on restart and is per process.
+- No SSO or MFA yet; passwords are the only sign-in method.

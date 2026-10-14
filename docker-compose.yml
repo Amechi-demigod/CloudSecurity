@@ -8,6 +8,8 @@ services:
       DATABASE_URL: sqlite:////data/cnapp.db
       # Sensor ingest is fail-closed: set INGEST_API_TOKEN in .env to accept sensor events.
       INGEST_API_TOKEN: ${INGEST_API_TOKEN:-}
+      # First admin (only when no users exist): set ADMIN_EMAIL / ADMIN_PASSWORD in .env,
+      # or run: docker compose exec backend python -m app.cli create-user --email ... --role admin
     volumes:
       - cnapp-data:/data
     ports:
