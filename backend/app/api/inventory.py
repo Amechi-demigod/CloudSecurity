@@ -3,14 +3,15 @@ from __future__ import annotations
 
 from collections import Counter
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from ..auth import audit, client_ip, require_analyst
 from ..db import get_db
 from ..engine import posture
 from ..engine.detection import DETECTION_RULES
-from ..models import Alert, Asset, Finding, Relationship, Vulnerability, utcnow
+from ..models import Alert, Asset, Finding, Relationship, User, Vulnerability, utcnow
 from ..schemas import (
     AlertOut,
     AssetOut,
@@ -149,10 +150,14 @@ def list_findings(
 
 
 @router.patch("/findings/{finding_id}", response_model=FindingOut)
-def update_finding(finding_id: str, body: FindingUpdate, db: Session = Depends(get_db)):
+def update_finding(finding_id: str, body: FindingUpdate, request: Request, user: User = Depends(require_analyst),
+                   db: Session = Depends(get_db)):
     f = db.get(Finding, finding_id)
     if f is None:
         raise HTTPException(404, "finding not found")
+    if f.status != body.status:
+        audit(db, "finding_updated", actor=user, target=f.id, ip=client_ip(request),
+              rule_id=f.rule_id, status=[f.status, body.status])
     f.status = body.status
     f.resolved_at = utcnow() if body.status == "resolved" else None
     db.commit()

@@ -68,6 +68,31 @@ class Settings:
         default_factory=lambda: _bool("AZURE_USE_DEFAULT_CREDENTIAL", False)
     )
 
+    # --- User authentication ------------------------------------------------
+    # First admin, created on startup only when the users table is empty.
+    admin_email: str | None = field(default_factory=lambda: os.getenv("ADMIN_EMAIL") or None)
+    admin_password: str | None = field(default_factory=lambda: os.getenv("ADMIN_PASSWORD") or None)
+    admin_name: str = field(default_factory=lambda: os.getenv("ADMIN_NAME") or "Administrator")
+    # Session cookie. Secure is on by default; browsers treat http://localhost as
+    # a secure context, and GitHub Codespaces forwards ports over https, so it
+    # only needs turning off for plain-http access via a non-localhost hostname.
+    session_cookie_name: str = field(default_factory=lambda: os.getenv("SESSION_COOKIE_NAME", "cnapp_session"))
+    cookie_secure: bool = field(default_factory=lambda: _bool("COOKIE_SECURE", True))
+    session_max_age_hours: float = field(default_factory=lambda: float(os.getenv("SESSION_MAX_AGE_HOURS", "8")))
+    session_idle_minutes: float = field(default_factory=lambda: float(os.getenv("SESSION_IDLE_MINUTES", "30")))
+    # Brute-force protection.
+    login_max_failures: int = field(default_factory=lambda: int(os.getenv("LOGIN_MAX_FAILURES", "5")))
+    login_lockout_minutes: float = field(default_factory=lambda: float(os.getenv("LOGIN_LOCKOUT_MINUTES", "15")))
+    login_rate_limit: int = field(default_factory=lambda: int(os.getenv("LOGIN_RATE_LIMIT", "20")))
+    login_rate_window_seconds: float = field(
+        default_factory=lambda: float(os.getenv("LOGIN_RATE_WINDOW_SECONDS", "300"))
+    )
+    # Use the right-most X-Forwarded-For entry as the client IP (only behind a
+    # reverse proxy you control, e.g. the bundled nginx).
+    trust_proxy_headers: bool = field(default_factory=lambda: _bool("TRUST_PROXY_HEADERS", False))
+    # Serve /api/docs and /api/openapi.json without login (default: login required).
+    api_docs_public: bool = field(default_factory=lambda: _bool("API_DOCS_PUBLIC", False))
+
 
 settings = Settings()
 

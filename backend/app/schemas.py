@@ -310,3 +310,65 @@ class ScanRunOut(ORM):
     findings_open: int
     errors: list[str]
     message: str
+
+
+# --- Authentication ---------------------------------------------------------------
+
+Role = Literal["admin", "analyst", "viewer"]
+
+
+class LoginRequest(BaseModel):
+    email: str = Field(min_length=1, max_length=320)
+    password: str = Field(min_length=1, max_length=1024)
+
+
+class UserOut(ORM):
+    id: str
+    email: str
+    name: str
+    role: Role
+    is_active: bool
+    created_at: UTCDateTime
+    last_login_at: UTCDateTime | None = None
+    locked_until: UTCDateTime | None = None
+    failed_login_count: int = 0
+
+
+class SessionInfo(BaseModel):
+    user: UserOut
+    csrf_token: str
+    expires_at: UTCDateTime
+    idle_timeout_minutes: float
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=1024)
+    new_password: str = Field(min_length=1, max_length=1024)
+
+
+class UserCreate(BaseModel):
+    email: str = Field(min_length=3, max_length=320, pattern=r"^[^@\s]+@[^@\s]+$")
+    name: str = Field("", max_length=128)
+    role: Role = "viewer"
+    password: str = Field(min_length=1, max_length=1024)
+
+
+class UserUpdate(BaseModel):
+    name: str | None = Field(None, max_length=128)
+    role: Role | None = None
+    is_active: bool | None = None
+
+
+class PasswordReset(BaseModel):
+    password: str = Field(min_length=1, max_length=1024)
+
+
+class AuditLogOut(ORM):
+    id: int
+    timestamp: UTCDateTime
+    action: str
+    actor_id: str | None = None
+    actor_email: str | None = None
+    target: str | None = None
+    ip: str | None = None
+    detail: dict[str, Any] = {}

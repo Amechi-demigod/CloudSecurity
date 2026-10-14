@@ -172,3 +172,60 @@ class ScanRun(Base):
     findings_open: Mapped[int] = mapped_column(Integer, default=0)
     errors: Mapped[list] = mapped_column(JSON, default=list)
     message: Mapped[str] = mapped_column(Text, default="")
+
+
+# --- Authentication -----------------------------------------------------------
+# New tables are created by `Base.metadata.create_all()` on startup and new
+# nullable columns by `db._add_missing_columns()` (additive migration).
+
+ROLES = ("viewer", "analyst", "admin")
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    # Always stored normalized (stripped + lower-cased).
+    email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(128), default="")
+    password_hash: Mapped[str] = mapped_column(String(255))
+    role: Mapped[str] = mapped_column(String(16), default="viewer")  # admin | analyst | viewer
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    failed_login_count: Mapped[int] = mapped_column(Integer, default=0)
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    password_changed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class UserSession(Base):
+    """Server-side login session. Only a SHA-256 of the cookie token is stored."""
+
+    __tablename__ = "user_sessions"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # sha256(token) hex
+    user_id: Mapped[str] = mapped_column(String(32), ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    csrf_token: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    user: Mapped[User] = relationship(lazy="joined")
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    # login_success | login_failure | login_locked | logout | password_changed | user_created |
+    # user_updated | password_reset | finding_updated | alert_updated | scan_started | user_bootstrapped
+    action: Mapped[str] = mapped_column(String(64), index=True)
+    actor_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    actor_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    target: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    detail: Mapped[dict] = mapped_column(JSON, default=dict)

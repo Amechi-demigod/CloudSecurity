@@ -4,15 +4,16 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from pydantic import Discriminator, Tag, TypeAdapter, ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import config
+from ..auth import audit, client_ip, require_analyst
 from ..db import get_db
-from ..models import Alert, AlertEvent, Asset, RuntimeEvent
+from ..models import Alert, AlertEvent, Asset, RuntimeEvent, User
 from ..schemas import (
     AlertDetail,
     AlertOut,
@@ -29,6 +30,8 @@ from ..services.runtime import ingest_event
 from ..services.sensor import AssetResolver, apply_library_loaded, expire_stale_in_use, normalize_v1
 
 router = APIRouter(prefix="/api", tags=["runtime"])
+# Sensor ingest: authenticated by the INGEST_API_TOKEN bearer token, not user sessions.
+ingest_router = APIRouter(prefix="/api", tags=["runtime"])
 TIMELINE_CONTEXT = timedelta(minutes=10)
 
 
@@ -55,7 +58,7 @@ def _unpack(payload: Any) -> list[Any]:
                                    "msg": "expected an event object, an array of events or {\"events\": [...]}"}])
 
 
-@router.post("/runtime/events", response_model=IngestResult, status_code=202,
+@ingest_router.post("/runtime/events", response_model=IngestResult, status_code=202,
              dependencies=[Depends(require_ingest_token)])
 def ingest_runtime_events(payload: Any = Body(...), db: Session = Depends(get_db)):
     """Ingest runtime-sensor events.
@@ -197,10 +200,14 @@ def get_alert(alert_id: str, db: Session = Depends(get_db)):
 
 
 @router.patch("/alerts/{alert_id}", response_model=AlertOut)
-def update_alert(alert_id: str, body: AlertUpdate, db: Session = Depends(get_db)):
+def update_alert(alert_id: str, body: AlertUpdate, request: Request, user: User = Depends(require_analyst),
+                 db: Session = Depends(get_db)):
     a = db.get(Alert, alert_id)
     if a is None:
         raise HTTPException(404, "alert not found")
+    if a.status != body.status:
+        audit(db, "alert_updated", actor=user, target=a.id, ip=client_ip(request),
+              rule_id=a.rule_id, status=[a.status, body.status])
     a.status = body.status
     db.commit()
     return AlertOut.model_validate(a)

@@ -7,10 +7,13 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.responses import JSONResponse, RedirectResponse
 
-from . import config, db
+from . import auth, config, db
+from .api import auth as auth_api
 from .api import inventory, platform, runtime, vulns
 from .security import BodySizeLimitMiddleware
 from .services.simulation import RuntimeSimulator, seed_if_empty
@@ -23,6 +26,8 @@ log = logging.getLogger("cnapp")
 async def lifespan(app: FastAPI):
     s = config.settings
     db.init_engine(s.database_url)
+    with db.get_session() as session:
+        auth.bootstrap_admin(session)
     app.state.simulator = None
     if s.simulation_mode:
         seed_if_empty(s.seed)
@@ -40,23 +45,57 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     if "*" in config.settings.cors_origins:
         log.warning("CORS_ORIGINS contains '*': any website can read this API from a browser")
+    auth.login_limiter.reset()
     app = FastAPI(
         title="CloudSecurity CNAPP",
         version="0.1.0",
         description="Runtime-first cloud security platform MVP: inventory, CSPM, runtime-aware "
         "vulnerability prioritization, CDR and attack paths.",
         lifespan=lifespan,
+        # Served below under /api/ so they work through the frontend's /api proxy,
+        # and require a login unless API_DOCS_PUBLIC=true.
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
     )
+    origins = config.settings.cors_origins
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=config.settings.cors_origins,
+        allow_origins=origins,
+        allow_credentials="*" not in origins,
         allow_methods=["GET", "POST", "PATCH"],
-        allow_headers=["Authorization", "Content-Type"],
+        allow_headers=["Authorization", "Content-Type", auth.CSRF_HEADER],
     )
     app.add_middleware(BodySizeLimitMiddleware, max_bytes=config.settings.max_request_bytes)
+
+    # Public: health probe, login, and sensor ingest (own bearer-token auth).
+    app.include_router(platform.public_router)
+    app.include_router(runtime.ingest_router)
+    app.include_router(auth_api.router)  # /login is public; the others depend on the session
+    # Everything else requires a logged-in user (viewer or higher). Write
+    # endpoints additionally require analyst/admin via their own dependencies.
+    session_required = [Depends(auth.require_viewer)]
     for r in (platform.router, inventory.router, vulns.router, runtime.router):
-        app.include_router(r)
+        app.include_router(r, dependencies=session_required)
+    app.include_router(auth_api.admin_router)
+    _add_docs(app)
     return app
+
+
+def _add_docs(app: FastAPI) -> None:
+    deps = [] if config.settings.api_docs_public else [Depends(auth.require_viewer)]
+
+    @app.get("/api/openapi.json", include_in_schema=False, dependencies=deps)
+    def openapi_json():
+        return JSONResponse(app.openapi())
+
+    @app.get("/api/docs", include_in_schema=False, dependencies=deps)
+    def swagger_ui():
+        return get_swagger_ui_html(openapi_url="/api/openapi.json", title=f"{app.title} - API docs")
+
+    @app.get("/docs", include_in_schema=False)
+    def docs_redirect():
+        return RedirectResponse("/api/docs")
 
 
 app = create_app()
