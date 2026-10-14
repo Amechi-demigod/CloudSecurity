@@ -90,6 +90,14 @@ class Smoke:
         self.check(status == 401, "anonymous /api/dashboard is rejected (401)")
         status, *_ = request("GET", f"{self.base}/api/docs")
         print(f"info /api/docs -> HTTP {status} (404 expected in production)")
+        status, *_ = request("POST", f"{self.base}/api/runtime/events", {"event_type": "process_exec"})
+        self.check(status in (401, 503), "sensor ingest without a token is rejected")
+        token = os.getenv("SMOKE_INGEST_TOKEN")
+        if token:
+            event = {"event_type": "file_access", "sensor_id": "smoke-test", "file": {"path": "/srv/smoke-test"}}
+            status, _, _, raw = request("POST", f"{self.base}/api/runtime/events", event,
+                                        headers={"Authorization": f"Bearer {token}"})
+            self.check(status == 202, f"sensor ingest with the token through the proxy (HTTP {status} {raw[:200]!r})")
 
         if not (email and password):
             print("no credentials given: skipping the login checks")

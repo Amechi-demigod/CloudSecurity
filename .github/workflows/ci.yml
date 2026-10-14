@@ -13,9 +13,27 @@ concurrency:
 
 jobs:
   backend:
-    name: Backend (ruff + pytest)
+    name: Backend (ruff + pytest, ${{ matrix.database }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        database: [sqlite, postgres]
+    services:
+      postgres:
+        # Started for both legs (services cannot be conditional); only the
+        # postgres leg points the tests at it.
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: cnapp
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: cnapp_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U cnapp -d cnapp_test"
+          --health-interval 5s --health-timeout 3s --health-retries 20
     defaults:
       run:
         working-directory: backend
@@ -33,6 +51,8 @@ jobs:
       - name: Lint (ruff)
         run: ruff check --output-format=github .
       - name: Test (pytest, includes sensor -> API end-to-end tests)
+        env:
+          TEST_DATABASE_URL: ${{ matrix.database == 'postgres' && 'postgresql://cnapp:ci-only-password@localhost:5432/cnapp_test' || '' }}
         run: python -m pytest
 
   sensor:
@@ -78,3 +98,170 @@ jobs:
         run: npm run lint --if-present
       - name: Type-check and build
         run: npm run build
+
+  infra:
+    name: Infra (Bicep build + lint, setup.sh, workflows)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      BICEP_VERSION: v0.47.16
+      ACTIONLINT_VERSION: 1.7.12
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Bicep CLI (no Azure login needed)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/bicep" "https://github.com/Azure/bicep/releases/download/${BICEP_VERSION}/bicep-linux-x64"
+          chmod +x "$RUNNER_TEMP/bicep"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: Bicep build (all analyzer rules that matter are errors, see infra/bicepconfig.json)
+        run: bicep build infra/main.bicep --outfile "$RUNNER_TEMP/main.json"
+      - name: Bicep lint
+        run: |
+          bicep lint infra/main.bicep 2>&1 | tee "$RUNNER_TEMP/lint.txt"
+          if grep -Eq "(Warning|Error) " "$RUNNER_TEMP/lint.txt"; then echo "::error::Bicep lint reported findings"; exit 1; fi
+      - name: Bicep parameters file compiles
+        env:
+          # Throwaway values: build-params only type-checks; nothing is deployed.
+          CNAPP_POSTGRES_PASSWORD: ci-placeholder-password-0000
+          CNAPP_INGEST_API_TOKEN: ci-placeholder-token-000000000000000000
+          CNAPP_ADMIN_PASSWORD: ci-placeholder-admin
+          CNAPP_SESSION_SECRET: ci-placeholder-session-secret-000000000000
+        run: bicep build-params infra/main.bicepparam --outfile "$RUNNER_TEMP/main.parameters.json"
+      - name: shellcheck
+        run: shellcheck infra/setup.sh infra/tests/fake-cli.sh
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: setup.sh tests (az and gh are mocked; nothing touches Azure)
+        run: |
+          python -m pip install "pytest>=8.0"
+          python -m pytest -q infra/tests
+      - name: actionlint (workflow syntax)
+        run: |
+          curl -fsSL "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
+            | tar -xz -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" -color
+
+  images:
+    name: Images (build, smoke test, push to GHCR on main)
+    needs: [backend, frontend]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write # only used on pushes to main
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Image names
+        id: names
+        run: |
+          owner="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          {
+            echo "backend=ghcr.io/${owner}/cloudsecurity-backend"
+            echo "frontend=ghcr.io/${owner}/cloudsecurity-frontend"
+          } >> "$GITHUB_OUTPUT"
+      - name: Build backend image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: backend
+          platforms: linux/amd64
+          load: true
+          tags: cnapp-backend:ci
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,scope=backend,mode=max
+      - name: Build frontend image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: frontend
+          platforms: linux/amd64
+          load: true
+          tags: cnapp-frontend:ci
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,scope=frontend,mode=max
+      - name: Images run as non-root and ship a CA bundle for Postgres TLS
+        run: |
+          for img in cnapp-backend:ci cnapp-frontend:ci; do
+            uid="$(docker run --rm --entrypoint id "$img" -u)"
+            echo "$img runs as uid $uid"
+            test "$uid" != "0"
+          done
+          docker run --rm --entrypoint test cnapp-backend:ci -s /etc/ssl/certs/ca-certificates.crt
+          docker inspect --format '{{json .Config.Healthcheck}}' cnapp-backend:ci cnapp-frontend:ci
+      - name: Smoke test (docker compose with PostgreSQL, production settings)
+        env:
+          BACKEND_IMAGE: cnapp-backend:ci
+          FRONTEND_IMAGE: cnapp-frontend:ci
+        run: |
+          admin_password="$(openssl rand -hex 16)"
+          ingest_token="$(openssl rand -hex 32)"
+          echo "::add-mask::${admin_password}"
+          echo "::add-mask::${ingest_token}"
+          # Generated at runtime; never committed.
+          cat > .env <<EOF
+          APP_ENV=production
+          SESSION_SECRET=$(openssl rand -hex 32)
+          ADMIN_EMAIL=smoke@example.com
+          ADMIN_PASSWORD=${admin_password}
+          INGEST_API_TOKEN=${ingest_token}
+          TRUST_PROXY_HEADERS=true
+          TRUSTED_PROXY_CIDRS=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+          POSTGRES_PASSWORD=$(openssl rand -hex 16)
+          EOF
+          sed -i 's/^ *//' .env
+          compose="docker compose -f docker-compose.yml -f docker-compose.postgres.yml"
+          $compose up -d --no-build
+          export SMOKE_ADMIN_EMAIL=smoke@example.com SMOKE_ADMIN_PASSWORD="${admin_password}" SMOKE_INGEST_TOKEN="${ingest_token}"
+          python3 scripts/smoke_test.py --base-url http://localhost:5173 --wait 180
+          echo "--- restart: migrations and seeding are idempotent"
+          $compose restart backend
+          python3 scripts/smoke_test.py --base-url http://localhost:5173 --wait 180
+          $compose exec -T backend python -m app.cli migrate
+          $compose ps
+      - name: Container logs
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.postgres.yml logs --no-color --tail 200 || true
+      - name: Log in to GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push backend image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: backend
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ steps.names.outputs.backend }}:${{ github.sha }}
+            ${{ steps.names.outputs.backend }}:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=backend
+      - name: Push frontend image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: frontend
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ steps.names.outputs.frontend }}:${{ github.sha }}
+            ${{ steps.names.outputs.frontend }}:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=frontend
+      - name: Clean up
+        if: always()
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.postgres.yml down -v || true
+          rm -f .env
