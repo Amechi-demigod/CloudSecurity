@@ -6,6 +6,8 @@ services:
         required: false
     environment:
       DATABASE_URL: sqlite:////data/cnapp.db
+      # Sensor ingest is fail-closed: set INGEST_API_TOKEN in .env to accept sensor events.
+      INGEST_API_TOKEN: ${INGEST_API_TOKEN:-}
     volumes:
       - cnapp-data:/data
     ports:
@@ -17,6 +19,35 @@ services:
       - backend
     ports:
       - "5173:80"
+
+  # Optional Linux runtime sensor (observe-only). Start with:
+  #   INGEST_API_TOKEN=... docker compose --profile sensor up --build
+  # It watches the Docker host's processes, connections, sensitive files and
+  # loaded libraries and POSTs native v1.0 events to the backend.
+  sensor:
+    profiles: ["sensor"]
+    build: ./sensor
+    depends_on:
+      - backend
+    pid: host                  # see every process on the host
+    cap_drop: ["ALL"]
+    cap_add: ["SYS_PTRACE", "DAC_READ_SEARCH"]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    environment:
+      SENSOR_API_URL: http://backend:8000/api/runtime/events
+      SENSOR_API_TOKEN: ${INGEST_API_TOKEN:-}
+      SENSOR_DRY_RUN: "false"
+      SENSOR_PAYLOAD_FORMAT: list
+      SENSOR_ID: ${SENSOR_ID:-docker-host}
+      SENSOR_EBPF: "off"
+      # Optional: attach events to an inventory asset (e.g. the VM's ARM id)
+      SENSOR_CLOUD_RESOURCE_ID: ${SENSOR_CLOUD_RESOURCE_ID:-}
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /etc:/host/etc:ro
+    restart: unless-stopped
 
 volumes:
   cnapp-data:

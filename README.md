@@ -19,7 +19,7 @@ flowchart LR
   subgraph Sources
     SIM[Simulated connector<br/>seed + live event simulator]
     AZ[Azure connector<br/>read-only, Reader role]
-    SENSOR[Runtime sensor<br/>future eBPF agent]
+    SENSOR[Runtime sensor<br/>sensor/, procfs + optional eBPF]
   end
   subgraph Backend [FastAPI backend]
     ING[Ingest service]
@@ -75,6 +75,12 @@ cp .env.example .env        # optional; defaults to simulated mode
 docker compose up --build
 ```
 
+To also run the runtime sensor against the Docker host (Linux only), set `INGEST_API_TOKEN` in `.env` and start the optional profile:
+
+```bash
+docker compose --profile sensor up --build
+```
+
 - UI: http://localhost:5173
 - API docs: http://localhost:8000/docs
 
@@ -116,7 +122,10 @@ On first start, simulated mode seeds the database (`backend/cnapp.db`) and backf
 | `SIMULATOR_INTERVAL_SECONDS` | `15` | Seconds between simulator ticks |
 | `SIMULATOR_ATTACK_PROBABILITY` | `0.05` | Chance that a tick plays out an attack scenario |
 | `SEED` | `42` | Deterministic seed for generated data |
-| `RUNTIME_INGEST_TOKEN` | *(empty)* | If set, sensors must send `Authorization: Bearer <token>` |
+| `INGEST_API_TOKEN` | *(empty)* | Bearer token required on `POST /api/runtime/events` (the sensor's `SENSOR_API_TOKEN`). Ingest is **fail-closed**: unset means 503. `RUNTIME_INGEST_TOKEN` is accepted as a legacy alias |
+| `INGEST_ALLOW_UNAUTHENTICATED` | `false` | Local development only: accept sensor events without a token |
+| `MAX_REQUEST_BYTES` | `1048576` | Request body limit for every endpoint (413 above it) |
+| `MAX_EVENTS_PER_REQUEST` | `1000` | Max events per ingest request |
 | `CORS_ORIGINS` | `http://localhost:5173` | Comma-separated allowed origins |
 | `AZURE_TENANT_ID` | | Entra ID tenant |
 | `AZURE_CLIENT_ID` | | Service principal app ID |
@@ -181,7 +190,16 @@ Relationships come from NICs (VM↔NSG), VM identities, and RBAC role assignment
 
 ## Runtime sensor event schema
 
-Sensors push events to `POST /api/runtime/events`. The endpoint accepts a single object or an array of up to 1,000. The full JSON schema is at `GET /api/runtime/schema`.
+The runtime sensor in [`sensor/`](sensor/README.md) pushes events to `POST /api/runtime/events` with `Authorization: Bearer $INGEST_API_TOKEN`. The endpoint accepts a single event, a JSON array, or the sensor envelope `{"events": [...]}`, up to 1,000 events / 1 MiB. Both JSON schemas are at `GET /api/runtime/schema`.
+
+**Native sensor schema v1.0** (default; see [`sensor/EVENT_SCHEMA.md`](sensor/EVENT_SCHEMA.md)) is recognised by its `schema_version` field. The backend:
+
+- maps `network_connect`/`network_accept` to `network_connection` and `privilege_change` to `privilege_escalation`, and runs the same CDR rules as simulated events (plus CDR-009, a fallback for events the sensor marks `high`/`critical`);
+- links events to inventory assets by Kubernetes pod name and namespace, then `cloud.resource_id` (ARM id), then VM name = `host`;
+- de-duplicates on `event_id`, so sensor retries never double-count;
+- uses `library_loaded` events to set the vulnerability **in use at runtime** flag (package and version match, with distro/soname aliases such as `libssl3` to `openssl`) and re-scores risk. The flag expires if the sensor's hourly heartbeat stops for 3 hours. Events show up in the UI tagged `sensor`, next to `sim` events.
+
+**Legacy format** (used by the built-in simulator and the sensor's `cnapp-mvp` mode):
 
 ```jsonc
 {
@@ -203,6 +221,7 @@ Example:
 
 ```bash
 curl -X POST localhost:8000/api/runtime/events \
+  -H "Authorization: Bearer $INGEST_API_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"event_type":"network_connection","network":{"dst_ip":"185.220.101.47","dst_port":443}}'
 ```
@@ -229,12 +248,14 @@ A dormant vulnerability can never score above 20. An in-use, exposed vulnerabili
 
 - No secrets are committed. Only `.env.example` is tracked; `.env`, `*.pem`, `*.key` and local DB files are git-ignored.
 - The Azure connector is strictly read-only (Reader role plus the code-level guard).
-- The MVP API has **no user authentication**. Run it locally or behind an authenticating reverse proxy. Set `RUNTIME_INGEST_TOKEN` before exposing the ingest endpoint.
+- The sensor ingest endpoint requires a bearer token (`INGEST_API_TOKEN`) and is disabled when none is set. Request bodies are capped (`MAX_REQUEST_BYTES`) and every event field is length and range checked.
+- The rest of the MVP API (dashboards, `PATCH` on findings and alerts, `POST /api/scans`) has **no user authentication**. Run it locally or behind an authenticating reverse proxy.
+- The Azure guard also blocks `list*`/`get*` operations that return secrets (`list_keys`, SAS tokens, AKS credentials).
 - Do not commit the SQLite DB if you have run real scans; it contains your cloud inventory.
 
 ## Roadmap
 
-- Real **eBPF runtime sensor** (Tetragon or Falco style) feeding `/api/runtime/events`, plus real loaded-package detection for runtime vulnerability context.
+- Wider eBPF coverage in the runtime sensor (file access attribution, accept/privilege events without polling).
 - **AWS** and **GCP** connectors.
 - **DSPM**: data discovery and classification instead of tag-based sensitivity.
 - **API security**: discovery of exposed APIs and runtime API traffic analysis.

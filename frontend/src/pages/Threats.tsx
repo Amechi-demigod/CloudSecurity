@@ -8,7 +8,12 @@ const EVENT_LABEL: Record<string, string> = {
   network_connection: "net",
   file_access: "file",
   privilege_escalation: "privesc",
+  library_loaded: "lib",
 };
+
+function SourceTag({ source }: { source: string }) {
+  return source === "sensor" ? <Tag tone="accent">sensor</Tag> : <Tag>sim</Tag>;
+}
 
 function AlertDetailPanel({ id, onChanged, onAsset }: { id: string; onChanged: () => void; onAsset: (id: string) => void }) {
   const { data: a, error, reload } = useApi(() => api.alert(id), [id], 5000);
@@ -74,6 +79,7 @@ function AlertDetailPanel({ id, onChanged, onAsset }: { id: string; onChanged: (
             <div className="flex items-baseline gap-2 text-xs">
               <span className="text-ink-3">{new Date(e.timestamp).toLocaleTimeString()}</span>
               <Tag>{EVENT_LABEL[e.event_type] ?? e.event_type}</Tag>
+              <SourceTag source={e.source} />
               {e.triggered && <span className="text-[11px] font-semibold text-sev-critical">detection</span>}
             </div>
             <div className={`mt-0.5 break-all font-mono text-xs ${e.triggered ? "text-ink" : "text-ink-2"}`}>{e.summary}</div>
@@ -90,7 +96,8 @@ export default function Threats() {
   const [selected, setSelected] = useState<string | null>(null);
   const [asset, setAsset] = useState<string | null>(null);
   const alerts = useApi(() => api.alerts({ status: status || undefined, severity: severity || undefined }), [status, severity], 5000);
-  const events = useApi(() => api.events(40), [], 3000);
+  const [eventSource, setEventSource] = useState("");
+  const events = useApi(() => api.events(40, eventSource || undefined), [eventSource], 3000);
   const current = selected ?? alerts.data?.[0]?.id ?? null;
 
   return (
@@ -154,6 +161,16 @@ export default function Threats() {
         title={
           <span className="flex items-center gap-2">
             <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-good" /> Live runtime event feed
+            <select
+              aria-label="Event source"
+              className="ml-2 rounded border border-line bg-surface-1 px-1 py-0.5 text-xs font-normal"
+              value={eventSource}
+              onChange={(ev) => setEventSource(ev.target.value)}
+            >
+              <option value="">All sources</option>
+              <option value="sensor">Runtime sensor</option>
+              <option value="simulated">Simulated</option>
+            </select>
           </span>
         }
       >
@@ -162,6 +179,9 @@ export default function Threats() {
             <div key={e.id} className="flex gap-3 border-b border-line/40 py-1">
               <span className="w-20 shrink-0 text-ink-3">{new Date(e.timestamp).toLocaleTimeString()}</span>
               <span className="w-14 shrink-0 text-ink-2">{EVENT_LABEL[e.event_type] ?? e.event_type}</span>
+              <span className="w-14 shrink-0">
+                <SourceTag source={e.source} />
+              </span>
               <span className="w-32 shrink-0 truncate text-ink-3" title={e.asset_id ?? ""}>
                 {e.asset_id?.split("/").pop()}
               </span>

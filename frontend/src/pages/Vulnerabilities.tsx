@@ -100,7 +100,17 @@ export default function Vulnerabilities() {
                 {v.cvss.toFixed(1)} <span className="text-ink-3">({v.severity})</span>
               </td>
               <td className="space-x-1 whitespace-nowrap px-3 py-2">
-                {v.in_use ? <Tag tone="warn">In use</Tag> : <Tag>Not loaded</Tag>}
+                {v.in_use ? (
+                  v.in_use_source === "sensor" ? (
+                    <span title={v.in_use_last_seen ? `Seen by runtime sensor ${new Date(v.in_use_last_seen).toLocaleString()}` : "Seen by runtime sensor"}>
+                      <Tag tone="warn">In use (sensor)</Tag>
+                    </span>
+                  ) : (
+                    <Tag tone="warn">In use</Tag>
+                  )
+                ) : (
+                  <Tag>Not loaded</Tag>
+                )}
                 {v.internet_exposed && <Tag tone="warn">Exposed</Tag>}
                 {v.sensitive_data_access && <Tag tone="warn">Data access</Tag>}
                 {v.exploit_available && <Tag tone="warn">Exploit</Tag>}

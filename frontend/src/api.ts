@@ -58,6 +58,8 @@ export interface Vulnerability {
   severity: Severity;
   exploit_available: boolean;
   in_use: boolean;
+  in_use_source?: string | null;
+  in_use_last_seen?: string | null;
   internet_exposed: boolean;
   sensitive_data_access: boolean;
   risk_score: number;
@@ -250,7 +252,7 @@ export const api = {
   alert: (id: string) => request<AlertDetail>(`/api/alerts/${id}`),
   updateAlert: (id: string, status: Alert["status"]) =>
     request<Alert>(`/api/alerts/${id}`, { method: "PATCH", body: JSON.stringify({ status }) }),
-  events: (limit = 50) => request<RuntimeEvent[]>(`/api/runtime/events${qs({ limit })}`),
+  events: (limit = 50, source?: string) => request<RuntimeEvent[]>(`/api/runtime/events${qs({ limit, source })}`),
   attackPaths: (limit = 20) => request<AttackPath[]>(`/api/attack-paths${qs({ limit })}`),
   attackGraph: (limit = 10) =>
     request<{
