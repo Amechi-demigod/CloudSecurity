@@ -78,11 +78,11 @@ param backendMinReplicas int = 1
 param backendMaxReplicas int = 2
 param backendWorkers int = 2
 @minValue(0)
-param frontendMinReplicas int = 1
+param frontendMinReplicas int = 0
 param frontendMaxReplicas int = 2
 param logRetentionDays int = 30
 @description('Log Analytics daily ingestion cap in GB (cost guard), as a string; "-1" disables the cap.')
-param logDailyQuotaGb string = '0.5'
+param logDailyQuotaGb string = '0.2'
 
 // --- network ---------------------------------------------------------------------------
 param vnetAddressPrefix string = '10.42.0.0/16'

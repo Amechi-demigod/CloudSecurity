@@ -28,7 +28,7 @@ flowchart LR
     DR[Detection rules engine]
     RS[Risk scoring]
     AP[Attack path engine]
-    DB[(SQLite via SQLAlchemy)]
+    DB[(SQLite or PostgreSQL<br/>via SQLAlchemy + Alembic)]
     API[REST API /api/*]
   end
   UI[React + Vite UI]
@@ -50,7 +50,9 @@ backend/
     main.py              FastAPI app, lifespan (seeding + simulator + bootstrap admin)
     config.py            env-var settings
     auth.py              password hashing, sessions, CSRF, RBAC dependencies, audit helper
-    cli.py               `python -m app.cli create-user | reset-password`
+    cli.py               `python -m app.cli create-user | reset-password | migrate`
+    db.py, locks.py      engine (SQLite/PostgreSQL), migrations, advisory-lock leader election
+    logging_setup.py     text / JSON logging
     models.py            Asset, Relationship, Finding, Vulnerability, RuntimeEvent, Alert, ScanRun,
                          User, UserSession, AuditLog
     schemas.py           Pydantic v2 schemas (includes the runtime event schema)
@@ -65,10 +67,19 @@ backend/
       azure.py           read-only Azure scanner (ReadOnlyClient guard)
     services/            ingest, runtime, scans, simulation, analytics
     api/                 routers
-  tests/                 pytest suite (API, auth/RBAC, engines, sensor end-to-end)
-frontend/                React + Vite + TypeScript + Tailwind + Recharts
-docker-compose.yml
+  migrations/            Alembic migrations (PostgreSQL)
+  gunicorn.conf.py       production server settings
+  tests/                 pytest suite (API, auth/RBAC, engines, DB, production config, sensor end-to-end)
+frontend/                React + Vite + TypeScript + Tailwind + Recharts (nginx/ = production proxy config)
+infra/                   Bicep (main.bicep + modules/), setup.sh (one-time Azure/GitHub setup) and its tests
+docs/DEPLOY_AZURE.md     Azure deployment guide
+scripts/smoke_test.py    end-to-end smoke test (CI and the deploy workflow)
+docker-compose.yml       local stack (SQLite); docker-compose.postgres.yml adds PostgreSQL
 ```
+
+## Deploy to Azure
+
+A production deployment on **Azure Container Apps + Azure Database for PostgreSQL + Key Vault**, provisioned with Bicep and deployed by a GitHub Actions workflow that signs in with OIDC (no stored Azure secrets), is described step by step in **[docs/DEPLOY_AZURE.md](docs/DEPLOY_AZURE.md)**: one-time `infra/setup.sh`, then run the *Deploy to Azure* workflow. Estimated cost for the demo sizing is roughly **US$35-45/month**; `az group delete` removes everything.
 
 ## Quick start
 
@@ -77,6 +88,13 @@ docker-compose.yml
 ```bash
 cp .env.example .env        # then set ADMIN_EMAIL and ADMIN_PASSWORD (12+ characters)
 docker compose up --build
+```
+
+The compose stack runs the same production images as Azure (gunicorn with uvicorn workers, unprivileged nginx). To use PostgreSQL instead of SQLite, as in production:
+
+```bash
+export POSTGRES_PASSWORD=$(openssl rand -hex 16)   # any local-only value
+docker compose -f docker-compose.yml -f docker-compose.postgres.yml up --build
 ```
 
 To also run the runtime sensor against the Docker host (Linux only), set `INGEST_API_TOKEN` in `.env` and start the optional profile:
@@ -116,13 +134,35 @@ cd backend && pytest && ruff check .
 cd frontend && npm run lint && npm run build
 ```
 
+The backend suite runs on in-memory SQLite by default. To run it against PostgreSQL as CI does (the database is wiped repeatedly):
+
+```bash
+TEST_DATABASE_URL=postgresql://cnapp:<password>@localhost:5432/cnapp_test pytest
+```
+
+### Database migrations
+
+SQLite (local default) keeps the zero-setup behaviour: tables are created on startup. PostgreSQL is managed by Alembic migrations in `backend/migrations/`, applied automatically on startup (`DB_AUTO_MIGRATE=true`, under a PostgreSQL advisory lock so several replicas can start together) or explicitly with `python -m app.cli migrate`. After changing `app/models.py`, add a migration:
+
+```bash
+cd backend
+DATABASE_URL=postgresql://... alembic revision --autogenerate -m "describe the change"
+```
+
+`tests/test_database.py` fails if the migrations and the models drift apart.
+
 On first start, simulated mode seeds the database (`backend/cnapp.db`) and backfills 24 hours of runtime events. To start fresh, delete the DB file.
 
 ## Configuration (env vars)
 
 | Variable | Default | Description |
 |---|---|---|
-| `DATABASE_URL` | `sqlite:///./cnapp.db` | SQLAlchemy URL |
+| `APP_ENV` | `development` | `production` enables the [production guardrails](docs/DEPLOY_AZURE.md#production-settings): refuses to start if insecure, JSON logs, HSTS, no API docs |
+| `DATABASE_URL` | `sqlite:///./cnapp.db` | SQLAlchemy URL. `postgresql://user:pass@host:5432/db?sslmode=verify-full` uses psycopg 3 |
+| `DB_AUTO_MIGRATE` | `true` | Apply schema migrations on startup (Alembic on PostgreSQL, `create_all` on SQLite) |
+| `DB_POOL_SIZE` / `DB_MAX_OVERFLOW` | `5` / `5` | PostgreSQL connection pool per worker process |
+| `LOG_FORMAT` / `LOG_LEVEL` | `text` (`json` in production) / `INFO` | Log output format and level |
+| `WEB_CONCURRENCY` | `2` | gunicorn worker processes in the container image |
 | `SIMULATION_MODE` | `true` | Seed the simulated environment when the DB is empty |
 | `SIMULATOR_ENABLED` | `true` | Run the background runtime-event simulator |
 | `SIMULATOR_INTERVAL_SECONDS` | `15` | Seconds between simulator ticks |
@@ -142,14 +182,22 @@ On first start, simulated mode seeds the database (`backend/cnapp.db`) and backf
 | `LOGIN_MAX_FAILURES` / `LOGIN_LOCKOUT_MINUTES` | `5` / `15` | Lock an account for 15 minutes after 5 consecutive wrong passwords |
 | `LOGIN_RATE_LIMIT` / `LOGIN_RATE_WINDOW_SECONDS` | `20` / `300` | Max login attempts per client IP per window (429 above it) |
 | `TRUST_PROXY_HEADERS` | `false` | Take the client IP from the right-most `X-Forwarded-For` entry. Only enable when the backend is reachable *only* through your proxy |
+| `TRUSTED_PROXY_CIDRS` | | With `TRUST_PROXY_HEADERS`: honour `X-Forwarded-For` only from these proxies and use the right-most address that is not one of them (several proxy hops, e.g. Container Apps ingress + nginx) |
+| `SESSION_SECRET` | | Key for the stored session-token digests (HMAC-SHA256). Required (32+ chars) in production; rotating it signs everyone out |
+| `API_DOCS_ENABLED` | `true` (`false` in production) | Serve the interactive API docs at all |
 | `API_DOCS_PUBLIC` | `false` | Serve `/api/docs` and `/api/openapi.json` without login |
+| `HSTS_MAX_AGE` | `31536000` | `Strict-Transport-Security` max-age sent in production (0 disables) |
 | `AZURE_TENANT_ID` | | Entra ID tenant |
 | `AZURE_CLIENT_ID` | | Service principal app ID |
 | `AZURE_CLIENT_SECRET` | | Service principal secret |
 | `AZURE_SUBSCRIPTION_IDS` | | Comma-separated subscriptions to scan |
 | `AZURE_USE_DEFAULT_CREDENTIAL` | `false` | Use `DefaultAzureCredential` (az login, managed identity) when no secret is set |
+| `AZURE_AUTH_MODE` | `auto` | `auto`, `client_secret`, `managed_identity` or `default`. `auto` uses the client secret if set, else the managed identity if `AZURE_MANAGED_IDENTITY_CLIENT_ID` is set, else `DefaultAzureCredential` if enabled |
+| `AZURE_MANAGED_IDENTITY_CLIENT_ID` | | Client ID of the user-assigned managed identity to scan with (set by the Azure deployment) |
 
 ## Connecting a real Azure environment (read-only)
+
+**Deployed on Azure:** the scanner uses the backend's managed identity, so there is no secret at all. Grant it Reader with `infra/setup.sh --grant-scanner <subscription-id>` and redeploy; see [Enable the Azure scanner](docs/DEPLOY_AZURE.md#enable-the-azure-scanner). The steps below are for running the scanner **locally** with a service principal secret.
 
 1. Create a least-privilege service principal with the built-in **Reader** role:
 
@@ -370,11 +418,11 @@ A dormant vulnerability can never score above 20. An in-use, exposed vulnerabili
 - **DSPM**: data discovery and classification instead of tag-based sensitivity.
 - **API security**: discovery of exposed APIs and runtime API traffic analysis.
 - **CI/CD shift-left**: IaC scanning and image scanning in pipelines, linked to the runtime findings.
-- SSO (OIDC/SAML), MFA and multi-tenancy; Postgres; a real vulnerability scanner feed (for example Trivy or Grype); more CIS controls.
+- SSO (OIDC/SAML), MFA and multi-tenancy; a real vulnerability scanner feed (for example Trivy or Grype); more CIS controls.
 
 ## Limitations (MVP)
 
 - Vulnerability data and runtime events in simulated mode are synthetic. The Azure connector covers posture only; it has no runtime or CVE data.
 - CIS control numbers are approximate mappings for illustration.
-- SQLite and in-process background threads mean a single process; this is not built for scale. The login rate limiter is in-memory too, so it resets on restart and is per process.
+- On PostgreSQL the backend can run several replicas/workers (the simulator and scans use advisory-lock leader election), but the login rate limiter is in-memory: it resets on restart and counts per worker process, so the effective limit is `LOGIN_RATE_LIMIT` x workers x replicas. Per-account lockout is stored in the database and is exact.
 - No SSO or MFA yet; passwords are the only sign-in method.
