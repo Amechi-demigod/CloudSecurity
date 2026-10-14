@@ -1,0 +1,31 @@
+# Overlay: run the backend on PostgreSQL 16 (like Azure Database for PostgreSQL
+# Flexible Server in production) instead of SQLite.
+#
+#   export POSTGRES_PASSWORD=$(openssl rand -hex 16)   # any local-only value
+#   docker compose -f docker-compose.yml -f docker-compose.postgres.yml up --build
+#
+# The schema is created/upgraded by Alembic migrations when the backend starts.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: cnapp
+      POSTGRES_DB: cnapp
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD (local-only value)}
+    volumes:
+      - cnapp-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cnapp -d cnapp"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://cnapp:${POSTGRES_PASSWORD}@postgres:5432/cnapp
+
+volumes:
+  cnapp-pg:
