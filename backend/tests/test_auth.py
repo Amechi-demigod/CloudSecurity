@@ -11,7 +11,7 @@ from sqlalchemy import select
 
 from app import config, db
 from app.models import AuditLog, User, UserSession, utcnow
-from tests.conftest import ADMIN_EMAIL, ADMIN_PASSWORD, AUTH, BASE_URL, login, make_user
+from tests.conftest import ADMIN_EMAIL, ADMIN_PASSWORD, AUTH, BASE_URL, login, make_user, reset_database
 
 GENERIC = "Invalid email or password"
 
@@ -354,6 +354,7 @@ def test_no_admin_without_valid_env(monkeypatch, email, password):
         else:
             monkeypatch.setenv(k, v)
     config.reload_settings()
+    reset_database()
     from app.main import create_app
 
     try:
@@ -370,7 +371,7 @@ def test_no_admin_without_valid_env(monkeypatch, email, password):
 def test_cli_create_user_and_reset(session, monkeypatch, capsys):
     from app import cli
 
-    monkeypatch.setattr(db, "init_engine", lambda url: None)  # keep the fixture's in-memory DB
+    monkeypatch.setattr(db, "init_engine", lambda url, **kw: None)  # keep the fixture's in-memory DB
     monkeypatch.setattr("sys.stdin", io.StringIO("cli-password-123\n"))
     assert cli.main(["create-user", "--email", "Ops@Example.com", "--role", "admin", "--password-stdin"]) == 0
     u = session.scalar(select(User).where(User.email == "ops@example.com"))

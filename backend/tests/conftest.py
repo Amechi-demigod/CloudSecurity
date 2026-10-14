@@ -8,8 +8,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 # Tests never touch a real DB file, never start the background simulator,
 # and never see real Azure credentials.
+#
+# By default every test gets a fresh in-memory SQLite database. Set
+# TEST_DATABASE_URL (e.g. postgresql://postgres:postgres@localhost:5432/cnapp_test)
+# to run the whole suite against PostgreSQL instead: each test then starts from
+# an empty `public` schema and the Alembic migrations are applied.
+# WARNING: that database is wiped repeatedly.
+TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL") or "sqlite://"
 os.environ.update({
-    "DATABASE_URL": "sqlite://",
+    "APP_ENV": "development",
+    "DATABASE_URL": TEST_DATABASE_URL,
     "SIMULATION_MODE": "true",
     "SIMULATOR_ENABLED": "false",
     "INGEST_API_TOKEN": "test-ingest-token",
@@ -24,6 +32,8 @@ for k in ("AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET", "AZURE_SU
     os.environ.pop(k, None)
 
 from app import config, db  # noqa: E402
+
+IS_POSTGRES = not db.is_sqlite(TEST_DATABASE_URL)
 
 AUTH = {"Authorization": "Bearer test-ingest-token"}
 ADMIN_EMAIL = "admin@example.com"
@@ -48,11 +58,35 @@ def make_user(c, role: str, email: str | None = None, password: str = "a-long-te
     return r.json()
 
 
+def reset_database() -> None:
+    """Start from an empty database (only needed for PostgreSQL; a new in-memory
+    SQLite engine is empty anyway)."""
+    if not IS_POSTGRES:
+        return
+    from sqlalchemy import text
+
+    if db.engine is not None:
+        db.engine.dispose()
+    eng = db.create_db_engine(TEST_DATABASE_URL)
+    try:
+        with eng.begin() as conn:
+            conn.execute(text("DROP SCHEMA public CASCADE"))
+            conn.execute(text("CREATE SCHEMA public"))
+    finally:
+        eng.dispose()
+
+
+def fresh_db():
+    """Reset the test database and (re)initialize the global engine on it."""
+    reset_database()
+    return db.init_engine(TEST_DATABASE_URL)
+
+
 @pytest.fixture()
 def session():
-    """Fresh, empty in-memory database session."""
+    """Fresh, empty database session."""
     config.reload_settings()
-    db.init_engine("sqlite://")
+    fresh_db()
     s = db.get_session()
     yield s
     s.close()
@@ -64,6 +98,7 @@ def anon_client():
     from fastapi.testclient import TestClient
 
     config.reload_settings()
+    reset_database()
     from app.main import create_app
 
     with TestClient(create_app(), base_url=BASE_URL) as c:
@@ -83,6 +118,7 @@ def empty_client(monkeypatch):
 
     monkeypatch.setenv("SIMULATION_MODE", "false")
     config.reload_settings()
+    reset_database()
     from app.main import create_app
 
     with TestClient(create_app(), base_url=BASE_URL) as c:
