@@ -1,6 +1,7 @@
 """FastAPI application entrypoint.
 
 Run locally:  uvicorn app.main:app --reload   (from the backend/ directory)
+Production:   gunicorn -c gunicorn.conf.py app.main:app   (see the Dockerfile)
 """
 from __future__ import annotations
 
@@ -12,13 +13,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import JSONResponse, RedirectResponse
 
-from . import auth, config, db
+from . import auth, config, db, locks, logging_setup
 from .api import auth as auth_api
 from .api import inventory, platform, runtime, vulns
-from .security import BodySizeLimitMiddleware
+from .security import BodySizeLimitMiddleware, SecurityHeadersMiddleware
 from .services.simulation import RuntimeSimulator, seed_if_empty
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("cnapp")
 
 
@@ -26,11 +26,15 @@ log = logging.getLogger("cnapp")
 async def lifespan(app: FastAPI):
     s = config.settings
     db.init_engine(s.database_url)
-    with db.get_session() as session:
-        auth.bootstrap_admin(session)
+    # Several replicas / workers may start together: one at a time creates the
+    # first admin and seeds the simulated environment.
+    with locks.advisory_lock("startup"):
+        with db.get_session() as session:
+            auth.bootstrap_admin(session)
+        if s.simulation_mode:
+            seed_if_empty(s.seed)
     app.state.simulator = None
     if s.simulation_mode:
-        seed_if_empty(s.seed)
         if s.simulator_enabled:
             app.state.simulator = RuntimeSimulator(
                 interval=s.simulator_interval_seconds, attack_probability=s.simulator_attack_probability
@@ -43,10 +47,18 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
-    if "*" in config.settings.cors_origins:
+    s = config.settings
+    logging_setup.configure(s.effective_log_format, s.log_level)
+    problems = s.production_problems()
+    if problems:
+        for p in problems:
+            log.critical("refusing to start: %s", p)
+        raise RuntimeError("insecure production configuration: " + "; ".join(problems))
+    if "*" in s.cors_origins:
         log.warning("CORS_ORIGINS contains '*': any website can read this API from a browser")
     auth.login_limiter.reset()
     app = FastAPI(
+        debug=s.debug and not s.is_production,
         title="CloudSecurity CNAPP",
         version="0.1.0",
         description="Runtime-first cloud security platform MVP: inventory, CSPM, runtime-aware "
@@ -67,6 +79,7 @@ def create_app() -> FastAPI:
         allow_headers=["Authorization", "Content-Type", auth.CSRF_HEADER],
     )
     app.add_middleware(BodySizeLimitMiddleware, max_bytes=config.settings.max_request_bytes)
+    app.add_middleware(SecurityHeadersMiddleware, hsts_max_age=s.hsts_max_age if s.is_production else 0)
 
     # Public: health probe, login, and sensor ingest (own bearer-token auth).
     app.include_router(platform.public_router)
@@ -78,7 +91,8 @@ def create_app() -> FastAPI:
     for r in (platform.router, inventory.router, vulns.router, runtime.router):
         app.include_router(r, dependencies=session_required)
     app.include_router(auth_api.admin_router)
-    _add_docs(app)
+    if s.api_docs_enabled:
+        _add_docs(app)
     return app
 
 

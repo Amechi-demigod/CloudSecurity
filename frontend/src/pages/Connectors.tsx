@@ -53,7 +53,9 @@ export default function Connectors() {
             </div>
             {c.name === "azure" && !c.configured && (
               <p className="mt-3 text-xs text-ink-3">
-                Set <code>AZURE_TENANT_ID</code>, <code>AZURE_CLIENT_ID</code>, <code>AZURE_CLIENT_SECRET</code> and{" "}
+                Deployed on Azure: grant the backend&apos;s managed identity the <b>Reader</b> role on the subscriptions to
+                scan and set <code>AZURE_SUBSCRIPTION_IDS</code> (see docs/DEPLOY_AZURE.md). Locally: set{" "}
+                <code>AZURE_TENANT_ID</code>, <code>AZURE_CLIENT_ID</code>, <code>AZURE_CLIENT_SECRET</code> and{" "}
                 <code>AZURE_SUBSCRIPTION_IDS</code> for a service principal with the <b>Reader</b> role, then restart the backend.
               </p>
             )}

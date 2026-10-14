@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 
 from .. import db as dbmod
 from ..connectors.simulated import SimulatedConnector, benign_events, generate_history, pick_scenario, workload_dicts
+from ..locks import LeaderLock
 from ..models import Asset, utcnow
 from .ingest import ingest_collection
 from .runtime import ingest_event
@@ -18,7 +19,10 @@ log = logging.getLogger(__name__)
 
 
 def seed_if_empty(seed: int = 42, history: bool = True) -> bool:
-    """Populate the DB with the simulated environment if it has no assets yet."""
+    """Populate the DB with the simulated environment if it has no assets yet.
+
+    Callers starting several replicas at once should hold the "startup" lock
+    (see app.main) so only one of them seeds."""
     with dbmod.get_session() as db:
         if db.scalar(select(func.count()).select_from(Asset)):
             return False
@@ -55,7 +59,15 @@ def simulate_tick(rng: random.Random, attack_probability: float = 0.25) -> int:
 
 
 class RuntimeSimulator:
-    """Background thread emitting simulated runtime events every N seconds."""
+    """Background thread emitting simulated runtime events every N seconds.
+
+    Safe to start in every replica / gunicorn worker: only the process holding
+    the "runtime-simulator" leader lock (PostgreSQL advisory lock or SQLite
+    file lock) emits events. The others keep trying each interval and take
+    over if the leader goes away.
+    """
+
+    LOCK_NAME = "runtime-simulator"
 
     def __init__(self, interval: float = 15.0, seed: int | None = None, attack_probability: float = 0.05):
         self.interval = interval
@@ -63,6 +75,8 @@ class RuntimeSimulator:
         self.rng = random.Random(seed)
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._leader = LeaderLock(self.LOCK_NAME)
+        self.is_leader = False
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -75,14 +89,30 @@ class RuntimeSimulator:
         self._stop.set()
         if self._thread:
             self._thread.join(timeout=5)
+        if not (self._thread and self._thread.is_alive()):
+            self._leader.release()
+            self.is_leader = False
 
     @property
     def running(self) -> bool:
         return bool(self._thread and self._thread.is_alive())
 
+    def _check_leadership(self) -> bool:
+        was = self.is_leader
+        self.is_leader = self._leader.held() if self._leader.acquired else self._leader.try_acquire()
+        if self.is_leader and not was:
+            log.info("runtime simulator: this instance is now the leader")
+        return self.is_leader
+
+    def tick(self) -> int:
+        """One iteration: emit events if this instance is the leader."""
+        if not self._check_leadership():
+            return 0
+        return simulate_tick(self.rng, self.attack_probability)
+
     def _run(self) -> None:
         while not self._stop.wait(self.interval):
             try:
-                simulate_tick(self.rng, self.attack_probability)
+                self.tick()
             except Exception:  # never let the simulator die
                 log.exception("simulator tick failed")

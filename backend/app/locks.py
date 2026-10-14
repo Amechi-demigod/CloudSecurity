@@ -57,6 +57,7 @@ class LeaderLock:
     def __init__(self, name: str):
         self.name = name
         self._conn: Any = None  # PostgreSQL connection holding the advisory lock
+        self._pid: int | None = None  # its server backend pid
         self._fd: int | None = None  # SQLite lock file
         self._tlock: threading.Lock | None = None
 
@@ -86,6 +87,8 @@ class LeaderLock:
                 conn.close()
                 return False
             self._conn = conn
+            self._pid = conn.execute(text("SELECT pg_backend_pid()")).scalar()
+            conn.commit()
             return True
         path = _sqlite_lock_path(self.name)
         if path is not None:
@@ -109,8 +112,11 @@ class LeaderLock:
             try:
                 from sqlalchemy import text
 
-                self._conn.execute(text("SELECT 1"))
+                # A reconnect (new backend pid) means the session that held the lock is gone.
+                pid = self._conn.execute(text("SELECT pg_backend_pid()")).scalar()
                 self._conn.commit()
+                if pid != self._pid:
+                    raise ConnectionError("advisory-lock connection was replaced")
                 return True
             except Exception:
                 log.warning("lost the %r leader lock (database connection dropped)", self.name)
@@ -125,6 +131,7 @@ class LeaderLock:
         except Exception:  # pragma: no cover - best effort
             log.debug("closing a dead lock connection failed", exc_info=True)
         self._conn = None
+        self._pid = None
 
     def release(self) -> None:
         if self._conn is not None:
@@ -134,7 +141,7 @@ class LeaderLock:
                 self._conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": lock_key(self.name)})
                 self._conn.commit()
                 self._conn.close()
-                self._conn = None
+                self._conn = self._pid = None
             except Exception:
                 self._discard_conn()
         if self._fd is not None:

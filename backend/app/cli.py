@@ -2,6 +2,7 @@
 
     python -m app.cli create-user --email you@example.com --role admin [--name "Your Name"]
     python -m app.cli reset-password --email you@example.com
+    python -m app.cli migrate        # apply schema migrations (Alembic on PostgreSQL)
 
 Passwords are prompted for (never passed as arguments, so they stay out of shell
 history). For automation, pipe the password with --password-stdin.
@@ -64,6 +65,13 @@ def reset_password(args: argparse.Namespace) -> int:
     return 0
 
 
+def migrate(args: argparse.Namespace) -> int:
+    # init_engine() (called by main with migrate=True) already applied them.
+    url = db.engine.url.render_as_string(hide_password=True) if db.engine is not None else "?"
+    print(f"Database schema is up to date ({url})")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="python -m app.cli", description="CloudSecurity CNAPP admin CLI")
     sub = p.add_subparsers(dest="command", required=True)
@@ -77,8 +85,13 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--email", required=True)
     r.add_argument("--password-stdin", action="store_true", help="read the password from stdin")
     r.set_defaults(func=reset_password)
+    m = sub.add_parser("migrate", help="apply database schema migrations (also done on startup by default)")
+    m.set_defaults(func=migrate)
     args = p.parse_args(argv)
-    db.init_engine(config.settings.database_url)
+    if args.func is migrate:
+        db.init_engine(config.settings.database_url, migrate=True)
+    else:
+        db.init_engine(config.settings.database_url)
     return args.func(args)
 
 

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
 import logging
 import secrets
 import threading
@@ -100,13 +101,56 @@ def needs_rehash(password_hash: str) -> bool:
 
 # --- request helpers -------------------------------------------------------------
 
+def _parse_networks(cidrs: tuple[str, ...]) -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
+    nets = []
+    for c in cidrs:
+        try:
+            nets.append(ipaddress.ip_network(c, strict=False))
+        except ValueError:
+            log.warning("ignoring invalid TRUSTED_PROXY_CIDRS entry %r", c)
+    return nets
+
+
+_networks_cache: dict[tuple[str, ...], list] = {}
+
+
+def _is_trusted_proxy(ip: str, cidrs: list[str]) -> bool:
+    key = tuple(cidrs)
+    nets = _networks_cache.get(key)
+    if nets is None:
+        nets = _networks_cache[key] = _parse_networks(key)
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return any(addr in n for n in nets)
+
+
 def client_ip(request: Request) -> str:
-    if config.settings.trust_proxy_headers:
+    """Best-effort client IP, used for rate limiting and the audit log.
+
+    * TRUST_PROXY_HEADERS=false (default): the TCP peer.
+    * TRUST_PROXY_HEADERS=true without TRUSTED_PROXY_CIDRS: the right-most
+      X-Forwarded-For entry (the address your single proxy saw).
+    * With TRUSTED_PROXY_CIDRS (e.g. Azure Container Apps, where the request
+      passes the ingress and the frontend nginx): X-Forwarded-For is only
+      honoured if the peer is a trusted proxy, and the client is the right-most
+      entry that is not one, so values a client injects are ignored.
+    """
+    s = config.settings
+    peer = request.client.host if request.client else "unknown"
+    if s.trust_proxy_headers:
         xff = request.headers.get("x-forwarded-for", "")
         parts = [p.strip() for p in xff.split(",") if p.strip()]
-        if parts:
+        if s.trusted_proxy_cidrs:
+            if parts and _is_trusted_proxy(peer, s.trusted_proxy_cidrs):
+                for hop in reversed(parts):
+                    if not _is_trusted_proxy(hop, s.trusted_proxy_cidrs):
+                        return hop[:64]
+                return parts[0][:64]  # every hop is internal (e.g. a client on the VNet)
+        elif parts:
             return parts[-1][:64]
-    return (request.client.host if request.client else "unknown")[:64]
+    return peer[:64]
 
 
 class RateLimiter:
@@ -151,6 +195,12 @@ def audit(db: Session, action: str, *, actor: User | None = None, actor_email: s
 # --- sessions ------------------------------------------------------------------
 
 def _token_id(token: str) -> str:
+    """Database key for a session token: HMAC-SHA256 keyed with SESSION_SECRET
+    (plain SHA-256 when no secret is configured, e.g. local development).
+    Rotating SESSION_SECRET signs everybody out."""
+    secret = config.settings.session_secret
+    if secret:
+        return hmac.new(secret.encode(), token.encode(), hashlib.sha256).hexdigest()
     return hashlib.sha256(token.encode()).hexdigest()
 
 

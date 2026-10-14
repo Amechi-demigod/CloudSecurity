@@ -250,3 +250,63 @@ def test_raw_request_escape_hatch_blocked():
         client.send_request
     with pytest.raises(AttributeError):
         client._pipeline
+
+
+# --- authentication modes (managed identity when deployed on Azure) ------------------
+
+def _settings(**kw):
+    s = Settings()
+    s.azure_subscription_ids = [SUB]
+    s.azure_tenant_id = s.azure_client_id = s.azure_client_secret = None
+    s.azure_managed_identity_client_id = None
+    s.azure_use_default_credential = False
+    s.azure_auth_mode = "auto"
+    for k, v in kw.items():
+        setattr(s, k, v)
+    return s
+
+
+@pytest.mark.parametrize("kw,mode", [
+    ({}, None),
+    ({"azure_tenant_id": "t", "azure_client_id": "c", "azure_client_secret": "x"}, "client_secret"),
+    ({"azure_managed_identity_client_id": "mi-client"}, "managed_identity"),
+    ({"azure_use_default_credential": True}, "default"),
+    # the secret wins in auto mode (local fallback), an explicit mode wins over it
+    ({"azure_tenant_id": "t", "azure_client_id": "c", "azure_client_secret": "x",
+      "azure_managed_identity_client_id": "mi"}, "client_secret"),
+    ({"azure_auth_mode": "managed_identity"}, "managed_identity"),  # system-assigned
+    ({"azure_auth_mode": "default"}, "default"),
+    ({"azure_auth_mode": "client_secret"}, None),
+    ({"azure_auth_mode": "bogus", "azure_managed_identity_client_id": "mi"}, "managed_identity"),
+])
+def test_resolve_auth_mode(kw, mode):
+    from app.connectors.azure import resolve_auth_mode
+
+    s = _settings(**kw)
+    assert resolve_auth_mode(s) == mode
+    assert AzureConnector(s).is_configured() is (mode is not None)
+
+
+def test_managed_identity_credential_without_secret():
+    from azure.identity import ManagedIdentityCredential
+
+    from app.connectors.azure import build_credential
+
+    cred = build_credential(_settings(azure_managed_identity_client_id="11111111-2222-3333-4444-555555555555"))
+    assert isinstance(cred, ManagedIdentityCredential)
+    info = AzureConnector(_settings(azure_managed_identity_client_id="x")).info()
+    assert info["configured"] is True and info["auth_mode"] == "managed_identity"
+
+
+def test_default_and_secret_credentials():
+    from azure.identity import ClientSecretCredential, DefaultAzureCredential
+
+    from app.connectors.azure import build_credential
+
+    assert isinstance(build_credential(_settings(azure_use_default_credential=True)), DefaultAzureCredential)
+    assert isinstance(build_credential(_settings(azure_auth_mode="default", azure_managed_identity_client_id="mi")),
+                      DefaultAzureCredential)
+    assert isinstance(build_credential(_settings(azure_tenant_id="t", azure_client_id="c", azure_client_secret="x")),
+                      ClientSecretCredential)
+    with pytest.raises(RuntimeError, match="not configured"):
+        build_credential(_settings())
