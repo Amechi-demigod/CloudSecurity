@@ -146,7 +146,7 @@ Options: `--resource-group`, `--name-prefix`, `--repo`, `--reviewer`, `--deploy-
 
 GitHub → **Actions** → **Deploy to Azure** → **Run workflow** (branch `main`, leave *image_tag* empty) → approve the `production` deployment when prompted.
 
-The first run takes about 15-20 minutes (PostgreSQL creation is the slow part). It:
+The first run takes about 15-20 minutes (PostgreSQL creation is the slow part). The main step is [`infra/deploy.sh`](../infra/deploy.sh); the workflow:
 
 1. Signs in to Azure with OIDC (`azure/login` with client, tenant and subscription IDs only).
 2. Reads the app secrets from Key Vault, or generates them on the first run (`openssl rand`): PostgreSQL password, session secret, sensor ingest token and the first admin's password. They are masked in the logs and passed to Bicep as secure parameters through environment variables.

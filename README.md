@@ -71,7 +71,7 @@ backend/
   gunicorn.conf.py       production server settings
   tests/                 pytest suite (API, auth/RBAC, engines, DB, production config, sensor end-to-end)
 frontend/                React + Vite + TypeScript + Tailwind + Recharts (nginx/ = production proxy config)
-infra/                   Bicep (main.bicep + modules/), setup.sh (one-time Azure/GitHub setup) and its tests
+infra/                   Bicep (main.bicep + modules/), setup.sh (one-time Azure/GitHub setup), deploy.sh (CD step), tests
 docs/DEPLOY_AZURE.md     Azure deployment guide
 scripts/smoke_test.py    end-to-end smoke test (CI and the deploy workflow)
 docker-compose.yml       local stack (SQLite); docker-compose.postgres.yml adds PostgreSQL
