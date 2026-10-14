@@ -1,0 +1,10 @@
+Name:	sh
+Umask:	0022
+State:	S (sleeping)
+Tgid:	4243
+Ngid:	0
+Pid:	4243
+PPid:	4242
+TracerPid:	0
+Uid:	33	33	33	33
+Gid:	0	0	0	0

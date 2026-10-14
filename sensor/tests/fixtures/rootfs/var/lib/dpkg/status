@@ -1,0 +1,12 @@
+Package: libc6
+Status: install ok installed
+Architecture: amd64
+Version: 2.36-9+deb12u4
+
+Package: libssl3
+Status: install ok installed
+Version: 3.0.11-1~deb12u2
+
+Package: removed-pkg
+Status: deinstall ok config-files
+Version: 1.0

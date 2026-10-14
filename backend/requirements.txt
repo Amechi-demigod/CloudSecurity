@@ -1,0 +1,16 @@
+# Core API
+fastapi>=0.115
+uvicorn[standard]>=0.30
+sqlalchemy>=2.0
+pydantic>=2.6
+
+# Azure read-only posture connector (only imported when a scan runs)
+azure-identity>=1.17
+azure-mgmt-resource>=23.0
+azure-mgmt-compute>=30.0
+azure-mgmt-network>=25.0
+azure-mgmt-storage>=21.0
+azure-mgmt-sql>=3.0
+azure-mgmt-keyvault>=10.3
+azure-mgmt-containerservice>=30.0
+azure-mgmt-authorization>=4.0

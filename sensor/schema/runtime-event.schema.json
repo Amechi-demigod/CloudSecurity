@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cnapp.local/schemas/runtime-event/1.0.json",
+  "title": "RuntimeEvent",
+  "description": "One runtime security event emitted by the CNAPP runtime sensor (schema_version 1.0). Sections not relevant to an event_type are null.",
+  "type": "object",
+  "required": ["schema_version", "event_id", "timestamp", "sensor_id", "host", "event_type", "severity_hint", "tags"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"type": "string", "const": "1.0"},
+    "event_id": {"type": "string", "format": "uuid"},
+    "timestamp": {"type": "string", "format": "date-time", "description": "ISO8601 UTC, millisecond precision, Z suffix"},
+    "sensor_id": {"type": "string"},
+    "host": {"type": "string", "description": "hostname or Kubernetes node name"},
+    "event_type": {"type": "string", "enum": ["process_exec", "network_connect", "network_accept", "file_access", "library_loaded", "privilege_change"]},
+    "container_id": {"type": ["string", "null"], "description": "64-hex container id from the process cgroup; null for host processes"},
+    "k8s": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/k8s"}]},
+    "process": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/process"}]},
+    "network": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/network"}]},
+    "file": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/file"}]},
+    "library": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/library"}]},
+    "cloud": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/cloud"}]},
+    "severity_hint": {"type": "string", "enum": ["info", "low", "medium", "high", "critical"]},
+    "tags": {"type": "array", "items": {"type": "string"}}
+  },
+  "allOf": [
+    {"if": {"properties": {"event_type": {"enum": ["process_exec", "privilege_change"]}}}, "then": {"properties": {"process": {"$ref": "#/$defs/process"}}}},
+    {"if": {"properties": {"event_type": {"enum": ["network_connect", "network_accept"]}}}, "then": {"properties": {"network": {"$ref": "#/$defs/network"}}}},
+    {"if": {"properties": {"event_type": {"const": "file_access"}}}, "then": {"properties": {"file": {"$ref": "#/$defs/file"}}}},
+    {"if": {"properties": {"event_type": {"const": "library_loaded"}}}, "then": {"properties": {"library": {"$ref": "#/$defs/library"}}}}
+  ],
+  "$defs": {
+    "process": {
+      "type": "object",
+      "required": ["pid"],
+      "properties": {
+        "pid": {"type": "integer"},
+        "ppid": {"type": ["integer", "null"]},
+        "name": {"type": ["string", "null"]},
+        "exe": {"type": ["string", "null"]},
+        "cmdline": {"type": ["string", "null"], "description": "space-joined argv, secrets redacted, max 1024 chars"},
+        "uid": {"type": ["integer", "null"]},
+        "euid": {"type": ["integer", "null"]},
+        "user": {"type": ["string", "null"]},
+        "parent_name": {"type": ["string", "null"]}
+      }
+    },
+    "network": {
+      "type": "object",
+      "required": ["src_ip", "src_port", "dst_ip", "dst_port", "protocol", "direction"],
+      "properties": {
+        "src_ip": {"type": "string"},
+        "src_port": {"type": "integer"},
+        "dst_ip": {"type": "string"},
+        "dst_port": {"type": "integer"},
+        "protocol": {"type": "string", "enum": ["tcp"]},
+        "direction": {"type": "string", "enum": ["outbound", "inbound"]}
+      }
+    },
+    "file": {
+      "type": "object",
+      "required": ["path", "operation"],
+      "properties": {
+        "path": {"type": "string"},
+        "operation": {"type": "string", "enum": ["open", "write", "attrib", "create", "delete", "rename"]}
+      }
+    },
+    "library": {
+      "type": "object",
+      "required": ["path", "kind"],
+      "properties": {
+        "path": {"type": "string"},
+        "package": {"type": ["string", "null"]},
+        "version": {"type": ["string", "null"]},
+        "kind": {"type": "string", "enum": ["shared_object", "python_package"]},
+        "source": {"type": ["string", "null"], "enum": ["dpkg", "apk", "dist-info", "soname", null]}
+      }
+    },
+    "k8s": {
+      "type": "object",
+      "properties": {
+        "namespace": {"type": ["string", "null"]},
+        "pod": {"type": ["string", "null"]},
+        "node": {"type": ["string", "null"]},
+        "pod_uid": {"type": ["string", "null"]},
+        "container": {"type": ["string", "null"]}
+      }
+    },
+    "cloud": {
+      "type": "object",
+      "properties": {
+        "provider": {"type": ["string", "null"], "description": "aws | gcp | azure | null"},
+        "resource_id": {"type": ["string", "null"]}
+      }
+    }
+  }
+}
