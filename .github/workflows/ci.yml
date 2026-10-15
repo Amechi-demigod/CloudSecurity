@@ -128,6 +128,7 @@ jobs:
           CNAPP_INGEST_API_TOKEN: ci-placeholder-token-000000000000000000
           CNAPP_ADMIN_PASSWORD: ci-placeholder-admin
           CNAPP_SESSION_SECRET: ci-placeholder-session-secret-000000000000
+          CNAPP_MFA_ENCRYPTION_KEY: ci-placeholder-mfa-encryption-key-0000000
         run: bicep build-params infra/main.bicepparam --outfile "$RUNNER_TEMP/main.parameters.json"
       - name: shellcheck
         run: shellcheck infra/setup.sh infra/deploy.sh infra/tests/*.sh
@@ -205,6 +206,7 @@ jobs:
           cat > .env <<EOF
           APP_ENV=production
           SESSION_SECRET=$(openssl rand -hex 32)
+          MFA_ENCRYPTION_KEY=$(openssl rand -hex 32)
           ADMIN_EMAIL=smoke@example.com
           ADMIN_PASSWORD=${admin_password}
           INGEST_API_TOKEN=${ingest_token}

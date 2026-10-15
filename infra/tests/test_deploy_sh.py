@@ -55,7 +55,7 @@ def test_first_deployment(env):
     assert [d["apps"] for d in deps] == ["false", "true"]
     assert deps[1]["backend"] == f"cnapp-backend:{SHA}" and deps[1]["frontend"] == f"cnapp-frontend:{SHA}"
     # secrets were generated (not read from a vault that does not exist yet), identical in both phases
-    for key in ("pg", "token", "admin", "session"):
+    for key in ("pg", "token", "admin", "session", "mfa"):
         assert deps[0][key] == deps[1][key] and not deps[0][key].startswith("kv-value")
     assert len(deps[0]["pg"]) == 48 and len(deps[0]["token"]) == 64 and len(deps[0]["session"]) == 64
     assert re.fullmatch(r"[A-Za-z0-9]{20,24}", deps[0]["admin"])
@@ -82,6 +82,7 @@ def test_later_deployment_reuses_secrets_and_running_images(env):
     d = deps[0]
     assert d["pg"] == "kv-value-of-postgres-admin-password" and d["session"] == "kv-value-of-session-secret"
     assert d["token"] == "kv-value-of-ingest-api-token" and d["admin"] == "kv-value-of-admin-password"
+    assert d["mfa"] == "kv-value-of-mfa-encryption-key"
     # Bicep keeps the running images; the workflow's next step rolls out the new tag
     assert d["backend"] == "cnapp-backend:old" and d["frontend"] == "cnapp-frontend:old"
     assert "generated a new value" not in proc.stdout
@@ -109,3 +110,13 @@ def test_requires_inputs(env):
     base = {k: v for k, v in base.items() if k != "RG"}
     proc = run(base)
     assert proc.returncode != 0 and "RG" in proc.stderr
+
+
+def test_upgrade_generates_only_the_missing_mfa_key(env):
+    base, log, _ = env
+    proc = run(base, FAKE_STATE="existing", FAKE_NO_MFA_KEY="1")
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    d = deployments(log)[0]
+    assert len(d["mfa"]) == 64 and f"::add-mask::{d['mfa']}" in proc.stdout
+    assert d["session"] == "kv-value-of-session-secret"
+    assert proc.stdout.count("generated a new value") == 1 and "mfa-encryption-key" in proc.stdout

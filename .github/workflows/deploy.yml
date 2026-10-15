@@ -102,6 +102,16 @@ jobs:
       CNAPP_ADMIN_EMAIL: ${{ vars.CNAPP_ADMIN_EMAIL }}
       CNAPP_SIMULATION_MODE: ${{ vars.CNAPP_SIMULATION_MODE || 'true' }}
       CNAPP_SCAN_SUBSCRIPTION_IDS: ${{ vars.CNAPP_SCAN_SUBSCRIPTION_IDS }}
+      # MFA / Microsoft sign-in (optional; docs/AUTH.md)
+      CNAPP_MFA_REQUIRED_ROLES: ${{ vars.CNAPP_MFA_REQUIRED_ROLES }}
+      CNAPP_PASSWORD_LOGIN_ENABLED: ${{ vars.CNAPP_PASSWORD_LOGIN_ENABLED || 'true' }}
+      CNAPP_BREAK_GLASS_EMAILS: ${{ vars.CNAPP_BREAK_GLASS_EMAILS }}
+      CNAPP_ENTRA_CLIENT_ID: ${{ vars.CNAPP_ENTRA_CLIENT_ID }}
+      CNAPP_ENTRA_CLIENT_AUTH: ${{ vars.CNAPP_ENTRA_CLIENT_AUTH || 'managed_identity' }}
+      CNAPP_ENTRA_CREDENTIAL_SECRET_NAME: ${{ vars.CNAPP_ENTRA_CREDENTIAL_SECRET_NAME }}
+      CNAPP_ENTRA_ROLE_MAP: ${{ vars.CNAPP_ENTRA_ROLE_MAP || 'CNAPP.Admin=admin,CNAPP.Analyst=analyst,CNAPP.Viewer=viewer' }}
+      CNAPP_ENTRA_JIT_PROVISIONING: ${{ vars.CNAPP_ENTRA_JIT_PROVISIONING || 'false' }}
+      CNAPP_ENTRA_DEFAULT_ROLE: ${{ vars.CNAPP_ENTRA_DEFAULT_ROLE || 'viewer' }}
       SHA: ${{ needs.preflight.outputs.sha }}
       BICEP_VERSION: v0.47.16
     steps:

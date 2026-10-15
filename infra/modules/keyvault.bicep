@@ -26,6 +26,9 @@ param adminPassword string
 @secure()
 param sessionSecret string
 
+@secure()
+param mfaEncryptionKey string
+
 // Built-in role: Key Vault Secrets User (read secret values).
 var keyVaultSecretsUserRoleId = '4633458b-17de-408a-b874-0445c86b69e6'
 
@@ -71,6 +74,10 @@ var secrets = [
   {
     name: 'session-secret'
     value: sessionSecret
+  }
+  {
+    name: 'mfa-encryption-key'
+    value: mfaEncryptionKey
   }
 ]
 

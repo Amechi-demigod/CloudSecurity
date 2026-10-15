@@ -66,6 +66,43 @@ param adminPassword string
 @description('Key for session-token digests (SESSION_SECRET).')
 param sessionSecret string
 
+@secure()
+@minLength(32)
+@description('Key encrypting TOTP (MFA) secrets at rest (MFA_ENCRYPTION_KEY).')
+param mfaEncryptionKey string
+
+// --- MFA and Microsoft Entra ID sign-in (docs/AUTH.md) -------------------------------------
+@description('Roles that must use TOTP MFA, e.g. "admin,analyst" (empty: optional for everyone).')
+param mfaRequiredRoles string = ''
+
+@description('Allow email + password sign-in. When false, only the break-glass accounts may use it.')
+param passwordLoginEnabled bool = true
+
+@description('Accounts that may always use password (+ MFA) sign-in (default: adminEmail).')
+param breakGlassEmails string = ''
+
+@description('Application (client) ID of the Entra app registration for user sign-in; empty disables Microsoft sign-in.')
+param entraClientId string = ''
+
+@description('Entra tenant of that app registration (default: the tenant of this subscription).')
+param entraTenantId string = tenant().tenantId
+
+@description('How the backend authenticates to Entra: managed_identity (federated credential, no secret), certificate or secret.')
+@allowed(['managed_identity', 'certificate', 'secret'])
+param entraClientAuth string = 'managed_identity'
+
+@description('For certificate/secret: name of the Key Vault secret holding the client secret or PEM certificate (you create it).')
+param entraCredentialSecretName string = ''
+
+@description('Entra app role values or group object ids -> local role, e.g. "CNAPP.Admin=admin,CNAPP.Analyst=analyst".')
+param entraRoleMap string = 'CNAPP.Admin=admin,CNAPP.Analyst=analyst,CNAPP.Viewer=viewer'
+
+@description('Create users on their first Microsoft sign-in.')
+param entraJitProvisioning bool = false
+
+@description('Role of just-in-time provisioned users without a mapped app role.')
+param entraDefaultRole string = 'viewer'
+
 // --- sizing (low-cost demo defaults) ----------------------------------------------------
 param postgresSkuName string = 'Standard_B1ms'
 param postgresSkuTier string = 'Burstable'
@@ -187,6 +224,7 @@ module keyVault 'modules/keyvault.bicep' = {
     ingestApiToken: ingestApiToken
     adminPassword: adminPassword
     sessionSecret: sessionSecret
+    mfaEncryptionKey: mfaEncryptionKey
   }
 }
 
@@ -209,6 +247,18 @@ module apps 'modules/apps.bicep' = if (deployApps) {
     simulationMode: simulationMode
     scanSubscriptionIds: scanSubscriptionIds
     trustedProxyCidrs: trustedProxyCidrs
+    auth: {
+      mfaRequiredRoles: mfaRequiredRoles
+      passwordLoginEnabled: passwordLoginEnabled
+      breakGlassEmails: breakGlassEmails
+      entraTenantId: entraTenantId
+      entraClientId: entraClientId
+      entraClientAuth: entraClientAuth
+      entraCredentialSecretName: entraCredentialSecretName
+      entraRoleMap: entraRoleMap
+      entraJitProvisioning: entraJitProvisioning
+      entraDefaultRole: entraDefaultRole
+    }
     backendCpu: backendCpu
     backendMemory: backendMemory
     backendMinReplicas: backendMinReplicas
@@ -230,3 +280,4 @@ output backendIdentityClientId string = backendIdentity.properties.clientId
 output backendAppName string = deployApps ? apps!.outputs.backendAppName : ''
 output frontendAppName string = deployApps ? apps!.outputs.frontendAppName : ''
 output frontendUrl string = deployApps ? apps!.outputs.frontendUrl : ''
+output entraRedirectUri string = deployApps ? apps!.outputs.entraRedirectUri : ''

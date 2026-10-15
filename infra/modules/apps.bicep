@@ -35,6 +35,9 @@ param simulationMode bool
 param scanSubscriptionIds string
 param trustedProxyCidrs string
 
+@description('MFA / Microsoft Entra ID sign-in settings (see main.bicep and docs/AUTH.md).')
+param auth object
+
 param backendCpu string
 param backendMemory string
 param backendMinReplicas int
@@ -78,12 +81,41 @@ resource env 'Microsoft.App/managedEnvironments@2024-03-01' = {
 
 var frontendOrigin = 'https://${frontendName}.${env.properties.defaultDomain}'
 
-var kvSecret = {
+var kvSecret = union({
   'database-url': 'database-url'
   'ingest-api-token': 'ingest-api-token'
   'admin-password': 'admin-password'
   'session-secret': 'session-secret'
-}
+  'mfa-encryption-key': 'mfa-encryption-key'
+}, empty(auth.entraCredentialSecretName) ? {} : {
+  // Entra client secret or certificate (PEM), stored in Key Vault by you (docs/AUTH.md).
+  'entra-client-credential': auth.entraCredentialSecretName
+})
+
+// Redirect URI to register on the Entra application (also an output).
+var entraRedirectUri = '${frontendOrigin}/api/auth/sso/entra/callback'
+
+var authEnv = concat([
+  { name: 'MFA_ENCRYPTION_KEY', secretRef: 'mfa-encryption-key' }
+  { name: 'MFA_REQUIRED_ROLES', value: auth.mfaRequiredRoles }
+  { name: 'AUTH_PASSWORD_LOGIN_ENABLED', value: string(auth.passwordLoginEnabled) }
+  { name: 'AUTH_BREAK_GLASS_EMAILS', value: empty(auth.breakGlassEmails) ? adminEmail : auth.breakGlassEmails }
+], empty(auth.entraClientId) ? [] : [
+  { name: 'ENTRA_TENANT_ID', value: auth.entraTenantId }
+  { name: 'ENTRA_CLIENT_ID', value: auth.entraClientId }
+  // managed_identity: the backend identity is a federated credential of the app (no secret).
+  { name: 'ENTRA_CLIENT_AUTH', value: auth.entraClientAuth }
+  { name: 'ENTRA_MANAGED_IDENTITY_CLIENT_ID', value: backendIdentityClientId }
+  { name: 'ENTRA_REDIRECT_URI', value: entraRedirectUri }
+  { name: 'ENTRA_ROLE_MAP', value: auth.entraRoleMap }
+  { name: 'ENTRA_JIT_PROVISIONING', value: string(auth.entraJitProvisioning) }
+  { name: 'ENTRA_DEFAULT_ROLE', value: auth.entraDefaultRole }
+], empty(auth.entraCredentialSecretName) ? [] : [
+  {
+    name: auth.entraClientAuth == 'certificate' ? 'ENTRA_CLIENT_CERTIFICATE' : 'ENTRA_CLIENT_SECRET'
+    secretRef: 'entra-client-credential'
+  }
+])
 
 resource api 'Microsoft.App/containerApps@2024-03-01' = {
   name: backendName
@@ -130,7 +162,7 @@ resource api 'Microsoft.App/containerApps@2024-03-01' = {
             cpu: json(backendCpu)
             memory: backendMemory
           }
-          env: [
+          env: concat([
             { name: 'APP_ENV', value: 'production' }
             { name: 'LOG_FORMAT', value: 'json' }
             { name: 'WEB_CONCURRENCY', value: string(backendWorkers) }
@@ -150,7 +182,7 @@ resource api 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'AZURE_AUTH_MODE', value: 'managed_identity' }
             { name: 'AZURE_MANAGED_IDENTITY_CLIENT_ID', value: backendIdentityClientId }
             { name: 'AZURE_SUBSCRIPTION_IDS', value: scanSubscriptionIds }
-          ]
+          ], authEnv)
           probes: [
             {
               type: 'Startup'
@@ -286,3 +318,4 @@ output backendAppName string = api.name
 output frontendAppName string = web.name
 output frontendFqdn string = web.properties.configuration.ingress.fqdn
 output frontendUrl string = 'https://${web.properties.configuration.ingress.fqdn}'
+output entraRedirectUri string = entraRedirectUri
