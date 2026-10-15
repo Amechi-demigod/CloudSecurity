@@ -200,6 +200,9 @@ export interface User {
   last_login_at: string | null;
   locked_until: string | null;
   failed_login_count: number;
+  mfa_enabled: boolean;
+  /** "password" and/or linked identity providers, e.g. "entra" */
+  auth_sources: string[];
 }
 
 export interface SessionInfo {
@@ -207,6 +210,49 @@ export interface SessionInfo {
   csrf_token: string;
   expires_at: string;
   idle_timeout_minutes: number;
+}
+
+/** Returned by login instead of a session when a second step is needed. */
+export interface MfaChallenge {
+  mfa_required: true;
+  purpose: "verify" | "enroll";
+  mfa_token: string;
+  expires_in: number;
+}
+
+export type LoginResult = SessionInfo | MfaChallenge;
+
+export function isMfaChallenge(r: LoginResult): r is MfaChallenge {
+  return "mfa_token" in r;
+}
+
+export interface LoginComplete extends SessionInfo {
+  /** only after a forced enrolment: shown once */
+  recovery_codes?: string[] | null;
+}
+
+export interface MfaSetup {
+  secret: string;
+  otpauth_uri: string;
+  /** data:image/svg+xml URI rendered by the backend */
+  qr_svg: string;
+  digits: number;
+  period: number;
+}
+
+export interface MfaStatus {
+  enabled: boolean;
+  enabled_at: string | null;
+  required: boolean;
+  recovery_codes_remaining: number;
+  has_password: boolean;
+  sso_user: boolean;
+}
+
+export interface AuthProviders {
+  password: boolean;
+  entra: boolean;
+  entra_label: string;
 }
 
 export interface AuditEntry {
@@ -291,7 +337,7 @@ export const api = {
   // --- auth ---
   me: () => request<SessionInfo>("/api/auth/me", { skipAuthHandling: true }),
   login: (email: string, password: string) =>
-    request<SessionInfo>("/api/auth/login", {
+    request<LoginResult>("/api/auth/login", {
       method: "POST",
       body: JSON.stringify({ email, password }),
       skipAuthHandling: true,
@@ -302,7 +348,39 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ current_password, new_password }),
     }),
+  // --- MFA / SSO ---
+  providers: () => request<AuthProviders>("/api/auth/providers", { skipAuthHandling: true }),
+  loginMfa: (mfa_token: string, code: string) =>
+    request<LoginComplete>("/api/auth/login/mfa", {
+      method: "POST",
+      body: JSON.stringify({ mfa_token, code }),
+      skipAuthHandling: true,
+    }),
+  enrollStart: (mfa_token: string) =>
+    request<MfaSetup>("/api/auth/login/mfa/enroll/start", {
+      method: "POST",
+      body: JSON.stringify({ mfa_token }),
+      skipAuthHandling: true,
+    }),
+  enrollConfirm: (mfa_token: string, code: string) =>
+    request<LoginComplete>("/api/auth/login/mfa/enroll/confirm", {
+      method: "POST",
+      body: JSON.stringify({ mfa_token, code }),
+      skipAuthHandling: true,
+    }),
+  mfaStatus: () => request<MfaStatus>("/api/auth/mfa"),
+  mfaSetup: () => request<MfaSetup>("/api/auth/mfa/totp/setup", { method: "POST" }),
+  mfaEnable: (code: string) =>
+    request<{ recovery_codes: string[] }>("/api/auth/mfa/totp/enable", { method: "POST", body: JSON.stringify({ code }) }),
+  mfaDisable: (password: string | null, code: string) =>
+    request<void>("/api/auth/mfa/totp/disable", { method: "POST", body: JSON.stringify({ password, code }) }),
+  regenerateRecoveryCodes: (password: string | null, code: string) =>
+    request<{ recovery_codes: string[] }>("/api/auth/mfa/recovery-codes", {
+      method: "POST",
+      body: JSON.stringify({ password, code }),
+    }),
   // --- admin ---
+  resetMfa: (id: string) => request<User>(`/api/users/${id}/reset-mfa`, { method: "POST" }),
   users: () => request<User[]>("/api/users"),
   createUser: (u: { email: string; name: string; role: Role; password: string }) =>
     request<User>("/api/users", { method: "POST", body: JSON.stringify(u) }),

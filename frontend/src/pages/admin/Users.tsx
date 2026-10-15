@@ -161,6 +161,18 @@ export default function Users() {
     }
   }
 
+  async function resetMfa(u: User) {
+    setActionError(null);
+    setNotice(null);
+    try {
+      await api.resetMfa(u.id);
+      setNotice(`Two-step verification reset for ${u.email}.`);
+      reload();
+    } catch (e) {
+      setActionError(errMsg(e));
+    }
+  }
+
   const locked = (u: User) => !!u.locked_until && new Date(u.locked_until).getTime() > Date.now();
 
   return (
@@ -181,7 +193,7 @@ export default function Users() {
         </div>
       )}
       <Card>
-        <Table head={["User", "Role", "Status", "Last sign-in", "Created", "Actions"]}>
+        <Table head={["User", "Role", "Status", "Sign-in", "Last sign-in", "Created", "Actions"]}>
           {users?.map((u) => {
             const isMe = u.id === me?.id;
             return (
@@ -223,11 +235,28 @@ export default function Users() {
                     <Tag tone="good">Active</Tag>
                   )}
                 </td>
+                <td className="px-3 py-2">
+                  <div className="flex flex-wrap gap-1">
+                    {u.auth_sources.includes("entra") && <Tag tone="accent">Microsoft</Tag>}
+                    {u.auth_sources.includes("password") && <Tag>Password</Tag>}
+                    {u.mfa_enabled ? <Tag tone="good">MFA on</Tag> : <Tag>MFA off</Tag>}
+                  </div>
+                </td>
                 <td className="px-3 py-2 text-xs text-ink-2">{u.last_login_at ? fmtAgo(u.last_login_at) : "Never"}</td>
                 <td className="px-3 py-2 text-xs text-ink-2">{fmtTime(u.created_at)}</td>
                 <td className="px-3 py-2">
                   <div className="flex flex-wrap gap-2">
                     <Button onClick={() => setResetting(u)}>Reset password</Button>
+                    {u.mfa_enabled && (
+                      <Button
+                        title="Remove the user's authenticator and recovery codes (lost device)"
+                        onClick={() => {
+                          if (window.confirm(`Reset two-step verification for ${u.email}? They are signed out and must set it up again if their role requires it.`)) resetMfa(u);
+                        }}
+                      >
+                        Reset MFA
+                      </Button>
+                    )}
                     {u.is_active ? (
                       <Button
                         variant="danger"

@@ -186,6 +186,17 @@ export default function UserMenu() {
           <button
             role="menuitem"
             type="button"
+            className="block w-full px-3 py-2 text-left text-sm text-ink-2 hover:bg-surface-2 hover:text-ink focus:bg-surface-2 focus:text-ink focus:outline-none"
+            onClick={() => {
+              setOpen(false);
+              navigate("/account/security");
+            }}
+          >
+            Security (two-step verification)
+          </button>
+          <button
+            role="menuitem"
+            type="button"
             className="block w-full border-t border-line px-3 py-2 text-left text-sm text-ink-2 hover:bg-surface-2 hover:text-ink focus:bg-surface-2 focus:text-ink focus:outline-none"
             onClick={signOut}
           >

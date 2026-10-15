@@ -10,6 +10,7 @@ import DashboardPage from "./pages/Dashboard";
 import Findings from "./pages/Findings";
 import Inventory from "./pages/Inventory";
 import Login from "./pages/Login";
+import Security from "./pages/Security";
 import Threats from "./pages/Threats";
 import Vulnerabilities from "./pages/Vulnerabilities";
 import AuditLog from "./pages/admin/AuditLog";
@@ -141,6 +142,7 @@ function Shell() {
             <Route path="/threats" element={<Threats />} />
             <Route path="/attack-paths" element={<AttackPaths />} />
             <Route path="/connectors" element={<Connectors />} />
+            <Route path="/account/security" element={<Security />} />
             <Route path="/admin/users" element={<RequireRole role="admin"><Users /></RequireRole>} />
             <Route path="/admin/audit-log" element={<RequireRole role="admin"><AuditLog /></RequireRole>} />
             <Route path="*" element={<Navigate to="/" replace />} />

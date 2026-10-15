@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ApiError, api, setAuthHandlers, setCsrfToken, type Role, type User } from "../api";
+import { ApiError, api, isMfaChallenge, setAuthHandlers, setCsrfToken, type Role, type SessionInfo, type User } from "../api";
 import { AuthContext, hasRole, type AuthState } from "./context";
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -45,14 +45,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
-  const login = useCallback(async (email: string, password: string) => {
-    const s = await api.login(email, password);
+  const completeLogin = useCallback((s: SessionInfo) => {
     setCsrfToken(s.csrf_token);
     setSessionExpired(false);
     setForbidden(null);
     setUser(s.user);
-    return s.user;
   }, []);
+
+  const login = useCallback(
+    async (email: string, password: string) => {
+      const r = await api.login(email, password);
+      if (!isMfaChallenge(r)) completeLogin(r);
+      return r;
+    },
+    [completeLogin],
+  );
 
   const logout = useCallback(async () => {
     try {
@@ -73,13 +80,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       user,
       sessionExpired,
       login,
+      completeLogin,
       logout,
       changePassword,
       can: (role: Role) => hasRole(user, role),
       forbidden,
       dismissForbidden: () => setForbidden(null),
     }),
-    [user, sessionExpired, login, logout, changePassword, forbidden],
+    [user, sessionExpired, login, completeLogin, logout, changePassword, forbidden],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
