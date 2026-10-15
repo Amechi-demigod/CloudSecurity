@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+	<key>askForPassword</key>
+	<integer>1</integer>
+	<key>askForPasswordDelay</key>
+	<integer>5</integer>
+</dict>
+</plist>

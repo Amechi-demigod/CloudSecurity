@@ -1,0 +1,10 @@
+[
+ {"key":"{23170F69-40C1-2702-2408-000001000000}","DisplayName":"7-Zip 24.08 (x64 edition)","DisplayVersion":"24.08.00.0","Publisher":"Igor Pavlov","InstallDate":"20260901","source":"registry_hklm64"},
+ {"key":"Google Chrome","DisplayName":"Google Chrome","DisplayVersion":"130.0.6723.70","Publisher":"Google LLC","InstallDate":"20261001","source":"registry_hklm64"},
+ {"key":"Google Chrome","DisplayName":"Google Chrome","DisplayVersion":"130.0.6723.70","Publisher":"Google LLC","source":"registry_hklm32"},
+ {"key":"{GUID-HIDDEN}","DisplayName":"Microsoft Visual C++ 2022 X64 Minimum Runtime","DisplayVersion":"14.40","SystemComponent":1,"source":"registry_hklm64"},
+ {"key":"KB5044285","DisplayName":"Security Update for Office (KB5044285)","ParentKeyName":"Office16.PROPLUS","source":"registry_hklm32"},
+ {"key":"KB1","DisplayName":"Hotfix 1","ReleaseType":"Hotfix","source":"registry_hklm64"},
+ {"key":"NoName","DisplayName":"","source":"registry_hklm64"},
+ {"key":"Zoom","DisplayName":"Zoom Workplace","DisplayVersion":"6.2.5","Publisher":"Zoom Video Communications, Inc.","InstallDate":"bogus","source":"registry_user"}
+]

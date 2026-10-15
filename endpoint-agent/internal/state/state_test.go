@@ -80,7 +80,7 @@ func TestMarkExecuted(t *testing.T) {
 		t.Fatal("replay guard")
 	}
 	for i := 0; i < MaxExecuted+10; i++ {
-		s.MarkExecuted(string(rune('A' + i%26)) + strings.Repeat("x", i))
+		s.MarkExecuted(string(rune('A'+i%26)) + strings.Repeat("x", i))
 	}
 	if len(s.ExecutedCommands) != MaxExecuted {
 		t.Fatalf("len %d", len(s.ExecutedCommands))
