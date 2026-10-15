@@ -19,6 +19,14 @@ const ACTIONS = [
   "finding_updated",
   "alert_updated",
   "scan_started",
+  "notification_channel_created",
+  "notification_channel_updated",
+  "notification_channel_deleted",
+  "notification_channel_tested",
+  "notification_rule_created",
+  "notification_rule_updated",
+  "notification_rule_deleted",
+  "notification_delivery_retried",
 ];
 
 function tone(action: string): "default" | "warn" | "good" | "accent" {

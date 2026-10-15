@@ -247,7 +247,7 @@ export function setAuthHandlers(h: { unauthorized: () => void; forbidden: (messa
   onForbidden = h.forbidden;
 }
 
-async function request<T>(path: string, init?: RequestInit & { skipAuthHandling?: boolean }): Promise<T> {
+export async function request<T>(path: string, init?: RequestInit & { skipAuthHandling?: boolean }): Promise<T> {
   const method = (init?.method ?? "GET").toUpperCase();
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (!SAFE_METHODS.has(method) && csrfToken) headers["X-CSRF-Token"] = csrfToken;
@@ -278,7 +278,7 @@ async function request<T>(path: string, init?: RequestInit & { skipAuthHandling?
   return res.json() as Promise<T>;
 }
 
-function qs(params: Record<string, string | number | boolean | undefined | null>): string {
+export function qs(params: Record<string, string | number | boolean | undefined | null>): string {
   const p = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) {
     if (v !== undefined && v !== null && v !== "") p.set(k, String(v));

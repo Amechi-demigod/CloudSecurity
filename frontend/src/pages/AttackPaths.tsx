@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { api, type AttackPath } from "../api";
 import AssetDrawer from "../components/AssetDrawer";
 import { Card, Empty, ErrorNote, PageHeader, SeverityBadge } from "../components/ui";
@@ -131,9 +132,10 @@ function Graph({ nodes, edges, paths, selected, onNode }: { nodes: GNode[]; edge
 
 export default function AttackPaths() {
   const { data, error } = useApi(() => api.attackGraph(12), [], 30000);
-  const [selected, setSelected] = useState<string | null>(null);
+  const [params] = useSearchParams(); // deep link: /attack-paths?path=<id>
+  const [selected, setSelected] = useState<string | null>(params.get("path"));
   const [asset, setAsset] = useState<string | null>(null);
-  const current = selected ?? data?.paths[0]?.id ?? null;
+  const current = (selected && data?.paths.some((p) => p.id === selected) ? selected : null) ?? data?.paths[0]?.id ?? null;
   const path = data?.paths.find((p) => p.id === current);
 
   return (

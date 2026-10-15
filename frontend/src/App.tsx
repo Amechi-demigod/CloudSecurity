@@ -9,6 +9,7 @@ import Connectors from "./pages/Connectors";
 import DashboardPage from "./pages/Dashboard";
 import Findings from "./pages/Findings";
 import Inventory from "./pages/Inventory";
+import Notifications from "./pages/Notifications";
 import Login from "./pages/Login";
 import Threats from "./pages/Threats";
 import Vulnerabilities from "./pages/Vulnerabilities";
@@ -23,6 +24,7 @@ const NAV: { to: string; label: string; role?: Role }[] = [
   { to: "/threats", label: "Runtime threats" },
   { to: "/attack-paths", label: "Attack paths" },
   { to: "/connectors", label: "Connectors & scans" },
+  { to: "/notifications", label: "Notifications", role: "analyst" },
 ];
 
 const ADMIN_NAV = [
@@ -82,7 +84,7 @@ function Shell() {
           </div>
         </div>
         <ul className="flex-1 space-y-0.5 overflow-y-auto px-2">
-          {NAV.map((n) => (
+          {NAV.filter((n) => !n.role || can(n.role)).map((n) => (
             <li key={n.to}>
               <NavLink to={n.to} end={n.to === "/"} className={navClass}>
                 {n.label}
@@ -141,6 +143,7 @@ function Shell() {
             <Route path="/threats" element={<Threats />} />
             <Route path="/attack-paths" element={<AttackPaths />} />
             <Route path="/connectors" element={<Connectors />} />
+            <Route path="/notifications" element={<RequireRole role="analyst"><Notifications /></RequireRole>} />
             <Route path="/admin/users" element={<RequireRole role="admin"><Users /></RequireRole>} />
             <Route path="/admin/audit-log" element={<RequireRole role="admin"><AuditLog /></RequireRole>} />
             <Route path="*" element={<Navigate to="/" replace />} />

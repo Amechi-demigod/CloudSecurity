@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { api, type Alert } from "../api";
 import { useAuth } from "../auth/context";
 import AssetDrawer from "../components/AssetDrawer";
@@ -106,9 +107,12 @@ function AlertDetailPanel({ id, onChanged, onAsset }: { id: string; onChanged: (
 }
 
 export default function Threats() {
-  const [status, setStatus] = useState("");
+  // Deep link from notifications: /threats?alert=<id>
+  const [params] = useSearchParams();
+  const linked = params.get("alert");
+  const [status, setStatus] = useState(linked ? "all" : "");
   const [severity, setSeverity] = useState("");
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(linked);
   const [asset, setAsset] = useState<string | null>(null);
   const alerts = useApi(() => api.alerts({ status: status || undefined, severity: severity || undefined }), [status, severity], 5000);
   const [eventSource, setEventSource] = useState("");

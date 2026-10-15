@@ -1,4 +1,5 @@
 import { Fragment, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { api, type Finding } from "../api";
 import { useAuth } from "../auth/context";
 import AssetDrawer from "../components/AssetDrawer";
@@ -8,10 +9,13 @@ import { useApi } from "../lib/useApi";
 
 export default function Findings() {
   const [severity, setSeverity] = useState("");
-  const [status, setStatus] = useState("open");
+  // Deep link from notifications: /findings?finding=<id>
+  const [params] = useSearchParams();
+  const linked = params.get("finding");
+  const [status, setStatus] = useState(linked ? "all" : "open");
   const [source, setSource] = useState("");
   const [compliance, setCompliance] = useState("");
-  const [expanded, setExpanded] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<string | null>(linked);
   const [asset, setAsset] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const canTriage = useAuth().can("analyst");
