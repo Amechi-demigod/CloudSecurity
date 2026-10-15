@@ -28,6 +28,13 @@
 # After the first deployment, optionally let the Azure scanner read a subscription:
 #   infra/setup.sh --grant-scanner <subscription-id> [--grant-scanner <id> ...]
 # which grants the backend's managed identity the built-in Reader role there.
+#
+# After the first deployment, optionally enable "Sign in with Microsoft" (docs/AUTH.md):
+#   infra/setup.sh --entra-sso [--sso-redirect-uri http://localhost:5173/api/auth/sso/entra/callback]
+# which registers an Entra application for user sign-in (redirect URI of the
+# deployed app, app roles CNAPP.Admin/Analyst/Viewer, assignment required) and
+# a federated credential trusting the backend's managed identity, so the app
+# needs NO client secret, then sets the CNAPP_ENTRA_* repository variables.
 set -euo pipefail
 
 SCRIPT_NAME="$(basename "$0")"
@@ -44,6 +51,9 @@ GH_ENVIRONMENT="production"
 REVIEWER=""
 DEPLOY_ON_PUSH=false
 SCAN_SUBSCRIPTIONS=()
+ENTRA_SSO=false
+SSO_APP_NAME=""
+SSO_REDIRECT_URIS=()
 
 # Built-in role definition IDs.
 ROLE_ACR_PULL="7f951dda-4ed3-4680-a7ca-43fe172d538d"
@@ -68,6 +78,12 @@ Usage: $SCRIPT_NAME [options]
   --grant-scanner SUB_ID     (after the first deployment) grant the backend identity Reader on
                              SUB_ID and add it to the scanned subscriptions; repeatable.
                              Only this step runs when given.
+  --entra-sso                (after the first deployment) register the Entra application for
+                             "Sign in with Microsoft" (secretless: federated credential for the
+                             backend managed identity). Only this step runs when given.
+  --sso-app-name NAME        display name of that application (default: cloudsecurity-cnapp-<prefix>-sso)
+  --sso-redirect-uri URI     extra redirect URI (local/Codespaces), repeatable; the deployed
+                             app's https://<web fqdn>/api/auth/sso/entra/callback is always added
   --dry-run                  print what would be done; change nothing
   -h, --help                 show this help
 EOF
@@ -90,6 +106,9 @@ while [[ $# -gt 0 ]]; do
     --reviewer) REVIEWER="${2:?}"; shift 2 ;;
     --deploy-on-push) DEPLOY_ON_PUSH=true; shift ;;
     --grant-scanner) SCAN_SUBSCRIPTIONS+=("${2:?}"); shift 2 ;;
+    --entra-sso) ENTRA_SSO=true; shift ;;
+    --sso-app-name) SSO_APP_NAME="${2:?}"; shift 2 ;;
+    --sso-redirect-uri) SSO_REDIRECT_URIS+=("${2:?}"); shift 2 ;;
     --dry-run) DRY_RUN=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; die "unknown option: $1" ;;
@@ -204,6 +223,69 @@ Done. Re-run the "Deploy to Azure" workflow so the backend picks up
 AZURE_SUBSCRIPTION_IDS=$all, then start a scan from Connectors -> Azure.
 (Role assignments can take a few minutes to propagate.)
 EOF
+  exit 0
+fi
+
+# --- post-deployment: Entra application for user sign-in (SSO) ----------------------
+if [[ "$ENTRA_SSO" == true ]]; then
+  SSO_APP_NAME="${SSO_APP_NAME:-cloudsecurity-cnapp-${NAME_PREFIX}-sso}"
+  identity="id-${NAME_PREFIX}-api"
+  log "Entra application '$SSO_APP_NAME' for Sign in with Microsoft (tenant $TENANT_ID)"
+  fqdn="$(query az containerapp show -g "$RESOURCE_GROUP" -n "${NAME_PREFIX}-web" --subscription "$SUBSCRIPTION" \
+    --query properties.configuration.ingress.fqdn -o tsv)"
+  if [[ -z "$fqdn" ]]; then
+    [[ "$DRY_RUN" == true ]] || die "container app ${NAME_PREFIX}-web not found in $RESOURCE_GROUP: deploy first"
+    fqdn="<web-app-fqdn>"
+  fi
+  uris=("https://${fqdn}/api/auth/sso/entra/callback")
+  for u in "${SSO_REDIRECT_URIS[@]+"${SSO_REDIRECT_URIS[@]}"}"; do
+    [[ "$u" =~ ^(https://[^/]+|http://localhost(:[0-9]+)?)/api/auth/sso/entra/callback$ ]] \
+      || die "invalid --sso-redirect-uri '$u' (https://<host>/api/auth/sso/entra/callback, or http://localhost:<port>/...)"
+    uris+=("$u")
+  done
+  # Fixed ids so re-runs keep the same roles. The values are what ENTRA_ROLE_MAP maps.
+  app_roles='[{"id":"6f2d6b1e-6b3c-4b8e-9a51-1c7c0c0a0001","value":"CNAPP.Admin","displayName":"CNAPP Admin","description":"Full access including user management","allowedMemberTypes":["User"],"isEnabled":true},{"id":"6f2d6b1e-6b3c-4b8e-9a51-1c7c0c0a0002","value":"CNAPP.Analyst","displayName":"CNAPP Analyst","description":"Triage findings and alerts, run scans","allowedMemberTypes":["User"],"isEnabled":true},{"id":"6f2d6b1e-6b3c-4b8e-9a51-1c7c0c0a0003","value":"CNAPP.Viewer","displayName":"CNAPP Viewer","description":"Read-only access","allowedMemberTypes":["User"],"isEnabled":true}]'
+  SSO_APP_ID="$(query az ad app list --display-name "$SSO_APP_NAME" --query "[0].appId" -o tsv)"
+  if [[ -n "$SSO_APP_ID" ]]; then
+    note "application exists: $SSO_APP_ID (updating its redirect URIs)"
+    run az ad app update --id "$SSO_APP_ID" --web-redirect-uris "${uris[@]}" -o none
+  else
+    SSO_APP_ID="$(run_capture "<new-sso-app-id>" az ad app create --display-name "$SSO_APP_NAME" \
+      --sign-in-audience AzureADMyOrg --web-redirect-uris "${uris[@]}" --app-roles "$app_roles" \
+      --query appId -o tsv)"
+  fi
+  sso_sp="$(query az ad sp show --id "$SSO_APP_ID" --query id -o tsv 2>/dev/null || true)"
+  if [[ -n "$sso_sp" ]]; then
+    note "service principal exists: $sso_sp"
+  else
+    sso_sp="$(run_capture "<new-sso-sp-object-id>" az ad sp create --id "$SSO_APP_ID" --query id -o tsv)"
+  fi
+  # Only users / groups assigned to an app role can sign in.
+  run az ad sp update --id "$SSO_APP_ID" --set appRoleAssignmentRequired=true -o none
+
+  principal="$(query az identity show -g "$RESOURCE_GROUP" -n "$identity" --subscription "$SUBSCRIPTION" --query principalId -o tsv)"
+  if [[ -z "$principal" ]]; then
+    [[ "$DRY_RUN" == true ]] || die "managed identity $identity not found in $RESOURCE_GROUP: deploy first"
+    principal="<backend-identity-principal-id>"
+  fi
+  existing_fc="$(query az ad app federated-credential list --id "$SSO_APP_ID" --query "[?subject=='${principal}'].name" -o tsv)"
+  if [[ -n "$existing_fc" ]]; then
+    note "federated credential for the backend managed identity exists"
+  else
+    fc_json="$(printf '{"name":"cnapp-backend-managed-identity","issuer":"https://login.microsoftonline.com/%s/v2.0","subject":"%s","audiences":["api://AzureADTokenExchange"],"description":"Backend managed identity %s redeems sign-in codes (no client secret)"}' \
+      "$TENANT_ID" "$principal" "$identity")"
+    run az ad app federated-credential create --id "$SSO_APP_ID" --parameters "$fc_json" -o none
+  fi
+  set_gh_var CNAPP_ENTRA_CLIENT_ID "$SSO_APP_ID"
+  set_gh_var CNAPP_ENTRA_CLIENT_AUTH managed_identity
+  echo
+  echo "Done. Next:"
+  echo "  1. Assign people or groups to an app role (CNAPP.Admin / CNAPP.Analyst / CNAPP.Viewer):"
+  echo "     Entra admin center -> Enterprise applications -> $SSO_APP_NAME -> Users and groups -> Add."
+  echo "  2. Require MFA for this application with Conditional Access (docs/AUTH.md)."
+  echo "  3. Re-run the \"Deploy to Azure\" workflow; the login page then offers \"Sign in with Microsoft\"."
+  echo "Redirect URIs registered:"
+  printf '  %s\n' "${uris[@]}"
   exit 0
 fi
 

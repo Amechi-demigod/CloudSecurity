@@ -18,6 +18,7 @@ FAKE = INFRA / "tests" / "fake-cli.sh"
 MUTATING = (
     "az provider register", "az group create", "az ad app create", "az ad sp create",
     "az ad app federated-credential create", "az role assignment create", "az account set",
+    "az ad app update", "az ad sp update",
     "gh variable set", "gh api -X PUT", "gh api -X POST",
 )
 
@@ -174,3 +175,40 @@ def test_input_validation(fake_env, args, msg):
     proc = run(env, *args, FAKE_EXISTING="1")
     assert proc.returncode != 0 and msg in proc.stderr
     assert mutations(log) == []
+
+
+def test_entra_sso_updates_existing_app(fake_env):
+    env, log = fake_env
+    proc = run(env, "--entra-sso", "--sso-redirect-uri", "http://localhost:5173/api/auth/sso/entra/callback",
+               FAKE_EXISTING="1")
+    assert proc.returncode == 0, proc.stderr
+    joined = "\n".join(mutations(log))
+    app = "11111111-1111-1111-1111-111111111111"
+    assert (f"az ad app update --id {app} --web-redirect-uris "
+            "https://cnapp-web.example.azurecontainerapps.io/api/auth/sso/entra/callback "
+            "http://localhost:5173/api/auth/sso/entra/callback") in joined
+    assert f"az ad sp update --id {app} --set appRoleAssignmentRequired=true" in joined
+    assert f"gh variable set CNAPP_ENTRA_CLIENT_ID --body {app}" in joined
+    assert "gh variable set CNAPP_ENTRA_CLIENT_AUTH --body managed_identity" in joined
+    assert "az ad app create" not in joined
+    assert not any("credential reset" in c for c in calls(log))  # never creates a client secret
+    # only the SSO step ran
+    assert "az group create" not in joined and "az role assignment create" not in joined
+
+
+def test_entra_sso_dry_run_plans_app_roles_and_federated_credential(fake_env):
+    env, log = fake_env
+    proc = run(env, "--entra-sso", "--dry-run")
+    assert proc.returncode == 0, proc.stderr
+    assert mutations(log) == []
+    plan = proc.stderr
+    assert "az ad app create --display-name cloudsecurity-cnapp-cnapp-sso --sign-in-audience AzureADMyOrg" in plan
+    assert "CNAPP.Admin" in plan and "appRoleAssignmentRequired=true" in plan
+    assert "api://AzureADTokenExchange" in plan and "backend-identity-principal-id" in plan
+    assert "login.microsoftonline.com/00000000-0000-0000-0000-00000000aaaa/v2.0" in plan
+
+
+def test_entra_sso_rejects_bad_redirect_uri(fake_env):
+    env, _ = fake_env
+    proc = run(env, "--entra-sso", "--sso-redirect-uri", "http://evil.example/cb", FAKE_EXISTING="1")
+    assert proc.returncode != 0 and "invalid --sso-redirect-uri" in proc.stderr

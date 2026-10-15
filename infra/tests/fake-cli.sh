@@ -28,6 +28,7 @@ if [[ "$tool" == az ]]; then
     *" ad signed-in-user show "*"--query id"*) echo "user-object-id" ;;
     *" ad signed-in-user show "*) echo "me@example.com" ;;
     *" role assignment list "*) [[ "$existing" == 1 ]] && echo 1 || echo 0 ;;
+    *" containerapp show "*) [[ "$existing" == 1 ]] && echo "cnapp-web.example.azurecontainerapps.io" || echo "" ;;
     *" identity show "*) [[ "$existing" == 1 ]] && echo "mi-principal-id" || echo "" ;;
     *) : ;;
   esac
