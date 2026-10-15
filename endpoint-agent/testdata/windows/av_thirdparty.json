@@ -1,0 +1,1 @@
+{"defender":{"am_service_enabled":true,"antivirus_enabled":false,"realtime_enabled":false,"signature_age_days":40,"signature_last_updated":null,"signature_version":"","tamper_protected":false,"am_running_mode":"Passive Mode"},"products":[{"name":"CrowdStrike Falcon Sensor","state":266240},{"name":"Windows Defender","state":393472}]}

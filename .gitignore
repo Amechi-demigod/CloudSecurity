@@ -17,6 +17,8 @@ venv/
 # Local databases
 *.db
 *.db-*
+# SQLite cross-process lock files (app/locks.py)
+*.db.*.lock
 *.sqlite
 data/
 

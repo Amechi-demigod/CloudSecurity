@@ -1,6 +1,9 @@
 import { useState } from "react";
 import { api } from "../api";
-import { Button, Card, ErrorNote, PageHeader, SeverityBadge, Table, Tag, fmtTime, useApi } from "../components/ui";
+import { useAuth } from "../auth/context";
+import { Button, Card, ErrorNote, PageHeader, SeverityBadge, Table, Tag } from "../components/ui";
+import { fmtTime } from "../lib/format";
+import { useApi } from "../lib/useApi";
 
 export default function Connectors() {
   const connectors = useApi(api.connectors, []);
@@ -8,6 +11,7 @@ export default function Connectors() {
   const posture = useApi(api.postureRules, []);
   const detection = useApi(api.detectionRules, []);
   const [scanError, setScanError] = useState<string | null>(null);
+  const canScan = useAuth().can("analyst");
   const running = scans.data?.some((s) => s.status === "running");
 
   async function runScan(name: string) {
@@ -33,9 +37,15 @@ export default function Connectors() {
               {c.name === "azure" && (
                 <Button
                   variant="primary"
-                  disabled={!c.configured || running}
+                  disabled={!canScan || !c.configured || running}
                   onClick={() => runScan(c.name)}
-                  title={c.configured ? "Run a read-only Azure posture scan" : "Set AZURE_* env vars on the backend"}
+                  title={
+                    !canScan
+                      ? "Requires the analyst or admin role"
+                      : c.configured
+                        ? "Run a read-only Azure posture scan"
+                        : "Set AZURE_* env vars on the backend"
+                  }
                 >
                   {running ? "Scanning…" : "Run scan"}
                 </Button>
@@ -43,7 +53,9 @@ export default function Connectors() {
             </div>
             {c.name === "azure" && !c.configured && (
               <p className="mt-3 text-xs text-ink-3">
-                Set <code>AZURE_TENANT_ID</code>, <code>AZURE_CLIENT_ID</code>, <code>AZURE_CLIENT_SECRET</code> and{" "}
+                Deployed on Azure: grant the backend&apos;s managed identity the <b>Reader</b> role on the subscriptions to
+                scan and set <code>AZURE_SUBSCRIPTION_IDS</code> (see docs/DEPLOY_AZURE.md). Locally: set{" "}
+                <code>AZURE_TENANT_ID</code>, <code>AZURE_CLIENT_ID</code>, <code>AZURE_CLIENT_SECRET</code> and{" "}
                 <code>AZURE_SUBSCRIPTION_IDS</code> for a service principal with the <b>Reader</b> role, then restart the backend.
               </p>
             )}

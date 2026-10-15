@@ -10,7 +10,20 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    LargeBinary,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -172,3 +185,320 @@ class ScanRun(Base):
     findings_open: Mapped[int] = mapped_column(Integer, default=0)
     errors: Mapped[list] = mapped_column(JSON, default=list)
     message: Mapped[str] = mapped_column(Text, default="")
+
+
+# --- Authentication -----------------------------------------------------------
+# New tables are created by `Base.metadata.create_all()` on startup and new
+# nullable columns by `db._add_missing_columns()` (additive migration).
+
+ROLES = ("viewer", "analyst", "admin")
+# password_hash of accounts that have no local password (SSO-only); never a valid Argon2 hash.
+UNUSABLE_PASSWORD_PREFIX = "!"  # noqa: S105 (marker, not a password)
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    # Always stored normalized (stripped + lower-cased).
+    email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(128), default="")
+    password_hash: Mapped[str] = mapped_column(String(255))
+    role: Mapped[str] = mapped_column(String(16), default="viewer")  # admin | analyst | viewer
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    failed_login_count: Mapped[int] = mapped_column(Integer, default=0)
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    password_changed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    # MFA / SSO (Phase 4). Loaded lazily: only the auth endpoints touch them.
+    mfa: Mapped[UserMfa | None] = relationship(back_populates="user", uselist=False, cascade="all, delete-orphan",
+                                               passive_deletes=True)
+    identities: Mapped[list[UserIdentity]] = relationship(back_populates="user", cascade="all, delete-orphan",
+                                                          passive_deletes=True)
+
+    @property
+    def mfa_enabled(self) -> bool:
+        return self.mfa is not None and self.mfa.enabled_at is not None
+
+    @property
+    def has_password(self) -> bool:
+        """False for accounts created by SSO just-in-time provisioning."""
+        return bool(self.password_hash) and not self.password_hash.startswith(UNUSABLE_PASSWORD_PREFIX)
+
+    @property
+    def auth_sources(self) -> list[str]:
+        sources = ["password"] if self.has_password else []
+        return sources + sorted({i.provider for i in self.identities})
+
+
+class UserSession(Base):
+    """Server-side login session. Only a SHA-256 of the cookie token is stored."""
+
+    __tablename__ = "user_sessions"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # sha256(token) hex
+    user_id: Mapped[str] = mapped_column(String(32), ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    csrf_token: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    user: Mapped[User] = relationship(lazy="joined")
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    # login_success | login_failure | login_locked | logout | password_changed | user_created |
+    # user_updated | password_reset | finding_updated | alert_updated | scan_started | user_bootstrapped
+    action: Mapped[str] = mapped_column(String(64), index=True)
+    actor_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    actor_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    target: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    detail: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+# --- Device management (endpoint agent) ------------------------------------------
+# Laptops / desktops running our own `cnapp-agent` (Windows, macOS). Agents
+# authenticate with a per-device secret (only its SHA-256 is stored) and pull
+# allow-listed commands; see docs/DEVICE_MANAGEMENT.md.
+
+DEVICE_OS_FAMILIES = ("windows", "macos", "linux")
+
+
+class EnrollmentToken(Base):
+    """Admin-issued secret an agent exchanges for a per-device credential."""
+
+    __tablename__ = "enrollment_tokens"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(128))
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)  # sha256(token) hex
+    token_prefix: Mapped[str] = mapped_column(String(16))  # shown in the UI to tell tokens apart
+    max_uses: Mapped[int | None] = mapped_column(Integer, nullable=True)  # None = unlimited until expiry
+    use_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_by: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class Device(Base):
+    __tablename__ = "devices"
+    __table_args__ = (Index("ix_devices_os_machine", "os_family", "machine_id"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    hostname: Mapped[str] = mapped_column(String(255), index=True)
+    os_family: Mapped[str] = mapped_column(String(16), index=True)  # windows | macos | linux
+    os_name: Mapped[str] = mapped_column(String(128), default="")
+    os_version: Mapped[str] = mapped_column(String(64), default="")
+    os_build: Mapped[str] = mapped_column(String(64), default="")
+    architecture: Mapped[str] = mapped_column(String(32), default="")
+    serial_number: Mapped[str] = mapped_column(String(128), default="")
+    manufacturer: Mapped[str] = mapped_column(String(128), default="")
+    model: Mapped[str] = mapped_column(String(128), default="")
+    # SHA-256 of the OS machine identifier (MachineGuid / IOPlatformUUID); used to
+    # recognise a re-enrolling machine.
+    machine_id: Mapped[str] = mapped_column(String(64), default="")
+    agent_version: Mapped[str] = mapped_column(String(32), default="")
+    status: Mapped[str] = mapped_column(String(16), default="active", index=True)  # active | revoked
+    enrolled_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    enrollment_token_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    last_checkin_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    check_in_interval_seconds: Mapped[int] = mapped_column(Integer, default=900)
+    # Latest full inventory (hardware/OS/network/users) and posture checks, as sent by the agent.
+    inventory: Mapped[dict] = mapped_column(JSON, default=dict)
+    posture: Mapped[dict] = mapped_column(JSON, default=dict)
+    collection_errors: Mapped[dict] = mapped_column(JSON, default=dict)
+    software_count: Mapped[int] = mapped_column(Integer, default=0)
+    # First check-in that reported pending OS updates (cleared when none are pending).
+    updates_pending_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class DeviceCredential(Base):
+    """Per-device secret. Only sha256(secret) is stored; rotated on re-enrollment."""
+
+    __tablename__ = "device_credentials"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    device_id: Mapped[str] = mapped_column(String(32), ForeignKey("devices.id", ondelete="CASCADE"), index=True)
+    secret_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    device: Mapped[Device] = relationship(lazy="joined")
+
+
+class DevicePostureSnapshot(Base):
+    """One row per check-in (history); the latest values are also on `devices`."""
+
+    __tablename__ = "device_posture_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    device_id: Mapped[str] = mapped_column(String(32), ForeignKey("devices.id", ondelete="CASCADE"), index=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    collected_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    agent_version: Mapped[str] = mapped_column(String(32), default="")
+    os_version: Mapped[str] = mapped_column(String(64), default="")
+    posture: Mapped[dict] = mapped_column(JSON, default=dict)
+    issues: Mapped[list] = mapped_column(JSON, default=list)  # issue codes at that time
+    software_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class DeviceSoftware(Base):
+    """Installed software (latest inventory). Kept with versions so that
+    vulnerable-software matching can be added later."""
+
+    __tablename__ = "device_software"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    device_id: Mapped[str] = mapped_column(String(32), ForeignKey("devices.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(255), index=True)
+    version: Mapped[str] = mapped_column(String(128), default="")
+    publisher: Mapped[str] = mapped_column(String(255), default="")
+    identifier: Mapped[str] = mapped_column(String(255), default="")  # bundle id / registry key
+    install_date: Mapped[str] = mapped_column(String(32), default="")
+    source: Mapped[str] = mapped_column(String(32), default="")  # registry_hklm64 | applications | ...
+
+
+class DeviceCommand(Base):
+    """Allow-listed remote action, pulled by the agent and executed at most once."""
+
+    __tablename__ = "device_commands"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    device_id: Mapped[str] = mapped_column(String(32), ForeignKey("devices.id", ondelete="CASCADE"), index=True)
+    type: Mapped[str] = mapped_column(String(32))
+    params: Mapped[dict] = mapped_column(JSON, default=dict)
+    nonce: Mapped[str] = mapped_column(String(64))
+    # pending -> delivered -> succeeded | failed | rejected ; or expired | cancelled
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    requested_by_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    requested_by_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    output: Mapped[str] = mapped_column(Text, default="")
+    log_bundle_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+
+class DeviceLogBundle(Base):
+    """Agent log bundle uploaded for a collect_logs command (size-capped, gzip tar)."""
+
+    __tablename__ = "device_log_bundles"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    device_id: Mapped[str] = mapped_column(String(32), ForeignKey("devices.id", ondelete="CASCADE"), index=True)
+    command_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    sha256: Mapped[str] = mapped_column(String(64))
+    content_type: Mapped[str] = mapped_column(String(64), default="application/gzip")
+    data: Mapped[bytes] = mapped_column(LargeBinary)
+
+
+# --- MFA (TOTP) and single sign-on --------------------------------------------------
+
+class UserMfa(Base):
+    """TOTP state of one user. The shared secret is encrypted (Fernet, key from
+    MFA_ENCRYPTION_KEY); `last_used_step` blocks reuse of a code within its window."""
+
+    __tablename__ = "user_mfa"
+
+    user_id: Mapped[str] = mapped_column(String(32), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    # Encrypted secret of the active authenticator (None until enrolment is confirmed).
+    totp_secret_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Encrypted secret being enrolled (set by /setup, moved to totp_secret_enc by /enable).
+    pending_secret_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    pending_created_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    enabled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_used_step: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+    user: Mapped[User] = relationship(back_populates="mfa")
+
+
+class MfaRecoveryCode(Base):
+    """Single-use recovery code; only SHA-256 of the (80-bit random) code is stored."""
+
+    __tablename__ = "mfa_recovery_codes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(32), ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    code_hash: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class MfaChallenge(Base):
+    """Short-lived token between a successful first factor (password or SSO) and
+    the second step (TOTP / recovery code, or forced enrolment). Only an HMAC of
+    the token is stored; it never grants API access by itself."""
+
+    __tablename__ = "mfa_challenges"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(32), ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    purpose: Mapped[str] = mapped_column(String(16))  # verify | enroll
+    method: Mapped[str] = mapped_column(String(16), default="password")  # first factor: password | entra
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    pending_secret_enc: Mapped[str | None] = mapped_column(Text, nullable=True)  # forced enrolment
+    ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    user: Mapped[User] = relationship(lazy="joined")
+
+
+class UserIdentity(Base):
+    """Link between a local user and an external identity (Entra ID: tenant + object id)."""
+
+    __tablename__ = "user_identities"
+    __table_args__ = (UniqueConstraint("provider", "tenant_id", "subject"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(32), ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    provider: Mapped[str] = mapped_column(String(32))  # entra
+    tenant_id: Mapped[str] = mapped_column(String(64))
+    subject: Mapped[str] = mapped_column(String(128))  # Entra object id (oid)
+    email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    user: Mapped[User] = relationship(back_populates="identities")
+
+
+class OidcAuthRequest(Base):
+    """In-flight OIDC authorization request (state, nonce, PKCE verifier), bound to
+    the browser that started it and deleted when the callback consumes it."""
+
+    __tablename__ = "oidc_auth_requests"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # HMAC of `state`
+    browser_binding: Mapped[str] = mapped_column(String(64))  # HMAC of the binding cookie
+    nonce: Mapped[str] = mapped_column(String(128))
+    code_verifier: Mapped[str] = mapped_column(String(128))
+    return_to: Mapped[str] = mapped_column(String(512), default="/")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+
+
+# Notification tables live in their own module; import them so they are part of
+# Base.metadata (create_all on SQLite, Alembic autogenerate / schema checks).
+from .notifications import models as _notification_models  # noqa: E402, F401

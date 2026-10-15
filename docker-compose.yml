@@ -1,6 +1,10 @@
+# Local stack (SQLite). For PostgreSQL, as in production:
+#   POSTGRES_PASSWORD=$(openssl rand -hex 16) \
+#     docker compose -f docker-compose.yml -f docker-compose.postgres.yml up --build
 services:
   backend:
     build: ./backend
+    image: ${BACKEND_IMAGE:-cloudsecurity-backend:local}
     env_file:
       - path: .env
         required: false
@@ -8,6 +12,8 @@ services:
       DATABASE_URL: sqlite:////data/cnapp.db
       # Sensor ingest is fail-closed: set INGEST_API_TOKEN in .env to accept sensor events.
       INGEST_API_TOKEN: ${INGEST_API_TOKEN:-}
+      # First admin (only when no users exist): set ADMIN_EMAIL / ADMIN_PASSWORD in .env,
+      # or run: docker compose exec backend python -m app.cli create-user --email ... --role admin
     volumes:
       - cnapp-data:/data
     ports:
@@ -15,10 +21,13 @@ services:
 
   frontend:
     build: ./frontend
+    image: ${FRONTEND_IMAGE:-cloudsecurity-frontend:local}
     depends_on:
       - backend
+    environment:
+      BACKEND_URL: http://backend:8000
     ports:
-      - "5173:80"
+      - "5173:8080"
 
   # Optional Linux runtime sensor (observe-only). Start with:
   #   INGEST_API_TOKEN=... docker compose --profile sensor up --build

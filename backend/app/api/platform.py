@@ -8,22 +8,26 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import config
+from ..auth import audit, client_ip, require_analyst
 from ..connectors import build_registry
 from ..db import get_db
 from ..engine.attack_paths import INTERNET_NODE
-from ..models import Asset, ScanRun
+from ..models import Asset, ScanRun, User
 from ..schemas import ScanRequest, ScanRunOut
 from ..services import analytics
 from ..services.scans import start_scan
 
 router = APIRouter(prefix="/api", tags=["platform"])
+# Unauthenticated: liveness probe only.
+public_router = APIRouter(prefix="/api", tags=["platform"])
 
 
-@router.get("/health")
+@public_router.get("/health")
 def health(request: Request):
     sim = getattr(request.app.state, "simulator", None)
     s = config.settings
     return {"status": "ok", "simulation_mode": s.simulation_mode, "simulator_running": bool(sim and sim.running),
+            "simulator_leader": bool(sim and sim.is_leader),
             "azure_configured": build_registry(s)["azure"].is_configured()}
 
 
@@ -66,16 +70,21 @@ def list_connectors():
 
 
 @router.post("/scans", response_model=ScanRunOut, status_code=202)
-def run_scan(body: ScanRequest):
+def run_scan(body: ScanRequest, request: Request, user: User = Depends(require_analyst),
+             db: Session = Depends(get_db)):
     """Start a read-only connector scan in the background (e.g. `{"connector": "azure"}`)."""
     registry = build_registry(config.settings)
     conn = registry.get(body.connector)
     if conn is None:
         raise HTTPException(404, f"unknown connector '{body.connector}'")
     if not conn.is_configured():
-        raise HTTPException(400, f"connector '{body.connector}' is not configured; see README "
-                                 "(AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_SUBSCRIPTION_IDS)")
-    return start_scan(conn, background=True)
+        raise HTTPException(400, f"connector '{body.connector}' is not configured; set AZURE_SUBSCRIPTION_IDS and "
+                                 "a credential: the managed identity (AZURE_MANAGED_IDENTITY_CLIENT_ID) when "
+                                 "deployed on Azure, or AZURE_TENANT_ID/AZURE_CLIENT_ID/AZURE_CLIENT_SECRET locally")
+    run = start_scan(conn, background=True)
+    audit(db, "scan_started", actor=user, target=body.connector, ip=client_ip(request), scan_id=run.id)
+    db.commit()
+    return run
 
 
 @router.get("/scans", response_model=list[ScanRunOut])

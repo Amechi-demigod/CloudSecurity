@@ -188,12 +188,250 @@ export interface Health {
   azure_configured: boolean;
 }
 
-const BASE = import.meta.env.VITE_API_BASE ?? "";
+export type Role = "admin" | "analyst" | "viewer";
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+export interface User {
+  id: string;
+  email: string;
+  name: string;
+  role: Role;
+  is_active: boolean;
+  created_at: string;
+  last_login_at: string | null;
+  locked_until: string | null;
+  failed_login_count: number;
+  mfa_enabled: boolean;
+  /** "password" and/or linked identity providers, e.g. "entra" */
+  auth_sources: string[];
+}
+
+export interface SessionInfo {
+  user: User;
+  csrf_token: string;
+  expires_at: string;
+  idle_timeout_minutes: number;
+}
+
+/** Returned by login instead of a session when a second step is needed. */
+export interface MfaChallenge {
+  mfa_required: true;
+  purpose: "verify" | "enroll";
+  mfa_token: string;
+  expires_in: number;
+}
+
+export type LoginResult = SessionInfo | MfaChallenge;
+
+export function isMfaChallenge(r: LoginResult): r is MfaChallenge {
+  return "mfa_token" in r;
+}
+
+export interface LoginComplete extends SessionInfo {
+  /** only after a forced enrolment: shown once */
+  recovery_codes?: string[] | null;
+}
+
+export interface MfaSetup {
+  secret: string;
+  otpauth_uri: string;
+  /** data:image/svg+xml URI rendered by the backend */
+  qr_svg: string;
+  digits: number;
+  period: number;
+}
+
+export interface MfaStatus {
+  enabled: boolean;
+  enabled_at: string | null;
+  required: boolean;
+  recovery_codes_remaining: number;
+  has_password: boolean;
+  sso_user: boolean;
+}
+
+export interface AuthProviders {
+  password: boolean;
+  entra: boolean;
+  entra_label: string;
+}
+
+export interface AuditEntry {
+  id: number;
+  timestamp: string;
+  action: string;
+  actor_id: string | null;
+  actor_email: string | null;
+  target: string | null;
+  ip: string | null;
+  detail: Record<string, unknown>;
+}
+
+// --- device management -------------------------------------------------------
+
+export type DeviceHealth = "healthy" | "warning" | "critical" | "unknown";
+export type Connectivity = "active" | "stale" | "inactive" | "never";
+export type CheckStatus = "pass" | "fail" | "unknown" | "info";
+
+export interface DeviceIssue {
+  code: string;
+  severity: "critical" | "high" | "medium" | "low";
+  title: string;
+  detail: string;
+}
+
+export interface DeviceSummary {
+  id: string;
+  hostname: string;
+  os_family: "windows" | "macos" | "linux";
+  os_name: string;
+  os_version: string;
+  architecture: string;
+  serial_number: string;
+  manufacturer: string;
+  model: string;
+  agent_version: string;
+  status: "active" | "revoked";
+  enrolled_at: string;
+  last_seen_at: string | null;
+  last_checkin_at: string | null;
+  logged_in_users: string[];
+  health: DeviceHealth;
+  connectivity: Connectivity;
+  issues: DeviceIssue[];
+}
+
+export interface PostureCheck {
+  status: CheckStatus;
+  detail: string;
+  error?: string | null;
+  data: Record<string, unknown>;
+}
+
+export interface DeviceInventory {
+  hostname?: string;
+  cpu?: string;
+  cpu_cores?: number | null;
+  memory_bytes?: number | null;
+  disks?: { mount: string; filesystem: string; size_bytes: number | null; free_bytes: number | null }[];
+  uptime_seconds?: number | null;
+  last_boot?: string | null;
+  logged_in_users?: string[];
+  network?: { name: string; mac: string; ips: string[] }[];
+  timezone?: string;
+}
+
+export interface DeviceDetail extends DeviceSummary {
+  os_build: string;
+  last_ip: string | null;
+  check_in_interval_seconds: number;
+  software_count: number;
+  updates_pending_since: string | null;
+  revoked_at: string | null;
+  inventory: DeviceInventory;
+  posture: Record<string, PostureCheck>;
+  collection_errors: Record<string, string>;
+}
+
+export interface DeviceSoftware {
+  name: string;
+  version: string;
+  publisher: string;
+  identifier: string;
+  install_date: string;
+  source: string;
+}
+
+export interface PostureSnapshot {
+  id: number;
+  received_at: string;
+  collected_at: string | null;
+  agent_version: string;
+  os_version: string;
+  posture: Record<string, PostureCheck>;
+  issues: string[];
+  software_count: number | null;
+}
+
+export type CommandType = "recheck_posture" | "collect_logs" | "lock_device" | "restart_agent" | "update_check_in_interval";
+
+export interface DeviceCommand {
+  id: string;
+  device_id: string;
+  type: CommandType;
+  params: Record<string, unknown>;
+  status: "pending" | "delivered" | "succeeded" | "failed" | "rejected" | "expired" | "cancelled";
+  reason: string;
+  requested_by_email: string | null;
+  created_at: string;
+  expires_at: string;
+  delivered_at: string | null;
+  completed_at: string | null;
+  output: string;
+  log_bundle_id: string | null;
+}
+
+export interface DeviceFleetSummary {
+  total: number;
+  revoked: number;
+  by_os: Record<string, number>;
+  by_health: Record<DeviceHealth, number>;
+  connectivity: Record<Connectivity, number>;
+  issues: Record<string, number>;
+  encrypted_percent: number | null;
+  firewall_percent: number | null;
+  encryption_known: number;
+  firewall_known: number;
+}
+
+export interface EnrollmentToken {
+  id: string;
+  name: string;
+  token_prefix: string;
+  max_uses: number | null;
+  use_count: number;
+  created_by: string | null;
+  created_at: string;
+  expires_at: string;
+  last_used_at: string | null;
+  revoked_at: string | null;
+  state: "active" | "expired" | "exhausted" | "revoked";
+}
+
+const BASE = import.meta.env.VITE_API_BASE ?? "";
+const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+
+/** Error carrying the HTTP status, so callers can tell 401/403 from other failures. */
+export class ApiError extends Error {
+  readonly status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
+// Session-wide state set by the auth provider. The CSRF token is kept in memory
+// only (never in localStorage) and sent on every state-changing request.
+let csrfToken: string | null = null;
+let onUnauthorized: (() => void) | null = null;
+let onForbidden: ((message: string) => void) | null = null;
+
+export function setCsrfToken(token: string | null) {
+  csrfToken = token;
+}
+
+export function setAuthHandlers(h: { unauthorized: () => void; forbidden: (message: string) => void }) {
+  onUnauthorized = h.unauthorized;
+  onForbidden = h.forbidden;
+}
+
+export async function request<T>(path: string, init?: RequestInit & { skipAuthHandling?: boolean }): Promise<T> {
+  const method = (init?.method ?? "GET").toUpperCase();
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (!SAFE_METHODS.has(method) && csrfToken) headers["X-CSRF-Token"] = csrfToken;
   const res = await fetch(`${BASE}${path}`, {
     ...init,
-    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+    credentials: "same-origin",
+    headers: { ...headers, ...((init?.headers as Record<string, string>) ?? {}) },
   });
   if (!res.ok) {
     let detail = res.statusText;
@@ -203,12 +441,21 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       /* ignore */
     }
-    throw new Error(`${res.status}: ${detail}`);
+    if (!init?.skipAuthHandling) {
+      if (res.status === 401) onUnauthorized?.();
+      if (res.status === 403) {
+        const msg = `Not permitted: ${detail}`;
+        onForbidden?.(msg);
+        throw new ApiError(403, msg);
+      }
+    }
+    throw new ApiError(res.status, detail || `HTTP ${res.status}`);
   }
+  if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
 }
 
-function qs(params: Record<string, string | number | boolean | undefined | null>): string {
+export function qs(params: Record<string, string | number | boolean | undefined | null>): string {
   const p = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) {
     if (v !== undefined && v !== null && v !== "") p.set(k, String(v));
@@ -218,6 +465,94 @@ function qs(params: Record<string, string | number | boolean | undefined | null>
 }
 
 export const api = {
+  // --- auth ---
+  me: () => request<SessionInfo>("/api/auth/me", { skipAuthHandling: true }),
+  login: (email: string, password: string) =>
+    request<LoginResult>("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+      skipAuthHandling: true,
+    }),
+  logout: () => request<void>("/api/auth/logout", { method: "POST", skipAuthHandling: true }),
+  changePassword: (current_password: string, new_password: string) =>
+    request<void>("/api/auth/change-password", {
+      method: "POST",
+      body: JSON.stringify({ current_password, new_password }),
+    }),
+  // --- MFA / SSO ---
+  providers: () => request<AuthProviders>("/api/auth/providers", { skipAuthHandling: true }),
+  loginMfa: (mfa_token: string, code: string) =>
+    request<LoginComplete>("/api/auth/login/mfa", {
+      method: "POST",
+      body: JSON.stringify({ mfa_token, code }),
+      skipAuthHandling: true,
+    }),
+  enrollStart: (mfa_token: string) =>
+    request<MfaSetup>("/api/auth/login/mfa/enroll/start", {
+      method: "POST",
+      body: JSON.stringify({ mfa_token }),
+      skipAuthHandling: true,
+    }),
+  enrollConfirm: (mfa_token: string, code: string) =>
+    request<LoginComplete>("/api/auth/login/mfa/enroll/confirm", {
+      method: "POST",
+      body: JSON.stringify({ mfa_token, code }),
+      skipAuthHandling: true,
+    }),
+  mfaStatus: () => request<MfaStatus>("/api/auth/mfa"),
+  mfaSetup: () => request<MfaSetup>("/api/auth/mfa/totp/setup", { method: "POST" }),
+  mfaEnable: (code: string) =>
+    request<{ recovery_codes: string[] }>("/api/auth/mfa/totp/enable", { method: "POST", body: JSON.stringify({ code }) }),
+  mfaDisable: (password: string | null, code: string) =>
+    request<void>("/api/auth/mfa/totp/disable", { method: "POST", body: JSON.stringify({ password, code }) }),
+  regenerateRecoveryCodes: (password: string | null, code: string) =>
+    request<{ recovery_codes: string[] }>("/api/auth/mfa/recovery-codes", {
+      method: "POST",
+      body: JSON.stringify({ password, code }),
+    }),
+  // --- admin ---
+  resetMfa: (id: string) => request<User>(`/api/users/${id}/reset-mfa`, { method: "POST" }),
+  users: () => request<User[]>("/api/users"),
+  createUser: (u: { email: string; name: string; role: Role; password: string }) =>
+    request<User>("/api/users", { method: "POST", body: JSON.stringify(u) }),
+  updateUser: (id: string, patch: Partial<Pick<User, "name" | "role" | "is_active">>) =>
+    request<User>(`/api/users/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  resetPassword: (id: string, password: string) =>
+    request<User>(`/api/users/${id}/reset-password`, { method: "POST", body: JSON.stringify({ password }) }),
+  auditLog: (f: { action?: string; limit?: number } = {}) => request<AuditEntry[]>(`/api/audit-log${qs(f)}`),
+  // --- devices ---
+  devices: (f: Record<string, string | undefined> = {}) => request<DeviceSummary[]>(`/api/devices${qs(f)}`),
+  deviceSummary: () => request<DeviceFleetSummary>("/api/devices/summary"),
+  deviceIssueTypes: () => request<{ code: string; severity: string; title: string }[]>("/api/devices/issue-types"),
+  device: (id: string) => request<DeviceDetail>(`/api/devices/${id}`),
+  deviceSoftware: (id: string, q?: string) => request<DeviceSoftware[]>(`/api/devices/${id}/software${qs({ q })}`),
+  deviceHistory: (id: string, limit = 50) => request<PostureSnapshot[]>(`/api/devices/${id}/history${qs({ limit })}`),
+  deviceCommands: (id: string) => request<DeviceCommand[]>(`/api/devices/${id}/commands`),
+  queueCommand: (id: string, body: { type: CommandType; reason: string; params?: Record<string, unknown> }) =>
+    request<DeviceCommand>(`/api/devices/${id}/commands`, { method: "POST", body: JSON.stringify(body) }),
+  cancelCommand: (id: string, commandId: string, reason: string) =>
+    request<DeviceCommand>(`/api/devices/${id}/commands/${commandId}/cancel`, {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    }),
+  revokeDevice: (id: string, reason: string) =>
+    request<DeviceDetail>(`/api/devices/${id}/revoke`, { method: "POST", body: JSON.stringify({ reason }) }),
+  deleteDevice: (id: string, reason: string) =>
+    request<void>(`/api/devices/${id}${qs({ reason })}`, { method: "DELETE" }),
+  logBundleUrl: (id: string, bundleId: string) => `${BASE}/api/devices/${id}/log-bundles/${bundleId}`,
+  enrollmentInfo: () =>
+    request<{ agent_download_url: string | null; default_check_in_interval_seconds: number; command_poll_seconds: number }>(
+      "/api/devices/enrollment/info",
+    ),
+  enrollmentTokens: () => request<EnrollmentToken[]>("/api/devices/enrollment-tokens"),
+  createEnrollmentToken: (body: { name: string; max_uses: number | null; expires_in_hours: number }) =>
+    request<EnrollmentToken & { token: string }>("/api/devices/enrollment-tokens", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  revokeEnrollmentToken: (id: string) =>
+    request<EnrollmentToken>(`/api/devices/enrollment-tokens/${id}/revoke`, { method: "POST" }),
+  // --- platform ---
   health: () => request<Health>("/api/health"),
   dashboard: () => request<Dashboard>("/api/dashboard"),
   assets: (f: Record<string, string | boolean | undefined> = {}) => request<AssetSummary[]>(`/api/assets${qs(f)}`),

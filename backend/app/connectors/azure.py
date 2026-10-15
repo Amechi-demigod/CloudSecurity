@@ -122,15 +122,58 @@ class AzureClientFactory:
         return self._make(kind, sub)
 
 
+AUTH_MODES = ("auto", "client_secret", "managed_identity", "default")
+
+
+def resolve_auth_mode(settings: Settings) -> str | None:
+    """Which credential the scanner will use, or None if none is configured.
+
+    auto: client secret (local / outside Azure) if all three AZURE_TENANT_ID,
+    AZURE_CLIENT_ID and AZURE_CLIENT_SECRET are set; else managed identity if
+    AZURE_MANAGED_IDENTITY_CLIENT_ID is set (Container Apps); else
+    DefaultAzureCredential if AZURE_USE_DEFAULT_CREDENTIAL=true.
+    """
+    s = settings
+    mode = s.azure_auth_mode if s.azure_auth_mode in AUTH_MODES else "auto"
+    has_secret = bool(s.azure_tenant_id and s.azure_client_id and s.azure_client_secret)
+    if mode == "client_secret":
+        return mode if has_secret else None
+    if mode in ("managed_identity", "default"):
+        return mode
+    if has_secret:
+        return "client_secret"
+    if s.azure_managed_identity_client_id:
+        return "managed_identity"
+    if s.azure_use_default_credential:
+        return "default"
+    return None
+
+
 def build_credential(settings: Settings) -> Any:
-    """ClientSecretCredential if a secret is configured, else DefaultAzureCredential (opt-in)."""
-    if settings.azure_tenant_id and settings.azure_client_id and settings.azure_client_secret:
+    """Credential for the configured auth mode (see `resolve_auth_mode`).
+
+    Deployed on Azure (Container Apps), the scanner authenticates with the
+    app's managed identity: no secret exists anywhere. Grant that identity the
+    built-in Reader role on each subscription to scan.
+    """
+    mode = resolve_auth_mode(settings)
+    if mode == "client_secret":
         from azure.identity import ClientSecretCredential
 
         return ClientSecretCredential(settings.azure_tenant_id, settings.azure_client_id, settings.azure_client_secret)
-    from azure.identity import DefaultAzureCredential
+    if mode == "managed_identity":
+        from azure.identity import ManagedIdentityCredential
 
-    return DefaultAzureCredential(exclude_interactive_browser_credential=True)
+        if settings.azure_managed_identity_client_id:
+            return ManagedIdentityCredential(client_id=settings.azure_managed_identity_client_id)
+        return ManagedIdentityCredential()  # system-assigned
+    if mode == "default":
+        from azure.identity import DefaultAzureCredential
+
+        return DefaultAzureCredential(exclude_interactive_browser_credential=True,
+                                      managed_identity_client_id=settings.azure_managed_identity_client_id)
+    raise RuntimeError("Azure connector is not configured: set AZURE_SUBSCRIPTION_IDS and a credential "
+                       "(managed identity, client secret or AZURE_USE_DEFAULT_CREDENTIAL)")
 
 
 # ----------------------------------------------------------------------------- helpers
@@ -183,9 +226,10 @@ class AzureConnector(Connector):
 
     def is_configured(self) -> bool:
         s = self.settings
-        has_secret = bool(s.azure_tenant_id and s.azure_client_id and s.azure_client_secret)
-        return bool(s.azure_subscription_ids) and (has_secret or s.azure_use_default_credential
-                                                    or self._factory is not None)
+        return bool(s.azure_subscription_ids) and (resolve_auth_mode(s) is not None or self._factory is not None)
+
+    def info(self) -> dict:
+        return {**super().info(), "auth_mode": resolve_auth_mode(self.settings)}
 
     def _client_factory(self) -> Callable[[str, str], Any]:
         if self._factory is None:

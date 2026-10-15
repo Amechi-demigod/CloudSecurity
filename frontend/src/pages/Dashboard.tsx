@@ -1,7 +1,33 @@
 import { Link } from "react-router-dom";
 import { Bar, BarChart, CartesianGrid, Cell, LabelList, ResponsiveContainer, Tooltip, XAxis, YAxis, Legend } from "recharts";
 import { api } from "../api";
-import { Card, ErrorNote, PageHeader, SEV_COLOR, SEVERITIES, SeverityBadge, Stat, useApi } from "../components/ui";
+import { Card, ErrorNote, PageHeader, SeverityBadge, Stat } from "../components/ui";
+import { SEV_COLOR, SEVERITIES } from "../lib/format";
+import { useApi } from "../lib/useApi";
+
+function DevicesTile() {
+  const { data: s } = useApi(api.deviceSummary, [], 30000);
+  if (!s) return null;
+  const pct = (v: number | null) => (v === null ? "—" : `${v}%`);
+  return (
+    <Card title="Devices" className="mt-4" actions={<Link className="text-xs text-accent" to="/devices">View all</Link>}>
+      {s.total === 0 ? (
+        <p className="text-sm text-ink-3">
+          No endpoints enrolled yet. <Link className="text-accent" to="/devices">Enroll Windows and macOS devices</Link> to track their
+          inventory and security posture.
+        </p>
+      ) : (
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
+          <Stat label="Enrolled" value={s.total} sub={`${s.by_os.windows ?? 0} Windows · ${s.by_os.macos ?? 0} macOS`} />
+          <Stat label="At risk" value={s.by_health.critical} sub={`${s.by_health.warning} with warnings`} />
+          <Stat label="Disk encrypted" value={pct(s.encrypted_percent)} sub={`${s.issues.disk_encryption_off ?? 0} unencrypted`} />
+          <Stat label="Firewall on" value={pct(s.firewall_percent)} sub={`${s.issues.firewall_off ?? 0} with firewall off`} />
+          <Stat label="Stale devices" value={s.connectivity.stale + s.connectivity.inactive} sub={`${s.connectivity.inactive} inactive > 7 days`} />
+        </div>
+      )}
+    </Card>
+  );
+}
 
 const axis = { stroke: "var(--color-ink-3)", fontSize: 11, tickLine: false, axisLine: false } as const;
 
@@ -79,6 +105,8 @@ export default function DashboardPage() {
           <Stat label="Attack paths" value={d.attack_paths.total} sub={`${d.attack_paths.critical} critical`} />
         </div>
       </div>
+
+      <DevicesTile />
 
       <div className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-3">
         <Card title="Runtime alerts, last 24h" className="xl:col-span-2">

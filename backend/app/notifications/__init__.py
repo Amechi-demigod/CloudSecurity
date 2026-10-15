@@ -1,0 +1,17 @@
+"""Alert notifications & integrations (Teams, Slack, email, signed webhooks).
+
+Public interface for producers:
+
+    from app.notifications import Event, EventSource, emit, register_source
+
+See events.py for the event model and docs/NOTIFICATIONS.md for setup.
+"""
+from __future__ import annotations
+
+from . import (
+    builtin,  # noqa: F401  (registers the built-in sources)
+    device_source,  # noqa: F401  (endpoint devices: posture issues, connectivity, remote actions)
+)
+from .events import SEVERITIES, Event, EventSource, emit, register_source, sources
+
+__all__ = ["SEVERITIES", "Event", "EventSource", "emit", "register_source", "sources"]

@@ -1,7 +1,11 @@
 import { useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { api, type Alert } from "../api";
+import { useAuth } from "../auth/context";
 import AssetDrawer from "../components/AssetDrawer";
-import { Button, Card, Empty, ErrorNote, PageHeader, Select, SeverityBadge, Tag, TYPE_LABEL, fmtAgo, fmtTime, useApi } from "../components/ui";
+import { Button, Card, Empty, ErrorNote, PageHeader, Select, SeverityBadge, Tag } from "../components/ui";
+import { TYPE_LABEL, fmtAgo, fmtTime } from "../lib/format";
+import { useApi } from "../lib/useApi";
 
 const EVENT_LABEL: Record<string, string> = {
   process_exec: "exec",
@@ -17,11 +21,18 @@ function SourceTag({ source }: { source: string }) {
 
 function AlertDetailPanel({ id, onChanged, onAsset }: { id: string; onChanged: () => void; onAsset: (id: string) => void }) {
   const { data: a, error, reload } = useApi(() => api.alert(id), [id], 5000);
+  const canTriage = useAuth().can("analyst");
+  const [actionError, setActionError] = useState<string | null>(null);
   if (!a) return <ErrorNote error={error} />;
   async function set(status: Alert["status"]) {
-    await api.updateAlert(id, status);
-    reload();
-    onChanged();
+    try {
+      setActionError(null);
+      await api.updateAlert(id, status);
+      reload();
+      onChanged();
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : String(e));
+    }
   }
   return (
     <div>
@@ -63,11 +74,16 @@ function AlertDetailPanel({ id, onChanged, onAsset }: { id: string; onChanged: (
           {a.event_count} · first {fmtTime(a.first_seen)} · last {fmtAgo(a.last_seen)}
         </dd>
       </dl>
-      <div className="mt-3 flex gap-2">
-        {a.status === "open" && <Button onClick={() => set("acknowledged")}>Acknowledge</Button>}
-        {a.status !== "resolved" && <Button onClick={() => set("resolved")}>Resolve</Button>}
-        {a.status === "resolved" && <Button onClick={() => set("open")}>Reopen</Button>}
-      </div>
+      {canTriage ? (
+        <div className="mt-3 flex gap-2">
+          {a.status === "open" && <Button onClick={() => set("acknowledged")}>Acknowledge</Button>}
+          {a.status !== "resolved" && <Button onClick={() => set("resolved")}>Resolve</Button>}
+          {a.status === "resolved" && <Button onClick={() => set("open")}>Reopen</Button>}
+        </div>
+      ) : (
+        <p className="mt-3 text-xs text-ink-3">Read-only access: an analyst or admin can acknowledge or resolve alerts.</p>
+      )}
+      {actionError && <div className="mt-2"><ErrorNote error={actionError} /></div>}
 
       <h4 className="mb-2 mt-5 text-xs font-semibold uppercase tracking-wide text-ink-3">Event timeline</h4>
       <ol className="relative ml-2 border-l border-line">
@@ -91,9 +107,12 @@ function AlertDetailPanel({ id, onChanged, onAsset }: { id: string; onChanged: (
 }
 
 export default function Threats() {
-  const [status, setStatus] = useState("");
+  // Deep link from notifications: /threats?alert=<id>
+  const [params] = useSearchParams();
+  const linked = params.get("alert");
+  const [status, setStatus] = useState(linked ? "all" : "");
   const [severity, setSeverity] = useState("");
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(linked);
   const [asset, setAsset] = useState<string | null>(null);
   const alerts = useApi(() => api.alerts({ status: status || undefined, severity: severity || undefined }), [status, severity], 5000);
   const [eventSource, setEventSource] = useState("");

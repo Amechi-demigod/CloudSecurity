@@ -1,0 +1,182 @@
+name: Deploy to Azure
+
+# Deploys infra/main.bicep and the app images to Azure Container Apps.
+#
+# Inert until configured: run infra/setup.sh once (see docs/DEPLOY_AZURE.md).
+# It sets the repository variables below; without them this workflow only
+# prints how to set it up and exits successfully.
+#
+# Authentication is GitHub OIDC -> Entra federated credential (azure/login with
+# client-id/tenant-id/subscription-id). No Azure passwords or client secrets
+# are stored anywhere; app secrets are generated on the first run and live in
+# Key Vault.
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Commit SHA to deploy (default: the selected branch's head). CI must have pushed its images to ghcr.io, otherwise they are built here."
+        required: false
+        default: ""
+  # Optional continuous deployment: after CI succeeds on main, if the
+  # repository variable AZURE_DEPLOY_ON_PUSH is "true".
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-azure-production
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: Check configuration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.check.outputs.run }}
+      sha: ${{ steps.check.outputs.sha }}
+    steps:
+      - name: Check repository variables and trigger
+        id: check
+        env:
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+          CNAPP_ADMIN_EMAIL: ${{ vars.CNAPP_ADMIN_EMAIL }}
+          DEPLOY_ON_PUSH: ${{ vars.AZURE_DEPLOY_ON_PUSH }}
+          EVENT: ${{ github.event_name }}
+          RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          RUN_EVENT: ${{ github.event.workflow_run.event }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          INPUT_TAG: ${{ inputs.image_tag }}
+        run: |
+          skip() {
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Deployment skipped: $1"
+            echo "### Deployment skipped" >> "$GITHUB_STEP_SUMMARY"
+            echo "$1" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          }
+          missing=""
+          for v in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID AZURE_RESOURCE_GROUP CNAPP_ADMIN_EMAIL; do
+            [ -n "${!v}" ] || missing="$missing $v"
+          done
+          if [ -n "$missing" ]; then
+            skip "Azure deployment is not configured (missing repository variables:${missing}). Run infra/setup.sh once; see docs/DEPLOY_AZURE.md."
+          fi
+          if [ "$EVENT" = "workflow_run" ]; then
+            [ "$DEPLOY_ON_PUSH" = "true" ] || skip "Automatic deployment is off (set the repository variable AZURE_DEPLOY_ON_PUSH=true to deploy after CI passes on main)."
+            [ "$RUN_EVENT" = "push" ] || skip "CI run was triggered by '$RUN_EVENT', not a push to main."
+            [ "$RUN_CONCLUSION" = "success" ] || skip "CI did not succeed ($RUN_CONCLUSION)."
+            sha="$RUN_SHA"
+          else
+            sha="${INPUT_TAG:-$GITHUB_SHA}"
+          fi
+          echo "$sha" | grep -Eq '^[0-9a-f]{7,40}$' || { echo "::error::image_tag must be a commit SHA"; exit 1; }
+          echo "run=true" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    name: Deploy (production)
+    needs: preflight
+    if: needs.preflight.outputs.run == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment:
+      name: production
+      url: ${{ steps.deploy.outputs.url }}
+    permissions:
+      contents: read
+      id-token: write # OIDC token for azure/login
+      packages: read # import the CI-built images from ghcr.io
+    env:
+      RG: ${{ vars.AZURE_RESOURCE_GROUP }}
+      AZURE_LOCATION: ${{ vars.AZURE_LOCATION || 'eastus' }}
+      CNAPP_NAME_PREFIX: ${{ vars.CNAPP_NAME_PREFIX || 'cnapp' }}
+      CNAPP_ADMIN_EMAIL: ${{ vars.CNAPP_ADMIN_EMAIL }}
+      CNAPP_SIMULATION_MODE: ${{ vars.CNAPP_SIMULATION_MODE || 'true' }}
+      CNAPP_SCAN_SUBSCRIPTION_IDS: ${{ vars.CNAPP_SCAN_SUBSCRIPTION_IDS }}
+      # Optional: public URL for notification deep links (custom domain); default = the web app URL.
+      CNAPP_PUBLIC_BASE_URL: ${{ vars.CNAPP_PUBLIC_BASE_URL }}
+      # MFA / Microsoft sign-in (optional; docs/AUTH.md)
+      CNAPP_MFA_REQUIRED_ROLES: ${{ vars.CNAPP_MFA_REQUIRED_ROLES }}
+      CNAPP_PASSWORD_LOGIN_ENABLED: ${{ vars.CNAPP_PASSWORD_LOGIN_ENABLED || 'true' }}
+      CNAPP_BREAK_GLASS_EMAILS: ${{ vars.CNAPP_BREAK_GLASS_EMAILS }}
+      CNAPP_ENTRA_CLIENT_ID: ${{ vars.CNAPP_ENTRA_CLIENT_ID }}
+      CNAPP_ENTRA_CLIENT_AUTH: ${{ vars.CNAPP_ENTRA_CLIENT_AUTH || 'managed_identity' }}
+      CNAPP_ENTRA_CREDENTIAL_SECRET_NAME: ${{ vars.CNAPP_ENTRA_CREDENTIAL_SECRET_NAME }}
+      CNAPP_ENTRA_ROLE_MAP: ${{ vars.CNAPP_ENTRA_ROLE_MAP || 'CNAPP.Admin=admin,CNAPP.Analyst=analyst,CNAPP.Viewer=viewer' }}
+      CNAPP_ENTRA_JIT_PROVISIONING: ${{ vars.CNAPP_ENTRA_JIT_PROVISIONING || 'false' }}
+      CNAPP_ENTRA_DEFAULT_ROLE: ${{ vars.CNAPP_ENTRA_DEFAULT_ROLE || 'viewer' }}
+      SHA: ${{ needs.preflight.outputs.sha }}
+      BICEP_VERSION: v0.47.16
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+          persist-credentials: false
+
+      - name: Azure login (OIDC, no secrets)
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Prepare Azure CLI
+        run: |
+          az config set extension.use_dynamic_install=yes_without_prompt --only-show-errors
+          az extension add --name containerapp --upgrade --yes --only-show-errors
+          az bicep install --version "$BICEP_VERSION"
+          az group show -n "$RG" --query "{name:name, location:location}" -o table \
+            || { echo "::error::Resource group $RG not found or not accessible: run infra/setup.sh"; exit 1; }
+
+      - name: Deploy infrastructure and import images
+        id: deploy
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+        run: infra/deploy.sh
+
+      - name: Roll out the new images
+        env:
+          BACKEND_APP: ${{ steps.deploy.outputs.backend_app }}
+          FRONTEND_APP: ${{ steps.deploy.outputs.frontend_app }}
+          LOGIN_SERVER: ${{ steps.deploy.outputs.login_server }}
+        run: |
+          set -euo pipefail
+          # Backend first (runs the database migrations), then the UI.
+          az containerapp update -g "$RG" -n "$BACKEND_APP" --image "${LOGIN_SERVER}/cnapp-backend:${SHA}" -o none --only-show-errors
+          az containerapp update -g "$RG" -n "$FRONTEND_APP" --image "${LOGIN_SERVER}/cnapp-frontend:${SHA}" -o none --only-show-errors
+          az containerapp revision list -g "$RG" -n "$BACKEND_APP" \
+            --query "[?properties.active].{revision:name, image:properties.template.containers[0].image, health:properties.healthState, state:properties.runningState}" -o table
+
+      - name: Smoke test the public URL
+        env:
+          URL: ${{ steps.deploy.outputs.url }}
+        run: python3 scripts/smoke_test.py --base-url "$URL" --wait 420
+
+      - name: Summary
+        if: success()
+        env:
+          URL: ${{ steps.deploy.outputs.url }}
+          KV: ${{ steps.deploy.outputs.key_vault }}
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ### Deployed ${SHA}
+
+          **URL:** ${URL}
+
+          First sign-in: \`${CNAPP_ADMIN_EMAIL}\` with the initial password from Key Vault (then change it):
+
+          \`\`\`
+          az keyvault secret show --vault-name ${KV} --name admin-password --query value -o tsv
+          \`\`\`
+          EOF

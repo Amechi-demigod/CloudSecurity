@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from ..engine.detection import evaluate_event
 from ..models import Alert, AlertEvent, RuntimeEvent, utcnow
+from ..notifications import builtin as notify
 
 # Repeated hits of the same rule on the same asset within this window are
 # grouped into one alert (event_count increments) instead of creating noise.
@@ -90,6 +91,7 @@ def ingest_event(db: Session, event: dict[str, Any], source: str = "sensor",
             )
             db.add(alert)
             db.flush()
+            notify.alert_created(db, alert)  # queued in this transaction; sent in the background
         db.add(AlertEvent(alert_id=alert.id, event_id=ev.id))
         alerts.append(alert)
     db.flush()

@@ -1,16 +1,24 @@
 import { Fragment, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { api, type Finding } from "../api";
+import { useAuth } from "../auth/context";
 import AssetDrawer from "../components/AssetDrawer";
-import { Button, Card, Empty, ErrorNote, PageHeader, Select, SeverityBadge, Table, Tag, TYPE_LABEL, fmtAgo, useApi } from "../components/ui";
+import { Button, Card, Empty, ErrorNote, PageHeader, Select, SeverityBadge, Table, Tag } from "../components/ui";
+import { TYPE_LABEL, fmtAgo } from "../lib/format";
+import { useApi } from "../lib/useApi";
 
 export default function Findings() {
   const [severity, setSeverity] = useState("");
-  const [status, setStatus] = useState("open");
+  // Deep link from notifications: /findings?finding=<id>
+  const [params] = useSearchParams();
+  const linked = params.get("finding");
+  const [status, setStatus] = useState(linked ? "all" : "open");
   const [source, setSource] = useState("");
   const [compliance, setCompliance] = useState("");
-  const [expanded, setExpanded] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<string | null>(linked);
   const [asset, setAsset] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const canTriage = useAuth().can("analyst");
 
   const { data, error, reload } = useApi(
     () => api.findings({ severity: severity || undefined, status, source: source || undefined, compliance: compliance || undefined }),
@@ -23,7 +31,7 @@ export default function Findings() {
       setActionError(null);
       reload();
     } catch (e) {
-      setActionError(String(e));
+      setActionError(e instanceof Error ? e.message : String(e));
     }
   }
 
@@ -93,11 +101,15 @@ export default function Findings() {
                         {f.remediation}
                       </p>
                       <p className="mt-2 font-mono text-xs text-ink-3">Evidence: {JSON.stringify(f.evidence)}</p>
+                      {canTriage ? (
                       <div className="mt-3 flex gap-2">
                         {f.status !== "suppressed" && <Button onClick={() => setFindingStatus(f, "suppressed")}>Suppress</Button>}
                         {f.status !== "resolved" && <Button onClick={() => setFindingStatus(f, "resolved")}>Mark resolved</Button>}
                         {f.status !== "open" && <Button onClick={() => setFindingStatus(f, "open")}>Reopen</Button>}
                       </div>
+                      ) : (
+                        <p className="mt-3 text-xs text-ink-3">Read-only access: an analyst or admin can suppress or resolve findings.</p>
+                      )}
                     </td>
                   </tr>
                 )}

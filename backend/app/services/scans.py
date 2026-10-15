@@ -8,11 +8,12 @@ from sqlalchemy import func, select
 
 from .. import db as dbmod
 from ..connectors.base import Connector
+from ..locks import advisory_lock
 from ..models import Finding, ScanRun, utcnow
+from ..notifications import builtin as notify
 from .ingest import ingest_collection
 
 log = logging.getLogger(__name__)
-_lock = threading.Lock()
 
 
 def start_scan(connector: Connector, background: bool = True) -> ScanRun:
@@ -30,7 +31,8 @@ def start_scan(connector: Connector, background: bool = True) -> ScanRun:
 
 
 def execute_scan(connector: Connector, run_id: str) -> None:
-    with _lock, dbmod.get_session() as db:  # one scan at a time
+    # One scan per connector at a time, across all replicas / workers.
+    with advisory_lock(f"scan-{connector.name}"), dbmod.get_session() as db:
         run = db.get(ScanRun, run_id)
         try:
             result = connector.collect()
@@ -50,4 +52,5 @@ def execute_scan(connector: Connector, run_id: str) -> None:
             run.status = "failed"
             run.message = f"{type(exc).__name__}: {exc}"
         run.finished_at = utcnow()
+        notify.scan_finished(db, run)
         db.commit()

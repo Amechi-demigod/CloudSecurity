@@ -1,0 +1,98 @@
+# Rendered at container start by the nginx image's entrypoint (envsubst):
+#   BACKEND_URL            where /api/ is proxied (docker compose: http://backend:8000;
+#                          Azure Container Apps: http://<backend app name>, internal ingress)
+#   NGINX_LOCAL_RESOLVERS  set automatically from /etc/resolv.conf (NGINX_ENTRYPOINT_LOCAL_RESOLVERS=1)
+# nginx's own $variables are left alone because only defined env vars are substituted.
+
+# Resolve the backend at request time (not only at startup), so the frontend
+# starts even if the backend is not resolvable yet and follows address changes.
+resolver ${NGINX_LOCAL_RESOLVERS} valid=30s ipv6=off;
+
+# Keep the original scheme when TLS is terminated in front of us (Container Apps ingress).
+map $http_x_forwarded_proto $forwarded_proto {
+  default $http_x_forwarded_proto;
+  ""      $scheme;
+}
+
+server {
+  listen 8080;
+  root /usr/share/nginx/html;
+  server_tokens off;
+
+  # Matches the backend's MAX_REQUEST_BYTES default (1 MiB)
+  client_max_body_size 1m;
+
+  gzip on;
+  gzip_types text/css application/javascript application/json image/svg+xml;
+
+  add_header X-Content-Type-Options "nosniff" always;
+  add_header X-Frame-Options "DENY" always;
+  add_header Referrer-Policy "no-referrer" always;
+  add_header Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'" always;
+  # Browsers ignore HSTS on plain http (local docker compose); in Azure the site is https-only.
+  add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+  location = /healthz {
+    access_log off;
+    default_type text/plain;
+    return 200 "ok\n";
+  }
+
+  # API requests go to the backend. Same origin for the browser, so the session
+  # cookie never needs CORS or third-party-cookie exceptions.
+  location /api/ {
+    set $backend_upstream "${BACKEND_URL}";
+    proxy_pass $backend_upstream;
+    proxy_http_version 1.1;
+    # The Host of the upstream itself: Container Apps routes internal traffic by Host.
+    proxy_set_header Host $proxy_host;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $forwarded_proto;
+    proxy_read_timeout 120s;
+    # nginx adds these itself (above); avoid duplicates from the backend.
+    proxy_hide_header X-Content-Type-Options;
+    proxy_hide_header X-Frame-Options;
+    proxy_hide_header Referrer-Policy;
+    proxy_hide_header Strict-Transport-Security;
+  }
+
+  # Endpoint-agent API: same backend, larger bodies for check-ins with big
+  # software lists and collect_logs bundles (backend: AGENT_MAX_REQUEST_BYTES,
+  # 6 MiB by default). Agents authenticate with per-device credentials.
+  location /api/agent/ {
+    client_max_body_size 8m;
+    set $backend_upstream "${BACKEND_URL}";
+    proxy_pass $backend_upstream;
+    proxy_http_version 1.1;
+    proxy_set_header Host $proxy_host;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $forwarded_proto;
+    proxy_read_timeout 120s;
+    proxy_hide_header X-Content-Type-Options;
+    proxy_hide_header X-Frame-Options;
+    proxy_hide_header Referrer-Policy;
+    proxy_hide_header Strict-Transport-Security;
+  }
+
+  # Fingerprinted build assets can be cached forever.
+  location /assets/ {
+    expires 1y;
+    add_header Cache-Control "public, immutable" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    try_files $uri =404;
+  }
+
+  # SPA fallback for client-side routes; never cache index.html.
+  location / {
+    add_header Cache-Control "no-cache" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "no-referrer" always;
+    add_header Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'" always;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    try_files $uri /index.html;
+  }
+}

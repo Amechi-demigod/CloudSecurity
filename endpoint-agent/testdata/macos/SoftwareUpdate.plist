@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>AutomaticDownload</key>
+	<true/>
+	<key>InstallDateDictionary</key>
+	<dict>
+		<key>24A335</key>
+		<date>2026-09-01T10:00:00Z</date>
+		<key>24B83</key>
+		<date>2026-10-01T10:00:00Z</date>
+	</dict>
+	<key>LastRecommendedUpdatesAvailable</key>
+	<integer>2</integer>
+	<key>LastSuccessfulDate</key>
+	<date>2026-10-15T06:00:00Z</date>
+	<key>RecommendedUpdates</key>
+	<array>
+		<dict>
+			<key>Display Name</key>
+			<string>macOS Sequoia 15.1.1</string>
+			<key>Display Version</key>
+			<string>15.1.1</string>
+			<key>Identifier</key>
+			<string>MSU_UPDATE_24B91_patch_15.1.1</string>
+			<key>Product Key</key>
+			<string>MSU_UPDATE_24B91_patch_15.1.1</string>
+		</dict>
+		<dict>
+			<key>Display Name</key>
+			<string>Command Line Tools for Xcode</string>
+			<key>Display Version</key>
+			<string>16.1</string>
+		</dict>
+	</array>
+</dict>
+</plist>
