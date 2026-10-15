@@ -178,7 +178,7 @@ export default function Security() {
             </div>
           ) : setup ? (
             <div className="space-y-4">
-              <TotpSetupDetails setup={setup} />
+              <TotpSetupDetails setup={setup} wide />
               <VerifyCodeForm submitLabel="Verify and turn on" busyLabel="Verifying…" onSubmit={enable} error={verifyError} />
               <Button onClick={() => setSetup(null)}>Cancel</Button>
             </div>

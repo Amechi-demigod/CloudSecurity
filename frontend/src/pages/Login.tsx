@@ -230,7 +230,7 @@ export default function Login() {
               {ssoErrorMessage(ssoError)}
             </div>
           )}
-          {sessionExpired && !error && (
+          {sessionExpired && !error && step.kind === "password" && (
             <div
               id={noticeId}
               role="status"

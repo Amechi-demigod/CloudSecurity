@@ -50,11 +50,11 @@ export function CodeInput({
 }
 
 /** QR code + manual key for adding the account to an authenticator app. */
-export function TotpSetupDetails({ setup }: { setup: MfaSetup }) {
+export function TotpSetupDetails({ setup, wide = false }: { setup: MfaSetup; wide?: boolean }) {
   const [showKey, setShowKey] = useState(false);
   const grouped = setup.secret.replace(/(.{4})/g, "$1 ").trim();
   return (
-    <div className="flex flex-col items-center gap-3 sm:flex-row sm:items-start">
+    <div className={`flex flex-col items-center gap-3 ${wide ? "sm:flex-row sm:items-start" : ""}`}>
       {/* Rendered by our own backend as an SVG data URI: the secret never goes to a third-party service. */}
       <img
         src={setup.qr_svg}
@@ -119,9 +119,11 @@ export function RecoveryCodes({ codes, email }: { codes: string[]; email?: strin
         Save these recovery codes somewhere safe. Each one signs you in once if you lose your authenticator.
         They will not be shown again.
       </div>
-      <ul className="grid grid-cols-2 gap-x-4 gap-y-1 rounded-md border border-line bg-surface-2 px-4 py-3 font-mono text-sm text-ink" aria-label="Recovery codes">
+      <ul className="grid grid-cols-2 gap-x-3 gap-y-1 rounded-md border border-line bg-surface-2 px-3 py-3 font-mono text-xs text-ink" aria-label="Recovery codes">
         {codes.map((c) => (
-          <li key={c}>{c}</li>
+          <li key={c} className="whitespace-nowrap">
+            {c}
+          </li>
         ))}
       </ul>
       <div className="flex flex-wrap gap-2">
