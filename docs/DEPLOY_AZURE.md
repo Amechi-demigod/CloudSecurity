@@ -195,6 +195,16 @@ az role assignment create --assignee-object-id "$PRINCIPAL" --assignee-principal
 
 Reader is enough: the scanner only issues `list*`/`get*` calls and the code-level `ReadOnlyClient` guard blocks everything else, including list calls that return secrets. Role assignments take a few minutes to propagate. Locally, the scanner still supports a service principal secret (`AZURE_TENANT_ID`/`AZURE_CLIENT_ID`/`AZURE_CLIENT_SECRET`, see the README) or `AZURE_USE_DEFAULT_CREDENTIAL=true` with `az login`.
 
+## Enable Sign in with Microsoft and MFA
+
+The deployment always generates `MFA_ENCRYPTION_KEY` (Key Vault secret `mfa-encryption-key`), so users can turn on authenticator-app MFA right away; set the repository variable `CNAPP_MFA_REQUIRED_ROLES` (e.g. `admin,analyst`) to make it mandatory. For Microsoft Entra ID single sign-on without any client secret, run after the first deployment:
+
+```bash
+infra/setup.sh --entra-sso
+```
+
+then assign users to the app roles, add Conditional Access, and run **Deploy to Azure** again. Details, role mapping, certificate/secret alternatives and the break-glass procedure: [docs/AUTH.md](AUTH.md).
+
 ## Connect a runtime sensor
 
 The sensor ingest endpoint is reachable through the frontend: `https://<frontend-fqdn>/api/runtime/events`, authenticated with the ingest token from Key Vault:
@@ -225,6 +235,7 @@ Database migrations: PostgreSQL is managed by Alembic (`backend/migrations/`). E
 The backend runs with `APP_ENV=production`, which refuses to start (and logs why) unless:
 
 - `SESSION_SECRET` is set (32+ characters; it keys the stored session-token digests);
+- `MFA_ENCRYPTION_KEY` is set (32+ characters; it encrypts TOTP secrets), and with Microsoft sign-in configured, `ENTRA_REDIRECT_URI` is an `https://` URL;
 - `COOKIE_SECURE=true` and `DEBUG` is off;
 - `CORS_ORIGINS` lists only explicit `https://` origins (the deployment sets the frontend origin; the UI itself is same-origin);
 - `INGEST_ALLOW_UNAUTHENTICATED` and `API_DOCS_PUBLIC` are off;
