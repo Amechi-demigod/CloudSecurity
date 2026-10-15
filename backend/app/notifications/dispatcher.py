@@ -268,3 +268,14 @@ def queue_stats(db: Session) -> dict[str, Any]:
                         .where(NotificationEvent.processed_at.is_(None))) or 0
     return {"deliveries": {k: counts.get(k, 0) for k in ("pending", "sending", "sent", "dead")},
             "sent_24h": sent_24h, "event_backlog": backlog}
+
+
+def rotate_channel_secrets(db: Session) -> int:
+    """Re-encrypt every channel's secrets with the primary (first) key, after a new
+    key was put in front of NOTIFICATIONS_ENCRYPTION_KEY. Returns channels updated."""
+    n = 0
+    for c in db.scalars(select(NotificationChannel).where(NotificationChannel.secret_ciphertext.is_not(None))):
+        c.secret_ciphertext = crypto.rotate(c.secret_ciphertext)
+        n += 1
+    db.commit()
+    return n

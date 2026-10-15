@@ -3,6 +3,7 @@
     python -m app.cli create-user --email you@example.com --role admin [--name "Your Name"]
     python -m app.cli reset-password --email you@example.com
     python -m app.cli migrate        # apply schema migrations (Alembic on PostgreSQL)
+    python -m app.cli rotate-notification-key   # after prepending a new NOTIFICATIONS_ENCRYPTION_KEY
 
 Passwords are prompted for (never passed as arguments, so they stay out of shell
 history). For automation, pipe the password with --password-stdin.
@@ -72,6 +73,20 @@ def migrate(args: argparse.Namespace) -> int:
     return 0
 
 
+def rotate_notification_key(args: argparse.Namespace) -> int:
+    from .notifications import crypto, dispatcher
+
+    with db.get_session() as s:
+        try:
+            n = dispatcher.rotate_channel_secrets(s)
+        except (crypto.DecryptionFailed, crypto.EncryptionUnavailable) as exc:
+            raise SystemExit(f"error: {exc}") from None
+        auth.audit(s, "notification_key_rotated", actor_email="cli", channels=n)
+        s.commit()
+    print(f"Re-encrypted the secrets of {n} notification channel(s) with the first NOTIFICATIONS_ENCRYPTION_KEY")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="python -m app.cli", description="CloudSecurity CNAPP admin CLI")
     sub = p.add_subparsers(dest="command", required=True)
@@ -87,6 +102,9 @@ def main(argv: list[str] | None = None) -> int:
     r.set_defaults(func=reset_password)
     m = sub.add_parser("migrate", help="apply database schema migrations (also done on startup by default)")
     m.set_defaults(func=migrate)
+    k = sub.add_parser("rotate-notification-key",
+                       help="re-encrypt notification channel secrets with the first NOTIFICATIONS_ENCRYPTION_KEY")
+    k.set_defaults(func=rotate_notification_key)
     args = p.parse_args(argv)
     if args.func is migrate:
         db.init_engine(config.settings.database_url, migrate=True)

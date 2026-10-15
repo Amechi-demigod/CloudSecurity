@@ -567,3 +567,18 @@ def test_cleanup_removes_old_rows(session, transport, monkeypatch):
     dispatcher.cleanup(session, T0 + timedelta(days=8))
     assert deliveries(session) == []
     assert session.scalar(select(func.count()).select_from(NotificationEvent)) == 0
+
+
+def test_cli_rotates_channel_key(session, monkeypatch, capsys):
+    from app import cli
+
+    old, new = crypto.generate_key(), crypto.generate_key()
+    monkeypatch.setenv("NOTIFICATIONS_ENCRYPTION_KEY", old)
+    c = add_channel(session)
+    monkeypatch.setenv("NOTIFICATIONS_ENCRYPTION_KEY", f"{new},{old}")
+    monkeypatch.setattr(db, "init_engine", lambda *a, **k: db.engine)  # keep the test database
+    assert cli.main(["rotate-notification-key"]) == 0
+    assert "1 notification channel" in capsys.readouterr().out
+    monkeypatch.setenv("NOTIFICATIONS_ENCRYPTION_KEY", new)
+    session.expire_all()
+    assert crypto.decrypt_secrets(session.get(NotificationChannel, c.id).secret_ciphertext)["webhook_url"] == SLACK_URL
