@@ -92,6 +92,15 @@ class Smoke:
         print(f"info /api/docs -> HTTP {status} (404 expected in production)")
         status, *_ = request("POST", f"{self.base}/api/runtime/events", {"event_type": "process_exec"})
         self.check(status in (401, 503), "sensor ingest without a token is rejected")
+        # Endpoint-agent API is routed through the proxy, needs a device credential,
+        # and accepts check-ins larger than the 1 MiB default body cap.
+        status, _, _, raw = request("GET", f"{self.base}/api/agent/commands")
+        self.check(status == 401 and b"device credential" in raw, "agent API without a device credential is rejected (401)")
+        big = {"device": {"hostname": "smoke", "os_family": "windows"},
+               "software": [{"name": f"pkg-{i}", "version": "1.0", "publisher": "x" * 200} for i in range(8000)]}
+        status, *_ = request("POST", f"{self.base}/api/agent/checkin", big,
+                             headers={"Authorization": "Bearer cnd_not-a-real-device-credential"})
+        self.check(status == 401, f"2 MiB agent check-in passes the proxy body limit and is rejected by auth (HTTP {status})")
         token = os.getenv("SMOKE_INGEST_TOKEN")
         if token:
             event = {"event_type": "file_access", "sensor_id": "smoke-test", "file": {"path": "/srv/smoke-test"}}

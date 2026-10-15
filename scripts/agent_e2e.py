@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ruff: noqa: S105, S310, S603, S607  (test harness: fixed local URLs, binaries and throwaway credentials)
 """End-to-end test: real endpoint agent <-> real backend (stdlib only).
 
 Starts the FastAPI backend on a throwaway SQLite database, creates an
@@ -222,6 +223,8 @@ def main() -> int:
             except subprocess.TimeoutExpired:
                 backend.kill()
             log.close()
+            if SUDO:  # the LaunchDaemon left root-owned state and logs behind
+                subprocess.run([*SUDO, "rm", "-rf", home], check=False)
             if os.environ.get("E2E_SHOW_BACKEND_LOG"):
                 print(Path(tmp, "backend.log").read_text()[-5000:])
 
