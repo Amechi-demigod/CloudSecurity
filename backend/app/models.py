@@ -10,7 +10,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -179,6 +179,8 @@ class ScanRun(Base):
 # nullable columns by `db._add_missing_columns()` (additive migration).
 
 ROLES = ("viewer", "analyst", "admin")
+# password_hash of accounts that have no local password (SSO-only); never a valid Argon2 hash.
+UNUSABLE_PASSWORD_PREFIX = "!"  # noqa: S105 (marker, not a password)
 
 
 class User(Base):
@@ -196,6 +198,26 @@ class User(Base):
     failed_login_count: Mapped[int] = mapped_column(Integer, default=0)
     locked_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     password_changed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    # MFA / SSO (Phase 4). Loaded lazily: only the auth endpoints touch them.
+    mfa: Mapped[UserMfa | None] = relationship(back_populates="user", uselist=False, cascade="all, delete-orphan",
+                                               passive_deletes=True)
+    identities: Mapped[list[UserIdentity]] = relationship(back_populates="user", cascade="all, delete-orphan",
+                                                          passive_deletes=True)
+
+    @property
+    def mfa_enabled(self) -> bool:
+        return self.mfa is not None and self.mfa.enabled_at is not None
+
+    @property
+    def has_password(self) -> bool:
+        """False for accounts created by SSO just-in-time provisioning."""
+        return bool(self.password_hash) and not self.password_hash.startswith(UNUSABLE_PASSWORD_PREFIX)
+
+    @property
+    def auth_sources(self) -> list[str]:
+        sources = ["password"] if self.has_password else []
+        return sources + sorted({i.provider for i in self.identities})
 
 
 class UserSession(Base):
@@ -229,3 +251,90 @@ class AuditLog(Base):
     target: Mapped[str | None] = mapped_column(String(512), nullable=True)
     ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
     detail: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+# --- MFA (TOTP) and single sign-on --------------------------------------------------
+
+class UserMfa(Base):
+    """TOTP state of one user. The shared secret is encrypted (Fernet, key from
+    MFA_ENCRYPTION_KEY); `last_used_step` blocks reuse of a code within its window."""
+
+    __tablename__ = "user_mfa"
+
+    user_id: Mapped[str] = mapped_column(String(32), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    # Encrypted secret of the active authenticator (None until enrolment is confirmed).
+    totp_secret_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Encrypted secret being enrolled (set by /setup, moved to totp_secret_enc by /enable).
+    pending_secret_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    pending_created_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    enabled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_used_step: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+    user: Mapped[User] = relationship(back_populates="mfa")
+
+
+class MfaRecoveryCode(Base):
+    """Single-use recovery code; only SHA-256 of the (80-bit random) code is stored."""
+
+    __tablename__ = "mfa_recovery_codes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(32), ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    code_hash: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class MfaChallenge(Base):
+    """Short-lived token between a successful first factor (password or SSO) and
+    the second step (TOTP / recovery code, or forced enrolment). Only an HMAC of
+    the token is stored; it never grants API access by itself."""
+
+    __tablename__ = "mfa_challenges"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(32), ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    purpose: Mapped[str] = mapped_column(String(16))  # verify | enroll
+    method: Mapped[str] = mapped_column(String(16), default="password")  # first factor: password | entra
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    pending_secret_enc: Mapped[str | None] = mapped_column(Text, nullable=True)  # forced enrolment
+    ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    user: Mapped[User] = relationship(lazy="joined")
+
+
+class UserIdentity(Base):
+    """Link between a local user and an external identity (Entra ID: tenant + object id)."""
+
+    __tablename__ = "user_identities"
+    __table_args__ = (UniqueConstraint("provider", "tenant_id", "subject"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(32), ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    provider: Mapped[str] = mapped_column(String(32))  # entra
+    tenant_id: Mapped[str] = mapped_column(String(64))
+    subject: Mapped[str] = mapped_column(String(128))  # Entra object id (oid)
+    email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    user: Mapped[User] = relationship(back_populates="identities")
+
+
+class OidcAuthRequest(Base):
+    """In-flight OIDC authorization request (state, nonce, PKCE verifier), bound to
+    the browser that started it and deleted when the callback consumes it."""
+
+    __tablename__ = "oidc_auth_requests"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # HMAC of `state`
+    browser_binding: Mapped[str] = mapped_column(String(64))  # HMAC of the binding cookie
+    nonce: Mapped[str] = mapped_column(String(128))
+    code_verifier: Mapped[str] = mapped_column(String(128))
+    return_to: Mapped[str] = mapped_column(String(512), default="/")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)

@@ -1,8 +1,6 @@
 """Login / logout / session info, admin user management and the audit log."""
 from __future__ import annotations
 
-from datetime import timedelta
-
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -14,7 +12,6 @@ from ..auth import (
     burn_verify_time,
     clear_session_cookie,
     client_ip,
-    create_session,
     current_session,
     current_user,
     hash_password,
@@ -33,12 +30,14 @@ from ..schemas import (
     AuditLogOut,
     ChangePasswordRequest,
     LoginRequest,
+    MfaChallengeOut,
     PasswordReset,
     SessionInfo,
     UserCreate,
     UserOut,
     UserUpdate,
 )
+from .mfa_sso import finish_first_factor, is_password_login_allowed, register_failure
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 admin_router = APIRouter(prefix="/api", tags=["admin"], dependencies=[Depends(require_admin)])
@@ -55,9 +54,10 @@ def _check_password(password: str) -> None:
         raise HTTPException(422, problem)
 
 
-@router.post("/login", response_model=SessionInfo)
+@router.post("/login", response_model=SessionInfo | MfaChallengeOut)
 def login(body: LoginRequest, request: Request, response: Response, db: Session = Depends(get_db)):
-    """Exchange email + password for a session cookie. Returns the CSRF token."""
+    """Exchange email + password for a session cookie (returns the CSRF token), or
+    for an MFA challenge token when a second factor / enrolment is required."""
     s = config.settings
     # Login CSRF: only accept JSON (a cross-site HTML form cannot send it without a CORS preflight).
     if not (request.headers.get("content-type") or "").lower().startswith("application/json"):
@@ -84,24 +84,23 @@ def login(body: LoginRequest, request: Request, response: Response, db: Session 
         db.commit()
         raise HTTPException(401, GENERIC_LOGIN_ERROR)
     if not verify_password(user.password_hash, body.password):
-        user.failed_login_count += 1
-        detail: dict = {"reason": "bad_password", "failed_count": user.failed_login_count}
-        if user.failed_login_count >= s.login_max_failures:
-            user.locked_until = now + timedelta(minutes=s.login_lockout_minutes)
-            user.failed_login_count = 0
-            detail["locked_until"] = user.locked_until.isoformat() + "Z"
-        audit(db, "login_failure", actor=user, ip=ip, **detail)
+        register_failure(db, user, ip, "login_failure", reason="bad_password")
         db.commit()
         raise HTTPException(401, GENERIC_LOGIN_ERROR)
+    # Policy is checked only after the password, so it reveals nothing to someone without it.
+    if not is_password_login_allowed(user):
+        audit(db, "login_password_disabled", actor=user, ip=ip)
+        db.commit()
+        raise HTTPException(403, "Password sign-in is disabled for this account. Use Sign in with Microsoft.")
 
     if needs_rehash(user.password_hash):
         user.password_hash = hash_password(body.password)
-    user.failed_login_count = 0
-    user.locked_until = None
-    user.last_login_at = now
-    token, sess = create_session(db, user, request)
-    audit(db, "login_success", actor=user, ip=ip)
-    db.commit()
+    # Second factor / forced enrolment if needed (the failure counter is only
+    # reset once the whole login succeeds, so MFA guesses keep counting).
+    result = finish_first_factor(db, user, request, method="password")
+    if isinstance(result, MfaChallengeOut):
+        return result
+    token, sess = result
     set_session_cookie(response, token)
     return _session_info(sess)
 

@@ -46,8 +46,11 @@ def test_migrations_match_models(tmp_path):
         insp = inspect(eng)
         assert insp.has_table("alembic_version") and insp.has_table("users") and insp.has_table("assets")
         assert _schema_diff(eng) == []
+        from alembic.script import ScriptDirectory
+
+        head = ScriptDirectory.from_config(db.alembic_config()).get_current_head()  # one linear head
         with eng.connect() as conn:
-            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0001_baseline"
+            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == head
         db.run_migrations(eng)  # idempotent
     finally:
         eng.dispose()
@@ -59,9 +62,12 @@ def test_pre_alembic_postgres_database_is_stamped():
     eng = db.create_db_engine(TEST_DATABASE_URL)
     try:
         db.Base.metadata.create_all(eng)  # how Phase 1/2 created schemas
-        db.run_migrations(eng)
+        db.run_migrations(eng)  # stamped at 0001_baseline, then upgraded to head
+        from alembic.script import ScriptDirectory
+
+        head = ScriptDirectory.from_config(db.alembic_config()).get_current_head()
         with eng.connect() as conn:
-            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0001_baseline"
+            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == head
     finally:
         eng.dispose()
 

@@ -21,6 +21,7 @@ def prod_env(monkeypatch):
     monkeypatch.setenv("APP_ENV", "production")
     monkeypatch.setenv("SESSION_SECRET", SECRET)
     monkeypatch.setenv("ALLOW_SQLITE_IN_PRODUCTION", "true")  # the suite may run on SQLite
+    monkeypatch.setenv("MFA_ENCRYPTION_KEY", "m" * 40)
     config.reload_settings()
     yield monkeypatch
     monkeypatch.undo()
@@ -55,6 +56,9 @@ def test_production_defaults(prod_env):
     ({"CORS_ORIGINS": "http://cnapp.example.com"}, "https://"),
     ({"INGEST_ALLOW_UNAUTHENTICATED": "true"}, "INGEST_ALLOW_UNAUTHENTICATED"),
     ({"API_DOCS_PUBLIC": "true"}, "API_DOCS_PUBLIC"),
+    ({"MFA_ENCRYPTION_KEY": ""}, "MFA_ENCRYPTION_KEY"),
+    ({"MFA_ENCRYPTION_KEY": "short"}, "MFA_ENCRYPTION_KEY"),
+    ({"ENTRA_TENANT_ID": "t", "ENTRA_CLIENT_ID": "c"}, "ENTRA_REDIRECT_URI"),
     ({"ALLOW_SQLITE_IN_PRODUCTION": "false", "DATABASE_URL": "sqlite:///x.db"}, "PostgreSQL"),
 ])
 def test_insecure_production_config_refuses_to_start(prod_env, env, expected):

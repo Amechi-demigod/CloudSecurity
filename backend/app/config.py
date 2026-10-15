@@ -21,6 +21,16 @@ def _list(name: str) -> list[str]:
     return [p.strip() for p in raw.replace(";", ",").split(",") if p.strip()]
 
 
+def _mapping(name: str) -> dict[str, str]:
+    """"a=x,b=y" -> {"a": "x", "b": "y"} (keys keep their case, values are lower-cased)."""
+    out: dict[str, str] = {}
+    for item in _list(name):
+        key, sep, value = item.partition("=")
+        if sep and key.strip():
+            out[key.strip()] = value.strip().lower()
+    return out
+
+
 PRODUCTION_ENVS = {"production", "prod"}
 
 
@@ -148,6 +158,70 @@ class Settings:
     # Serve /api/docs and /api/openapi.json without login (default: login required).
     api_docs_public: bool = field(default_factory=lambda: _bool("API_DOCS_PUBLIC", False))
 
+    # --- Multi-factor authentication (TOTP) -------------------------------------
+    # Key(s) encrypting TOTP secrets at rest. Any string of 32+ characters (e.g.
+    # `openssl rand -hex 32`); comma-separate several to rotate: the first one
+    # encrypts, all of them decrypt. Required in production.
+    mfa_encryption_keys: list[str] = field(default_factory=lambda: _list("MFA_ENCRYPTION_KEY"))
+    # Roles that must use MFA, e.g. "admin,analyst": users with these roles who
+    # have not enrolled are taken through enrolment at their next password login.
+    mfa_required_roles: list[str] = field(
+        default_factory=lambda: [r.lower() for r in _list("MFA_REQUIRED_ROLES")])
+    mfa_issuer: str = field(default_factory=lambda: os.getenv("MFA_ISSUER") or "CloudSecurity CNAPP")
+    # Lifetime of the token between the password step and the code step.
+    mfa_challenge_ttl_seconds: int = field(default_factory=lambda: int(os.getenv("MFA_CHALLENGE_TTL_SECONDS", "300")))
+    # Wrong codes allowed per challenge (the account lockout counter also applies).
+    mfa_challenge_max_attempts: int = field(default_factory=lambda: int(os.getenv("MFA_CHALLENGE_MAX_ATTEMPTS", "5")))
+
+    # --- Password login policy ---------------------------------------------------
+    # false: only Microsoft sign-in, except for the break-glass accounts below.
+    auth_password_login_enabled: bool = field(default_factory=lambda: _bool("AUTH_PASSWORD_LOGIN_ENABLED", True))
+    # Whether users linked to an Entra identity may still sign in with a local password.
+    auth_password_login_for_sso_users: bool = field(
+        default_factory=lambda: _bool("AUTH_PASSWORD_LOGIN_FOR_SSO_USERS", False))
+    # Local accounts that may always use password (+ MFA) login, whatever the two
+    # settings above say (emergency access when Entra ID is unavailable).
+    # Defaults to ADMIN_EMAIL.
+    auth_break_glass_emails: list[str] = field(default_factory=lambda: [
+        e.lower() for e in (_list("AUTH_BREAK_GLASS_EMAILS") or _list("ADMIN_EMAIL"))])
+
+    # --- Microsoft Entra ID single sign-on (OIDC, authorization code + PKCE) ----
+    entra_tenant_id: str | None = field(default_factory=lambda: (os.getenv("ENTRA_TENANT_ID") or "").strip() or None)
+    entra_client_id: str | None = field(default_factory=lambda: (os.getenv("ENTRA_CLIENT_ID") or "").strip() or None)
+    # How the app authenticates to the token endpoint:
+    #   auto (default)     certificate if ENTRA_CLIENT_CERTIFICATE is set, else client
+    #                      secret if ENTRA_CLIENT_SECRET is set, else managed_identity
+    #                      if a managed identity client id is configured
+    #   certificate        private_key_jwt signed with ENTRA_CLIENT_CERTIFICATE (PEM: key + cert)
+    #   secret             ENTRA_CLIENT_SECRET
+    #   managed_identity   federated credential: a managed identity token is the client assertion
+    entra_client_auth: str = field(default_factory=lambda: (os.getenv("ENTRA_CLIENT_AUTH") or "auto").strip().lower())
+    entra_client_secret: str | None = field(default_factory=lambda: os.getenv("ENTRA_CLIENT_SECRET") or None)
+    entra_client_certificate: str | None = field(default_factory=lambda: os.getenv("ENTRA_CLIENT_CERTIFICATE") or None)
+    entra_managed_identity_client_id: str | None = field(default_factory=lambda: (
+        os.getenv("ENTRA_MANAGED_IDENTITY_CLIENT_ID") or os.getenv("AZURE_MANAGED_IDENTITY_CLIENT_ID") or None))
+    entra_authority_host: str = field(default_factory=lambda: (
+        os.getenv("ENTRA_AUTHORITY_HOST") or "https://login.microsoftonline.com").rstrip("/"))
+    # Must exactly match a redirect URI of the app registration, e.g.
+    # https://cnapp-web.<env>.azurecontainerapps.io/api/auth/sso/entra/callback
+    entra_redirect_uri: str | None = field(default_factory=lambda: os.getenv("ENTRA_REDIRECT_URI") or None)
+    # Create unknown users on their first Microsoft sign-in (off: an admin must add them first).
+    entra_jit_provisioning: bool = field(default_factory=lambda: _bool("ENTRA_JIT_PROVISIONING", False))
+    entra_default_role: str = field(default_factory=lambda: (os.getenv("ENTRA_DEFAULT_ROLE") or "viewer").strip().lower())
+    # App role values or group object ids -> local role, e.g.
+    # "CNAPP.Admin=admin,CNAPP.Analyst=analyst,0f6c...=viewer". The highest match
+    # wins and is applied at every sign-in.
+    entra_role_map: dict[str, str] = field(default_factory=lambda: _mapping("ENTRA_ROLE_MAP"))
+    # Refuse Microsoft sign-in when no ENTRA_ROLE_MAP entry matches.
+    entra_require_role: bool = field(default_factory=lambda: _bool("ENTRA_REQUIRE_ROLE", False))
+    # Also require the local TOTP after Microsoft sign-in (default off: enforce MFA
+    # in Entra ID with Conditional Access instead).
+    entra_enforce_local_mfa: bool = field(default_factory=lambda: _bool("ENTRA_ENFORCE_LOCAL_MFA", False))
+
+    @property
+    def entra_enabled(self) -> bool:
+        return bool(self.entra_tenant_id and self.entra_client_id)
+
     @property
     def is_production(self) -> bool:
         return self.environment in PRODUCTION_ENVS
@@ -180,6 +254,31 @@ class Settings:
         if self.database_url.startswith("sqlite") and not _bool("ALLOW_SQLITE_IN_PRODUCTION", False):
             problems.append("DATABASE_URL must point to PostgreSQL in production "
                             "(set ALLOW_SQLITE_IN_PRODUCTION=true to override for a single-instance demo)")
+        if not self.mfa_encryption_keys or any(len(k) < 32 for k in self.mfa_encryption_keys):
+            problems.append("MFA_ENCRYPTION_KEY must be set (32+ characters) in production")
+        problems.extend(self.auth_config_problems())
+        return problems
+
+    def auth_config_problems(self) -> list[str]:
+        """MFA / SSO misconfigurations (fatal in every environment)."""
+        from .models import ROLES
+
+        problems = []
+        for r in self.mfa_required_roles:
+            if r not in ROLES:
+                problems.append(f"MFA_REQUIRED_ROLES: unknown role {r!r}")
+        if self.entra_default_role not in ROLES:
+            problems.append(f"ENTRA_DEFAULT_ROLE: unknown role {self.entra_default_role!r}")
+        for k, r in self.entra_role_map.items():
+            if r not in ROLES:
+                problems.append(f"ENTRA_ROLE_MAP: unknown role {r!r} for {k!r}")
+        if self.entra_client_auth not in {"auto", "certificate", "secret", "managed_identity"}:
+            problems.append("ENTRA_CLIENT_AUTH must be auto, certificate, secret or managed_identity")
+        if self.entra_enabled:
+            if (self.entra_tenant_id or "").lower() in {"common", "organizations", "consumers"}:
+                problems.append("ENTRA_TENANT_ID must be your tenant id, not a multi-tenant alias")
+            if self.is_production and not (self.entra_redirect_uri or "").startswith("https://"):
+                problems.append("ENTRA_REDIRECT_URI must be set to an https:// URL in production")
         return problems
 
 

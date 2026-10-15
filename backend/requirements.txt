@@ -23,3 +23,12 @@ alembic>=1.13
 # Production server: gunicorn process manager with uvicorn workers
 gunicorn>=23.0
 uvicorn-worker>=0.3
+
+# MFA (TOTP, RFC 6238), at-rest encryption of TOTP secrets, enrolment QR codes (SVG, rendered locally)
+pyotp>=2.9
+cryptography>=43.0
+segno>=1.6
+# Microsoft Entra ID SSO: OIDC helpers (PKCE, state/nonce) + JOSE/JWKS validation, HTTP to the IdP
+authlib>=1.6
+joserfc>=1.0
+httpx>=0.27

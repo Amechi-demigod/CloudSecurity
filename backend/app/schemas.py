@@ -332,6 +332,9 @@ class UserOut(ORM):
     last_login_at: UTCDateTime | None = None
     locked_until: UTCDateTime | None = None
     failed_login_count: int = 0
+    mfa_enabled: bool = False
+    # "password" (has a local password) and/or linked identity providers ("entra").
+    auth_sources: list[str] = []
 
 
 class SessionInfo(BaseModel):
@@ -372,3 +375,65 @@ class AuditLogOut(ORM):
     target: str | None = None
     ip: str | None = None
     detail: dict[str, Any] = {}
+
+
+# --- MFA and single sign-on ---------------------------------------------------------
+
+class MfaChallengeOut(BaseModel):
+    """Returned by /login (or the SSO callback) instead of a session when a second step is needed."""
+    mfa_required: bool = True
+    # verify: enter a TOTP / recovery code. enroll: MFA is mandatory for the role, set it up now.
+    purpose: Literal["verify", "enroll"]
+    mfa_token: str
+    expires_in: int
+
+
+class LoginComplete(SessionInfo):
+    # Only after a forced enrolment: shown once.
+    recovery_codes: list[str] | None = None
+
+
+class MfaCodeRequest(BaseModel):
+    mfa_token: str = Field(min_length=1, max_length=128)
+    code: str = Field(min_length=1, max_length=64)
+
+
+class MfaTokenRequest(BaseModel):
+    mfa_token: str = Field(min_length=1, max_length=128)
+
+
+class MfaSetupOut(BaseModel):
+    secret: str
+    otpauth_uri: str
+    qr_svg: str  # data:image/svg+xml URI
+    digits: int
+    period: int
+
+
+class MfaStatus(BaseModel):
+    enabled: bool
+    enabled_at: UTCDateTime | None = None
+    required: bool
+    recovery_codes_remaining: int
+    has_password: bool
+    sso_user: bool
+
+
+class MfaEnableRequest(BaseModel):
+    code: str = Field(min_length=1, max_length=64)
+
+
+class MfaManageRequest(BaseModel):
+    """Disable / regenerate: password (if the account has one) + a current TOTP or recovery code."""
+    password: str | None = Field(None, max_length=1024)
+    code: str = Field(min_length=1, max_length=64)
+
+
+class RecoveryCodesOut(BaseModel):
+    recovery_codes: list[str]
+
+
+class AuthProviders(BaseModel):
+    password: bool
+    entra: bool
+    entra_label: str = "Microsoft"
