@@ -70,7 +70,8 @@ def add_channel(s, name="SOC Slack", ctype="slack", secrets=None, enabled=True):
 def add_rule(s, channel_ids, **over):
     fields = dict(name="High+", sources=[], event_types=[], min_severity="high", subscription_ids=[], asset_ids=[],
                   asset_types=[], tags={}, rule_ids=[], mitre_techniques=[], channel_ids=channel_ids,
-                  throttle_minutes=60, mode="immediate", digest_hour=8, timezone="UTC")
+                  throttle_minutes=60, mode="immediate", digest_hour=8, timezone="UTC",
+                  created_at=T0 - timedelta(days=1))
     fields.update(over)
     r = NotificationRule(**fields)
     s.add(r)
@@ -151,6 +152,16 @@ def test_status_changes_only_when_enabled(session, transport):
     add_event(session, "high", "s2", event_type="status_changed")
     dispatcher.process_events(session, T0)
     assert [d.rule_name for d in deliveries(session)] == ["with status"]
+
+
+def test_rules_do_not_replay_events_from_before_they_existed(session, transport):
+    c = add_channel(session)
+    add_event(session, "critical", "old", created=T0 - timedelta(days=2))
+    add_rule(session, [c.id])  # created T0 - 1 day
+    add_event(session, "critical", "new", created=T0)
+    dispatcher.process_events(session, T0)
+    assert [d.message["event"]["id"] for d in deliveries(session)] == [
+        session.scalar(select(NotificationEvent.id).where(NotificationEvent.group_key == "new"))]
 
 
 def test_disabled_channel_and_rule_are_skipped(session, transport):

@@ -65,7 +65,9 @@ def process_events(db: Session, now: datetime | None = None, limit: int | None =
         asset = assets.get(ev.asset_id) if ev.asset_id else None
         ctx = build_context(ev, asset)
         for rule in rules:
-            if not matches(rule, ctx):
+            # A rule applies from its creation on: creating the first rule must not
+            # replay the backlog (e.g. seeded history) into a channel.
+            if ev.created_at < rule.created_at or not matches(rule, ctx):
                 continue
             for cid in rule.channel_ids or []:
                 channel = chans.get(cid)

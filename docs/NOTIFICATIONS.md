@@ -223,7 +223,8 @@ the receiver to accept both secrets, update the channel, then drop the old one.
 ## Rules
 
 A rule selects events and routes them to one or more channels. Nothing is
-sent until at least one rule exists.
+sent until at least one rule exists. A rule applies to events raised after it was
+created (creating a rule never replays older alerts into a channel).
 
 * **Match:** sources (empty = all), minimum severity, subscriptions, resource
   types, tags (`key=value`, `key=*` = present), detection/posture rule ids
