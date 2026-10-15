@@ -184,6 +184,10 @@ def test_csrf_token_is_per_session(anon_client):
 # Enrollment is authenticated by the enrollment token in its body (tested in test_devices.py).
 PUBLIC = {("GET", "/api/health"), ("POST", "/api/auth/login"), ("POST", "/api/runtime/events"), ("GET", "/docs"),
           ("POST", "/api/agent/enroll")}
+# MFA second step / forced enrolment (challenge-token auth) and SSO (tested in test_mfa.py / test_sso.py).
+PUBLIC |= {("POST", "/api/auth/login/mfa"), ("POST", "/api/auth/login/mfa/enroll/start"),
+           ("POST", "/api/auth/login/mfa/enroll/confirm"), ("GET", "/api/auth/providers"),
+           ("GET", "/api/auth/sso/entra/login"), ("GET", "/api/auth/sso/entra/callback")}
 
 
 def test_every_endpoint_requires_auth(anon_client):

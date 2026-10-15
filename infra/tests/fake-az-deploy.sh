@@ -13,12 +13,15 @@ state="${FAKE_STATE:-first}"
 
 case "$args" in
   *" keyvault list "*) [[ "$state" == existing ]] && echo "kv-cnapp-abc" || echo "" ;;
-  *" keyvault secret list "*) printf '%s\n' postgres-admin-password ingest-api-token admin-password session-secret database-url notifications-encryption-key ;;
+  *" keyvault secret list "*)
+    printf '%s\n' postgres-admin-password ingest-api-token admin-password session-secret database-url notifications-encryption-key
+    # FAKE_NO_MFA_KEY=1: a vault from before MFA (the key is generated on upgrade)
+    [[ "${FAKE_NO_MFA_KEY:-0}" == 1 ]] || echo mfa-encryption-key ;;
   *" keyvault secret show "*)
     name="$(sed -E 's/.*--name ([^ ]+).*/\1/' <<<"$args")"
     echo "kv-value-of-${name}" ;;
   *" deployment group create "*)
-    echo "  env: apps=${CNAPP_DEPLOY_APPS:-} backend=${CNAPP_BACKEND_IMAGE:-} frontend=${CNAPP_FRONTEND_IMAGE:-} pg=${CNAPP_POSTGRES_PASSWORD:-} token=${CNAPP_INGEST_API_TOKEN:-} admin=${CNAPP_ADMIN_PASSWORD:-} session=${CNAPP_SESSION_SECRET:-} notify=${CNAPP_NOTIFICATIONS_ENCRYPTION_KEY:-} baseurl=${CNAPP_PUBLIC_BASE_URL:-}" >> "$FAKE_LOG"
+    echo "  env: apps=${CNAPP_DEPLOY_APPS:-} backend=${CNAPP_BACKEND_IMAGE:-} frontend=${CNAPP_FRONTEND_IMAGE:-} pg=${CNAPP_POSTGRES_PASSWORD:-} token=${CNAPP_INGEST_API_TOKEN:-} admin=${CNAPP_ADMIN_PASSWORD:-} session=${CNAPP_SESSION_SECRET:-} notify=${CNAPP_NOTIFICATIONS_ENCRYPTION_KEY:-} baseurl=${CNAPP_PUBLIC_BASE_URL:-} mfa=${CNAPP_MFA_ENCRYPTION_KEY:-}" >> "$FAKE_LOG"
     if [[ "${FAKE_DEPLOY_FAIL_ONCE:-0}" == 1 && ! -e "$FAKE_LOG.failed" ]]; then
       touch "$FAKE_LOG.failed"; echo "RoleAssignmentNotFound (simulated)" >&2; exit 1
     fi ;;

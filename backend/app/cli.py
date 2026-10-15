@@ -2,6 +2,7 @@
 
     python -m app.cli create-user --email you@example.com --role admin [--name "Your Name"]
     python -m app.cli reset-password --email you@example.com
+    python -m app.cli reset-mfa --email you@example.com   # lost authenticator (break-glass)
     python -m app.cli migrate        # apply schema migrations (Alembic on PostgreSQL)
     python -m app.cli rotate-notification-key   # after prepending a new NOTIFICATIONS_ENCRYPTION_KEY
 
@@ -66,6 +67,26 @@ def reset_password(args: argparse.Namespace) -> int:
     return 0
 
 
+def reset_mfa(args: argparse.Namespace) -> int:
+    """Remove a user's TOTP authenticator and recovery codes (break-glass, e.g. the
+    last admin lost their phone); also unlocks the account."""
+    from . import mfa
+
+    email = auth.normalize_email(args.email)
+    with db.get_session() as s:
+        user = s.scalar(select(User).where(User.email == email))
+        if user is None:
+            raise SystemExit(f"error: no user {email}")
+        had = user.mfa_enabled
+        mfa.disable(s, user)
+        user.failed_login_count, user.locked_until = 0, None
+        auth.revoke_user_sessions(s, user.id)
+        auth.audit(s, "mfa_reset", actor_email="cli", target=email, had_mfa=had)
+        s.commit()
+    print(f"MFA reset for {email}; they sign in with their password (and enrol again if required)")
+    return 0
+
+
 def migrate(args: argparse.Namespace) -> int:
     # init_engine() (called by main with migrate=True) already applied them.
     url = db.engine.url.render_as_string(hide_password=True) if db.engine is not None else "?"
@@ -100,6 +121,9 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--email", required=True)
     r.add_argument("--password-stdin", action="store_true", help="read the password from stdin")
     r.set_defaults(func=reset_password)
+    f = sub.add_parser("reset-mfa", help="remove a user's authenticator app and recovery codes, unlock them")
+    f.add_argument("--email", required=True)
+    f.set_defaults(func=reset_mfa)
     m = sub.add_parser("migrate", help="apply database schema migrations (also done on startup by default)")
     m.set_defaults(func=migrate)
     k = sub.add_parser("rotate-notification-key",

@@ -1,5 +1,5 @@
 import { createContext, useContext } from "react";
-import type { Role, User } from "../api";
+import type { LoginResult, Role, SessionInfo, User } from "../api";
 
 export const ROLE_RANK: Record<Role, number> = { viewer: 0, analyst: 1, admin: 2 };
 
@@ -10,7 +10,10 @@ export interface AuthState {
   user: User | null | undefined;
   /** true when the last session ended because it expired (shown on the login page) */
   sessionExpired: boolean;
-  login: (email: string, password: string) => Promise<User>;
+  /** Password step: a session, or an MFA challenge to complete with the second step. */
+  login: (email: string, password: string) => Promise<LoginResult>;
+  /** Adopt a session obtained from a second step (MFA code / forced enrolment). */
+  completeLogin: (session: SessionInfo) => void;
   logout: () => Promise<void>;
   changePassword: (current: string, next: string) => Promise<void>;
   /** Does the current user have at least `role`? */

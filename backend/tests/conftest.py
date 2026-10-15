@@ -35,6 +35,9 @@ for k in ("AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET", "AZURE_SU
           "TRUST_PROXY_HEADERS", "TRUSTED_PROXY_CIDRS", "API_DOCS_ENABLED", "LOG_FORMAT", "CORS_ORIGINS",
           "NOTIFICATIONS_ENCRYPTION_KEY", "PUBLIC_BASE_URL", "NOTIFICATIONS_ALLOW_INSECURE_DEV"):
     os.environ.pop(k, None)
+# MFA / SSO settings (tests opt in per test).
+for k in [k for k in os.environ if k.startswith(("ENTRA_", "MFA_", "AUTH_PASSWORD_LOGIN", "AUTH_BREAK_GLASS"))]:
+    os.environ.pop(k, None)
 
 from app import config, db  # noqa: E402
 

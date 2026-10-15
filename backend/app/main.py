@@ -17,6 +17,7 @@ from . import auth, config, db, locks, logging_setup
 from .api import agent as agent_api
 from .api import auth as auth_api
 from .api import devices, inventory, platform, runtime, vulns
+from .api import mfa_sso as mfa_sso_api
 from .notifications import api as notifications_api
 from .notifications import settings as notification_settings
 from .notifications.worker import NotificationWorker, set_worker
@@ -65,11 +66,12 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     s = config.settings
     logging_setup.configure(s.effective_log_format, s.log_level)
-    problems = s.production_problems()
+    problems = s.production_problems() if s.is_production else s.auth_config_problems()
     if problems:
         for p in problems:
             log.critical("refusing to start: %s", p)
-        raise RuntimeError("insecure production configuration: " + "; ".join(problems))
+        kind = "insecure production" if s.is_production else "invalid"
+        raise RuntimeError(f"{kind} configuration: " + "; ".join(problems))
     if "*" in s.cors_origins:
         log.warning("CORS_ORIGINS contains '*': any website can read this API from a browser")
     auth.login_limiter.reset()
@@ -106,6 +108,7 @@ def create_app() -> FastAPI:
     app.include_router(runtime.ingest_router)
     app.include_router(agent_api.router)
     app.include_router(auth_api.router)  # /login is public; the others depend on the session
+    app.include_router(mfa_sso_api.router)  # /login/mfa*, /providers and /sso/* are public
     # Everything else requires a logged-in user (viewer or higher). Write
     # endpoints additionally require analyst/admin via their own dependencies.
     session_required = [Depends(auth.require_viewer)]
@@ -113,6 +116,7 @@ def create_app() -> FastAPI:
         app.include_router(r, dependencies=session_required)
     app.include_router(auth_api.admin_router)
     app.include_router(notifications_api.router)  # analyst read-only, admin writes
+    app.include_router(mfa_sso_api.admin_router)
     if s.api_docs_enabled:
         _add_docs(app)
     return app

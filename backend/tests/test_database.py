@@ -59,12 +59,71 @@ def test_migrations_match_models(tmp_path):
         eng.dispose()
 
 
+MIGRATION_CHAIN = ["0001_baseline", "0002_device_management", "0003_notifications", "0004_mfa_sso"]
+
+
+def test_migration_history_is_linear():
+    """The feature branches each started at 0001_baseline; once integrated they
+    must form one linear chain with exactly one head."""
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(db.alembic_config())
+    assert script.get_heads() == [MIGRATION_CHAIN[-1]]
+    chain = [r.revision for r in script.walk_revisions("base", "heads")][::-1]
+    assert chain == MIGRATION_CHAIN
+
+
+def test_upgrade_from_baseline_and_downgrade(tmp_path):
+    """A database at 0001_baseline (deployed Phase 3) upgrades to head, and the
+    downgrade path back to the baseline works too."""
+    if IS_POSTGRES:
+        reset_database()
+        eng = db.create_db_engine(TEST_DATABASE_URL)
+    else:
+        eng = db.create_db_engine(f"sqlite:///{tmp_path / 'baseline.db'}")
+    try:
+        db.run_migrations(eng, "0001_baseline")
+        insp = inspect(eng)
+        assert insp.has_table("users") and not insp.has_table("devices")
+        assert not insp.has_table("notification_rules") and not insp.has_table("user_mfa")
+        db.run_migrations(eng)
+        with eng.connect() as conn:
+            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == _head()
+        assert _schema_diff(eng) == []
+
+        from alembic import command
+
+        command.downgrade(db.alembic_config(eng), "0001_baseline")
+        insp = inspect(eng)
+        assert not insp.has_table("devices") and not insp.has_table("notification_rules")
+        assert not insp.has_table("user_mfa") and insp.has_table("users")
+        db.run_migrations(eng)
+        assert _schema_diff(eng) == []
+    finally:
+        eng.dispose()
+
+
+def test_sqlite_create_all_startup_path(tmp_path):
+    """SQLite deployments use create_all() (+ additive columns) at startup rather
+    than Alembic: every feature's tables are created."""
+    if IS_POSTGRES:
+        pytest.skip("SQLite startup path")
+    try:
+        eng = db.init_engine(f"sqlite:///{tmp_path / 'startup.db'}")
+        names = set(inspect(eng).get_table_names())
+        assert {t.name for t in db.Base.metadata.sorted_tables} <= names
+        assert {"devices", "notification_rules", "user_mfa", "user_identities"} <= names
+    finally:
+        fresh_db()
+
+
 @pytest.mark.skipif(not IS_POSTGRES, reason="PostgreSQL only (SQLite uses create_all)")
 def test_pre_alembic_postgres_database_is_stamped():
     reset_database()
     eng = db.create_db_engine(TEST_DATABASE_URL)
     try:
-        # How Phase 1/2 created schemas: only the baseline tables existed then.
+        # How Phase 1/2 created schemas: only the baseline tables existed then (the
+        # MFA tables are created too, to exercise 0004_mfa_sso's has_table guards).
         later = ("notification_", "device", "enrollment_tokens")
         baseline = [t for t in db.Base.metadata.sorted_tables if not t.name.startswith(later)]
         db.Base.metadata.create_all(eng, tables=baseline)

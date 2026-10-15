@@ -9,7 +9,8 @@
 #   OWNER               GitHub owner of the ghcr.io images
 #   GHCR_USER/GHCR_TOKEN  credentials to import the images from ghcr.io (the job's GITHUB_TOKEN)
 #   CNAPP_NAME_PREFIX, AZURE_LOCATION, CNAPP_ADMIN_EMAIL, CNAPP_SIMULATION_MODE,
-#   CNAPP_SCAN_SUBSCRIPTION_IDS, CNAPP_PUBLIC_BASE_URL  read by infra/main.bicepparam
+#   CNAPP_SCAN_SUBSCRIPTION_IDS, CNAPP_PUBLIC_BASE_URL, CNAPP_MFA_REQUIRED_ROLES,
+#   CNAPP_ENTRA_*  read by infra/main.bicepparam
 #
 # Writes url, backend_app, frontend_app, login_server and key_vault to $GITHUB_OUTPUT.
 set -euo pipefail
@@ -50,6 +51,7 @@ secret CNAPP_INGEST_API_TOKEN ingest-api-token hex32
 secret CNAPP_ADMIN_PASSWORD admin-password password
 secret CNAPP_SESSION_SECRET session-secret hex32
 secret CNAPP_NOTIFICATIONS_ENCRYPTION_KEY notifications-encryption-key fernet
+secret CNAPP_MFA_ENCRYPTION_KEY mfa-encryption-key hex32
 
 deploy() { # <deployApps>; retried once (new role assignments can take a minute to propagate)
   export CNAPP_DEPLOY_APPS="$1"

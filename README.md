@@ -194,6 +194,9 @@ On first start, simulated mode seeds the database (`backend/cnapp.db`) and backf
 | `TRUST_PROXY_HEADERS` | `false` | Take the client IP from the right-most `X-Forwarded-For` entry. Only enable when the backend is reachable *only* through your proxy |
 | `TRUSTED_PROXY_CIDRS` | | With `TRUST_PROXY_HEADERS`: honour `X-Forwarded-For` only from these proxies and use the right-most address that is not one of them (several proxy hops, e.g. Container Apps ingress + nginx) |
 | `SESSION_SECRET` | | Key for the stored session-token digests (HMAC-SHA256). Required (32+ chars) in production; rotating it signs everyone out |
+| `MFA_ENCRYPTION_KEY` | | Key encrypting TOTP secrets at rest (32+ chars; comma-separate to rotate). Required in production. See [docs/AUTH.md](docs/AUTH.md) |
+| `MFA_REQUIRED_ROLES` | | Roles that must enrol in MFA at their next login, e.g. `admin,analyst` |
+| `ENTRA_TENANT_ID` / `ENTRA_CLIENT_ID` | | Enable "Sign in with Microsoft"; other `ENTRA_*` and `AUTH_PASSWORD_LOGIN_*` settings in [docs/AUTH.md](docs/AUTH.md#settings-reference) |
 | `API_DOCS_ENABLED` | `true` (`false` in production) | Serve the interactive API docs at all |
 | `API_DOCS_PUBLIC` | `false` | Serve `/api/docs` and `/api/openapi.json` without login |
 | `HSTS_MAX_AGE` | `31536000` | `Strict-Transport-Security` max-age sent in production (0 disables) |
@@ -267,10 +270,14 @@ Relationships come from NICs (VM↔NSG), VM identities, and RBAC role assignment
 Every `/api/*` endpoint requires a signed-in user, except:
 
 - `GET /api/health` (liveness probe),
-- `POST /api/auth/login`,
+- `POST /api/auth/login`, the MFA second step (`/api/auth/login/mfa*`), `GET /api/auth/providers` and the Microsoft sign-in redirects (`/api/auth/sso/entra/*`),
 - `POST /api/runtime/events`, which keeps its own `Authorization: Bearer <INGEST_API_TOKEN>` sensor authentication (user sessions are not accepted there).
 
 The interactive API docs moved to `/api/docs` (`/api/openapi.json`), so they work through the frontend's `/api` proxy, and they also require sign-in unless `API_DOCS_PUBLIC=true`. `/docs` redirects there.
+
+### MFA and Sign in with Microsoft
+
+Users can protect their account with an authenticator app (TOTP) under **user menu → Security**; `MFA_REQUIRED_ROLES=admin,analyst` makes it mandatory for those roles, and admins can reset a user's MFA. Optionally, people sign in with **Microsoft Entra ID** (OIDC + PKCE, app-role/group → role mapping, optional just-in-time provisioning), and password login can be limited to break-glass accounts. Set `MFA_ENCRYPTION_KEY` (32+ chars) in production. Setup, all settings and the break-glass procedure: **[docs/AUTH.md](docs/AUTH.md)**.
 
 ### First sign-in (bootstrap admin)
 
