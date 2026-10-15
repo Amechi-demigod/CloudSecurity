@@ -1,0 +1,10 @@
++-o Root  <class IORegistryEntry, id 0x100000100, retain 41>
+  +-o Mac14,2  <class IOPlatformExpertDevice, id 0x10000020f, registered, matched, active, busy 0 (2083 ms), retain 39>
+      {
+        "IOPolledInterface" = "AppleARMWatchdogTimerHibernateHandler is not serializable"
+        "manufacturer" = <"Apple Inc.">
+        "IOPlatformSerialNumber" = "C02TESTSERIAL"
+        "model" = <"Mac14,2">
+        "IOPlatformUUID" = "00000000-1111-2222-3333-444444444444"
+        "target-type" = <"J413">
+      }

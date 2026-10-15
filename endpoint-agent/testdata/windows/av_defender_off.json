@@ -1,0 +1,1 @@
+{"defender":{"am_service_enabled":true,"antivirus_enabled":true,"realtime_enabled":false,"signature_age_days":3,"signature_last_updated":"2026-10-12T03:10:00Z","signature_version":"1.419.1.0","tamper_protected":false,"am_running_mode":"Normal"},"products":[{"name":"Windows Defender","state":393472}]}

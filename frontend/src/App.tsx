@@ -6,6 +6,9 @@ import UserMenu from "./components/UserMenu";
 import { useApi } from "./lib/useApi";
 import AttackPaths from "./pages/AttackPaths";
 import Connectors from "./pages/Connectors";
+import DeviceDetail from "./pages/devices/DeviceDetail";
+import Devices from "./pages/devices/Devices";
+import Enrollment from "./pages/devices/Enrollment";
 import DashboardPage from "./pages/Dashboard";
 import Findings from "./pages/Findings";
 import Inventory from "./pages/Inventory";
@@ -18,6 +21,7 @@ import Users from "./pages/admin/Users";
 const NAV: { to: string; label: string; role?: Role }[] = [
   { to: "/", label: "Dashboard" },
   { to: "/inventory", label: "Inventory" },
+  { to: "/devices", label: "Devices" },
   { to: "/findings", label: "Posture findings" },
   { to: "/vulnerabilities", label: "Vulnerabilities" },
   { to: "/threats", label: "Runtime threats" },
@@ -141,6 +145,9 @@ function Shell() {
             <Route path="/threats" element={<Threats />} />
             <Route path="/attack-paths" element={<AttackPaths />} />
             <Route path="/connectors" element={<Connectors />} />
+            <Route path="/devices" element={<Devices />} />
+            <Route path="/devices/enrollment" element={<RequireRole role="admin"><Enrollment /></RequireRole>} />
+            <Route path="/devices/:id" element={<DeviceDetail />} />
             <Route path="/admin/users" element={<RequireRole role="admin"><Users /></RequireRole>} />
             <Route path="/admin/audit-log" element={<RequireRole role="admin"><AuditLog /></RequireRole>} />
             <Route path="*" element={<Navigate to="/" replace />} />

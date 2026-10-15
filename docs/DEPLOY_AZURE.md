@@ -205,6 +205,10 @@ az keyvault secret show --vault-name "$KV" --name ingest-api-token --query value
 
 Set it as `SENSOR_API_TOKEN` and `SENSOR_API_URL=https://<frontend-fqdn>/api/runtime/events` on the sensor (see `sensor/README.md`).
 
+## Enroll endpoint devices
+
+Windows and macOS agents connect to the same public frontend URL: nginx routes `/api/agent/*` to the internal backend (with an 8 MiB body limit for check-ins and log bundles), so no infrastructure change is needed. Create an enrollment token under **Devices → Enroll devices** and follow [docs/DEVICE_MANAGEMENT.md](DEVICE_MANAGEMENT.md#enrolling-devices); use `https://<frontend-fqdn>` as `--server`.
+
 ## Operations
 
 | Task | Command |

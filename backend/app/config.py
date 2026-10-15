@@ -148,6 +148,37 @@ class Settings:
     # Serve /api/docs and /api/openapi.json without login (default: login required).
     api_docs_public: bool = field(default_factory=lambda: _bool("API_DOCS_PUBLIC", False))
 
+    # --- Device management (endpoint agent) ---------------------------------
+    # Body cap for /api/agent/* (check-ins with large software lists, log bundles).
+    agent_max_request_bytes: int = field(
+        default_factory=lambda: int(os.getenv("AGENT_MAX_REQUEST_BYTES", str(6 * 1024 * 1024))))
+    # Largest accepted collect_logs bundle (gzip tar, stored in the database).
+    device_log_bundle_max_bytes: int = field(
+        default_factory=lambda: int(os.getenv("DEVICE_LOG_BUNDLE_MAX_BYTES", str(5 * 1024 * 1024))))
+    # Per-device request budget on /api/agent/* (agents poll for commands every ~60s).
+    device_rate_limit: int = field(default_factory=lambda: int(os.getenv("DEVICE_RATE_LIMIT", "120")))
+    device_rate_window_seconds: float = field(
+        default_factory=lambda: float(os.getenv("DEVICE_RATE_WINDOW_SECONDS", "600")))
+    # Enrollment attempts per client IP.
+    enroll_rate_limit: int = field(default_factory=lambda: int(os.getenv("ENROLL_RATE_LIMIT", "20")))
+    enroll_rate_window_seconds: float = field(
+        default_factory=lambda: float(os.getenv("ENROLL_RATE_WINDOW_SECONDS", "600")))
+    # Device health thresholds.
+    device_stale_hours: float = field(default_factory=lambda: float(os.getenv("DEVICE_STALE_HOURS", "24")))
+    device_inactive_days: float = field(default_factory=lambda: float(os.getenv("DEVICE_INACTIVE_DAYS", "7")))
+    device_updates_grace_days: float = field(
+        default_factory=lambda: float(os.getenv("DEVICE_UPDATES_GRACE_DAYS", "14")))
+    device_av_signature_max_age_days: float = field(
+        default_factory=lambda: float(os.getenv("DEVICE_AV_SIGNATURE_MAX_AGE_DAYS", "7")))
+    # Posture snapshots kept per device (older ones are pruned on check-in).
+    device_history_limit: int = field(default_factory=lambda: int(os.getenv("DEVICE_HISTORY_LIMIT", "200")))
+    # Default lifetime of a queued remote command.
+    device_command_ttl_hours: float = field(
+        default_factory=lambda: float(os.getenv("DEVICE_COMMAND_TTL_HOURS", "24")))
+    # Optional link shown on the enrollment page for downloading agent builds
+    # (e.g. your GitHub release or an internal file share).
+    agent_download_url: str | None = field(default_factory=lambda: os.getenv("AGENT_DOWNLOAD_URL") or None)
+
     @property
     def is_production(self) -> bool:
         return self.environment in PRODUCTION_ENVS

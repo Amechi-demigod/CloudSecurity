@@ -1,0 +1,3 @@
+alice    console      Oct 12 17:25 
+alice    ttys000      Oct 12 17:25 
+bob      ttys001      Oct 13 09:01 (10.0.0.9)

@@ -47,7 +47,7 @@ def test_migrations_match_models(tmp_path):
         assert insp.has_table("alembic_version") and insp.has_table("users") and insp.has_table("assets")
         assert _schema_diff(eng) == []
         with eng.connect() as conn:
-            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0001_baseline"
+            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0002_device_management"
         db.run_migrations(eng)  # idempotent
     finally:
         eng.dispose()
@@ -58,10 +58,12 @@ def test_pre_alembic_postgres_database_is_stamped():
     reset_database()
     eng = db.create_db_engine(TEST_DATABASE_URL)
     try:
-        db.Base.metadata.create_all(eng)  # how Phase 1/2 created schemas
+        # How Phase 1/2 created schemas (before the device-management tables existed).
+        phase2 = [t for t in db.Base.metadata.sorted_tables if not t.name.startswith(("device", "enrollment"))]
+        db.Base.metadata.create_all(eng, tables=phase2)
         db.run_migrations(eng)
         with eng.connect() as conn:
-            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0001_baseline"
+            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0002_device_management"
     finally:
         eng.dispose()
 

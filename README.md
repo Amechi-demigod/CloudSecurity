@@ -21,6 +21,7 @@ flowchart LR
     SIM[Simulated connector<br/>seed + live event simulator]
     AZ[Azure connector<br/>read-only, Reader role]
     SENSOR[Runtime sensor<br/>sensor/, procfs + optional eBPF]
+    AGENT[Endpoint agent<br/>endpoint-agent/, Windows + macOS]
   end
   subgraph Backend [FastAPI backend]
     ING[Ingest service]
@@ -36,6 +37,7 @@ flowchart LR
   SIM --> ING
   AZ --> ING
   SENSOR -- POST /api/runtime/events --> DR
+  AGENT -- "/api/agent/* (per-device credential, pull)" --> DB
   ING --> PR --> DB
   ING --> RS --> DB
   DR --> DB
@@ -72,10 +74,18 @@ backend/
   tests/                 pytest suite (API, auth/RBAC, engines, DB, production config, sensor end-to-end)
 frontend/                React + Vite + TypeScript + Tailwind + Recharts (nginx/ = production proxy config)
 infra/                   Bicep (main.bicep + modules/), setup.sh (one-time Azure/GitHub setup), deploy.sh (CD step), tests
+endpoint-agent/          Go endpoint agent for Windows/macOS: inventory, posture, allow-listed remote actions,
+                         service install, packaging (see docs/DEVICE_MANAGEMENT.md)
 docs/DEPLOY_AZURE.md     Azure deployment guide
+docs/DEVICE_MANAGEMENT.md  device management: agent architecture, enrollment, data collected, security model
 scripts/smoke_test.py    end-to-end smoke test (CI and the deploy workflow)
+scripts/agent_e2e.py     endpoint agent <-> backend end-to-end test (CI on Windows and macOS runners)
 docker-compose.yml       local stack (SQLite); docker-compose.postgres.yml adds PostgreSQL
 ```
+
+## Device management (endpoints)
+
+Enroll company **Windows 10/11 and macOS** laptops and desktops with our own lightweight agent (`endpoint-agent/`, a single Go binary): hardware/OS inventory, security posture (disk encryption, firewall, antivirus, screen lock, OS updates, SIP/Gatekeeper, Secure Boot/TPM, local admins), installed software, derived device issues, and a small allow-list of audited remote actions (re-check posture, collect agent logs, lock device, restart agent, change check-in interval). The agent only makes outbound HTTPS requests, authenticates with a per-device credential, and never runs arbitrary commands. Admins create enrollment tokens and copy install commands from **Devices → Enroll devices**. See **[docs/DEVICE_MANAGEMENT.md](docs/DEVICE_MANAGEMENT.md)** for the walkthrough, the data collected, the security model and the packaging/signing steps.
 
 ## Deploy to Azure
 
@@ -406,6 +416,7 @@ A dormant vulnerability can never score above 20. An in-use, exposed vulnerabili
 
 - No secrets are committed. Only `.env.example` is tracked; `.env`, `*.pem`, `*.key` and local DB files are git-ignored.
 - The Azure connector is strictly read-only (Reader role plus the code-level guard).
+- Endpoint agents authenticate to `/api/agent/*` with per-device secrets (only SHA-256 stored), obtained with short-lived enrollment tokens; remote actions are allow-listed on the server and in the agent, need a reason and are audited ([details](docs/DEVICE_MANAGEMENT.md#security-model)).
 - The sensor ingest endpoint requires a bearer token (`INGEST_API_TOKEN`) and is disabled when none is set. Request bodies are capped (`MAX_REQUEST_BYTES`) and every event field is length and range checked.
 - Every other API endpoint requires a signed-in user with the right role (see [Authentication & access control](#authentication--access-control)): Argon2id passwords, server-side sessions in an `HttpOnly` / `SameSite=Lax` / `Secure` cookie, CSRF tokens on state-changing requests, account lockout, per-IP login rate limiting and an audit log.
 - The Azure guard also blocks `list*`/`get*` operations that return secrets (`list_keys`, SAS tokens, AKS credentials).
@@ -426,3 +437,4 @@ A dormant vulnerability can never score above 20. An in-use, exposed vulnerabili
 - CIS control numbers are approximate mappings for illustration.
 - On PostgreSQL the backend can run several replicas/workers (the simulator and scans use advisory-lock leader election), but the login rate limiter is in-memory: it resets on restart and counts per worker process, so the effective limit is `LOGIN_RATE_LIMIT` x workers x replicas. Per-account lockout is stored in the database and is exact.
 - No SSO or MFA yet; passwords are the only sign-in method.
+- Device management covers inventory, posture and a few remote actions on Windows and macOS; no compliance policies, CVE matching of installed software or Linux endpoints yet (see [limitations](docs/DEVICE_MANAGEMENT.md#limitations)).

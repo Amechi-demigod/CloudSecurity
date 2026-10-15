@@ -1,0 +1,4 @@
+#!/bin/bash
+# Stop a running agent before its binary is replaced (upgrade).
+/bin/launchctl bootout system/com.cloudsecurity.cnapp-agent 2>/dev/null || true
+exit 0

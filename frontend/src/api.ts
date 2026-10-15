@@ -220,6 +220,137 @@ export interface AuditEntry {
   detail: Record<string, unknown>;
 }
 
+// --- device management -------------------------------------------------------
+
+export type DeviceHealth = "healthy" | "warning" | "critical" | "unknown";
+export type Connectivity = "active" | "stale" | "inactive" | "never";
+export type CheckStatus = "pass" | "fail" | "unknown" | "info";
+
+export interface DeviceIssue {
+  code: string;
+  severity: "critical" | "high" | "medium" | "low";
+  title: string;
+  detail: string;
+}
+
+export interface DeviceSummary {
+  id: string;
+  hostname: string;
+  os_family: "windows" | "macos" | "linux";
+  os_name: string;
+  os_version: string;
+  architecture: string;
+  serial_number: string;
+  manufacturer: string;
+  model: string;
+  agent_version: string;
+  status: "active" | "revoked";
+  enrolled_at: string;
+  last_seen_at: string | null;
+  last_checkin_at: string | null;
+  logged_in_users: string[];
+  health: DeviceHealth;
+  connectivity: Connectivity;
+  issues: DeviceIssue[];
+}
+
+export interface PostureCheck {
+  status: CheckStatus;
+  detail: string;
+  error?: string | null;
+  data: Record<string, unknown>;
+}
+
+export interface DeviceInventory {
+  hostname?: string;
+  cpu?: string;
+  cpu_cores?: number | null;
+  memory_bytes?: number | null;
+  disks?: { mount: string; filesystem: string; size_bytes: number | null; free_bytes: number | null }[];
+  uptime_seconds?: number | null;
+  last_boot?: string | null;
+  logged_in_users?: string[];
+  network?: { name: string; mac: string; ips: string[] }[];
+  timezone?: string;
+}
+
+export interface DeviceDetail extends DeviceSummary {
+  os_build: string;
+  last_ip: string | null;
+  check_in_interval_seconds: number;
+  software_count: number;
+  updates_pending_since: string | null;
+  revoked_at: string | null;
+  inventory: DeviceInventory;
+  posture: Record<string, PostureCheck>;
+  collection_errors: Record<string, string>;
+}
+
+export interface DeviceSoftware {
+  name: string;
+  version: string;
+  publisher: string;
+  identifier: string;
+  install_date: string;
+  source: string;
+}
+
+export interface PostureSnapshot {
+  id: number;
+  received_at: string;
+  collected_at: string | null;
+  agent_version: string;
+  os_version: string;
+  posture: Record<string, PostureCheck>;
+  issues: string[];
+  software_count: number | null;
+}
+
+export type CommandType = "recheck_posture" | "collect_logs" | "lock_device" | "restart_agent" | "update_check_in_interval";
+
+export interface DeviceCommand {
+  id: string;
+  device_id: string;
+  type: CommandType;
+  params: Record<string, unknown>;
+  status: "pending" | "delivered" | "succeeded" | "failed" | "rejected" | "expired" | "cancelled";
+  reason: string;
+  requested_by_email: string | null;
+  created_at: string;
+  expires_at: string;
+  delivered_at: string | null;
+  completed_at: string | null;
+  output: string;
+  log_bundle_id: string | null;
+}
+
+export interface DeviceFleetSummary {
+  total: number;
+  revoked: number;
+  by_os: Record<string, number>;
+  by_health: Record<DeviceHealth, number>;
+  connectivity: Record<Connectivity, number>;
+  issues: Record<string, number>;
+  encrypted_percent: number | null;
+  firewall_percent: number | null;
+  encryption_known: number;
+  firewall_known: number;
+}
+
+export interface EnrollmentToken {
+  id: string;
+  name: string;
+  token_prefix: string;
+  max_uses: number | null;
+  use_count: number;
+  created_by: string | null;
+  created_at: string;
+  expires_at: string;
+  last_used_at: string | null;
+  revoked_at: string | null;
+  state: "active" | "expired" | "exhausted" | "revoked";
+}
+
 const BASE = import.meta.env.VITE_API_BASE ?? "";
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
@@ -311,6 +442,38 @@ export const api = {
   resetPassword: (id: string, password: string) =>
     request<User>(`/api/users/${id}/reset-password`, { method: "POST", body: JSON.stringify({ password }) }),
   auditLog: (f: { action?: string; limit?: number } = {}) => request<AuditEntry[]>(`/api/audit-log${qs(f)}`),
+  // --- devices ---
+  devices: (f: Record<string, string | undefined> = {}) => request<DeviceSummary[]>(`/api/devices${qs(f)}`),
+  deviceSummary: () => request<DeviceFleetSummary>("/api/devices/summary"),
+  deviceIssueTypes: () => request<{ code: string; severity: string; title: string }[]>("/api/devices/issue-types"),
+  device: (id: string) => request<DeviceDetail>(`/api/devices/${id}`),
+  deviceSoftware: (id: string, q?: string) => request<DeviceSoftware[]>(`/api/devices/${id}/software${qs({ q })}`),
+  deviceHistory: (id: string, limit = 50) => request<PostureSnapshot[]>(`/api/devices/${id}/history${qs({ limit })}`),
+  deviceCommands: (id: string) => request<DeviceCommand[]>(`/api/devices/${id}/commands`),
+  queueCommand: (id: string, body: { type: CommandType; reason: string; params?: Record<string, unknown> }) =>
+    request<DeviceCommand>(`/api/devices/${id}/commands`, { method: "POST", body: JSON.stringify(body) }),
+  cancelCommand: (id: string, commandId: string, reason: string) =>
+    request<DeviceCommand>(`/api/devices/${id}/commands/${commandId}/cancel`, {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    }),
+  revokeDevice: (id: string, reason: string) =>
+    request<DeviceDetail>(`/api/devices/${id}/revoke`, { method: "POST", body: JSON.stringify({ reason }) }),
+  deleteDevice: (id: string, reason: string) =>
+    request<void>(`/api/devices/${id}${qs({ reason })}`, { method: "DELETE" }),
+  logBundleUrl: (id: string, bundleId: string) => `${BASE}/api/devices/${id}/log-bundles/${bundleId}`,
+  enrollmentInfo: () =>
+    request<{ agent_download_url: string | null; default_check_in_interval_seconds: number; command_poll_seconds: number }>(
+      "/api/devices/enrollment/info",
+    ),
+  enrollmentTokens: () => request<EnrollmentToken[]>("/api/devices/enrollment-tokens"),
+  createEnrollmentToken: (body: { name: string; max_uses: number | null; expires_in_hours: number }) =>
+    request<EnrollmentToken & { token: string }>("/api/devices/enrollment-tokens", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  revokeEnrollmentToken: (id: string) =>
+    request<EnrollmentToken>(`/api/devices/enrollment-tokens/${id}/revoke`, { method: "POST" }),
   // --- platform ---
   health: () => request<Health>("/api/health"),
   dashboard: () => request<Dashboard>("/api/dashboard"),
