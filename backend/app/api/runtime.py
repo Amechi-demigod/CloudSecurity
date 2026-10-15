@@ -14,6 +14,7 @@ from .. import config
 from ..auth import audit, client_ip, require_analyst
 from ..db import get_db
 from ..models import Alert, AlertEvent, Asset, RuntimeEvent, User
+from ..notifications import builtin as notify
 from ..schemas import (
     AlertDetail,
     AlertOut,
@@ -208,6 +209,7 @@ def update_alert(alert_id: str, body: AlertUpdate, request: Request, user: User 
     if a.status != body.status:
         audit(db, "alert_updated", actor=user, target=a.id, ip=client_ip(request),
               rule_id=a.rule_id, status=[a.status, body.status])
+        notify.alert_status_changed(db, a, a.status, body.status, actor=user.email)
     a.status = body.status
     db.commit()
     return AlertOut.model_validate(a)

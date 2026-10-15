@@ -31,7 +31,7 @@ def build_context(ev, asset=None) -> EventContext:
         source=ev.source, event_type=ev.event_type, severity=ev.severity, asset_id=ev.asset_id,
         asset_type=getattr(asset, "type", None) or attrs.get("asset_type"),
         subscription_id=getattr(asset, "subscription_id", None) or attrs.get("subscription_id"),
-        tags=dict((getattr(asset, "tags", None) or attrs.get("tags") or {})),
+        tags=dict(getattr(asset, "tags", None) or attrs.get("tags") or {}),
         rule_id=ev.rule_id, mitre_technique_id=ev.mitre_technique_id,
     )
 

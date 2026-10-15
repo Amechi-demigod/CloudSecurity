@@ -27,10 +27,13 @@ os.environ.update({
     "ADMIN_PASSWORD": "correct-horse-battery",
     "COOKIE_SECURE": "true",
     "API_DOCS_PUBLIC": "false",
+    # Notification tests drive the dispatcher explicitly (no background thread).
+    "NOTIFICATIONS_WORKER_ENABLED": "false",
 })
 for k in ("AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET", "AZURE_SUBSCRIPTION_IDS", "AZURE_AUTH_MODE",
           "AZURE_MANAGED_IDENTITY_CLIENT_ID", "AZURE_USE_DEFAULT_CREDENTIAL", "SESSION_SECRET", "DEBUG",
-          "TRUST_PROXY_HEADERS", "TRUSTED_PROXY_CIDRS", "API_DOCS_ENABLED", "LOG_FORMAT", "CORS_ORIGINS"):
+          "TRUST_PROXY_HEADERS", "TRUSTED_PROXY_CIDRS", "API_DOCS_ENABLED", "LOG_FORMAT", "CORS_ORIGINS",
+          "NOTIFICATIONS_ENCRYPTION_KEY", "PUBLIC_BASE_URL", "NOTIFICATIONS_ALLOW_INSECURE_DEV"):
     os.environ.pop(k, None)
 
 from app import config, db  # noqa: E402

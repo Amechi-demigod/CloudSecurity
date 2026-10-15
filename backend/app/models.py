@@ -229,3 +229,8 @@ class AuditLog(Base):
     target: Mapped[str | None] = mapped_column(String(512), nullable=True)
     ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
     detail: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+# Notification tables live in their own module; import them so they are part of
+# Base.metadata (create_all on SQLite, Alembic autogenerate / schema checks).
+from .notifications import models as _notification_models  # noqa: E402, F401

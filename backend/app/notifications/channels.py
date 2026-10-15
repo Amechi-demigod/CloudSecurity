@@ -530,7 +530,8 @@ def send_smtp(config: dict[str, Any], secrets: dict[str, str], msg: dict[str, An
     except smtplib.SMTPRecipientsRefused as exc:
         raise PermanentError(f"all recipients refused: {sorted(exc.recipients)}") from None
     except smtplib.SMTPResponseException as exc:
-        err = f"SMTP {exc.smtp_code}: {exc.smtp_error.decode('utf-8', 'replace')[:200] if isinstance(exc.smtp_error, bytes) else exc.smtp_error}"
+        detail = exc.smtp_error.decode("utf-8", "replace") if isinstance(exc.smtp_error, bytes) else str(exc.smtp_error)
+        err = f"SMTP {exc.smtp_code}: {detail[:200]}"
         if 400 <= exc.smtp_code < 500:
             raise TransientError(err) from None
         raise PermanentError(err) from None

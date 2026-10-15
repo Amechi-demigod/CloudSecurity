@@ -12,6 +12,7 @@ from ..db import get_db
 from ..engine import posture
 from ..engine.detection import DETECTION_RULES
 from ..models import Alert, Asset, Finding, Relationship, User, Vulnerability, utcnow
+from ..notifications import builtin as notify
 from ..schemas import (
     AlertOut,
     AssetOut,
@@ -158,6 +159,7 @@ def update_finding(finding_id: str, body: FindingUpdate, request: Request, user:
     if f.status != body.status:
         audit(db, "finding_updated", actor=user, target=f.id, ip=client_ip(request),
               rule_id=f.rule_id, status=[f.status, body.status])
+        notify.finding_status_changed(db, f, f.status, body.status, actor=user.email)
     f.status = body.status
     f.resolved_at = utcnow() if body.status == "resolved" else None
     db.commit()

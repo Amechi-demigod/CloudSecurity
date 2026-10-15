@@ -34,6 +34,12 @@ def _schema_diff(eng):
         return compare_metadata(mc, db.Base.metadata)
 
 
+def _head() -> str:
+    from alembic.script import ScriptDirectory
+
+    return ScriptDirectory.from_config(db.alembic_config()).get_current_head()
+
+
 def test_migrations_match_models(tmp_path):
     """`alembic upgrade head` on an empty database yields exactly the ORM schema."""
     if IS_POSTGRES:
@@ -47,7 +53,7 @@ def test_migrations_match_models(tmp_path):
         assert insp.has_table("alembic_version") and insp.has_table("users") and insp.has_table("assets")
         assert _schema_diff(eng) == []
         with eng.connect() as conn:
-            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0001_baseline"
+            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == _head()
         db.run_migrations(eng)  # idempotent
     finally:
         eng.dispose()
@@ -58,10 +64,13 @@ def test_pre_alembic_postgres_database_is_stamped():
     reset_database()
     eng = db.create_db_engine(TEST_DATABASE_URL)
     try:
-        db.Base.metadata.create_all(eng)  # how Phase 1/2 created schemas
-        db.run_migrations(eng)
+        # How Phase 1/2 created schemas: only the baseline tables existed then.
+        baseline = [t for t in db.Base.metadata.sorted_tables if not t.name.startswith("notification_")]
+        db.Base.metadata.create_all(eng, tables=baseline)
+        db.run_migrations(eng)  # stamped at the baseline, then upgraded
         with eng.connect() as conn:
-            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0001_baseline"
+            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == _head()
+        assert inspect(eng).has_table("notification_deliveries")
     finally:
         eng.dispose()
 
