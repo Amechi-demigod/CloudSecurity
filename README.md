@@ -294,8 +294,8 @@ Then open the UI, sign in, and add other users under **Administration → Users*
 | Role | Can |
 |---|---|
 | `viewer` | Read everything: dashboard, inventory, findings, vulnerabilities, threats, attack paths, connectors, scan history |
-| `analyst` | Viewer, plus suppress / resolve / reopen findings, acknowledge / resolve alerts, and run connector scans |
-| `admin` | Everything, including user management (create, change role, deactivate, reset password), the audit log and connector settings |
+| `analyst` | Viewer, plus suppress / resolve / reopen findings, acknowledge / resolve alerts, run connector scans, and view notification channels (masked), rules and the delivery log |
+| `admin` | Everything, including user management (create, change role, deactivate, reset password), the audit log, connector settings, and notification channels / rules (test sends, retries) |
 
 The UI hides or disables actions the signed-in role cannot perform; the API enforces the same rules (403). The last active admin cannot be demoted or deactivated.
 
@@ -355,6 +355,27 @@ If you serve the UI from a different origin than the API (not the default), add 
 3. Open the **5173** port from the *Ports* tab (you do not need to forward or expose 8000: Vite proxies `/api` to it inside the codespace) and sign in with `ADMIN_EMAIL` / `ADMIN_PASSWORD`.
 
 Keep `COOKIE_SECURE=true` (the default): the browser sees the forwarded URL as https, so it stores the `Secure` cookie even though the hop from the Codespaces proxy to Vite and on to uvicorn is plain http. The cookie has no `Domain` attribute, so it is bound to your codespace's 5173 hostname only.
+
+## Alert notifications
+
+Send runtime alerts, posture findings, vulnerabilities, new attack paths and
+scan results to **Microsoft Teams** (Adaptive Cards), **Slack** (Block Kit),
+**email** (SMTP with STARTTLS/TLS, or Azure Communication Services) and
+**HMAC-signed webhooks**. Admins configure channels and routing rules under
+**Notifications** (severity threshold, sources, subscriptions, tags, rule ids,
+MITRE techniques; throttling per alert group, quiet hours, daily digests).
+
+* Producers only queue an event row in their own transaction; a leader-elected
+  background dispatcher (one sender across replicas) matches rules and delivers
+  from a durable outbox with exponential-backoff retries and a dead-letter state,
+  all visible in the delivery log.
+* Channel secrets are encrypted with `NOTIFICATIONS_ENCRYPTION_KEY` and never
+  returned by the API; outbound calls are SSRF-protected (https only, public IPs
+  only with DNS pinning, no redirects, timeouts, size caps, host allowlists).
+* Messages link back to the alert/finding via `PUBLIC_BASE_URL`.
+
+Setup for each channel, the webhook signature format with Python and Node.js
+verification code, and troubleshooting: **[docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md)**.
 
 ## Runtime sensor event schema
 

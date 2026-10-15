@@ -34,6 +34,12 @@ def _schema_diff(eng):
         return compare_metadata(mc, db.Base.metadata)
 
 
+def _head() -> str:
+    from alembic.script import ScriptDirectory
+
+    return ScriptDirectory.from_config(db.alembic_config()).get_current_head()
+
+
 def test_migrations_match_models(tmp_path):
     """`alembic upgrade head` on an empty database yields exactly the ORM schema."""
     if IS_POSTGRES:
@@ -47,7 +53,7 @@ def test_migrations_match_models(tmp_path):
         assert insp.has_table("alembic_version") and insp.has_table("users") and insp.has_table("assets")
         assert _schema_diff(eng) == []
         with eng.connect() as conn:
-            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0002_device_management"
+            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == _head()
         db.run_migrations(eng)  # idempotent
     finally:
         eng.dispose()
@@ -58,12 +64,14 @@ def test_pre_alembic_postgres_database_is_stamped():
     reset_database()
     eng = db.create_db_engine(TEST_DATABASE_URL)
     try:
-        # How Phase 1/2 created schemas (before the device-management tables existed).
-        phase2 = [t for t in db.Base.metadata.sorted_tables if not t.name.startswith(("device", "enrollment"))]
-        db.Base.metadata.create_all(eng, tables=phase2)
-        db.run_migrations(eng)
+        # How Phase 1/2 created schemas: only the baseline tables existed then.
+        later = ("notification_", "device", "enrollment_tokens")
+        baseline = [t for t in db.Base.metadata.sorted_tables if not t.name.startswith(later)]
+        db.Base.metadata.create_all(eng, tables=baseline)
+        db.run_migrations(eng)  # stamped at the baseline, then upgraded
         with eng.connect() as conn:
-            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0002_device_management"
+            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == _head()
+        assert inspect(eng).has_table("notification_deliveries") and inspect(eng).has_table("devices")
     finally:
         eng.dispose()
 

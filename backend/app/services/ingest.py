@@ -7,7 +7,8 @@ from sqlalchemy.orm import Session
 from ..connectors.base import CollectionResult
 from ..engine import posture
 from ..engine.risk import cvss_severity, priority_for, vuln_risk_score
-from ..models import Asset, Finding, Relationship, Vulnerability, utcnow
+from ..models import Asset, Finding, Relationship, Vulnerability, new_id, utcnow
+from ..notifications import builtin as notify
 
 
 def ingest_collection(db: Session, result: CollectionResult, source: str) -> dict:
@@ -58,10 +59,12 @@ def ingest_collection(db: Session, result: CollectionResult, source: str) -> dic
     db.flush()
 
     for v in result.vulnerabilities:
-        db.add(Vulnerability(asset_id=v.asset_id, cve_id=v.cve_id, package=v.package, version=v.version,
-                             fixed_version=v.fixed_version, title=v.title, cvss=v.cvss,
+        vuln = Vulnerability(id=new_id(), asset_id=v.asset_id, cve_id=v.cve_id, package=v.package,
+                             version=v.version, fixed_version=v.fixed_version, title=v.title, cvss=v.cvss,
                              severity=cvss_severity(v.cvss), exploit_available=v.exploit_available,
-                             in_use=v.in_use, source=source))
+                             in_use=v.in_use, source=source)
+        db.add(vuln)
+        notify.vulnerability_found(db, vuln)
     db.flush()
     if result.vulnerabilities:
         rescore_vulnerabilities(db)
@@ -90,9 +93,11 @@ def evaluate_posture(db: Session, assets: list[Asset], source: str) -> dict:
         for rid, (r, ev) in failures.items():
             f = existing.get(rid)
             if f is None:
-                db.add(Finding(rule_id=rid, asset_id=a.id, title=r.title, description=r.description,
-                               severity=r.severity, remediation=r.remediation, compliance=list(r.compliance),
-                               evidence=ev, source=source, first_seen=now, last_seen=now))
+                f = Finding(id=new_id(), rule_id=rid, asset_id=a.id, title=r.title, description=r.description,
+                            severity=r.severity, remediation=r.remediation, compliance=list(r.compliance),
+                            evidence=ev, source=source, first_seen=now, last_seen=now)
+                db.add(f)
+                notify.finding_opened(db, f)
                 opened += 1
             else:
                 f.last_seen = now
@@ -100,6 +105,7 @@ def evaluate_posture(db: Session, assets: list[Asset], source: str) -> dict:
                 if f.status == "resolved":  # regression
                     f.status = "open"
                     f.resolved_at = None
+                    notify.finding_opened(db, f, regression=True)
                     opened += 1
         for rid, f in existing.items():
             if rid not in failures and f.status == "open":

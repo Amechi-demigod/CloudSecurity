@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { api } from "../api";
 import AssetDrawer from "../components/AssetDrawer";
 import { Card, ErrorNote, PageHeader, RiskBar, Select, SeverityBadge, Stat, Table, Tag } from "../components/ui";
@@ -9,7 +10,8 @@ export default function Vulnerabilities() {
   const [scope, setScope] = useState("in_use");
   const [sort, setSort] = useState("risk");
   const [priority, setPriority] = useState("");
-  const [asset, setAsset] = useState<string | null>(null);
+  const [params] = useSearchParams(); // deep link: /vulnerabilities?asset=<id> opens the resource
+  const [asset, setAsset] = useState<string | null>(params.get("asset"));
 
   const { data: stats } = useApi(api.vulnStats, []);
   const { data, error } = useApi(

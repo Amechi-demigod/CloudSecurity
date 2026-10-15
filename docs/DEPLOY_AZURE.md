@@ -35,7 +35,7 @@ flowchart LR
       pg[("PostgreSQL Flexible Server<br/>B1ms, private access (snet-postgres)<br/>TLS 1.2+ required")]
     end
     dns["Private DNS zone<br/>*.private.postgres.database.azure.com"]
-    kv["Key Vault (RBAC)<br/>database-url, session-secret,<br/>admin-password, ingest-api-token"]
+    kv["Key Vault (RBAC)<br/>database-url, session-secret,<br/>admin-password, ingest-api-token,<br/>notifications-encryption-key"]
     acr["Container Registry (Basic)"]
     law["Log Analytics"]
     idapi["id-cnapp-api<br/>user-assigned identity"]
@@ -219,6 +219,7 @@ Windows and macOS agents connect to the same public frontend URL: nginx routes `
 | Shell in the backend | `az containerapp exec -g rg-cnapp -n cnapp-api --command sh` |
 | Create a user / reset a password | `az containerapp exec ... --command "python -m app.cli reset-password --email you@example.com"` |
 | Apply migrations explicitly | `python -m app.cli migrate` (also done on every start) |
+| Rotate the notifications key | Add a new key in front: `az keyvault secret set --vault-name $KV --name notifications-encryption-key --value "$(openssl rand -base64 32 \| tr '+/' '-_'),<old key>"`, restart, run `python -m app.cli rotate-notification-key` in the backend container (re-encrypts all channels), then drop the old key. See [NOTIFICATIONS.md](NOTIFICATIONS.md). |
 | Rotate the session secret | `az keyvault secret set --vault-name $KV --name session-secret --value $(openssl rand -hex 32)`, then restart the revision (signs everyone out) |
 | Pause the database | `az postgres flexible-server stop -g rg-cnapp -n <server>` (auto-restarts after 7 days) |
 

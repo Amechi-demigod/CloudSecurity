@@ -17,6 +17,9 @@ from . import auth, config, db, locks, logging_setup
 from .api import agent as agent_api
 from .api import auth as auth_api
 from .api import devices, inventory, platform, runtime, vulns
+from .notifications import api as notifications_api
+from .notifications import settings as notification_settings
+from .notifications.worker import NotificationWorker, set_worker
 from .security import BodySizeLimitMiddleware, SecurityHeadersMiddleware
 from .services.simulation import RuntimeSimulator, seed_if_empty
 
@@ -42,9 +45,21 @@ async def lifespan(app: FastAPI):
             )
             app.state.simulator.start()
             log.info("Runtime simulator started (every %.0fs)", s.simulator_interval_seconds)
+    ns = notification_settings.get()
+    for p in ns.problems():
+        log.warning("notifications: %s", p)
+    app.state.notifier = None
+    if ns.worker_enabled:
+        # Leader election: only one replica / worker sends.
+        app.state.notifier = NotificationWorker(interval=ns.poll_seconds)
+        set_worker(app.state.notifier)
+        app.state.notifier.start()
     yield
     if app.state.simulator:
         app.state.simulator.stop()
+    if app.state.notifier:
+        app.state.notifier.stop()
+        set_worker(None)
 
 
 def create_app() -> FastAPI:
@@ -78,7 +93,7 @@ def create_app() -> FastAPI:
         CORSMiddleware,
         allow_origins=origins,
         allow_credentials="*" not in origins,
-        allow_methods=["GET", "POST", "PATCH", "DELETE"],
+        allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE"],
         allow_headers=["Authorization", "Content-Type", auth.CSRF_HEADER],
     )
     app.add_middleware(BodySizeLimitMiddleware, max_bytes=s.max_request_bytes,
@@ -97,6 +112,7 @@ def create_app() -> FastAPI:
     for r in (platform.router, inventory.router, vulns.router, runtime.router, devices.router):
         app.include_router(r, dependencies=session_required)
     app.include_router(auth_api.admin_router)
+    app.include_router(notifications_api.router)  # analyst read-only, admin writes
     if s.api_docs_enabled:
         _add_docs(app)
     return app

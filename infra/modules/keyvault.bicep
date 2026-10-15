@@ -26,6 +26,10 @@ param adminPassword string
 @secure()
 param sessionSecret string
 
+@secure()
+@description('Fernet key encrypting notification channel secrets (webhook URLs, SMTP passwords) at rest.')
+param notificationsEncryptionKey string
+
 // Built-in role: Key Vault Secrets User (read secret values).
 var keyVaultSecretsUserRoleId = '4633458b-17de-408a-b874-0445c86b69e6'
 
@@ -71,6 +75,10 @@ var secrets = [
   {
     name: 'session-secret'
     value: sessionSecret
+  }
+  {
+    name: 'notifications-encryption-key'
+    value: notificationsEncryptionKey
   }
 ]
 

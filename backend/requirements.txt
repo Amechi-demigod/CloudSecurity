@@ -23,3 +23,7 @@ alembic>=1.13
 # Production server: gunicorn process manager with uvicorn workers
 gunicorn>=23.0
 uvicorn-worker>=0.3
+
+# Notifications: encryption of channel secrets at rest; IANA time zones for quiet hours
+cryptography>=42.0
+tzdata>=2024.1

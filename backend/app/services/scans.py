@@ -10,6 +10,7 @@ from .. import db as dbmod
 from ..connectors.base import Connector
 from ..locks import advisory_lock
 from ..models import Finding, ScanRun, utcnow
+from ..notifications import builtin as notify
 from .ingest import ingest_collection
 
 log = logging.getLogger(__name__)
@@ -51,4 +52,5 @@ def execute_scan(connector: Connector, run_id: str) -> None:
             run.status = "failed"
             run.message = f"{type(exc).__name__}: {exc}"
         run.finished_at = utcnow()
+        notify.scan_finished(db, run)
         db.commit()

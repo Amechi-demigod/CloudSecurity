@@ -102,6 +102,8 @@ jobs:
       CNAPP_ADMIN_EMAIL: ${{ vars.CNAPP_ADMIN_EMAIL }}
       CNAPP_SIMULATION_MODE: ${{ vars.CNAPP_SIMULATION_MODE || 'true' }}
       CNAPP_SCAN_SUBSCRIPTION_IDS: ${{ vars.CNAPP_SCAN_SUBSCRIPTION_IDS }}
+      # Optional: public URL for notification deep links (custom domain); default = the web app URL.
+      CNAPP_PUBLIC_BASE_URL: ${{ vars.CNAPP_PUBLIC_BASE_URL }}
       SHA: ${{ needs.preflight.outputs.sha }}
       BICEP_VERSION: v0.47.16
     steps:

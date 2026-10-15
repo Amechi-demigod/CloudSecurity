@@ -42,6 +42,9 @@ param simulationMode bool = true
 @description('Comma-separated subscription IDs the Azure posture scanner reads (needs Reader for the backend identity).')
 param scanSubscriptionIds string = ''
 
+@description('Public URL of the web UI used for deep links in notifications (Teams/Slack/email/webhooks). Empty = the Container Apps URL of the web app; set it when you use a custom domain.')
+param publicBaseUrl string = ''
+
 @description('CIDRs of the proxies in front of the backend (Container Apps ingress, web app). Only these may set X-Forwarded-For. Internet clients never have these addresses.')
 param trustedProxyCidrs string = '10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10'
 
@@ -65,6 +68,11 @@ param adminPassword string
 @minLength(32)
 @description('Key for session-token digests (SESSION_SECRET).')
 param sessionSecret string
+
+@secure()
+@minLength(44)
+@description('Fernet key (url-safe base64 of 32 random bytes) encrypting notification channel secrets at rest (NOTIFICATIONS_ENCRYPTION_KEY).')
+param notificationsEncryptionKey string
 
 // --- sizing (low-cost demo defaults) ----------------------------------------------------
 param postgresSkuName string = 'Standard_B1ms'
@@ -187,6 +195,7 @@ module keyVault 'modules/keyvault.bicep' = {
     ingestApiToken: ingestApiToken
     adminPassword: adminPassword
     sessionSecret: sessionSecret
+    notificationsEncryptionKey: notificationsEncryptionKey
   }
 }
 
@@ -209,6 +218,7 @@ module apps 'modules/apps.bicep' = if (deployApps) {
     simulationMode: simulationMode
     scanSubscriptionIds: scanSubscriptionIds
     trustedProxyCidrs: trustedProxyCidrs
+    publicBaseUrl: publicBaseUrl
     backendCpu: backendCpu
     backendMemory: backendMemory
     backendMinReplicas: backendMinReplicas

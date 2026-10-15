@@ -387,3 +387,8 @@ class DeviceLogBundle(Base):
     sha256: Mapped[str] = mapped_column(String(64))
     content_type: Mapped[str] = mapped_column(String(64), default="application/gzip")
     data: Mapped[bytes] = mapped_column(LargeBinary)
+
+
+# Notification tables live in their own module; import them so they are part of
+# Base.metadata (create_all on SQLite, Alembic autogenerate / schema checks).
+from .notifications import models as _notification_models  # noqa: E402, F401
