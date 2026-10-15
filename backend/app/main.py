@@ -14,8 +14,9 @@ from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import JSONResponse, RedirectResponse
 
 from . import auth, config, db, locks, logging_setup
+from .api import agent as agent_api
 from .api import auth as auth_api
-from .api import inventory, platform, runtime, vulns
+from .api import devices, inventory, platform, runtime, vulns
 from .security import BodySizeLimitMiddleware, SecurityHeadersMiddleware
 from .services.simulation import RuntimeSimulator, seed_if_empty
 
@@ -57,6 +58,8 @@ def create_app() -> FastAPI:
     if "*" in s.cors_origins:
         log.warning("CORS_ORIGINS contains '*': any website can read this API from a browser")
     auth.login_limiter.reset()
+    agent_api.device_limiter.reset()
+    agent_api.enroll_limiter.reset()
     app = FastAPI(
         debug=s.debug and not s.is_production,
         title="CloudSecurity CNAPP",
@@ -75,20 +78,23 @@ def create_app() -> FastAPI:
         CORSMiddleware,
         allow_origins=origins,
         allow_credentials="*" not in origins,
-        allow_methods=["GET", "POST", "PATCH"],
+        allow_methods=["GET", "POST", "PATCH", "DELETE"],
         allow_headers=["Authorization", "Content-Type", auth.CSRF_HEADER],
     )
-    app.add_middleware(BodySizeLimitMiddleware, max_bytes=config.settings.max_request_bytes)
+    app.add_middleware(BodySizeLimitMiddleware, max_bytes=s.max_request_bytes,
+                       path_limits={"/api/agent/": max(s.agent_max_request_bytes, s.max_request_bytes)})
     app.add_middleware(SecurityHeadersMiddleware, hsts_max_age=s.hsts_max_age if s.is_production else 0)
 
-    # Public: health probe, login, and sensor ingest (own bearer-token auth).
+    # Public: health probe, login, sensor ingest (own bearer-token auth) and the
+    # endpoint-agent API (per-device credentials, never user sessions).
     app.include_router(platform.public_router)
     app.include_router(runtime.ingest_router)
+    app.include_router(agent_api.router)
     app.include_router(auth_api.router)  # /login is public; the others depend on the session
     # Everything else requires a logged-in user (viewer or higher). Write
     # endpoints additionally require analyst/admin via their own dependencies.
     session_required = [Depends(auth.require_viewer)]
-    for r in (platform.router, inventory.router, vulns.router, runtime.router):
+    for r in (platform.router, inventory.router, vulns.router, runtime.router, devices.router):
         app.include_router(r, dependencies=session_required)
     app.include_router(auth_api.admin_router)
     if s.api_docs_enabled:

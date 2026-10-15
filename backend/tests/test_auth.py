@@ -181,7 +181,9 @@ def test_csrf_token_is_per_session(anon_client):
 
 # --- unauthenticated access -----------------------------------------------------------
 
-PUBLIC = {("GET", "/api/health"), ("POST", "/api/auth/login"), ("POST", "/api/runtime/events"), ("GET", "/docs")}
+# Enrollment is authenticated by the enrollment token in its body (tested in test_devices.py).
+PUBLIC = {("GET", "/api/health"), ("POST", "/api/auth/login"), ("POST", "/api/runtime/events"), ("GET", "/docs"),
+          ("POST", "/api/agent/enroll")}
 
 
 def test_every_endpoint_requires_auth(anon_client):
@@ -189,7 +191,7 @@ def test_every_endpoint_requires_auth(anon_client):
     paths = anon_client.app.openapi()["paths"]
     checked = 0
     for route_path, ops in paths.items():
-        path = re.sub(r"\{[^}]+\}", "x", route_path)
+        path = re.sub(r"\{[^}]+\}", "0" * 32, route_path)  # ids are 32 hex chars
         for method in ops:
             method = method.upper()
             if (method, route_path) in PUBLIC:

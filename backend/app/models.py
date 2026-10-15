@@ -10,7 +10,19 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    LargeBinary,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -229,3 +241,149 @@ class AuditLog(Base):
     target: Mapped[str | None] = mapped_column(String(512), nullable=True)
     ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
     detail: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+# --- Device management (endpoint agent) ------------------------------------------
+# Laptops / desktops running our own `cnapp-agent` (Windows, macOS). Agents
+# authenticate with a per-device secret (only its SHA-256 is stored) and pull
+# allow-listed commands; see docs/DEVICE_MANAGEMENT.md.
+
+DEVICE_OS_FAMILIES = ("windows", "macos", "linux")
+
+
+class EnrollmentToken(Base):
+    """Admin-issued secret an agent exchanges for a per-device credential."""
+
+    __tablename__ = "enrollment_tokens"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(128))
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)  # sha256(token) hex
+    token_prefix: Mapped[str] = mapped_column(String(16))  # shown in the UI to tell tokens apart
+    max_uses: Mapped[int | None] = mapped_column(Integer, nullable=True)  # None = unlimited until expiry
+    use_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_by: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class Device(Base):
+    __tablename__ = "devices"
+    __table_args__ = (Index("ix_devices_os_machine", "os_family", "machine_id"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    hostname: Mapped[str] = mapped_column(String(255), index=True)
+    os_family: Mapped[str] = mapped_column(String(16), index=True)  # windows | macos | linux
+    os_name: Mapped[str] = mapped_column(String(128), default="")
+    os_version: Mapped[str] = mapped_column(String(64), default="")
+    os_build: Mapped[str] = mapped_column(String(64), default="")
+    architecture: Mapped[str] = mapped_column(String(32), default="")
+    serial_number: Mapped[str] = mapped_column(String(128), default="")
+    manufacturer: Mapped[str] = mapped_column(String(128), default="")
+    model: Mapped[str] = mapped_column(String(128), default="")
+    # SHA-256 of the OS machine identifier (MachineGuid / IOPlatformUUID); used to
+    # recognise a re-enrolling machine.
+    machine_id: Mapped[str] = mapped_column(String(64), default="")
+    agent_version: Mapped[str] = mapped_column(String(32), default="")
+    status: Mapped[str] = mapped_column(String(16), default="active", index=True)  # active | revoked
+    enrolled_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    enrollment_token_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    last_checkin_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    check_in_interval_seconds: Mapped[int] = mapped_column(Integer, default=900)
+    # Latest full inventory (hardware/OS/network/users) and posture checks, as sent by the agent.
+    inventory: Mapped[dict] = mapped_column(JSON, default=dict)
+    posture: Mapped[dict] = mapped_column(JSON, default=dict)
+    collection_errors: Mapped[dict] = mapped_column(JSON, default=dict)
+    software_count: Mapped[int] = mapped_column(Integer, default=0)
+    # First check-in that reported pending OS updates (cleared when none are pending).
+    updates_pending_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class DeviceCredential(Base):
+    """Per-device secret. Only sha256(secret) is stored; rotated on re-enrollment."""
+
+    __tablename__ = "device_credentials"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    device_id: Mapped[str] = mapped_column(String(32), ForeignKey("devices.id", ondelete="CASCADE"), index=True)
+    secret_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    device: Mapped[Device] = relationship(lazy="joined")
+
+
+class DevicePostureSnapshot(Base):
+    """One row per check-in (history); the latest values are also on `devices`."""
+
+    __tablename__ = "device_posture_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    device_id: Mapped[str] = mapped_column(String(32), ForeignKey("devices.id", ondelete="CASCADE"), index=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    collected_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    agent_version: Mapped[str] = mapped_column(String(32), default="")
+    os_version: Mapped[str] = mapped_column(String(64), default="")
+    posture: Mapped[dict] = mapped_column(JSON, default=dict)
+    issues: Mapped[list] = mapped_column(JSON, default=list)  # issue codes at that time
+    software_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class DeviceSoftware(Base):
+    """Installed software (latest inventory). Kept with versions so that
+    vulnerable-software matching can be added later."""
+
+    __tablename__ = "device_software"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    device_id: Mapped[str] = mapped_column(String(32), ForeignKey("devices.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(255), index=True)
+    version: Mapped[str] = mapped_column(String(128), default="")
+    publisher: Mapped[str] = mapped_column(String(255), default="")
+    identifier: Mapped[str] = mapped_column(String(255), default="")  # bundle id / registry key
+    install_date: Mapped[str] = mapped_column(String(32), default="")
+    source: Mapped[str] = mapped_column(String(32), default="")  # registry_hklm64 | applications | ...
+
+
+class DeviceCommand(Base):
+    """Allow-listed remote action, pulled by the agent and executed at most once."""
+
+    __tablename__ = "device_commands"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    device_id: Mapped[str] = mapped_column(String(32), ForeignKey("devices.id", ondelete="CASCADE"), index=True)
+    type: Mapped[str] = mapped_column(String(32))
+    params: Mapped[dict] = mapped_column(JSON, default=dict)
+    nonce: Mapped[str] = mapped_column(String(64))
+    # pending -> delivered -> succeeded | failed | rejected ; or expired | cancelled
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    requested_by_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    requested_by_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    output: Mapped[str] = mapped_column(Text, default="")
+    log_bundle_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+
+class DeviceLogBundle(Base):
+    """Agent log bundle uploaded for a collect_logs command (size-capped, gzip tar)."""
+
+    __tablename__ = "device_log_bundles"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    device_id: Mapped[str] = mapped_column(String(32), ForeignKey("devices.id", ondelete="CASCADE"), index=True)
+    command_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    sha256: Mapped[str] = mapped_column(String(64))
+    content_type: Mapped[str] = mapped_column(String(64), default="application/gzip")
+    data: Mapped[bytes] = mapped_column(LargeBinary)
