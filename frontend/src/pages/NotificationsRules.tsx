@@ -41,6 +41,16 @@ function textToTags(s: string): Record<string, string> {
   return out;
 }
 
+// Event types a rule can narrow down to: only for a single selected source with
+// several kinds of events (e.g. endpoint devices: firewall off, stale, ...).
+// `status_changed` has its own checkbox.
+const humanize = (t: string) => (t.charAt(0).toUpperCase() + t.slice(1)).replace(/_/g, " ");
+function selectableEventTypes(meta: NotificationMeta, sources: string[]): string[] {
+  if (sources.length !== 1) return [];
+  const types = (meta.sources.find((x) => x.name === sources[0])?.event_types ?? []).filter((t) => t !== "status_changed");
+  return types.length > 1 ? types : [];
+}
+
 function errMsg(e: unknown) {
   return e instanceof ApiError || e instanceof Error ? e.message : String(e);
 }
@@ -80,8 +90,17 @@ function RuleDialog({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const set = <K extends keyof RuleInput>(k: K, v: RuleInput[K]) => setR((prev) => ({ ...prev, [k]: v }));
-  const toggle = (k: "sources" | "channel_ids", v: string) =>
-    set(k, r[k].includes(v) ? r[k].filter((x) => x !== v) : [...r[k], v]);
+  const toggle = (k: "sources" | "channel_ids" | "event_types", v: string) =>
+    setR((prev) => {
+      const next = { ...prev, [k]: prev[k].includes(v) ? prev[k].filter((x) => x !== v) : [...prev[k], v] };
+      // Event types only apply to a single source: drop ones the new source selection does not offer.
+      if (k === "sources") {
+        const allowed = selectableEventTypes(meta, next.sources);
+        next.event_types = prev.event_types.filter((t) => allowed.includes(t));
+      }
+      return next;
+    });
+  const eventTypes = selectableEventTypes(meta, r.sources);
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -138,6 +157,19 @@ function RuleDialog({
               </label>
             ))}
           </div>
+          {eventTypes.length > 0 && (
+            <div>
+              <div className="text-sm text-ink-2">Event types (none selected = all)</div>
+              <div className="grid grid-cols-1 gap-1 sm:grid-cols-2">
+                {eventTypes.map((t) => (
+                  <label key={t} className="flex items-center gap-2 text-sm">
+                    <input type="checkbox" checked={r.event_types.includes(t)} onChange={() => toggle("event_types", t)} />
+                    {humanize(t)}
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
           <div>
             <label htmlFor="rule-sev" className="mb-1 block text-sm font-medium text-ink-2">
               Minimum severity
@@ -157,7 +189,7 @@ function RuleDialog({
         </Group>
         <Group title="Only for (optional filters)">
           {textField("subscription_ids", "Subscriptions", "Comma-separated subscription IDs.")}
-          {textField("asset_types", "Resource types", "e.g. vm, pod, storage_account")}
+          {textField("asset_types", "Resource types", "e.g. vm, pod, storage_account, device")}
           {textField("tags", "Tags", "key=value pairs; key=* matches any value.", "env=prod, team=payments")}
           {textField("rule_ids", "Detection / posture rule IDs", "Wildcards allowed, e.g. CDR-00*")}
           {textField("mitre_techniques", "MITRE ATT&CK techniques", "T1059 also matches sub-techniques such as T1059.004")}
@@ -233,6 +265,7 @@ function RuleDialog({
 
 function describe(r: Rule, meta: NotificationMeta): string {
   const parts = [r.sources.length ? r.sources.map((s) => meta.sources.find((x) => x.name === s)?.label ?? s).join(", ") : "All sources"];
+  if (r.event_types.length) parts.push(r.event_types.map(humanize).join(", "));
   if (r.subscription_ids.length) parts.push(`${r.subscription_ids.length} subscription(s)`);
   if (r.asset_types.length) parts.push(r.asset_types.join("/"));
   if (Object.keys(r.tags).length) parts.push(`tags ${tagsToText(r.tags)}`);

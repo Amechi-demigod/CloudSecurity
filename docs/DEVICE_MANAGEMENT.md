@@ -190,6 +190,8 @@ The server derives **issues** from the latest posture and timestamps whenever a 
 
 **Health** is *At risk* if any issue is high, *Warning* if there are only medium or low issues, *Healthy* if there are none, and *No data* before the first check-in. The dashboard tile and the Devices page show fleet totals: device counts, % encrypted, % with the firewall on, and stale devices. Checks that report `unknown` (for example BitLocker on Windows Server, or Secure Boot on a VM) never raise issues.
 
+**Notifications:** new issues, devices becoming stale/inactive and remote action results are also events of the *Endpoint device* notification source, so admins can route them to Teams, Slack, email or webhooks with a rule (see [NOTIFICATIONS.md](NOTIFICATIONS.md#endpoint-device-events)).
+
 ## Remote actions
 
 There is no generic "run command". Only the following actions exist, and each one is allow-listed **on the server** (the API rejects any other type or parameter) and **again in the agent**, which refuses anything not on its own list whatever the server sends:

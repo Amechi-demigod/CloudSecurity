@@ -78,6 +78,8 @@ endpoint-agent/          Go endpoint agent for Windows/macOS: inventory, posture
                          service install, packaging (see docs/DEVICE_MANAGEMENT.md)
 docs/DEPLOY_AZURE.md     Azure deployment guide
 docs/DEVICE_MANAGEMENT.md  device management: agent architecture, enrollment, data collected, security model
+docs/NOTIFICATIONS.md    alert notifications: Teams, Slack, email, signed webhooks, rules
+docs/AUTH.md             MFA (TOTP) and Microsoft Entra ID sign-in, break-glass accounts
 scripts/smoke_test.py    end-to-end smoke test (CI and the deploy workflow)
 scripts/agent_e2e.py     endpoint agent <-> backend end-to-end test (CI on Windows and macOS runners)
 docker-compose.yml       local stack (SQLite); docker-compose.postgres.yml adds PostgreSQL
@@ -365,8 +367,9 @@ Keep `COOKIE_SECURE=true` (the default): the browser sees the forwarded URL as h
 
 ## Alert notifications
 
-Send runtime alerts, posture findings, vulnerabilities, new attack paths and
-scan results to **Microsoft Teams** (Adaptive Cards), **Slack** (Block Kit),
+Send runtime alerts, posture findings, vulnerabilities, new attack paths,
+scan results and endpoint device events (new posture issues, devices that stop
+checking in, remote action results) to **Microsoft Teams** (Adaptive Cards), **Slack** (Block Kit),
 **email** (SMTP with STARTTLS/TLS, or Azure Communication Services) and
 **HMAC-signed webhooks**. Admins configure channels and routing rules under
 **Notifications** (severity threshold, sources, subscriptions, tags, rule ids,

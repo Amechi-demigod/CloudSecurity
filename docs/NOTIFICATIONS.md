@@ -10,6 +10,7 @@ analysts can see them (secrets masked) and the delivery log; viewers cannot.
 - [Microsoft Teams](#microsoft-teams) · [Slack](#slack) · [Email: SMTP](#email-smtp) · [Email: Azure Communication Services](#email-azure-communication-services) · [Signed webhooks](#signed-webhooks)
 - [Rules: matching, throttling, quiet hours, digests](#rules)
 - [Security](#security)
+- [Endpoint device events](#endpoint-device-events)
 - [Adding a new event source](#adding-a-new-event-source)
 - [Troubleshooting](#troubleshooting)
 
@@ -230,7 +231,10 @@ created (creating a rule never replays older alerts into a channel).
   types, tags (`key=value`, `key=*` = present), detection/posture rule ids
   (wildcards, e.g. `CDR-00*`), MITRE techniques (`T1059` matches `T1059.004`).
   Events without a resource can carry `subscription_id`, `asset_type` and
-  `tags` attributes (e.g. future device events).
+  `tags` attributes (device events use `asset_type` = `device`).
+* **Event types:** when exactly one source with several kinds of events is
+  selected (e.g. *Endpoint device*), the rule builder lists its event types
+  (none ticked = all).
 * **Status changes:** off by default; tick *Also notify when an alert or finding
   changes status* to receive acknowledged/resolved/suppressed updates.
 * **Throttling / dedup:** events are grouped (a detection rule on one resource,
@@ -265,6 +269,23 @@ created (creating a rule never replays older alerts into a channel).
 * **Injection:** workload-controlled text is escaped for each format (Slack
   mrkdwn, Adaptive Card markdown, HTML email, header-safe subjects).
 
+## Endpoint device events
+
+The *Endpoint device* source ([device management](DEVICE_MANAGEMENT.md)) raises:
+
+| Event type | Severity | When |
+|---|---|---|
+| `disk_encryption_off`, `firewall_off`, `antivirus_off`, `sip_disabled` | high | the issue appears on a check-in (first check-in, or it was not present at the previous one) |
+| `av_signatures_outdated`, `os_updates_pending` (past the grace period), `gatekeeper_off`, `secure_boot_off` | medium | same |
+| `screen_lock_off` | low | same |
+| `stale` / `inactive` | medium / high | a device stops checking in (polled every 5 minutes by the dispatcher leader; the first poll only records a baseline). Notifies again if the device comes back and later goes quiet again |
+| `command_succeeded` / `command_failed` / `command_rejected` | low / medium / medium | the agent reports the result of a remote action (lock device, collect logs, ...) |
+
+Each event links to the device page, uses the issue code (or the command type)
+as its rule id, so the *rule ids* filter works too (e.g. `firewall_*`,
+`lock_device`), and is grouped per device and issue for throttling. Revoked
+devices are not reported. Producing an event never fails a check-in.
+
 ## Adding a new event source
 
 ```python
@@ -283,7 +304,8 @@ emit(db, Event(source="device", event_type="encryption_off", severity="high",
 
 The source then appears in the rule builder automatically. Pull-based sources
 pass `poll=` / `poll_interval=` (see `poll_attack_paths` in
-`backend/app/notifications/builtin.py`).
+`backend/app/notifications/builtin.py`). The endpoint device source in
+`backend/app/notifications/device_source.py` is a complete example of both.
 
 ## Troubleshooting
 
