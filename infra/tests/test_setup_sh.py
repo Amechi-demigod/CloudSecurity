@@ -174,3 +174,13 @@ def test_input_validation(fake_env, args, msg):
     proc = run(env, *args, FAKE_EXISTING="1")
     assert proc.returncode != 0 and msg in proc.stderr
     assert mutations(log) == []
+
+
+def test_public_base_url_variable(fake_env):
+    env, log = fake_env
+    proc = run(env, "--admin-email", "a@example.com", "--public-base-url", "https://cnapp.example.com/")
+    assert proc.returncode == 0, proc.stderr
+    assert any(c.startswith("gh variable set CNAPP_PUBLIC_BASE_URL --body https://cnapp.example.com --repo")
+               for c in mutations(log))
+    bad = run(env, "--admin-email", "a@example.com", "--public-base-url", "http://insecure.example.com")
+    assert bad.returncode != 0 and "https://" in bad.stderr

@@ -9,7 +9,7 @@
 #   OWNER               GitHub owner of the ghcr.io images
 #   GHCR_USER/GHCR_TOKEN  credentials to import the images from ghcr.io (the job's GITHUB_TOKEN)
 #   CNAPP_NAME_PREFIX, AZURE_LOCATION, CNAPP_ADMIN_EMAIL, CNAPP_SIMULATION_MODE,
-#   CNAPP_SCAN_SUBSCRIPTION_IDS  read by infra/main.bicepparam
+#   CNAPP_SCAN_SUBSCRIPTION_IDS, CNAPP_PUBLIC_BASE_URL  read by infra/main.bicepparam
 #
 # Writes url, backend_app, frontend_app, login_server and key_vault to $GITHUB_OUTPUT.
 set -euo pipefail
@@ -44,10 +44,12 @@ secret() { # <env var> <key vault secret name> <generator>
 hex32() { openssl rand -hex 32; }
 hex24() { openssl rand -hex 24; }
 password() { openssl rand -base64 24 | tr -d '/+=' | cut -c1-24; }
+fernet() { openssl rand -base64 32 | tr '+/' '-_'; } # url-safe base64 of 32 bytes (44 chars)
 secret CNAPP_POSTGRES_PASSWORD postgres-admin-password hex24
 secret CNAPP_INGEST_API_TOKEN ingest-api-token hex32
 secret CNAPP_ADMIN_PASSWORD admin-password password
 secret CNAPP_SESSION_SECRET session-secret hex32
+secret CNAPP_NOTIFICATIONS_ENCRYPTION_KEY notifications-encryption-key fernet
 
 deploy() { # <deployApps>; retried once (new role assignments can take a minute to propagate)
   export CNAPP_DEPLOY_APPS="$1"

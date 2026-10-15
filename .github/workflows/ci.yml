@@ -128,6 +128,7 @@ jobs:
           CNAPP_INGEST_API_TOKEN: ci-placeholder-token-000000000000000000
           CNAPP_ADMIN_PASSWORD: ci-placeholder-admin
           CNAPP_SESSION_SECRET: ci-placeholder-session-secret-000000000000
+          CNAPP_NOTIFICATIONS_ENCRYPTION_KEY: ci-placeholder-notifications-key-00000000000=
         run: bicep build-params infra/main.bicepparam --outfile "$RUNNER_TEMP/main.parameters.json"
       - name: shellcheck
         run: shellcheck infra/setup.sh infra/deploy.sh infra/tests/*.sh

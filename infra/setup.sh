@@ -44,6 +44,7 @@ GH_ENVIRONMENT="production"
 REVIEWER=""
 DEPLOY_ON_PUSH=false
 SCAN_SUBSCRIPTIONS=()
+PUBLIC_BASE_URL=""
 
 # Built-in role definition IDs.
 ROLE_ACR_PULL="7f951dda-4ed3-4680-a7ca-43fe172d538d"
@@ -65,6 +66,8 @@ Usage: $SCRIPT_NAME [options]
   --environment NAME         GitHub environment trusted by the federated credential (default: $GH_ENVIRONMENT)
   --reviewer LOGIN           GitHub user who must approve deployments (default: you)
   --deploy-on-push           also deploy automatically after CI passes on main
+  --public-base-url URL      https URL users open the app at (custom domain), used for links in
+                             notifications; default: the Container Apps URL of the web app
   --grant-scanner SUB_ID     (after the first deployment) grant the backend identity Reader on
                              SUB_ID and add it to the scanned subscriptions; repeatable.
                              Only this step runs when given.
@@ -89,6 +92,7 @@ while [[ $# -gt 0 ]]; do
     --environment) GH_ENVIRONMENT="${2:?}"; shift 2 ;;
     --reviewer) REVIEWER="${2:?}"; shift 2 ;;
     --deploy-on-push) DEPLOY_ON_PUSH=true; shift ;;
+    --public-base-url) PUBLIC_BASE_URL="${2:?}"; shift 2 ;;
     --grant-scanner) SCAN_SUBSCRIPTIONS+=("${2:?}"); shift 2 ;;
     --dry-run) DRY_RUN=true; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -99,6 +103,9 @@ done
 [[ "$NAME_PREFIX" =~ ^[a-z0-9]{3,10}$ ]] || die "--name-prefix must be 3-10 lowercase letters/digits"
 [[ "$RESOURCE_GROUP" =~ ^[-A-Za-z0-9_.()]{1,90}$ ]] || die "invalid --resource-group"
 [[ "$LOCATION" =~ ^[a-z0-9]+$ ]] || die "invalid --location (use the short name, e.g. eastus)"
+if [[ -n "$PUBLIC_BASE_URL" && ! "$PUBLIC_BASE_URL" =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?(/[^[:space:]]*)?$ ]]; then
+  die "--public-base-url must be an https:// URL"
+fi
 
 command -v az >/dev/null 2>&1 || die "Azure CLI (az) not found: https://aka.ms/azcli"
 command -v gh >/dev/null 2>&1 || die "GitHub CLI (gh) not found: https://cli.github.com"
@@ -304,6 +311,9 @@ set_gh_var AZURE_LOCATION "$LOCATION"
 set_gh_var CNAPP_NAME_PREFIX "$NAME_PREFIX"
 set_gh_var CNAPP_ADMIN_EMAIL "$ADMIN_EMAIL"
 set_gh_var AZURE_DEPLOY_ON_PUSH "$DEPLOY_ON_PUSH"
+if [[ -n "$PUBLIC_BASE_URL" ]]; then
+  set_gh_var CNAPP_PUBLIC_BASE_URL "${PUBLIC_BASE_URL%/}"
+fi
 
 cat <<EOF
 
@@ -320,6 +330,9 @@ Next steps:
      Change it right away (user menu -> Change password).
   4. Optional: let the Azure scanner read a subscription:
        $SCRIPT_NAME --resource-group $RESOURCE_GROUP --grant-scanner <subscription-id>
+  5. Optional: alert notifications (Teams, Slack, email, webhooks): sign in as an admin ->
+     Notifications. The encryption key for channel secrets is generated into Key Vault
+     (notifications-encryption-key) by the deploy workflow. See docs/NOTIFICATIONS.md.
 
 Tear everything down later with:  az group delete -n $RESOURCE_GROUP --yes
 EOF

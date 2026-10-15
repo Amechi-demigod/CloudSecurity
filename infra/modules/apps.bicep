@@ -35,6 +35,9 @@ param simulationMode bool
 param scanSubscriptionIds string
 param trustedProxyCidrs string
 
+@description('Public URL of the web UI for notification deep links; empty = the web app URL.')
+param publicBaseUrl string = ''
+
 param backendCpu string
 param backendMemory string
 param backendMinReplicas int
@@ -77,12 +80,14 @@ resource env 'Microsoft.App/managedEnvironments@2024-03-01' = {
 }
 
 var frontendOrigin = 'https://${frontendName}.${env.properties.defaultDomain}'
+var notificationsBaseUrl = empty(publicBaseUrl) ? frontendOrigin : publicBaseUrl
 
 var kvSecret = {
   'database-url': 'database-url'
   'ingest-api-token': 'ingest-api-token'
   'admin-password': 'admin-password'
   'session-secret': 'session-secret'
+  'notifications-encryption-key': 'notifications-encryption-key'
 }
 
 resource api 'Microsoft.App/containerApps@2024-03-01' = {
@@ -150,6 +155,13 @@ resource api 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'AZURE_AUTH_MODE', value: 'managed_identity' }
             { name: 'AZURE_MANAGED_IDENTITY_CLIENT_ID', value: backendIdentityClientId }
             { name: 'AZURE_SUBSCRIPTION_IDS', value: scanSubscriptionIds }
+            // Alert notifications (docs/NOTIFICATIONS.md). Outbound calls to Teams,
+            // Slack, SMTP/ACS and webhooks leave through the environment's default
+            // egress (no NAT gateway / firewall is deployed). If you add an Azure
+            // Firewall or NSG egress rules, allow 443 to the webhook hosts and your
+            // SMTP port. The dispatcher is leader-elected, so replicas never double-send.
+            { name: 'PUBLIC_BASE_URL', value: notificationsBaseUrl }
+            { name: 'NOTIFICATIONS_ENCRYPTION_KEY', secretRef: 'notifications-encryption-key' }
           ]
           probes: [
             {

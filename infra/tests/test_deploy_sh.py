@@ -55,12 +55,14 @@ def test_first_deployment(env):
     assert [d["apps"] for d in deps] == ["false", "true"]
     assert deps[1]["backend"] == f"cnapp-backend:{SHA}" and deps[1]["frontend"] == f"cnapp-frontend:{SHA}"
     # secrets were generated (not read from a vault that does not exist yet), identical in both phases
-    for key in ("pg", "token", "admin", "session"):
+    for key in ("pg", "token", "admin", "session", "notify"):
         assert deps[0][key] == deps[1][key] and not deps[0][key].startswith("kv-value")
     assert len(deps[0]["pg"]) == 48 and len(deps[0]["token"]) == 64 and len(deps[0]["session"]) == 64
+    # notifications key: a Fernet key (url-safe base64 of 32 bytes)
+    assert re.fullmatch(r"[A-Za-z0-9_-]{43}=", deps[0]["notify"])
     assert re.fullmatch(r"[A-Za-z0-9]{20,24}", deps[0]["admin"])
     # every generated value is masked in the logs
-    for key in ("pg", "token", "admin", "session"):
+    for key in ("pg", "token", "admin", "session", "notify"):
         assert f"::add-mask::{deps[0][key]}" in proc.stdout
     calls = log.read_text()
     assert "secret show" not in calls  # nothing to read on the first run
@@ -82,6 +84,7 @@ def test_later_deployment_reuses_secrets_and_running_images(env):
     d = deps[0]
     assert d["pg"] == "kv-value-of-postgres-admin-password" and d["session"] == "kv-value-of-session-secret"
     assert d["token"] == "kv-value-of-ingest-api-token" and d["admin"] == "kv-value-of-admin-password"
+    assert d["notify"] == "kv-value-of-notifications-encryption-key"
     # Bicep keeps the running images; the workflow's next step rolls out the new tag
     assert d["backend"] == "cnapp-backend:old" and d["frontend"] == "cnapp-frontend:old"
     assert "generated a new value" not in proc.stdout
