@@ -74,6 +74,7 @@ param sessionSecret string
 @description('Fernet key (url-safe base64 of 32 random bytes) encrypting notification channel secrets at rest (NOTIFICATIONS_ENCRYPTION_KEY).')
 param notificationsEncryptionKey string
 
+@secure()
 @minLength(32)
 @description('Key encrypting TOTP (MFA) secrets at rest (MFA_ENCRYPTION_KEY).')
 param mfaEncryptionKey string

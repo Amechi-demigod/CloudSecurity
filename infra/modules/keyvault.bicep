@@ -29,6 +29,9 @@ param sessionSecret string
 @secure()
 @description('Fernet key encrypting notification channel secrets (webhook URLs, SMTP passwords) at rest.')
 param notificationsEncryptionKey string
+
+@secure()
+@description('Key encrypting TOTP (MFA) secrets at rest.')
 param mfaEncryptionKey string
 
 // Built-in role: Key Vault Secrets User (read secret values).
@@ -80,6 +83,8 @@ var secrets = [
   {
     name: 'notifications-encryption-key'
     value: notificationsEncryptionKey
+  }
+  {
     name: 'mfa-encryption-key'
     value: mfaEncryptionKey
   }
