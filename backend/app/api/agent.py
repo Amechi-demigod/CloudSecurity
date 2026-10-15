@@ -19,6 +19,7 @@ from .. import config
 from ..auth import RateLimiter, audit, client_ip
 from ..db import get_db
 from ..models import Device, DeviceCommand, DeviceCredential, DeviceLogBundle, utcnow
+from ..notifications import device_source
 from ..schemas_devices import (
     AgentCommand,
     AgentCommandList,
@@ -157,6 +158,7 @@ def command_result(body: CommandResultIn, command_id: str = CommandId, device: D
         device.check_in_interval_seconds = svc.clamp_interval(int(cmd.params.get("interval_seconds", 900)))
     audit(db, "device_command_completed", actor_email=f"device:{device.hostname}"[:320],
           target=f"device:{device.id}", command_id=cmd.id, type=cmd.type, status=body.status)
+    device_source.command_completed(db, device, cmd)
     db.commit()
 
 

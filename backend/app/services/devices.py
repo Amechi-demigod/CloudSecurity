@@ -26,6 +26,7 @@ from ..models import (
     EnrollmentToken,
     utcnow,
 )
+from ..notifications import device_source
 from ..schemas_devices import MAX_INTERVAL_SECONDS, MIN_INTERVAL_SECONDS, CheckinRequest
 
 ENROLL_TOKEN_PREFIX = "cne_"  # noqa: S105 (a public prefix, not a secret)
@@ -151,7 +152,12 @@ def apply_checkin(db: Session, device: Device, body: CheckinRequest, ip: str | N
         db.add_all(rows)
         device.software_count = len(rows)
 
-    issues = [i["code"] for i in device_issues(device, now)]
+    # Issue codes at the previous check-in (None: first check-in), to notify about new ones only.
+    prev = db.scalar(select(DevicePostureSnapshot.issues).where(DevicePostureSnapshot.device_id == device.id)
+                     .order_by(DevicePostureSnapshot.id.desc()).limit(1))
+    current = device_issues(device, now)
+    issues = [i["code"] for i in current]
+    device_source.issues_raised(db, device, current, set(prev) if prev is not None else None)
     collected = body.collected_at
     if collected is not None and collected.tzinfo is not None:
         collected = collected.astimezone(UTC).replace(tzinfo=None)

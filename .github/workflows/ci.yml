@@ -335,6 +335,8 @@ jobs:
           APP_ENV=production
           SESSION_SECRET=$(openssl rand -hex 32)
           MFA_ENCRYPTION_KEY=$(openssl rand -hex 32)
+          NOTIFICATIONS_ENCRYPTION_KEY=$(openssl rand -base64 32 | tr '+/' '-_')
+          PUBLIC_BASE_URL=https://cnapp.example.com
           ADMIN_EMAIL=smoke@example.com
           ADMIN_PASSWORD=${admin_password}
           INGEST_API_TOKEN=${ingest_token}
