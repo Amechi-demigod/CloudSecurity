@@ -363,14 +363,15 @@ def _callback_fallback(request: Request) -> str:
     return f"{scheme}://{host}{CALLBACK_PATH}"
 
 
-def _login_redirect(error: str | None = None, fragment: str | None = None) -> RedirectResponse:
+def _login_redirect(error: str | None = None, fragment: str | None = None, clear: bool = True) -> RedirectResponse:
     url = "/login"
     if error:
         url += f"?sso_error={quote(error)}"
     if fragment:
         url += f"#{fragment}"
     resp = RedirectResponse(url, status_code=302)
-    _clear_oidc_cookie(resp)
+    if clear:
+        _clear_oidc_cookie(resp)
     return resp
 
 
@@ -477,18 +478,20 @@ def entra_callback(request: Request, code: str | None = None, state: str | None 
     _entra_ready()
     ip = client_ip(request)
 
-    def fail(reason: str, email: str | None = None, **detail) -> RedirectResponse:
+    def fail(reason: str, email: str | None = None, clear: bool = True, **detail) -> RedirectResponse:
         db.rollback()
         audit(db, "sso_login_failure", actor_email=(email or "")[:320], ip=ip, provider="entra", reason=reason,
               **detail)
         db.commit()
-        return _login_redirect(reason)
+        return _login_redirect(reason, clear=clear)
 
+    # An unknown state must not disturb a sign-in in progress in this browser
+    # (a third party could otherwise abort it with a forged callback link).
     if not state or len(state) > 256:
-        return fail("invalid_state")
+        return fail("invalid_state", clear=False)
     pending = db.get(OidcAuthRequest, _token_id("oidc-state:" + state))
     if pending is None:
-        return fail("invalid_state")
+        return fail("invalid_state", clear=False)
     db.delete(pending)  # single use, whatever happens next
     db.commit()
     binding = request.cookies.get(OIDC_COOKIE) or ""
