@@ -1,0 +1,5 @@
+/dist/
+/cnapp-agent
+*.exe
+*.pkg
+/build/

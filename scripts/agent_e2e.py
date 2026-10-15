@@ -7,6 +7,11 @@ enrollment token through the admin API, enrolls the agent binary given with
 collect_logs, update_check_in_interval), verifies their results and the
 uploaded log bundle, then revokes the device and checks the agent is rejected.
 
+With --service (CI only: it installs a real Windows service / macOS
+LaunchDaemon, using sudo on macOS) it also installs the agent as a service,
+waits for the service's own check-in, sends restart_agent and checks that the
+service manager brings the agent back, then uninstalls it.
+
 CI runs it on Windows and macOS runners. Locally:
 
     python scripts/agent_e2e.py --agent ./endpoint-agent/cnapp-agent
@@ -63,8 +68,11 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
+SUDO: list[str] = []
+
+
 def run_agent(agent: str, home: str, *args: str, check: bool = True) -> subprocess.CompletedProcess:
-    cmd = [agent, *args, "--home", home]
+    cmd = [*SUDO, agent, *args, "--home", home]
     print("+", " ".join(a if not a.startswith("cne_") else "cne_***" for a in cmd), flush=True)
     p = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
     sys.stdout.write(p.stdout[-4000:])
@@ -88,15 +96,53 @@ def wait_health(base: str, proc: subprocess.Popen, timeout: float = 120) -> None
     raise SystemExit("backend did not become healthy")
 
 
+def wait_for(what: str, fn, timeout: float) -> None:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if fn():
+            print(f"ok: {what}", flush=True)
+            return
+        time.sleep(3)
+    raise SystemExit(f"timed out waiting for: {what}")
+
+
+def service_test(api: Api, agent: str, home: str, device_id: str) -> None:
+    def checkins() -> int:
+        return len(api.call("GET", f"/api/devices/{device_id}/history?limit=500"))
+
+    before = checkins()
+    run_agent(agent, home, "install")
+    wait_for("check-in from the installed service", lambda: checkins() > before, 180)
+    if platform.system() == "Windows":
+        acl = subprocess.run(["icacls", str(Path(home, "state"))], capture_output=True, text=True).stdout
+        print(acl)
+        assert "NT AUTHORITY\\SYSTEM" in acl and "BUILTIN\\Administrators" in acl, "state dir ACL"
+        assert "BUILTIN\\Users" not in acl and "Everyone" not in acl, "state dir readable by non-admins"
+    cid = api.call("POST", f"/api/devices/{device_id}/commands",
+                   {"type": "restart_agent", "reason": "e2e service restart"})["id"]
+    before = checkins()
+
+    def restarted() -> bool:
+        cmd = next(c for c in api.call("GET", f"/api/devices/{device_id}/commands") if c["id"] == cid)
+        return cmd["status"] == "succeeded"
+
+    wait_for("restart_agent acknowledged by the service", restarted, 180)
+    wait_for("service restarted by the service manager and checked in again", lambda: checkins() > before, 240)
+    run_agent(agent, home, "uninstall")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--agent", required=True, help="path to the cnapp-agent binary")
     ap.add_argument("--python", default=sys.executable, help="python with the backend requirements installed")
+    ap.add_argument("--service", action="store_true", help="also test the real OS service (CI runners only)")
     args = ap.parse_args()
+    if args.service and platform.system() == "Darwin":
+        SUDO[:] = ["sudo", "-n"]  # the LaunchDaemon runs as root; keep all agent state root-owned
     agent = str(Path(args.agent).resolve())
     expected_os = {"Windows": "windows", "Darwin": "macos", "Linux": "linux"}[platform.system()]
 
-    with tempfile.TemporaryDirectory(prefix="cnapp-e2e-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="cnapp-e2e-", ignore_cleanup_errors=True) as tmp:
         port = free_port()
         base = f"http://127.0.0.1:{port}"
         env = {**os.environ, "DATABASE_URL": f"sqlite:///{Path(tmp, 'e2e.db').as_posix()}", "SIMULATION_MODE": "false",
@@ -155,6 +201,9 @@ def main() -> int:
             assert "cnd_" not in state_json, "log bundle leaks the device secret"
             assert api.call("GET", f"/api/devices/{dev['id']}")["check_in_interval_seconds"] == 600
             assert len(api.call("GET", f"/api/devices/{dev['id']}/history")) >= 2
+
+            if args.service:
+                service_test(api, agent, home, dev["id"])
 
             # 4. re-enrollment keeps the same device and rotates the secret
             run_agent(agent, home, "enroll", "--server", base, "--token", token, "--insecure-dev")
