@@ -397,3 +397,198 @@ jobs:
         run: |
           docker compose -f docker-compose.yml -f docker-compose.postgres.yml down -v || true
           rm -f .env
+
+  onprem:
+    name: On-prem (cnapp-ctl install, TLS, agent, sensor, backup/restore, update, rollback, uninstall)
+    needs: [backend, frontend]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      REG: ghcr.io/amechi-demigod
+      HOST: cnapp.test
+      ADMIN: admin@cnapp.test
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: shellcheck
+        run: shellcheck deploy/onprem/cnapp-ctl
+      - name: cnapp-ctl --dry-run and help (no changes)
+        run: |
+          deploy/onprem/cnapp-ctl help | head -n 5
+          sudo deploy/onprem/cnapp-ctl tls init --dry-run 2>&1 | tail -n 2 || true
+          sudo deploy/onprem/cnapp-ctl install --dry-run --hostname "$HOST" --admin-email "$ADMIN" --skip-firewall --skip-ghcr-login 2>&1 | tail -n 20
+          test ! -e /opt/cnapp/cnapp.env
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build backend image (tag ci-1, as if pulled from GHCR)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: backend
+          platforms: linux/amd64
+          load: true
+          tags: ${{ env.REG }}/cloudsecurity-backend:ci-1
+          labels: org.opencontainers.image.revision=ci-1
+          cache-from: type=gha,scope=backend
+      - name: Build frontend image (tag ci-1)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: frontend
+          platforms: linux/amd64
+          load: true
+          tags: ${{ env.REG }}/cloudsecurity-frontend:ci-1
+          labels: org.opencontainers.image.revision=ci-1
+          cache-from: type=gha,scope=frontend
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: endpoint-agent/go.mod
+          cache-dependency-path: endpoint-agent/go.sum
+      - name: Build the endpoint agent from source
+        run: cd endpoint-agent && go build -trimpath -o "$RUNNER_TEMP/cnapp-agent" ./cmd/cnapp-agent
+      - name: cnapp-ctl install (real, non-interactive; Docker already present; UFW enabled)
+        run: |
+          echo "127.0.0.1 $HOST" | sudo tee -a /etc/hosts
+          sudo deploy/onprem/cnapp-ctl install --hostname "$HOST" --ip 127.0.0.1 --admin-email "$ADMIN" \
+            --image-tag ci-1 --skip-ghcr-login --mfa-required-roles "" \
+            --allowed-cidrs 127.0.0.0/8,198.51.100.0/24 --ssh-cidrs 10.255.255.0/24 \
+            --admin-password-file "$RUNNER_TEMP/admin.pw" --yes
+          sudo chown "$USER" "$RUNNER_TEMP/admin.pw"
+          # The CA certificate is public: export it like an admin would for clients.
+          sudo cnapp-ctl tls export-ca "$RUNNER_TEMP/ca.crt"
+          echo "CA=$RUNNER_TEMP/ca.crt" >> "$GITHUB_ENV"
+          sudo cnapp-ctl show-secret INGEST_API_TOKEN > "$RUNNER_TEMP/ingest.token"
+          echo "::add-mask::$(cat "$RUNNER_TEMP/admin.pw")"
+          echo "::add-mask::$(cat "$RUNNER_TEMP/ingest.token")"
+      - name: Install is idempotent (second run changes nothing, keeps secrets)
+        run: |
+          before="$(sudo sha256sum /opt/cnapp/secrets/generated.env /opt/cnapp/tls/server.key /opt/cnapp/ca/ca.key)"
+          sudo cnapp-ctl install --skip-ghcr-login --no-admin --yes
+          test "$before" = "$(sudo sha256sum /opt/cnapp/secrets/generated.env /opt/cnapp/tls/server.key /opt/cnapp/ca/ca.key)"
+      - name: Permissions, ports, status
+        run: |
+          sudo stat -c '%a %U:%G %n' /opt/cnapp /opt/cnapp/cnapp.env /opt/cnapp/secrets /opt/cnapp/secrets/generated.env \
+            /opt/cnapp/ca /opt/cnapp/ca/ca.key /opt/cnapp/tls /opt/cnapp/tls/server.key /opt/cnapp/backups
+          test "$(sudo stat -c %a /opt/cnapp/secrets)" = 700
+          test "$(sudo stat -c %a /opt/cnapp/secrets/generated.env)" = 600
+          test "$(sudo stat -c %a /opt/cnapp/ca/ca.key)" = 600
+          test "$(sudo stat -c %a /opt/cnapp/cnapp.env)" = 600
+          docker ps --format '{{.Names}} {{.Ports}}'
+          # Only 80/443 are published; Postgres is not.
+          test -z "$(docker port cnapp-postgres-1 2>/dev/null)"
+          test -z "$(docker port cnapp-backend-1 2>/dev/null)"
+          sudo cnapp-ctl status
+          sudo cnapp-ctl tls show
+          sudo cnapp-ctl firewall status
+          systemctl is-enabled cnapp.service cnapp-firewall.service cnapp-backup.timer
+          test "$(systemctl is-enabled cnapp-update.timer)" = disabled
+      - name: End-to-end over HTTPS (TLS + CA, redirect, headers, login + CSRF, agent --ca-file, sensor ingest)
+        run: |
+          python3 deploy/onprem/tests/onprem_e2e.py --base "https://$HOST" --ca "$CA" --email "$ADMIN" \
+            --password-file "$RUNNER_TEMP/admin.pw" verify --agent "$RUNNER_TEMP/cnapp-agent" \
+            --sensor-dir sensor --ingest-token-file "$RUNNER_TEMP/ingest.token"
+      - name: Firewall - published 443 reachable from an allowed network, dropped from another (network namespaces)
+        run: |
+          set -x
+          mk() { # name host_ip ns_ip
+            sudo ip netns add "$1"; sudo ip link add "v$1" type veth peer name "p$1"
+            sudo ip link set "p$1" netns "$1"; sudo ip addr add "$2/24" dev "v$1"; sudo ip link set "v$1" up
+            sudo ip netns exec "$1" ip addr add "$3/24" dev "p$1"; sudo ip netns exec "$1" ip link set "p$1" up
+            sudo ip netns exec "$1" ip link set lo up
+          }
+          mk okns 198.51.100.1 198.51.100.2
+          mk badns 203.0.113.1 203.0.113.2
+          sudo ip netns exec okns curl -fsS --max-time 10 --cacert "$CA" --resolve "$HOST:443:198.51.100.1" "https://$HOST/api/health"
+          if sudo ip netns exec badns curl -sS --max-time 8 --cacert "$CA" --resolve "$HOST:443:203.0.113.1" "https://$HOST/api/health"; then
+            echo "::error::443 reachable from a network outside CNAPP_ALLOWED_CIDRS"; exit 1
+          fi
+          sudo iptables -S DOCKER-USER; sudo iptables -L CNAPP-INGRESS -v -n
+      - name: Backup, then restore (data written after the backup disappears)
+        run: |
+          e2e() { python3 deploy/onprem/tests/onprem_e2e.py --base "https://$HOST" --ca "$CA" --email "$ADMIN" --password-file "$RUNNER_TEMP/admin.pw" "$@"; }
+          e2e mark before-backup
+          sudo systemctl start cnapp-backup.service
+          sudo journalctl -u cnapp-backup.service --no-pager | tail -n 5
+          backup="$(sudo find /opt/cnapp/backups -name 'cnapp-db-*.dump.gz' | sort | tail -n1)"
+          test -n "$backup"; sudo ls -l /opt/cnapp/backups
+          e2e mark after-backup
+          sudo cnapp-ctl restore "$backup" --yes
+          e2e expect before-backup present
+          e2e expect after-backup absent
+      - name: Update to a second tag (ci-2)
+        run: |
+          for svc in backend frontend; do
+            printf 'FROM %s/cloudsecurity-%s:ci-1\nLABEL org.opencontainers.image.revision=ci-2\n' "$REG" "$svc" \
+              | docker build -q -t "$REG/cloudsecurity-$svc:ci-2" -
+          done
+          sudo cnapp-ctl update --tag ci-2
+          test "$(sudo grep '^IMAGE_TAG=' /opt/cnapp/cnapp.env)" = IMAGE_TAG=ci-2
+          test "$(docker inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' cnapp-backend-1)" = ci-2
+          sudo cnapp-ctl update --tag ci-2 | tee "$RUNNER_TEMP/noop.txt"; grep -q "already up to date" "$RUNNER_TEMP/noop.txt"
+          python3 deploy/onprem/tests/onprem_e2e.py --base "https://$HOST" --ca "$CA" --email "$ADMIN" --password-file "$RUNNER_TEMP/admin.pw" expect before-backup present
+      - name: Forced failing update (new migration, then crash) rolls back and restores the database
+        run: |
+          ctx="$RUNNER_TEMP/bad"; mkdir -p "$ctx"
+          cat > "$ctx/0005_ci_probe.py" <<'PY'
+          """CI only: a migration from a broken release."""
+          import sqlalchemy as sa
+          from alembic import op
+
+          revision = "0005_ci_probe"
+          down_revision = "0004_mfa_sso"
+          branch_labels = None
+          depends_on = None
+
+
+          def upgrade() -> None:
+              op.create_table("ci_rollback_probe", sa.Column("id", sa.Integer, primary_key=True))
+
+
+          def downgrade() -> None:
+              op.drop_table("ci_rollback_probe")
+          PY
+          sed -i 's/^          //' "$ctx/0005_ci_probe.py"
+          cat > "$ctx/Dockerfile" <<EOF
+          FROM $REG/cloudsecurity-backend:ci-2
+          COPY 0005_ci_probe.py /app/migrations/versions/
+          CMD ["sh", "-c", "python -m app.cli migrate && echo 'simulated broken release' && exit 1"]
+          EOF
+          docker build -q -t "$REG/cloudsecurity-backend:ci-bad" "$ctx"
+          docker tag "$REG/cloudsecurity-frontend:ci-2" "$REG/cloudsecurity-frontend:ci-bad"
+          if sudo cnapp-ctl update --tag ci-bad --health-timeout 90; then echo "::error::broken update reported success"; exit 1; fi
+          test "$(sudo grep '^IMAGE_TAG=' /opt/cnapp/cnapp.env)" = IMAGE_TAG=ci-2
+          rev="$(docker exec cnapp-postgres-1 psql -U cnapp -d cnapp -tAc 'select version_num from alembic_version' | tr -d '[:space:]')"
+          test "$rev" = 0004_mfa_sso
+          test -z "$(docker exec cnapp-postgres-1 psql -U cnapp -d cnapp -tAc "select to_regclass('ci_rollback_probe')" | tr -d '[:space:]')"
+          sudo cat /opt/cnapp/state/history.log
+          python3 deploy/onprem/tests/onprem_e2e.py --base "https://$HOST" --ca "$CA" --email "$ADMIN" --password-file "$RUNNER_TEMP/admin.pw" expect before-backup present
+      - name: TLS renew, restart via systemd, admin password reset
+        run: |
+          old="$(sudo openssl x509 -noout -serial -in /opt/cnapp/tls/server.crt)"
+          sudo cnapp-ctl tls renew
+          test "$old" != "$(sudo openssl x509 -noout -serial -in /opt/cnapp/tls/server.crt)"
+          curl -fsS --cacert "$CA" "https://$HOST/api/health"
+          sudo systemctl restart cnapp.service
+          sudo cnapp-ctl start
+          systemctl is-active cnapp.service
+          printf 'a-new-password-for-ci-123\n' > "$RUNNER_TEMP/new.pw"
+          sudo cnapp-ctl reset-password --email "$ADMIN" --password-file "$RUNNER_TEMP/new.pw"
+          python3 deploy/onprem/tests/onprem_e2e.py --base "https://$HOST" --ca "$CA" --email "$ADMIN" --password-file "$RUNNER_TEMP/new.pw" expect before-backup present
+      - name: Uninstall keeps data; reinstall picks it up; purge removes everything
+        run: |
+          sudo cnapp-ctl uninstall --yes
+          test -z "$(docker ps -q --filter name=cnapp-)"
+          docker volume inspect cnapp_pgdata >/dev/null
+          test -f /opt/cnapp/cnapp.env && test ! -e /usr/local/bin/cnapp-ctl
+          sudo /opt/cnapp/app/cnapp-ctl install --skip-ghcr-login --no-admin --yes
+          python3 deploy/onprem/tests/onprem_e2e.py --base "https://$HOST" --ca "$CA" --email "$ADMIN" --password-file "$RUNNER_TEMP/new.pw" expect before-backup present
+          sudo cnapp-ctl uninstall --purge --yes
+          test ! -e /opt/cnapp && ! docker volume inspect cnapp_pgdata >/dev/null 2>&1
+          test ! -e /etc/systemd/system/cnapp.service
+          ! sudo iptables -S CNAPP-INGRESS 2>/dev/null
+      - name: Diagnostics
+        if: failure()
+        run: |
+          sudo docker ps -a || true
+          for c in backend frontend postgres; do sudo docker logs --tail 150 "cnapp-$c-1" 2>&1 || true; done
+          sudo cat /opt/cnapp/state/*.log 2>/dev/null | tail -n 200 || true
+          sudo ufw status verbose || true
+          sudo iptables -S || true
