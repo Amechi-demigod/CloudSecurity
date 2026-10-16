@@ -34,6 +34,9 @@ CA_DIR="$CNAPP_HOME/ca"
 BACKUP_DIR="$CNAPP_HOME/backups"
 STATE_DIR="$CNAPP_HOME/state"
 export DOCKER_CONFIG="$SECRETS_DIR/docker"
+# systemd units run without HOME; docker/compose expect one.
+export HOME="${HOME:-/root}"
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin${PATH:+:$PATH}"
 
 DRY_RUN=0
 ASSUME_YES=0
@@ -129,7 +132,8 @@ https_health() { # end-to-end check through nginx + TLS, verified against our CA
   local host; host=$(conf_get CNAPP_HOSTNAME)
   local args=(-fsS --max-time 10 --resolve "${host}:443:127.0.0.1")
   [[ -f "$TLS_DIR/ca-bundle.crt" ]] && args+=(--cacert "$TLS_DIR/ca-bundle.crt")
-  curl "${args[@]}" "https://${host}/api/health" 2>/dev/null | grep -q '"status":"ok"'
+  local body; body=$(curl "${args[@]}" "https://${host}/api/health" 2>/dev/null || true)
+  [[ $body == *'"status":"ok"'* ]]
 }
 
 wait_healthy() { # wait_healthy timeout_seconds
@@ -332,7 +336,7 @@ cmd_tls_import() {
   [[ $a == "$b" ]] || die "the private key does not match the certificate"
   openssl x509 -checkend 0 -noout -in "$cert" >/dev/null || die "the certificate has expired"
   host=$(conf_get CNAPP_HOSTNAME)
-  if [[ -n $host ]] && ! openssl x509 -noout -checkhost "$host" -in "$cert" | grep -q 'does match'; then
+  if [[ -n $host && "$(openssl x509 -noout -checkhost "$host" -in "$cert" 2>/dev/null || true)" != *"does match"* ]]; then
     warn "the certificate is not valid for $host (check its Subject Alternative Names)"
   fi
   if [[ -n $ca ]]; then
@@ -411,9 +415,9 @@ ssh_port() {
 ssh_client_ip() { # the admin's current SSH source address, if any
   local ip=""
   [[ -n ${SSH_CONNECTION:-} ]] && ip=${SSH_CONNECTION%% *}
-  if [[ -z $ip ]] && have who; then ip=$(who -m 2>/dev/null | sed -n 's/.*(\([0-9a-fA-F.:]*\)).*/\1/p' | head -n1); fi
+  if [[ -z $ip ]] && have who; then ip=$(who -m 2>/dev/null | sed -n 's/.*(\([0-9a-fA-F.:]*\)).*/\1/p' | head -n1 || true); fi
   if [[ -z $ip && -n ${SUDO_USER:-} ]] && have ss; then
-    ip=$(ss -Htn state established "( sport = :$(ssh_port) )" 2>/dev/null | awk '{print $4}' | sed 's/:[0-9]*$//; s/^\[//; s/\]$//' | head -n1)
+    ip=$(ss -Htn state established "( sport = :$(ssh_port) )" 2>/dev/null | awk '{print $4}' | sed 's/:[0-9]*$//; s/^\[//; s/\]$//' | head -n1 || true)
   fi
   printf '%s' "$ip"
 }
@@ -468,7 +472,7 @@ fw_remove() {
     run iptables -w -F "$FW_CHAIN" 2>/dev/null || true
     run iptables -w -X "$FW_CHAIN" 2>/dev/null || true
   fi
-  if have ufw && ufw status 2>/dev/null | grep -q 'Status: active'; then
+  if have ufw && [[ "$(ufw status 2>/dev/null || true)" == *"Status: active"* ]]; then
     while read -r c; do run ufw delete allow proto tcp from "$c" to any port 80,443 >/dev/null 2>&1 || true; done < <(csv_items "$allowed")
     warn "UFW stays enabled and the SSH rules (port $port from $ssh_cidrs) are kept so you are not locked out"
   fi
@@ -488,7 +492,7 @@ cmd_firewall() {
 
 # ============================================================================ install
 os_field() { # os_field KEY -> value from /etc/os-release (parsed, not sourced)
-  sed -n "s/^$1=//p" /etc/os-release 2>/dev/null | tr -d '"' | head -n1
+  { sed -n "s/^$1=//p" /etc/os-release 2>/dev/null | tr -d '"' | head -n1; } || true
 }
 
 preflight() { # preflight force
@@ -506,7 +510,9 @@ preflight() { # preflight force
   (( disk_gb >= 15 )) && ok "${disk_gb} GB free under /var/lib" || warn "only ${disk_gb} GB free under /var/lib: 50 GB disk recommended"
   local p
   for p in 80 443; do
-    if ss -Hltn "( sport = :$p )" 2>/dev/null | grep -q . && ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${PROJECT}-frontend"; then
+    local listen ours; listen=$(ss -Hltn "( sport = :$p )" 2>/dev/null || true)
+    ours=$(docker ps --format '{{.Names}}' 2>/dev/null || true)
+    if [[ -n $listen && $'\n'$ours != *$'\n'"${PROJECT}-frontend"* ]]; then
       (( force )) || die "port $p is already in use by another service ($(ss -Hltnp "( sport = :$p )" | head -n1)); --force to continue"
       warn "port $p is in use"
     fi
@@ -894,7 +900,8 @@ backup_db() { # backup_db outfile -> pg_dump (custom format) | gzip, verified
   local out=$1 tmp="${1}.partial"
   compose exec -T postgres pg_dump -U cnapp -d cnapp -Fc -Z0 | gzip -6 >"$tmp"
   gzip -t "$tmp" || { rm -f "$tmp"; die "backup verification failed (gzip)"; }
-  gunzip -c "$tmp" | head -c 5 | grep -q PGDMP || { rm -f "$tmp"; die "backup verification failed (not a pg_dump archive)"; }
+  local magic; magic=$(gunzip -c "$tmp" 2>/dev/null | head -c 5 || true)
+  [[ $magic == PGDMP ]] || { rm -f "$tmp"; die "backup verification failed (not a pg_dump archive)"; }
   mv -f "$tmp" "$out"; chmod 0600 "$out"
   (cd "$(dirname "$out")" && sha256sum "$(basename "$out")" >"$(basename "$out").sha256")
 }
@@ -1020,7 +1027,7 @@ cmd_update_check() {
   tags=$(curl -fsS --max-time 20 -H "Authorization: Bearer $bearer" "https://ghcr.io/v2/$repo/tags/list?n=1000" \
     | tr ',' '\n' | sed -n 's/.*"\([^"]*\)".*/\1/p' | grep -vE '^(name|tags|cloudsecurity-backend)$' | grep -v '/' || true)
   latest_d=$(remote_digest "$repo" latest "$bearer" || true)
-  cur_d=$(docker image inspect -f '{{range .RepoDigests}}{{println .}}{{end}}' "$(image_ref backend)" 2>/dev/null | sed -n 's/.*@//p' | head -n1)
+  cur_d=$(docker image inspect -f '{{range .RepoDigests}}{{println .}}{{end}}' "$(image_ref backend)" 2>/dev/null | sed -n 's/.*@//p' | head -n1 || true)
   echo "Current tag: $cur  (backend digest ${cur_d:-unknown})"
   echo "Registry 'latest' (main branch): ${latest_d:-unknown}"
   if [[ -n $latest_d && $latest_d == "$cur_d" ]]; then ok "you are running the newest image"
@@ -1154,7 +1161,7 @@ cmd_status() {
   if https_health; then ok "HTTPS /api/health ok"; else warn "HTTPS /api/health FAILED"; fi
   local exp; exp=$(openssl x509 -noout -enddate -in "$TLS_DIR/server.crt" 2>/dev/null | cut -d= -f2)
   echo "TLS:       $(conf_get CNAPP_TLS_MODE), certificate expires $exp"
-  local last; last=$(find "$BACKUP_DIR" -maxdepth 1 -name '*.dump.gz' -printf '%T@ %f\n' 2>/dev/null | sort -rn | head -n1 | cut -d' ' -f2)
+  local last; last=$(find "$BACKUP_DIR" -maxdepth 1 -name '*.dump.gz' -printf '%T@ %f\n' 2>/dev/null | sort -rn | head -n1 | cut -d' ' -f2 || true)
   echo "Backups:   $(find "$BACKUP_DIR" -maxdepth 1 -name '*.dump.gz' 2>/dev/null | wc -l) in $BACKUP_DIR, newest: ${last:-none}"
   echo "Timers:    backup=$(systemctl is-enabled cnapp-backup.timer 2>/dev/null || echo n/a) auto-update=$(systemctl is-enabled cnapp-update.timer 2>/dev/null || echo n/a)"
   echo "Disk:      $(df -h /var/lib/docker 2>/dev/null | awk 'NR==2{print $4" free of "$2" ("$5" used)"}')"
