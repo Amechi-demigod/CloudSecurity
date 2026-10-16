@@ -44,6 +44,9 @@ Usage:
   cnapp-agent run                     run in the foreground (used by the service)
   cnapp-agent version
 
+--ca-file PEM (or env CNAPP_CA_FILE) trusts a private/internal CA (e.g. an on-prem server's
+              CA) in addition to the system store; it is copied next to the credentials.
+
 Common flags: --home DIR  keep state and logs under DIR instead of the system location
               (also CNAPP_AGENT_HOME; for testing)
 `
@@ -101,7 +104,9 @@ func cmdEnroll(args []string) error {
 	token := fs.String("token", "", "enrollment token (or use --token-stdin / CNAPP_ENROLL_TOKEN)")
 	tokenStdin := fs.Bool("token-stdin", false, "read the enrollment token from stdin")
 	insecure := fs.Bool("insecure-dev", false, "allow plain http:// (local testing only, never in production)")
-	caFile := fs.String("ca-file", "", "additional PEM CA bundle for a private PKI")
+	caFile := fs.String("ca-file", os.Getenv("CNAPP_CA_FILE"),
+		"PEM CA certificate(s) of a private/internal CA to trust in addition to the system store "+
+			"(env CNAPP_CA_FILE); a copy is kept with the agent's credentials")
 	_ = fs.Parse(args)
 	quietLogs()
 	tok := *token

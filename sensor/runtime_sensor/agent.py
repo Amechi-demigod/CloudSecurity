@@ -57,7 +57,7 @@ class Agent:
         self.shipper = shipper or Shipper(
             api_url=cfg.api_url, token=cfg.api_token, sensor_id=cfg.sensor_id, batch_size=cfg.batch_size,
             flush_interval=cfg.flush_interval, max_queue=cfg.max_queue, max_retries=cfg.max_retries,
-            dry_run=cfg.dry_run, payload_format=cfg.payload_format)
+            dry_run=cfg.dry_run, payload_format=cfg.payload_format, ca_file=cfg.ca_file)
         self.collectors = collectors if collectors is not None else build_collectors(cfg)
         self._stop = threading.Event()
 

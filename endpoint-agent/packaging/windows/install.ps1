@@ -13,6 +13,10 @@
   .\install.ps1 -Server https://cnapp.example.com -Token cne_xxx -BinaryPath .\cnapp-agent-windows-amd64.exe
 
 .EXAMPLE
+  # On-prem server with a certificate from an internal CA (cnapp-ctl tls export-ca, or your AD CS root):
+  .\install.ps1 -Server https://cnapp.corp.local -Token cne_xxx -BinaryPath .\cnapp-agent-windows-amd64.exe -CaFile .\cnapp-root-ca.crt
+
+.EXAMPLE
   .\install.ps1 -Server https://cnapp.example.com -Token cne_xxx `
      -DownloadUrl https://downloads.example.com/cnapp-agent-windows-amd64.exe -Sha256 <hex> -RequireSignature
 #>
@@ -24,6 +28,10 @@ param(
   [Parameter(ParameterSetName = 'Download', Mandatory = $true)][string]$DownloadUrl,
   [Parameter(ParameterSetName = 'Download')][string]$Sha256,
   [switch]$RequireSignature,
+  # PEM file of a private/internal CA that issued the server certificate. The agent
+  # keeps its own protected copy, so this file may be deleted afterwards. Not needed
+  # when the CA is already trusted machine-wide (e.g. deployed by GPO).
+  [string]$CaFile,
   [switch]$InsecureDev
 )
 $ErrorActionPreference = 'Stop'
@@ -65,6 +73,10 @@ try {
   }
 
   $enrollArgs = @('enroll', '--server', $Server, '--token-stdin')
+  if ($CaFile) {
+    if (-not (Test-Path -LiteralPath $CaFile -PathType Leaf)) { throw "CA file not found: $CaFile" }
+    $enrollArgs += @('--ca-file', (Resolve-Path -LiteralPath $CaFile).Path)
+  }
   if ($InsecureDev) { $enrollArgs += '--insecure-dev' }
   # The token goes over stdin so it never appears in the process list.
   $Token | & $BinaryPath @enrollArgs

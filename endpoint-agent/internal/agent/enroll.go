@@ -2,7 +2,9 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/client"
@@ -16,7 +18,7 @@ type EnrollOptions struct {
 	Server      string
 	Token       string
 	InsecureDev bool
-	CAFile      string
+	CAFile      string // PEM bundle of a private CA, copied into the state directory
 }
 
 // Enroll exchanges an enrollment token for a device credential and stores it.
@@ -39,8 +41,22 @@ func Enroll(ctx context.Context, p state.Paths, o EnrollOptions) (*client.Enroll
 	if err != nil {
 		return nil, fmt.Errorf("enrollment failed: %w", err)
 	}
+	caFile := ""
+	if o.CAFile != "" {
+		// Keep our own protected copy (client.New above already checked it
+		// parses and that the server's certificate chains to it).
+		pem, err := os.ReadFile(o.CAFile)
+		if err != nil {
+			return nil, fmt.Errorf("reading CA file: %w", err)
+		}
+		if caFile, err = state.SaveCA(p, pem); err != nil {
+			return nil, fmt.Errorf("saving CA bundle to %s: %w", p.StateDir, err)
+		}
+	} else if err := os.Remove(p.CAFile()); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
 	st := &state.State{ServerURL: server, DeviceID: resp.DeviceID, DeviceSecret: resp.DeviceSecret,
-		InsecureDev: o.InsecureDev, CAFile: o.CAFile, EnrolledAt: time.Now().UTC(),
+		InsecureDev: o.InsecureDev, CAFile: caFile, EnrolledAt: time.Now().UTC(),
 		CheckInIntervalSeconds: resp.CheckInIntervalSeconds, CommandPollSeconds: resp.CommandPollSeconds}
 	if old, err := state.Load(p); err == nil && old.DeviceID == resp.DeviceID {
 		st.ExecutedCommands = old.ExecutedCommands

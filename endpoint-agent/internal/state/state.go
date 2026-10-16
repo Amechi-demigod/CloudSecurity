@@ -104,14 +104,36 @@ func Load(p Paths) (*State, error) {
 
 // Save writes the state atomically (temp file + rename) with restrictive permissions.
 func Save(p Paths, s *State) error {
-	if err := SecureDir(p.StateDir); err != nil {
-		return fmt.Errorf("securing %s: %w", p.StateDir, err)
-	}
 	b, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(p.StateDir, ".state-*.tmp")
+	return writeSecure(p.StateDir, p.StateFile(), b)
+}
+
+// CAFileName is the copy of the private CA bundle kept next to state.json.
+const CAFileName = "ca.pem"
+
+// CAFile is where SaveCA stores the trusted private CA bundle.
+func (p Paths) CAFile() string { return filepath.Join(p.StateDir, CAFileName) }
+
+// SaveCA copies a PEM CA bundle into the protected state directory, so the
+// agent keeps trusting a private CA after the file given to `enroll --ca-file`
+// (e.g. a download) is deleted, and only SYSTEM/Administrators (Windows) or
+// root (macOS) can change which CA the agent trusts.
+func SaveCA(p Paths, pem []byte) (string, error) {
+	if err := writeSecure(p.StateDir, p.CAFile(), pem); err != nil {
+		return "", err
+	}
+	return p.CAFile(), nil
+}
+
+// writeSecure writes data to dst (inside dir) atomically with restrictive permissions.
+func writeSecure(dir, dst string, data []byte) error {
+	if err := SecureDir(dir); err != nil {
+		return fmt.Errorf("securing %s: %w", dir, err)
+	}
+	tmp, err := os.CreateTemp(dir, ".state-*.tmp")
 	if err != nil {
 		return err
 	}
@@ -120,7 +142,7 @@ func Save(p Paths, s *State) error {
 		tmp.Close()
 		return err
 	}
-	if _, err := tmp.Write(b); err != nil {
+	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
 		return err
 	}
@@ -131,16 +153,17 @@ func Save(p Paths, s *State) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return replaceFile(tmp.Name(), p.StateFile())
+	return replaceFile(tmp.Name(), dst)
 }
 
-// Remove deletes the state file (uninstall --purge).
+// Remove deletes the state file and the stored CA bundle (uninstall --purge).
 func Remove(p Paths) error {
-	err := os.Remove(p.StateFile())
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
+	for _, f := range []string{p.StateFile(), p.CAFile()} {
+		if err := os.Remove(f); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
 	}
-	return err
+	return nil
 }
 
 // MarkExecuted records a command id; false if it was already executed.

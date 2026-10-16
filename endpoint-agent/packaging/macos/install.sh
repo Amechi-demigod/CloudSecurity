@@ -1,6 +1,8 @@
 #!/bin/bash
 # Install the CNAPP agent on a Mac from a downloaded binary (no .pkg):
 #   sudo ./install.sh --server https://cnapp.example.com --binary ./cnapp-agent-darwin-arm64
+# On-prem server whose certificate comes from an internal CA (not trusted by macOS yet):
+#   sudo ./install.sh --server https://cnapp.corp.local --binary ./cnapp-agent-darwin-arm64 --ca-file ./cnapp-root-ca.crt
 # The enrollment token is read from stdin (or CNAPP_ENROLL_TOKEN) so it never
 # appears in the process list or shell history.
 set -euo pipefail
@@ -9,6 +11,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --server) server="$2"; shift 2 ;;
     --binary) binary="$2"; shift 2 ;;
+    --ca-file) [[ -f "$2" ]] || { echo "CA file not found: $2" >&2; exit 2; }; extra+=(--ca-file "$2"); shift 2 ;;
     --insecure-dev) extra+=(--insecure-dev); shift ;;
     *) echo "unknown argument $1" >&2; exit 2 ;;
   esac
