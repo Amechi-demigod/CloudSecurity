@@ -505,7 +505,7 @@ jobs:
         run: |
           e2e() { python3 deploy/onprem/tests/onprem_e2e.py --base "https://$HOST" --ca "$CA" --email "$ADMIN" --password-file "$RUNNER_TEMP/admin.pw" "$@"; }
           e2e mark before-backup
-          sudo systemctl start cnapp-backup.service
+          sudo systemctl start cnapp-backup.service || { sudo journalctl -u cnapp-backup.service --no-pager | tail -n 40; exit 1; }
           sudo journalctl -u cnapp-backup.service --no-pager | tail -n 5
           backup="$(sudo find /opt/cnapp/backups -name 'cnapp-db-*.dump.gz' | sort | tail -n1)"
           test -n "$backup"; sudo ls -l /opt/cnapp/backups
@@ -592,3 +592,4 @@ jobs:
           sudo cat /opt/cnapp/state/*.log 2>/dev/null | tail -n 200 || true
           sudo ufw status verbose || true
           sudo iptables -S || true
+          sudo journalctl -u 'cnapp*' --no-pager | tail -n 100 || true
