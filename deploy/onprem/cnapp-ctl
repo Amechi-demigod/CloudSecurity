@@ -11,7 +11,7 @@
 #   cnapp-ctl uninstall [--purge]
 #
 # Run `cnapp-ctl help` for every option. Full guide: docs/DEPLOY_ONPREM.md.
-# shellcheck disable=SC1091,SC2015  # /etc/os-release is sourced in subshells; A && ok || warn is intended
+# shellcheck disable=SC2015  # "A && ok || warn" is intended
 set -Eeuo pipefail
 umask 077
 
@@ -487,9 +487,13 @@ cmd_firewall() {
 }
 
 # ============================================================================ install
+os_field() { # os_field KEY -> value from /etc/os-release (parsed, not sourced)
+  sed -n "s/^$1=//p" /etc/os-release 2>/dev/null | tr -d '"' | head -n1
+}
+
 preflight() { # preflight force
   local force=$1 id ver cpus mem_kb disk_gb
-  id=$(. /etc/os-release 2>/dev/null; echo "${ID:-}"); ver=$(. /etc/os-release 2>/dev/null; echo "${VERSION_ID:-}")
+  id=$(os_field ID); ver=$(os_field VERSION_ID)
   if [[ $id != ubuntu || $ver != 24.04 ]]; then
     (( force )) || die "supported on Ubuntu Server 24.04 LTS only (found ${id:-?} ${ver:-?}); --force to try anyway"
     warn "untested OS ${id} ${ver} (--force)"
@@ -523,7 +527,7 @@ install_docker() {
   [[ $fpr == "$DOCKER_GPG_FINGERPRINT" ]] || { rm -f "$tmp"; die "Docker apt key fingerprint mismatch (got '$fpr', expected $DOCKER_GPG_FINGERPRINT)"; }
   ok "Docker apt key fingerprint verified ($fpr)"
   run install -m 0644 "$tmp" "$key"; rm -f "$tmp"
-  local codename; codename=$(. /etc/os-release; echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")
+  local codename; codename=$(os_field UBUNTU_CODENAME); codename=${codename:-$(os_field VERSION_CODENAME)}
   if (( DRY_RUN )); then echo "[dry-run] write /etc/apt/sources.list.d/docker.list"; else
     echo "deb [arch=$(dpkg --print-architecture) signed-by=$key] https://download.docker.com/linux/ubuntu $codename stable" \
       >/etc/apt/sources.list.d/docker.list

@@ -417,7 +417,7 @@ jobs:
         run: |
           deploy/onprem/cnapp-ctl help | head -n 5
           sudo deploy/onprem/cnapp-ctl tls init --dry-run 2>&1 | tail -n 2 || true
-          sudo deploy/onprem/cnapp-ctl install --dry-run --hostname "$HOST" --admin-email "$ADMIN" --skip-firewall --skip-ghcr-login 2>&1 | tail -n 20
+          sudo deploy/onprem/cnapp-ctl install --dry-run --hostname "$HOST" --admin-email "$ADMIN" --skip-firewall --skip-ghcr-login
           test ! -e /opt/cnapp/cnapp.env
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Build backend image (tag ci-1, as if pulled from GHCR)
@@ -455,7 +455,7 @@ jobs:
           # The CA certificate is public: export it like an admin would for clients.
           sudo cnapp-ctl tls export-ca "$RUNNER_TEMP/ca.crt"
           echo "CA=$RUNNER_TEMP/ca.crt" >> "$GITHUB_ENV"
-          sudo cnapp-ctl show-secret INGEST_API_TOKEN > "$RUNNER_TEMP/ingest.token"
+          sudo cnapp-ctl show-secret INGEST_API_TOKEN | tee "$RUNNER_TEMP/ingest.token" >/dev/null
           echo "::add-mask::$(cat "$RUNNER_TEMP/admin.pw")"
           echo "::add-mask::$(cat "$RUNNER_TEMP/ingest.token")"
       - name: Install is idempotent (second run changes nothing, keeps secrets)
