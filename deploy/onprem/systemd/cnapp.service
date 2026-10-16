@@ -1,0 +1,20 @@
+# Installed by `cnapp-ctl install`. Starts the CNAPP stack at boot.
+[Unit]
+Description=CloudSecurity CNAPP (docker compose stack)
+Documentation=file:///opt/cnapp/app/QUICKSTART.md
+Requires=docker.service
+After=docker.service network-online.target cnapp-firewall.service
+Wants=network-online.target cnapp-firewall.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=CNAPP_HOME=/opt/cnapp
+ExecStart=/usr/local/bin/cnapp-ctl start --no-wait
+ExecReload=/usr/local/bin/cnapp-ctl restart --no-wait
+ExecStop=/usr/local/bin/cnapp-ctl stop
+TimeoutStartSec=600
+TimeoutStopSec=180
+
+[Install]
+WantedBy=multi-user.target

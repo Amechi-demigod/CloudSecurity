@@ -1,0 +1,11 @@
+[Unit]
+Description=CloudSecurity CNAPP database backup
+Requires=docker.service
+After=docker.service cnapp.service
+
+[Service]
+Type=oneshot
+Environment=CNAPP_HOME=/opt/cnapp
+ExecStart=/usr/local/bin/cnapp-ctl backup --scheduled
+Nice=10
+IOSchedulingClass=idle

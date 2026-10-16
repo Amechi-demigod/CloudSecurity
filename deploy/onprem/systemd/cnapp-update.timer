@@ -1,0 +1,12 @@
+# Optional automatic updates: DISABLED by default.
+#   cnapp-ctl auto-update enable | disable | status
+[Unit]
+Description=CloudSecurity CNAPP automatic update check
+
+[Timer]
+OnCalendar=*-*-* 04:00:00
+RandomizedDelaySec=30m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

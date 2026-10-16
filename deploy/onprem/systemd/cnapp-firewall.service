@@ -1,0 +1,19 @@
+# Installed by `cnapp-ctl install`. Restricts the ports Docker publishes (80/443)
+# to CNAPP_ALLOWED_CIDRS. Docker's published ports bypass UFW's INPUT rules, so
+# the restriction lives in the DOCKER-USER chain, created before dockerd starts.
+[Unit]
+Description=CloudSecurity CNAPP firewall rules for Docker-published ports
+Before=docker.service cnapp.service
+After=ufw.service
+Wants=network-pre.target
+DefaultDependencies=no
+After=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=CNAPP_HOME=/opt/cnapp
+ExecStart=/usr/local/bin/cnapp-ctl firewall apply-docker
+
+[Install]
+WantedBy=multi-user.target docker.service

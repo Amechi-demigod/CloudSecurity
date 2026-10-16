@@ -1,0 +1,114 @@
+# On-prem nginx site (mounted over the image's default template by
+# deploy/onprem/docker-compose.prod.yml). Rendered at container start by the
+# nginx image's entrypoint (envsubst of defined env vars only):
+#   BACKEND_URL            http://backend:8000
+#   CNAPP_HOSTNAME         canonical internal hostname (HTTP -> HTTPS redirect target)
+#   NGINX_LOCAL_RESOLVERS  from /etc/resolv.conf (Docker's embedded DNS)
+# nginx runs unprivileged: 8080 is published as 80, 8443 as 443.
+
+resolver ${NGINX_LOCAL_RESOLVERS} valid=30s ipv6=off;
+
+# Plain HTTP: health probe for Docker, everything else -> HTTPS on the canonical name.
+server {
+  listen 8080 default_server;
+  server_tokens off;
+
+  location = /healthz {
+    access_log off;
+    default_type text/plain;
+    return 200 "ok\n";
+  }
+
+  location / {
+    return 301 https://${CNAPP_HOSTNAME}$request_uri;
+  }
+}
+
+server {
+  listen 8443 ssl default_server;
+  http2 on;
+  root /usr/share/nginx/html;
+  server_tokens off;
+
+  # Certificate = server certificate followed by any intermediates (full chain).
+  ssl_certificate     /etc/nginx/tls/server.crt;
+  ssl_certificate_key /etc/nginx/tls/server.key;
+  ssl_protocols TLSv1.2 TLSv1.3;
+  ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
+  ssl_prefer_server_ciphers off;
+  ssl_session_cache shared:SSL:10m;
+  ssl_session_timeout 1d;
+  ssl_session_tickets off;
+
+  # Matches the backend's MAX_REQUEST_BYTES default (1 MiB)
+  client_max_body_size 1m;
+
+  gzip on;
+  gzip_types text/css application/javascript application/json image/svg+xml;
+
+  add_header X-Content-Type-Options "nosniff" always;
+  add_header X-Frame-Options "DENY" always;
+  add_header Referrer-Policy "no-referrer" always;
+  add_header Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'" always;
+  add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+  location = /healthz {
+    access_log off;
+    default_type text/plain;
+    return 200 "ok\n";
+  }
+
+  # API requests go to the backend (same origin for the browser: no CORS needed).
+  location /api/ {
+    set $backend_upstream "${BACKEND_URL}";
+    proxy_pass $backend_upstream;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_read_timeout 120s;
+    proxy_hide_header X-Content-Type-Options;
+    proxy_hide_header X-Frame-Options;
+    proxy_hide_header Referrer-Policy;
+    proxy_hide_header Strict-Transport-Security;
+  }
+
+  # Endpoint-agent API: larger bodies for check-ins with big software lists and
+  # collect_logs bundles (backend: AGENT_MAX_REQUEST_BYTES, 6 MiB by default).
+  location /api/agent/ {
+    client_max_body_size 8m;
+    set $backend_upstream "${BACKEND_URL}";
+    proxy_pass $backend_upstream;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_read_timeout 120s;
+    proxy_hide_header X-Content-Type-Options;
+    proxy_hide_header X-Frame-Options;
+    proxy_hide_header Referrer-Policy;
+    proxy_hide_header Strict-Transport-Security;
+  }
+
+  # Fingerprinted build assets can be cached forever.
+  location /assets/ {
+    expires 1y;
+    add_header Cache-Control "public, immutable" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    try_files $uri =404;
+  }
+
+  # SPA fallback for client-side routes; never cache index.html.
+  location / {
+    add_header Cache-Control "no-cache" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "no-referrer" always;
+    add_header Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'" always;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    try_files $uri /index.html;
+  }
+}
