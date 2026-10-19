@@ -3,8 +3,11 @@
 package state
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 func defaultPaths() Paths {
@@ -29,4 +32,23 @@ func replaceFile(src, dst string) error {
 		return err
 	}
 	return os.Chmod(filepath.Clean(dst), 0o600)
+}
+
+// checkPrivilegedOwner requires root ownership and no group/other write access.
+func checkPrivilegedOwner(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return errors.New("cannot determine the file owner")
+	}
+	if st.Uid != 0 {
+		return fmt.Errorf("owned by uid %d, not root", st.Uid)
+	}
+	if info.Mode().Perm()&0o022 != 0 {
+		return fmt.Errorf("writable by group or others (mode %v)", info.Mode().Perm())
+	}
+	return nil
 }

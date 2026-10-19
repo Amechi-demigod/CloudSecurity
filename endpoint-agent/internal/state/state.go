@@ -42,6 +42,9 @@ type State struct {
 type Paths struct {
 	StateDir string
 	LogDir   string
+	// Custom is true for a --home / CNAPP_AGENT_HOME location (tests,
+	// development): ownership checks meant for the system location are skipped.
+	Custom bool
 }
 
 // StateFile is the full path of state.json.
@@ -57,7 +60,7 @@ func Resolve(home string) Paths {
 		home = os.Getenv("CNAPP_AGENT_HOME")
 	}
 	if home != "" {
-		return Paths{StateDir: filepath.Join(home, "state"), LogDir: filepath.Join(home, "logs")}
+		return Paths{StateDir: filepath.Join(home, "state"), LogDir: filepath.Join(home, "logs"), Custom: true}
 	}
 	return defaultPaths()
 }
@@ -156,8 +159,12 @@ func writeSecure(dir, dst string, data []byte) error {
 	return replaceFile(tmp.Name(), dst)
 }
 
-// Remove deletes the state file and the stored CA bundle (uninstall --purge).
+// Remove deletes the state file, the stored CA bundle and any pending
+// enrollment config (uninstall --purge).
 func Remove(p Paths) error {
+	if err := RemoveEnrollConfig(p); err != nil {
+		return err
+	}
 	for _, f := range []string{p.StateFile(), p.CAFile()} {
 		if err := os.Remove(f); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
