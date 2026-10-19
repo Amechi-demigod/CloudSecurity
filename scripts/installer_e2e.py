@@ -176,13 +176,20 @@ def windows_run(api: Api, bundle: Path, tmp: Path) -> None:
         return "RUNNING" if "RUNNING" in p.stdout else p.stdout.strip()[-200:]
 
     def msi_property(msi: Path, name: str) -> str:
-        ps = ("$i = New-Object -ComObject WindowsInstaller.Installer; "
-              f"$db = $i.GetType().InvokeMember('OpenDatabase','InvokeMethod',$null,$i,@('{msi}',0)); "
-              f"$v = $db.GetType().InvokeMember('OpenView','InvokeMethod',$null,$db,@(\"SELECT Value FROM Property WHERE Property='{name}'\")); "
-              "[void]$v.GetType().InvokeMember('Execute','InvokeMethod',$null,$v,$null); "
-              "$r = $v.GetType().InvokeMember('Fetch','InvokeMethod',$null,$v,$null); "
-              "if ($r) { $r.GetType().InvokeMember('StringData','GetProperty',$null,$r,1) }")
-        return sh("powershell", "-NoProfile", "-Command", ps, quiet=True).stdout.strip()
+        """Read a Property-table value with Windows Installer itself (msilib, Python <= 3.12)."""
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            import msilib
+        db = msilib.OpenDatabase(str(msi), msilib.MSIDBOPEN_READONLY)
+        view = db.OpenView(f"SELECT `Value` FROM `Property` WHERE `Property` = '{name}'")  # noqa: S608
+        view.Execute(None)
+        rec = view.Fetch()
+        value = rec.GetString(1) if rec is not None else ""
+        view.Close()
+        db.Close()
+        return value
 
     def msiexec(*a: str, log: str) -> None:
         p = sh("msiexec.exe", *a, "/qn", "/norestart", "/l*v", str(tmp / log), check=False)
