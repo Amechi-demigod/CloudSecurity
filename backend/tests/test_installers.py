@@ -343,3 +343,27 @@ def test_msi_preset_limits_and_names():
     assert msipatch.decode_stream_name("\u4840") == "!" and msipatch.decode_stream_name("abc") == "abc"
     with pytest.raises(msipatch.MsiPatchError):
         msipatch.inject(b"not an msi" * 100, b"{}")
+
+
+def test_public_agent_url_is_used_for_agents(admin, monkeypatch):
+    """PUBLIC_AGENT_URL (internet-facing agent name) wins over PUBLIC_BASE_URL for
+    installers and enrollment instructions; staff links keep PUBLIC_BASE_URL."""
+    from app import config
+
+    monkeypatch.setenv("PUBLIC_AGENT_URL", "https://agents.example.com/")
+    config.reload_settings()
+    assert admin.get("/api/devices/installers").json()["server_url"] == "https://agents.example.com"
+    assert admin.get("/api/devices/enrollment/info").json()["server_url"] == "https://agents.example.com"
+    r = download(admin)
+    assert r.status_code == 200, r.text
+    assert pkg_enroll_config(r.content)["server_url"] == "https://agents.example.com"
+    assert config.settings.public_base_url == SERVER
+    # Validated like PUBLIC_BASE_URL: https only.
+    monkeypatch.setenv("PUBLIC_AGENT_URL", "http://agents.example.com")
+    config.reload_settings()
+    r = download(admin)
+    assert r.status_code == 409 and "PUBLIC_AGENT_URL" in r.json()["detail"]
+    assert admin.get("/api/devices/enrollment/info").json()["server_url"] is None
+    monkeypatch.delenv("PUBLIC_AGENT_URL")
+    config.reload_settings()
+    assert admin.get("/api/devices/enrollment/info").json()["server_url"] == SERVER

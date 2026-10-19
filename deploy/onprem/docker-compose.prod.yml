@@ -15,6 +15,8 @@
 #
 # Sized for 2 vCPU / 4 GB RAM by default; every limit is overridable in cnapp.env.
 # Only 80 and 443 are published. PostgreSQL is reachable on the internal network only.
+# With CNAPP_PUBLIC_AGENT=true (cnapp-ctl public-agent enable) 443 is reachable
+# from the internet, but nginx serves only /api/agent/ to non-internal clients.
 
 name: cnapp
 
@@ -132,13 +134,27 @@ services:
     environment:
       BACKEND_URL: http://backend:8000
       CNAPP_HOSTNAME: ${CNAPP_HOSTNAME:?set CNAPP_HOSTNAME in cnapp.env}
+      # Access policy (nginx/cnapp-access.sh): the dashboard and user API only for
+      # these networks; /api/agent/ for everyone the firewall lets in.
+      CNAPP_INTERNAL_CIDRS: ${CNAPP_ALLOWED_CIDRS:-10.0.0.0/8,172.16.0.0/12,192.168.0.0/16},${CNAPP_ADMIN_CIDRS:-},${CNAPP_DOCKER_SUBNET:-172.30.252.0/24}
+      CNAPP_PUBLIC_AGENT: ${CNAPP_PUBLIC_AGENT:-false}
+      CNAPP_AGENT_HOSTNAME: ${CNAPP_AGENT_HOSTNAME:-}
+      CNAPP_PUBLIC_SENSOR_INGEST: ${CNAPP_PUBLIC_SENSOR_INGEST:-false}
+      CNAPP_AGENT_RATE: ${CNAPP_AGENT_RATE:-20r/s}
+      CNAPP_AGENT_BURST: ${CNAPP_AGENT_BURST:-200}
+      CNAPP_AGENT_ENROLL_RATE: ${CNAPP_AGENT_ENROLL_RATE:-60r/m}
+      CNAPP_AGENT_ENROLL_BURST: ${CNAPP_AGENT_ENROLL_BURST:-100}
+      CNAPP_AGENT_CONN_LIMIT: ${CNAPP_AGENT_CONN_LIMIT:-200}
     # nginx (uid 101) reads the TLS key through this group (key: root:cnapp-tls 0640).
     group_add:
       - "${CNAPP_TLS_GID:?run cnapp-ctl install (CNAPP_TLS_GID missing)}"
     volumes:
       # On-prem nginx config: TLS on 8443 (published as 443), 8080 (published as 80) redirects.
       - ./nginx/onprem.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ./nginx/cnapp-access.sh:/docker-entrypoint.d/25-cnapp-access.sh:ro
       - ../tls:/etc/nginx/tls:ro
+      # Edge access log (external clients only) for fail2ban; owned by uid 101.
+      - ${CNAPP_LOG_DIR:-/var/log/cnapp}:/var/log/cnapp
     ports:
       - "${CNAPP_BIND_ADDRESS:-0.0.0.0}:80:8080"
       - "${CNAPP_BIND_ADDRESS:-0.0.0.0}:443:8443"

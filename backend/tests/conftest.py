@@ -33,7 +33,7 @@ os.environ.update({
 for k in ("AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET", "AZURE_SUBSCRIPTION_IDS", "AZURE_AUTH_MODE",
           "AZURE_MANAGED_IDENTITY_CLIENT_ID", "AZURE_USE_DEFAULT_CREDENTIAL", "SESSION_SECRET", "DEBUG",
           "TRUST_PROXY_HEADERS", "TRUSTED_PROXY_CIDRS", "API_DOCS_ENABLED", "LOG_FORMAT", "CORS_ORIGINS",
-          "NOTIFICATIONS_ENCRYPTION_KEY", "PUBLIC_BASE_URL", "NOTIFICATIONS_ALLOW_INSECURE_DEV"):
+          "NOTIFICATIONS_ENCRYPTION_KEY", "PUBLIC_BASE_URL", "PUBLIC_AGENT_URL", "NOTIFICATIONS_ALLOW_INSECURE_DEV"):
     os.environ.pop(k, None)
 # MFA / SSO settings (tests opt in per test).
 for k in [k for k in os.environ if k.startswith(("ENTRA_", "MFA_", "AUTH_PASSWORD_LOGIN", "AUTH_BREAK_GLASS"))]:
@@ -88,6 +88,18 @@ def fresh_db():
     """Reset the test database and (re)initialize the global engine on it."""
     reset_database()
     return db.init_engine(TEST_DATABASE_URL)
+
+
+@pytest.fixture(autouse=True)
+def _reset_agent_limiters():
+    """Per-IP agent limiters and the rejection monitor are process-wide: start each test clean."""
+    from app.api import agent as agent_api
+    from app.notifications import agent_security
+
+    for lim in (agent_api.enroll_limiter, agent_api.enroll_failure_limiter, agent_api.device_limiter):
+        lim.reset()
+    agent_security.monitor.reset()
+    yield
 
 
 @pytest.fixture()

@@ -8,6 +8,7 @@
 #   cnapp-ctl backup | restore FILE
 #   cnapp-ctl tls init|renew|show|import|import-pfx|export-ca
 #   cnapp-ctl set-hostname NAME
+#   cnapp-ctl public-agent enable --hostname agents.corp.com | disable | status
 #   cnapp-ctl create-admin --email E | reset-password --email E
 #   cnapp-ctl uninstall [--purge]
 #
@@ -25,6 +26,9 @@ readonly LOCK_FILE="/run/cnapp-ctl.lock"
 readonly SYSTEMD_DIR="${CNAPP_SYSTEMD_DIR:-/etc/systemd/system}"
 readonly BIN_PATH="${CNAPP_BIN_PATH:-/usr/local/bin/cnapp-ctl}"
 readonly FW_CHAIN="CNAPP-INGRESS"
+readonly LOG_DIR="${CNAPP_LOG_DIR:-/var/log/cnapp}"
+readonly F2B_DIR="${CNAPP_F2B_DIR:-/etc/fail2ban}"
+readonly NGINX_UID=101  # nginx in the (unprivileged) frontend image
 
 APP_DIR="$CNAPP_HOME/app"
 CONF="$CNAPP_HOME/cnapp.env"
@@ -189,10 +193,10 @@ tls_fix_perms() {
   tls_sync_legacy_cert
   run chown root:"$gid" "$TLS_DIR"; run chmod 0750 "$TLS_DIR"
   local f
-  for f in server.key legacy.key; do
+  for f in server.key legacy.key agent.key; do
     [[ -f "$TLS_DIR/$f" ]] && { run chown root:"$gid" "$TLS_DIR/$f"; run chmod 0640 "$TLS_DIR/$f"; }
   done
-  for f in server.crt legacy.crt ca-bundle.crt cnapp-root-ca.crt; do
+  for f in server.crt legacy.crt agent.crt ca-bundle.crt cnapp-root-ca.crt; do
     [[ -f "$TLS_DIR/$f" ]] && { run chown root:root "$TLS_DIR/$f"; run chmod 0644 "$TLS_DIR/$f"; }
   done
   agent_ca_sync || true
@@ -724,6 +728,14 @@ fw_configure_ufw() {
   # SSH first, so enabling UFW can never cut off the current session.
   while read -r c; do run ufw allow proto tcp from "$c" to any port "$port" comment 'cnapp-ssh' >/dev/null; done < <(csv_items "$ssh_cidrs")
   while read -r c; do run ufw allow proto tcp from "$c" to any port 80,443 comment 'cnapp-web' >/dev/null; done < <(csv_items "$allowed")
+  while read -r c; do run ufw allow proto tcp from "$c" to any port 80,443 comment 'cnapp-admin' >/dev/null; done < <(csv_items "$(conf_get CNAPP_ADMIN_CIDRS)")
+  # Public agent endpoint: 443 from anywhere (nginx serves only /api/agent/ to
+  # non-internal clients); 80 and SSH stay restricted.
+  if [[ "$(conf_get CNAPP_PUBLIC_AGENT)" == true ]]; then
+    run ufw allow proto tcp to any port 443 comment 'cnapp-agent-public' >/dev/null
+  else
+    run ufw delete allow proto tcp to any port 443 >/dev/null 2>&1 || true
+  fi
   run ufw default deny incoming >/dev/null
   run ufw default allow outgoing >/dev/null
   run ufw --force enable >/dev/null
@@ -739,7 +751,11 @@ fw_apply_docker() { # idempotent; also run at boot by cnapp-firewall.service (be
   if (( DRY_RUN )); then echo "[dry-run] restrict published 80/443 to $allowed in DOCKER-USER"; return 0; fi
   iptables -w -N DOCKER-USER 2>/dev/null || true
   iptables -w -N "$FW_CHAIN" 2>/dev/null || iptables -w -F "$FW_CHAIN"
+  local public; public=$(conf_get CNAPP_PUBLIC_AGENT)
+  # Public agent endpoint: new connections to 443 (container 8443) from anywhere.
+  [[ $public == true ]] && iptables -w -A "$FW_CHAIN" -p tcp --dport 8443 -j RETURN
   while read -r c; do iptables -w -A "$FW_CHAIN" -s "$c" -j RETURN; done < <(csv_items "$allowed")
+  while read -r c; do iptables -w -A "$FW_CHAIN" -s "$c" -j RETURN; done < <(csv_items "$(conf_get CNAPP_ADMIN_CIDRS)")
   iptables -w -A "$FW_CHAIN" -j DROP
   # New connections from outside the Docker bridges to the frontend's container
   # ports (8080/8443, i.e. after Docker's DNAT of host ports 80/443).
@@ -753,7 +769,8 @@ fw_apply_docker() { # idempotent; also run at boot by cnapp-firewall.service (be
   # Docker creates DOCKER-USER with a trailing RETURN; keep one at the end.
   iptables -w -D DOCKER-USER -j RETURN 2>/dev/null || true
   iptables -w -A DOCKER-USER -j RETURN
-  ok "published ports 80/443 restricted to: $allowed"
+  if [[ $public == true ]]; then ok "published port 443 open to any address (public agent endpoint); 80 restricted to: $allowed"
+  else ok "published ports 80/443 restricted to: $allowed"; fi
 }
 
 fw_remove() {
@@ -767,6 +784,8 @@ fw_remove() {
   fi
   if have ufw && [[ "$(ufw status 2>/dev/null || true)" == *"Status: active"* ]]; then
     while read -r c; do run ufw delete allow proto tcp from "$c" to any port 80,443 >/dev/null 2>&1 || true; done < <(csv_items "$allowed")
+    while read -r c; do run ufw delete allow proto tcp from "$c" to any port 80,443 >/dev/null 2>&1 || true; done < <(csv_items "$(conf_get CNAPP_ADMIN_CIDRS)")
+    run ufw delete allow proto tcp to any port 443 >/dev/null 2>&1 || true
     warn "UFW stays enabled and the SSH rules (port $port from $ssh_cidrs) are kept so you are not locked out"
   fi
 }
@@ -780,6 +799,262 @@ cmd_firewall() {
       have ufw && { ufw status verbose 2>/dev/null || true; }
       have iptables && { echo "--- DOCKER-USER"; iptables -w -S DOCKER-USER 2>/dev/null || true; iptables -w -S "$FW_CHAIN" 2>/dev/null || true; } ;;
     *) die "usage: cnapp-ctl firewall status|configure|apply-docker" ;;
+  esac
+}
+
+# ============================================================================ public agent endpoint
+# Publish ONLY the endpoint-agent API (/api/agent/) to the internet: the firewall
+# opens 443 to everyone, nginx (nginx/cnapp-access.sh) answers 404 to non-internal
+# clients for everything else, fail2ban bans abusive addresses, and the backend
+# hands agents PUBLIC_AGENT_URL. See docs/DEPLOY_ONPREM.md.
+ensure_log_dir() { # host directory for nginx's edge log (fail2ban input)
+  if (( DRY_RUN )); then echo "[dry-run] create $LOG_DIR (owner uid $NGINX_UID)"; return 0; fi
+  install -d -m 0750 -o "$NGINX_UID" -g adm "$LOG_DIR" 2>/dev/null || install -d -m 0750 -o "$NGINX_UID" -g root "$LOG_DIR"
+  [[ -f "$LOG_DIR/edge-access.log" ]] || install -m 0640 -o "$NGINX_UID" -g "$(stat -c %g "$LOG_DIR")" /dev/null "$LOG_DIR/edge-access.log"
+  if [[ -d /etc/logrotate.d ]]; then
+    cat >/etc/logrotate.d/cnapp <<EOF
+# Written by cnapp-ctl: nginx edge log (external clients only; read by fail2ban)
+$LOG_DIR/*.log {
+  su root root
+  daily
+  rotate 14
+  maxsize 100M
+  compress
+  delaycompress
+  missingok
+  notifempty
+  copytruncate
+}
+EOF
+    chmod 0644 /etc/logrotate.d/cnapp
+  fi
+}
+
+f2b_ignoreip() {
+  local out="127.0.0.1/8 ::1" c
+  while read -r c; do out+=" $c"; done < <(csv_items "$(conf_get CNAPP_ALLOWED_CIDRS),$(conf_get CNAPP_ADMIN_CIDRS),$(conf_get CNAPP_DOCKER_SUBNET)")
+  printf '%s' "$out"
+}
+
+f2b_configure() { # install + configure fail2ban jails on the edge log
+  have fail2ban-client || { log "Installing fail2ban"; run apt-get update -qq; run env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq fail2ban; }
+  if (( DRY_RUN )); then echo "[dry-run] write $F2B_DIR/filter.d/cnapp-*.conf and jail.d/cnapp.local"; return 0; fi
+  install -d -m 0755 "$F2B_DIR/filter.d" "$F2B_DIR/jail.d"
+  local amax afind aban pmax pfind pban
+  amax=$(conf_get CNAPP_F2B_AGENT_MAXRETRY); afind=$(conf_get CNAPP_F2B_AGENT_FINDTIME); aban=$(conf_get CNAPP_F2B_AGENT_BANTIME)
+  pmax=$(conf_get CNAPP_F2B_PROBE_MAXRETRY); pfind=$(conf_get CNAPP_F2B_PROBE_FINDTIME); pban=$(conf_get CNAPP_F2B_PROBE_BANTIME)
+  cat >"$F2B_DIR/filter.d/cnapp-agent-auth.conf" <<'EOF'
+# Written by cnapp-ctl. Edge log line (nginx/cnapp-access.sh, external clients only):
+# 203.0.113.9 - [19/Oct/2026:10:00:00 +0000] "GET /api/agent/commands HTTP/1.1" 401 52 "host" "ua" allowed
+# Rejected agent requests: bad/revoked credentials (401/403), bad methods (405), rate limits (429).
+[Definition]
+failregex = ^<HOST> - \[[^\]]*\] "[A-Z]+ /api/agent/\S* [^"]*" (?:401|403|405|429) \d+ .* allowed$
+ignoreregex =
+EOF
+  cat >"$F2B_DIR/filter.d/cnapp-probe.conf" <<'EOF'
+# Written by cnapp-ctl. Any request from a non-internal address to something
+# other than the agent API (dashboard, /api/auth/*, /api/docs, scanners).
+[Definition]
+failregex = ^<HOST> - \[[^\]]*\] "[^"]*" \d+ \d+ .* blocked$
+ignoreregex =
+EOF
+  # Docker-published ports are filtered in DOCKER-USER (after DNAT: container ports 8080/8443).
+  cat >"$F2B_DIR/jail.d/cnapp.local" <<EOF
+# Written by cnapp-ctl public-agent; regenerate with: cnapp-ctl public-agent enable
+[DEFAULT]
+bantime.increment = true
+bantime.maxtime = 7d
+
+[cnapp-agent-auth]
+enabled  = true
+filter   = cnapp-agent-auth
+logpath  = $LOG_DIR/edge-access.log
+backend  = polling
+# Generous: a whole office behind one NAT address shares it (a revoked laptop
+# polls about once a minute).
+maxretry = ${amax:-60}
+findtime = ${afind:-600}
+bantime  = ${aban:-3600}
+ignoreip = $(f2b_ignoreip)
+action   = iptables-multiport[name=cnapp-agent, port="8080,8443", protocol=tcp, chain=DOCKER-USER]
+
+[cnapp-probe]
+enabled  = true
+filter   = cnapp-probe
+logpath  = $LOG_DIR/edge-access.log
+backend  = polling
+maxretry = ${pmax:-10}
+findtime = ${pfind:-600}
+bantime  = ${pban:-86400}
+ignoreip = $(f2b_ignoreip)
+action   = iptables-multiport[name=cnapp-probe, port="8080,8443", protocol=tcp, chain=DOCKER-USER]
+EOF
+  chmod 0644 "$F2B_DIR/filter.d/cnapp-agent-auth.conf" "$F2B_DIR/filter.d/cnapp-probe.conf" "$F2B_DIR/jail.d/cnapp.local"
+  systemctl enable fail2ban >/dev/null 2>&1 || true
+  systemctl restart fail2ban
+  local _
+  for _ in $(seq 1 20); do fail2ban-client ping >/dev/null 2>&1 && break; sleep 1; done
+  fail2ban-client status cnapp-agent-auth >/dev/null 2>&1 && fail2ban-client status cnapp-probe >/dev/null 2>&1 \
+    || die "fail2ban did not load the cnapp jails (journalctl -u fail2ban)"
+  ok "fail2ban: jails cnapp-agent-auth (${amax:-60} rejected agent requests / ${afind:-600}s) and cnapp-probe (${pmax:-10} non-agent requests / ${pfind:-600}s)"
+}
+
+f2b_remove() {
+  [[ -f "$F2B_DIR/jail.d/cnapp.local" ]] || return 0
+  if (( DRY_RUN )); then echo "[dry-run] remove the cnapp fail2ban jails"; return 0; fi
+  rm -f "$F2B_DIR/jail.d/cnapp.local" "$F2B_DIR/filter.d/cnapp-agent-auth.conf" "$F2B_DIR/filter.d/cnapp-probe.conf"
+  if have systemctl && systemctl is-active fail2ban >/dev/null 2>&1; then systemctl restart fail2ban || true; fi
+  ok "fail2ban: cnapp jails removed (fail2ban itself stays installed)"
+}
+
+agent_cert_install() { # agent_cert_install CERT KEY [CHAIN] -> tls/agent.crt|key (SNI for the agent name)
+  local cert=$1 key=$2 chain=${3:-} a b
+  [[ -f $cert && -f $key ]] || die "--cert and --key must both be PEM files"
+  a=$(openssl x509 -noout -pubkey -in "$cert" | openssl sha256) || die "$cert is not a PEM certificate"
+  b=$(openssl pkey -pubout -in "$key" | openssl sha256) || die "$key is not a PEM private key (an encrypted key is not supported)"
+  [[ $a == "$b" ]] || die "the private key does not match the certificate"
+  openssl x509 -checkend 0 -noout -in "$cert" >/dev/null || die "the certificate has expired"
+  if (( DRY_RUN )); then echo "[dry-run] install $cert as $TLS_DIR/agent.crt"; return 0; fi
+  { cat "$cert"; [[ -n $chain ]] && cat "$chain"; } >"$TLS_DIR/agent.crt.new"
+  install -m 0640 -o root -g "$(tls_gid)" "$key" "$TLS_DIR/agent.key"
+  mv -f "$TLS_DIR/agent.crt.new" "$TLS_DIR/agent.crt"
+  tls_fix_perms
+}
+
+is_cidr_list() { local c; while read -r c; do [[ $c =~ ^[0-9A-Fa-f:.]+(/[0-9]{1,3})?$ ]] || return 1; done < <(csv_items "$1"); }
+
+public_agent_probe() { # public_agent_probe HOST -> HTTP status of an unauthenticated agent request via the local nginx
+  local host=$1
+  # Reachability through the local nginx only (-k: the certificate is checked by cert_covers).
+  curl -k -sS -o /dev/null -w '%{http_code}' --max-time 10 --resolve "${host}:443:127.0.0.1" \
+    "https://${host}/api/agent/commands" 2>/dev/null || true
+}
+
+cmd_public_agent_enable() {
+  local host="" admin="" url="" cert="" key="" chain="" rate="" burst="" erate="" f2b=1 force=0 c
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --hostname) host=$2; shift 2 ;;
+      --admin-cidrs) admin=$2; shift 2 ;;
+      --url) url=$2; shift 2 ;;
+      --cert) cert=$2; shift 2 ;;
+      --key) key=$2; shift 2 ;;
+      --chain) chain=$2; shift 2 ;;
+      --rate) rate=$2; shift 2 ;;
+      --burst) burst=$2; shift 2 ;;
+      --enroll-rate) erate=$2; shift 2 ;;
+      --no-fail2ban) f2b=0; shift ;;
+      --force) force=1; shift ;;
+      --dry-run) DRY_RUN=1; shift ;;
+      *) die "public-agent enable: unknown option $1" ;;
+    esac
+  done
+  need_root public-agent; require_installed
+  host=${host:-$(conf_get CNAPP_AGENT_HOSTNAME)}; host=${host:-$(conf_get CNAPP_HOSTNAME)}
+  [[ $host =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] && ! is_ip "$host" \
+    || die "usage: cnapp-ctl public-agent enable --hostname agents.example.com (a public DNS name, not an IP address)"
+  [[ -z $admin ]] || is_cidr_list "$admin" || die "--admin-cidrs: comma-separated CIDRs expected (got $admin)"
+  [[ -z $rate || $rate =~ ^[0-9]+r/[sm]$ ]] || die "--rate: e.g. 20r/s"
+  [[ -z $erate || $erate =~ ^[0-9]+r/[sm]$ ]] || die "--enroll-rate: e.g. 60r/m"
+  [[ -z $burst || $burst =~ ^[0-9]+$ ]] || die "--burst: a number"
+  url=${url:-https://$host}
+  [[ $url =~ ^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?$ ]] || die "--url must be https://NAME[:PORT] (got $url)"
+  [[ "$(conf_get CNAPP_FIREWALL)" == false ]] && warn "CNAPP_FIREWALL=false: cnapp-ctl does not manage the firewall here; open 443 yourself"
+  [[ $(conf_get CNAPP_TLS_MODE) == builtin ]] && warn "the server uses the built-in CA: internet clients will not trust it; agents need the CA embedded (installers do this), but a publicly trusted certificate is recommended"
+
+  if [[ -n $cert || -n $key ]]; then
+    agent_cert_install "$cert" "$key" "$chain"
+    cert=$TLS_DIR/agent.crt
+  elif [[ -f "$TLS_DIR/agent.crt" ]]; then cert=$TLS_DIR/agent.crt
+  else cert=$TLS_DIR/server.crt; fi
+  if (( ! DRY_RUN )) && ! cert_covers "$cert" "$host"; then
+    (( force )) || die "$(basename "$cert") is not valid for $host: use a certificate that covers it (e.g. the *.domain wildcard),
+  or pass --cert FILE --key FILE [--chain FILE] for a separate one (served by SNI), or --force"
+    warn "$(basename "$cert") is not valid for $host (--force)"
+  fi
+
+  conf_set CNAPP_PUBLIC_AGENT true
+  conf_set CNAPP_AGENT_HOSTNAME "$host"
+  conf_set PUBLIC_AGENT_URL "$url"
+  [[ -n $admin ]] && conf_set CNAPP_ADMIN_CIDRS "$admin"
+  [[ -n $rate ]] && conf_set CNAPP_AGENT_RATE "$rate"
+  [[ -n $burst ]] && conf_set CNAPP_AGENT_BURST "$burst"
+  [[ -n $erate ]] && conf_set CNAPP_AGENT_ENROLL_RATE "$erate"
+  conf_set CNAPP_FAIL2BAN "$( (( f2b )) && echo true || echo false)"
+  ensure_log_dir
+  if [[ "$(conf_get CNAPP_FIREWALL)" != false ]]; then fw_configure_ufw; fw_apply_docker; fi
+  log "Applying (frontend and backend are recreated with the new settings)"
+  apply_changes
+  if (( f2b )); then f2b_configure; else f2b_remove; warn "--no-fail2ban: abusive addresses are only rate limited, never banned"; fi
+  (( DRY_RUN )) && return 0
+  local code; code=$(public_agent_probe "$host")
+  [[ $code == 401 ]] && ok "https://$host/api/agent/ answers through nginx (401 without a device credential, as expected)" \
+    || warn "https://$host/api/agent/commands returned '$code' locally (expected 401): cnapp-ctl logs frontend"
+  cat <<EOF
+${C_G}Public agent endpoint enabled:${C_0} $url  (only /api/agent/ is served to non-internal clients)
+  Internal (full access): $(conf_get CNAPP_ALLOWED_CIDRS)${admin:+,$admin}
+  Next: firewall NAT public:443 -> this server:443 (DNAT, keep the source address), public DNS $host -> public IP,
+        then download new installers (Devices > Enroll) so devices use $url.
+  Verify from outside (phone hotspot): curl -s -o /dev/null -w '%{http_code}\n' $url/api/agent/commands   # 401
+                                        curl -s -o /dev/null -w '%{http_code}\n' $url/                    # 404
+EOF
+}
+
+cmd_public_agent_disable() {
+  local forget=0
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --forget-hostname) forget=1; shift ;;
+      --dry-run) DRY_RUN=1; shift ;;
+      *) die "public-agent disable: unknown option $1" ;;
+    esac
+  done
+  need_root public-agent; require_installed
+  conf_set CNAPP_PUBLIC_AGENT false
+  if (( forget )); then
+    conf_set CNAPP_AGENT_HOSTNAME ""; conf_set PUBLIC_AGENT_URL ""
+  fi
+  if [[ "$(conf_get CNAPP_FIREWALL)" != false ]]; then fw_configure_ufw; fw_apply_docker; fi
+  f2b_remove
+  apply_changes
+  ok "public agent endpoint disabled: 80/443 reachable from $(conf_get CNAPP_ALLOWED_CIDRS) only"
+  if (( ! forget )) && [[ -n "$(conf_get PUBLIC_AGENT_URL)" ]]; then
+    echo "  Agents and installers keep using $(conf_get PUBLIC_AGENT_URL): resolve it internally to this server,"
+    echo "  or run: cnapp-ctl public-agent disable --forget-hostname (then download new installers)."
+  fi
+  echo "  Remove the firewall NAT rule and the public DNS record as well."
+}
+
+cmd_public_agent_status() {
+  require_installed
+  local public; public=$(conf_get CNAPP_PUBLIC_AGENT)
+  echo "Public agent endpoint: ${public:-false}"
+  echo "  Agent hostname:   $(conf_get CNAPP_AGENT_HOSTNAME)"
+  echo "  PUBLIC_AGENT_URL: $(conf_get PUBLIC_AGENT_URL)   (agents / installers; empty = PUBLIC_BASE_URL $(conf_get PUBLIC_BASE_URL))"
+  echo "  Internal CIDRs:   $(conf_get CNAPP_ALLOWED_CIDRS) admin: $(conf_get CNAPP_ADMIN_CIDRS)"
+  local r b e; r=$(conf_get CNAPP_AGENT_RATE); b=$(conf_get CNAPP_AGENT_BURST); e=$(conf_get CNAPP_AGENT_ENROLL_RATE)
+  echo "  Rate limit:       ${r:-20r/s} burst ${b:-200} per external IP (enroll ${e:-60r/m})"
+  if have iptables && [[ $EUID -eq 0 ]]; then
+    if iptables -w -S "$FW_CHAIN" 2>/dev/null | grep -q -- '--dport 8443 -j RETURN'; then echo "  Firewall:         443 open to any address"
+    else echo "  Firewall:         443 restricted to internal CIDRs"; fi
+  fi
+  if have fail2ban-client && [[ $EUID -eq 0 ]] && [[ -f "$F2B_DIR/jail.d/cnapp.local" ]]; then
+    local j
+    for j in cnapp-agent-auth cnapp-probe; do
+      fail2ban-client status "$j" 2>/dev/null | sed -n 's/.*Currently banned:[[:space:]]*/  fail2ban '"$j"' banned: /p;s/.*Banned IP list:[[:space:]]*/    /p' || true
+    done
+  else echo "  fail2ban:         not configured"; fi
+  [[ -f "$LOG_DIR/edge-access.log" ]] && echo "  Edge log:         $LOG_DIR/edge-access.log ($(wc -l <"$LOG_DIR/edge-access.log") lines; external clients only)"
+  return 0
+}
+
+cmd_public_agent() {
+  local sub=${1:-status}; shift || true
+  case $sub in
+    enable) cmd_public_agent_enable "$@" ;;
+    disable) cmd_public_agent_disable "$@" ;;
+    status) cmd_public_agent_status "$@" ;;
+    *) die "usage: cnapp-ctl public-agent enable --hostname NAME [--admin-cidrs LIST] | disable [--forget-hostname] | status" ;;
   esac
 }
 
@@ -921,6 +1196,13 @@ CNAPP_FIREWALL=true
 CNAPP_BIND_ADDRESS=0.0.0.0
 # Docker network for the stack: change if it overlaps your LAN/VPN
 CNAPP_DOCKER_SUBNET=172.30.252.0/24
+# Extra networks with full (dashboard) access, e.g. an admin VPN range
+CNAPP_ADMIN_CIDRS=
+# Publish ONLY the agent API (/api/agent/) on 443 to the internet: managed by
+# cnapp-ctl public-agent enable|disable (firewall, nginx, fail2ban, PUBLIC_AGENT_URL)
+CNAPP_PUBLIC_AGENT=false
+CNAPP_AGENT_HOSTNAME=
+PUBLIC_AGENT_URL=
 
 # --- Sizing (defaults for 2 vCPU / 4 GB; see docs/DEPLOY_ONPREM.md) ------------
 WEB_CONCURRENCY=2
@@ -1002,9 +1284,11 @@ install_files() { # copy the package (compose, nginx, units, docs) and the CLI
   run install -d -m 0755 -o root -g root "$CNAPP_HOME" "$APP_DIR" "$APP_DIR/nginx"
   run install -d -m 0700 -o root -g root "$SECRETS_DIR" "$DOCKER_CONFIG" "$BACKUP_DIR" "$STATE_DIR"
   run install -d -m 0750 -o root -g "$(tls_gid)" "$TLS_DIR"
+  ensure_log_dir
   if [[ "$src" != "$APP_DIR" ]]; then
     run install -m 0644 "$src/docker-compose.prod.yml" "$APP_DIR/docker-compose.prod.yml"
     run install -m 0644 "$src/nginx/onprem.conf.template" "$APP_DIR/nginx/onprem.conf.template"
+    run install -m 0755 "$src/nginx/cnapp-access.sh" "$APP_DIR/nginx/cnapp-access.sh"
   fi
   [[ -f "$src/QUICKSTART.md" && "$src" != "$APP_DIR" ]] && run install -m 0644 "$src/QUICKSTART.md" "$APP_DIR/QUICKSTART.md"
   run install -d -m 0755 -o root -g root "$APP_DIR/systemd"
@@ -1454,6 +1738,9 @@ cmd_status() {
   if https_health; then ok "HTTPS /api/health ok"; else warn "HTTPS /api/health FAILED"; fi
   local exp; exp=$(openssl x509 -noout -enddate -in "$TLS_DIR/server.crt" 2>/dev/null | cut -d= -f2)
   echo "TLS:       $(conf_get CNAPP_TLS_MODE), certificate expires $exp"
+  if [[ "$(conf_get CNAPP_PUBLIC_AGENT)" == true ]]; then
+    echo "Public:    agent API only, at $(conf_get PUBLIC_AGENT_URL) (cnapp-ctl public-agent status)"
+  fi
   local last; last=$(find "$BACKUP_DIR" -maxdepth 1 -name '*.dump.gz' -printf '%T@ %f\n' 2>/dev/null | sort -rn | head -n1 | cut -d' ' -f2 || true)
   echo "Backups:   $(find "$BACKUP_DIR" -maxdepth 1 -name '*.dump.gz' 2>/dev/null | wc -l) in $BACKUP_DIR, newest: ${last:-none}"
   echo "Timers:    backup=$(systemctl is-enabled cnapp-backup.timer 2>/dev/null || echo n/a) auto-update=$(systemctl is-enabled cnapp-update.timer 2>/dev/null || echo n/a)"
@@ -1568,6 +1855,8 @@ cmd_uninstall() {
     if (( purge )); then run compose down -v --remove-orphans || true; else run compose down --remove-orphans || true; fi
   fi
   [[ -f $CONF ]] && fw_remove
+  f2b_remove
+  run rm -f /etc/logrotate.d/cnapp
   for u in cnapp.service cnapp-firewall.service cnapp-backup.service cnapp-backup.timer cnapp-update.service cnapp-update.timer; do
     run rm -f "$SYSTEMD_DIR/$u"
   done
@@ -1616,6 +1905,12 @@ Operations
                                 prompts for the PFX password (never on the command line); legacy RC2/3DES PFX supported
   set-hostname NAME [--force]   change the URL (PUBLIC_BASE_URL, redirects, Entra redirect URI); re-issues the built-in cert
   firewall status | configure | apply-docker
+  public-agent enable --hostname NAME [--admin-cidrs LIST] [--url URL] [--cert C --key K [--chain I]]
+                      [--rate 20r/s] [--burst 200] [--enroll-rate 60r/m] [--no-fail2ban] [--force]
+                                publish ONLY the agent API (/api/agent/) on 443 to the internet: firewall,
+                                nginx (404 for everything else from non-internal clients), fail2ban,
+                                PUBLIC_AGENT_URL for installers
+  public-agent disable [--forget-hostname] | status
   create-admin --email E [--role admin|analyst|viewer] [--generate]
   reset-password --email E [--generate]   reset-mfa --email E
   show-secret INGEST_API_TOKEN|...        print one generated secret (e.g. for the runtime sensor)
@@ -1646,6 +1941,7 @@ main() {
     reset-mfa) cmd_reset_mfa "$@" ;;
     show-secret) cmd_show_secret "$@" ;;
     set-hostname) cmd_set_hostname "$@" ;;
+    public-agent) cmd_public_agent "$@" ;;
     version|--version) echo "$VERSION" ;;
     help|-h|--help) usage ;;
     *) usage >&2; die "unknown command '$cmd'" ;;

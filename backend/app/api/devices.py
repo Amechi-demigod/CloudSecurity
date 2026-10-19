@@ -121,7 +121,8 @@ def issue_types():
 @router.get("/enrollment/info", dependencies=[Depends(require_admin)])
 def enrollment_info():
     s = config.settings
-    return {"agent_download_url": s.agent_download_url, "default_check_in_interval_seconds":
+    return {"agent_download_url": s.agent_download_url, "server_url": installers.server_url_or_none(),
+            "default_check_in_interval_seconds":
             svc.DEFAULT_INTERVAL_SECONDS, "command_poll_seconds": svc.COMMAND_POLL_SECONDS}
 
 

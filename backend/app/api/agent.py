@@ -19,7 +19,7 @@ from .. import config
 from ..auth import RateLimiter, audit, client_ip
 from ..db import get_db
 from ..models import Device, DeviceCommand, DeviceCredential, DeviceLogBundle, utcnow
-from ..notifications import device_source
+from ..notifications import agent_security, device_source
 from ..schemas_devices import (
     AgentCommand,
     AgentCommandList,
@@ -36,10 +36,13 @@ log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/agent", tags=["agent"])
 device_limiter = RateLimiter()
 enroll_limiter = RateLimiter()
+enroll_failure_limiter = RateLimiter()
 CommandId = Path(pattern=r"^[0-9a-f]{32}$")
 
 
-def _deny(status: int, detail: str) -> HTTPException:
+def _deny(status: int, detail: str, request: Request | None = None, kind: str = "invalid_credential") -> HTTPException:
+    if request is not None:
+        agent_security.rejected(kind, client_ip(request))
     return HTTPException(status, detail, headers={"WWW-Authenticate": "Bearer"} if status == 401 else None)
 
 
@@ -50,16 +53,17 @@ def current_device(request: Request, authorization: str | None = Header(None),
     scheme, _, token = (authorization or "").strip().partition(" ")
     token = token.strip()
     if scheme.lower() != "bearer" or not token.startswith(svc.DEVICE_SECRET_PREFIX) or len(token) > 128:
-        raise _deny(401, "missing or invalid device credential")
+        raise _deny(401, "missing or invalid device credential", request)
     cred = db.scalar(select(DeviceCredential).where(DeviceCredential.secret_hash == svc.hash_secret(token)))
     if cred is None:
-        raise _deny(401, "missing or invalid device credential")
+        raise _deny(401, "missing or invalid device credential", request)
     device = cred.device
     if device.status != "active":
-        raise _deny(403, "device revoked: re-enroll with a new enrollment token")
+        raise _deny(403, "device revoked: re-enroll with a new enrollment token", request, "revoked_device")
     if cred.revoked_at is not None:
-        raise _deny(401, "device credential superseded (the device was re-enrolled)")
+        raise _deny(401, "device credential superseded (the device was re-enrolled)", request, "superseded_credential")
     if not device_limiter.hit(f"device:{device.id}", s.device_rate_limit, s.device_rate_window_seconds):
+        agent_security.rejected("device_rate_limited", client_ip(request))
         raise HTTPException(429, "rate limit exceeded for this device",
                             headers={"Retry-After": str(int(s.device_rate_window_seconds / 4))})
     now = utcnow()
@@ -74,11 +78,18 @@ def enroll(body: EnrollRequest, request: Request, db: Session = Depends(get_db))
     """Exchange an enrollment token for a per-device credential (shown once)."""
     s = config.settings
     ip = client_ip(request)
-    if not enroll_limiter.hit(f"ip:{ip}", s.enroll_rate_limit, s.enroll_rate_window_seconds):
+    # Per source IP: all attempts (generous: offices enroll many devices behind one
+    # NAT address) and failed attempts (small: tokens are not guessable, but a
+    # client that keeps failing is a scanner or a broken script).
+    if (enroll_failure_limiter.blocked(f"ip:{ip}", s.enroll_failure_limit, s.enroll_rate_window_seconds)
+            or not enroll_limiter.hit(f"ip:{ip}", s.enroll_rate_limit, s.enroll_rate_window_seconds)):
+        agent_security.rejected("enroll_rate_limited", ip)
         raise HTTPException(429, "too many enrollment attempts", headers={"Retry-After": "60"})
     token = svc.consume_enrollment_token(db, body.token)
     info = body.device
     if token is None:
+        enroll_failure_limiter.hit(f"ip:{ip}", s.enroll_failure_limit, s.enroll_rate_window_seconds)
+        agent_security.rejected("enroll_failed", ip)
         audit(db, "device_enroll_failed", actor_email=f"device:{info.hostname}"[:320], ip=ip,
               reason="invalid, expired, revoked or used-up enrollment token")
         db.commit()

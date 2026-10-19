@@ -586,7 +586,7 @@ export const api = {
     request<void>(`/api/devices/${id}${qs({ reason })}`, { method: "DELETE" }),
   logBundleUrl: (id: string, bundleId: string) => `${BASE}/api/devices/${id}/log-bundles/${bundleId}`,
   enrollmentInfo: () =>
-    request<{ agent_download_url: string | null; default_check_in_interval_seconds: number; command_poll_seconds: number }>(
+    request<{ agent_download_url: string | null; server_url?: string | null; default_check_in_interval_seconds: number; command_poll_seconds: number }>(
       "/api/devices/enrollment/info",
     ),
   enrollmentTokens: () => request<EnrollmentToken[]>("/api/devices/enrollment-tokens"),

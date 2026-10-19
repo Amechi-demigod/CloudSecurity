@@ -175,6 +175,13 @@ class RateLimiter:
                     del self._hits[k]
             return True
 
+    def blocked(self, key: str, limit: int, window: float) -> bool:
+        """True if `key` is already at `limit` within `window` (does not record an attempt)."""
+        now = time.monotonic()
+        with self._lock:
+            q = self._hits.get(key)
+            return bool(q) and sum(1 for t in q if t > now - window) >= limit
+
     def reset(self) -> None:
         with self._lock:
             self._hits.clear()
