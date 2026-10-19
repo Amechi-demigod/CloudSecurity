@@ -1,0 +1,11 @@
+# Nightly backup (enabled by `cnapp-ctl install`).
+[Unit]
+Description=Nightly CloudSecurity CNAPP database backup
+
+[Timer]
+OnCalendar=*-*-* 02:30:00
+RandomizedDelaySec=15m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -6,10 +6,13 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -252,5 +255,52 @@ func TestEnrollSavesState(t *testing.T) {
 	st, err := state.Load(p)
 	if err != nil || st.DeviceSecret != "cnd_secret" || st.CheckInIntervalSeconds != 900 || !st.InsecureDev {
 		t.Fatalf("%+v %v", st, err)
+	}
+}
+
+func TestEnrollWithPrivateCAKeepsACopy(t *testing.T) {
+	f := &fakeServer{results: map[string]string{}, outputs: map[string]string{}}
+	srv := httptest.NewTLSServer(f.handler(t))
+	defer srv.Close()
+	src := filepath.Join(t.TempDir(), "corp-root-ca.pem")
+	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})
+	if err := os.WriteFile(src, caPEM, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := state.Resolve(t.TempDir())
+	// Without the CA, enrollment against a privately signed server fails closed.
+	if _, err := Enroll(context.Background(), p, EnrollOptions{Server: srv.URL, Token: "cne_x"}); err == nil {
+		t.Fatal("enrolled against an untrusted certificate")
+	}
+	if _, err := Enroll(context.Background(), p, EnrollOptions{Server: srv.URL, Token: "cne_x", CAFile: src}); err != nil {
+		t.Fatal(err)
+	}
+	st, err := state.Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.CAFile != p.CAFile() {
+		t.Fatalf("CA path persisted as %q, want the copy %q", st.CAFile, p.CAFile())
+	}
+	if got, _ := os.ReadFile(p.CAFile()); !bytes.Equal(got, caPEM) {
+		t.Fatal("CA copy differs from the original")
+	}
+	// The original may be deleted (e.g. a downloaded file); the agent keeps working.
+	if err := os.Remove(src); err != nil {
+		t.Fatal(err)
+	}
+	a, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.CheckIn(context.Background()); err != nil {
+		t.Fatalf("check-in with the stored CA: %v", err)
+	}
+	// Purge removes the CA copy with the credentials.
+	if err := state.Remove(p); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(p.CAFile()); !os.IsNotExist(err) {
+		t.Fatalf("CA copy left behind: %v", err)
 	}
 }

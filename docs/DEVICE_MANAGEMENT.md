@@ -104,6 +104,8 @@ $env:CNAPP_ENROLL_TOKEN = 'cne_xxxxxxxx'
 Remove-Item Env:CNAPP_ENROLL_TOKEN
 ```
 
+**Server with an internal certificate (on-prem).** If the server's certificate comes from an internal CA that Windows does not trust yet (for example the CA created by `cnapp-ctl tls init`, see [DEPLOY_ONPREM.md](DEPLOY_ONPREM.md)), either deploy that root CA to the machine store first (Group Policy, or `certutil -addstore -f Root cnapp-root-ca.crt`), or pass it to the agent: `.\install.ps1 ... -CaFile .\cnapp-root-ca.crt` (or `enroll --ca-file`). The agent keeps a protected copy next to its credentials, so the file can be deleted afterwards. There is no option to skip certificate verification.
+
 Check the result with `Get-Service CNAPPAgent`, `& 'C:\Program Files\CNAPP Agent\cnapp-agent.exe' status` and the log at `C:\ProgramData\CNAPP Agent\logs\agent.log`.
 
 ### macOS
@@ -129,7 +131,14 @@ sudo /usr/local/cnapp-agent/bin/cnapp-agent install
 
 A deployment tool can enroll during package install instead. Before running the installer, write `/var/root/.cnapp-enroll` (root, `0600`) with the server URL on line 1 and the token on line 2. The `postinstall` script enrolls, deletes the file and starts the daemon. On an upgrade of an enrolled Mac, `postinstall` simply restarts the daemon.
 
-`packaging/macos/install.sh --server URL --binary PATH` combines the binary steps and prompts for the token.
+`packaging/macos/install.sh --server URL --binary PATH [--ca-file cnapp-root-ca.crt]` combines the binary steps and prompts for the token.
+
+**Server with an internal certificate (on-prem).** Add `--ca-file cnapp-root-ca.crt` to `enroll` (or to `install.sh`), or put the CA path on a third line of `/var/root/.cnapp-enroll` for package installs. Alternatively trust the root CA system-wide first (`sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain cnapp-root-ca.crt`, or an MDM certificate payload); the agent always uses the system trust store too. Example:
+
+```bash
+echo 'cne_xxxxxxxx' | sudo ./cnapp-agent-darwin-arm64 enroll --server https://cnapp.corp.local --token-stdin --ca-file ./cnapp-root-ca.crt
+sudo ./cnapp-agent-darwin-arm64 install
+```
 
 Check with `sudo /usr/local/cnapp-agent/bin/cnapp-agent status`, `sudo launchctl print system/com.cloudsecurity.cnapp-agent` and `/Library/Logs/CNAPP Agent/agent.log`.
 
@@ -225,7 +234,7 @@ Every action requires a **reason**. Creating one is written to the audit log (`d
   - macOS: `/Library/Application Support/CNAPP Agent/state.json`, owned by root, file `0600`, directory `0700`.
   - The file is written atomically (temp file and rename).
 - **Separate authentication planes.** `/api/agent/*` only accepts `Authorization: Bearer cnd_...` and never reads cookies, so there is no CSRF surface. `/api/devices/*` and every other user API only accept a user session (with CSRF on writes) and RBAC. A device credential cannot call user APIs, a session cannot act as a device, and the sensor ingest token is not a device credential. The tests cover all of these.
-- **Transport.** HTTPS only (TLS 1.2+), the system trust store plus an optional `--ca-file` for private PKI, no redirects followed (so the credential cannot be sent elsewhere), and responses capped at 1 MiB. Plain http is possible only with the explicit `--insecure-dev` flag.
+- **Transport.** HTTPS only (TLS 1.2+), the system trust store plus an optional `--ca-file` (or `CNAPP_CA_FILE`) for private PKI, copied into the protected state directory at enrollment, no redirects followed (so the credential cannot be sent elsewhere), and responses capped at 1 MiB. Plain http is possible only with the explicit `--insecure-dev` flag.
 - **Strict input validation.** Agent payloads are validated by Pydantic models that reject unknown fields and limit every string, list and map: at most 10,000 software items, 40 posture checks and 16 KiB of data per check. `/api/agent/*` bodies are capped at 6 MiB (`AGENT_MAX_REQUEST_BYTES`; nginx allows 8 MiB on that path only) and other APIs stay at 1 MiB. Log bundles must be gzip and at most `DEVICE_LOG_BUNDLE_MAX_BYTES`. Each device is rate-limited (`DEVICE_RATE_LIMIT` requests per `DEVICE_RATE_WINDOW_SECONDS`).
 - **No shells.** Collectors run fixed commands by absolute path with fixed arguments. PowerShell scripts are constants passed with `-EncodedCommand`, and nothing from the server is ever interpolated into them.
 - **Agent logs** rotate at 5 MiB with one backup, in an owner-only directory.

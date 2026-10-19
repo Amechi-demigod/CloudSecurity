@@ -86,6 +86,7 @@ Every flag has an environment variable default. Run `python3 -m runtime_sensor -
 |---|---|---|
 | `SENSOR_API_URL` | `--api-url` | `http://localhost:8000/api/runtime/events` |
 | `SENSOR_API_TOKEN` | `--api-token` (prefer the env var) | unset. When set, sent as `Authorization: Bearer ...` |
+| `SENSOR_CA_FILE` (or `CNAPP_CA_FILE`) | `--ca-file` | unset. PEM CA certificate(s) of a private/internal CA (e.g. an on-prem server set up with `cnapp-ctl tls init`), trusted in addition to the system store. Verification is never disabled. |
 | `SENSOR_ID` | `--sensor-id` | hostname / `NODE_NAME` |
 | `SENSOR_COLLECTORS` | `--collectors` | `process,network,file,library` |
 | `SENSOR_POLL_INTERVAL` | `--poll-interval` | `2` seconds |

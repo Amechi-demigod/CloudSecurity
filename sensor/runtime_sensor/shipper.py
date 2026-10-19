@@ -11,7 +11,9 @@ from __future__ import annotations
 import collections
 import json
 import logging
+import functools
 import random
+import ssl
 import sys
 import threading
 import time
@@ -39,14 +41,31 @@ class SendError(Exception):
         self.retryable = retryable
 
 
-# Honour HTTP(S)_PROXY / NO_PROXY env vars only (no OS proxy-registry lookups).
-_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler(urllib.request.getproxies_environment()))
+def build_opener(ca_file: Optional[str] = None) -> urllib.request.OpenerDirector:
+    """HTTP(S) opener honouring HTTP(S)_PROXY / NO_PROXY env vars only (no OS
+    proxy-registry lookups). ``ca_file`` (PEM) adds a private/internal CA to the
+    system trust store, e.g. for an on-prem server with an internal certificate.
+    Certificate and hostname verification always stay on."""
+    ctx = ssl.create_default_context()
+    if ca_file:
+        try:
+            ctx.load_verify_locations(cafile=ca_file)
+        except (OSError, ssl.SSLError) as exc:
+            raise ValueError(f"cannot load CA file {ca_file}: {exc}") from exc
+    return urllib.request.build_opener(
+        urllib.request.ProxyHandler(urllib.request.getproxies_environment()),
+        urllib.request.HTTPSHandler(context=ctx),
+    )
 
 
-def http_post(url: str, body: bytes, headers: Dict[str, str], timeout: float) -> int:
+_OPENER = build_opener()
+
+
+def http_post(url: str, body: bytes, headers: Dict[str, str], timeout: float,
+              opener: Optional[urllib.request.OpenerDirector] = None) -> int:
     req = urllib.request.Request(url, data=body, headers=headers, method="POST")
     try:
-        with _OPENER.open(req, timeout=timeout) as resp:
+        with (opener or _OPENER).open(req, timeout=timeout) as resp:
             return resp.status
     except urllib.error.HTTPError as exc:
         retryable = exc.code == 429 or exc.code >= 500
@@ -60,10 +79,12 @@ class Shipper:
                  batch_size: int = 100, flush_interval: float = 5.0, max_queue: int = 10_000,
                  max_retries: int = 5, backoff_base: float = 1.0, backoff_max: float = 60.0,
                  timeout: float = 10.0, dry_run: bool = False, payload_format: str = DEFAULT_PAYLOAD_FORMAT,
-                 out: Optional[IO[str]] = None, post: Callable[..., int] = http_post,
-                 sleep: Callable[[float], None] = time.sleep):
+                 out: Optional[IO[str]] = None, post: Optional[Callable[..., int]] = None,
+                 sleep: Callable[[float], None] = time.sleep, ca_file: Optional[str] = None):
         if payload_format not in PAYLOAD_FORMATS:
             raise ValueError(f"payload_format must be one of {PAYLOAD_FORMATS}")
+        if post is None:
+            post = functools.partial(http_post, opener=build_opener(ca_file)) if ca_file else http_post
         self.api_url = api_url
         self.token = token
         self.sensor_id = sensor_id

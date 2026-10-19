@@ -93,6 +93,10 @@ Enroll company **Windows 10/11 and macOS** laptops and desktops with our own lig
 
 A production deployment on **Azure Container Apps + Azure Database for PostgreSQL + Key Vault**, provisioned with Bicep and deployed by a GitHub Actions workflow that signs in with OIDC (no stored Azure secrets), is described step by step in **[docs/DEPLOY_AZURE.md](docs/DEPLOY_AZURE.md)**: one-time `infra/setup.sh`, then run the *Deploy to Azure* workflow. Estimated cost for the demo sizing is roughly **US$35-45/month**; `az group delete` removes everything.
 
+## Deploy on-prem (single Ubuntu server)
+
+Run it on your own **Ubuntu Server 24.04** box on the internal network/VPN: Docker Compose (PostgreSQL 16, API, nginx with TLS), an internal CA or your own certificate, pull-based updates from GHCR with automatic rollback, nightly backups and a firewall, all driven by one script, `cnapp-ctl`. Start with **[deploy/onprem/QUICKSTART.md](deploy/onprem/QUICKSTART.md)**; the full guide is **[docs/DEPLOY_ONPREM.md](docs/DEPLOY_ONPREM.md)**.
+
 ## Quick start
 
 ### With Docker

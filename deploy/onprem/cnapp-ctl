@@ -1,0 +1,1358 @@
+#!/usr/bin/env bash
+# cnapp-ctl - install and operate the CloudSecurity CNAPP on one Ubuntu 24.04 server
+# (Docker Compose, internal TLS, pull-based updates from ghcr.io, backups).
+#
+#   sudo ./cnapp-ctl install --hostname cnapp.corp.local --ip 10.0.0.20 --admin-email you@corp.com
+#   cnapp-ctl status | logs [service] | start | stop | restart
+#   cnapp-ctl update [--tag TAG] | update --check | auto-update enable|disable|status
+#   cnapp-ctl backup | restore FILE
+#   cnapp-ctl tls init|renew|show|import|export-ca
+#   cnapp-ctl create-admin --email E | reset-password --email E
+#   cnapp-ctl uninstall [--purge]
+#
+# Run `cnapp-ctl help` for every option. Full guide: docs/DEPLOY_ONPREM.md.
+# shellcheck disable=SC2015  # "A && ok || warn" is intended
+set -Eeuo pipefail
+umask 077
+
+readonly VERSION="1.0.0"
+CNAPP_HOME="${CNAPP_HOME:-/opt/cnapp}"
+readonly PROJECT="cnapp"
+readonly DEFAULT_REGISTRY="ghcr.io/amechi-demigod"
+readonly DOCKER_GPG_FINGERPRINT="9DC858229FC7DD38854AE2D88D81803C0EBFCD88"
+readonly LOCK_FILE="/run/cnapp-ctl.lock"
+readonly SYSTEMD_DIR="${CNAPP_SYSTEMD_DIR:-/etc/systemd/system}"
+readonly BIN_PATH="${CNAPP_BIN_PATH:-/usr/local/bin/cnapp-ctl}"
+readonly FW_CHAIN="CNAPP-INGRESS"
+
+APP_DIR="$CNAPP_HOME/app"
+CONF="$CNAPP_HOME/cnapp.env"
+SECRETS_DIR="$CNAPP_HOME/secrets"
+GEN_ENV="$SECRETS_DIR/generated.env"
+TLS_DIR="$CNAPP_HOME/tls"
+CA_DIR="$CNAPP_HOME/ca"
+BACKUP_DIR="$CNAPP_HOME/backups"
+STATE_DIR="$CNAPP_HOME/state"
+export DOCKER_CONFIG="$SECRETS_DIR/docker"
+# systemd units run without HOME; docker/compose expect one.
+export HOME="${HOME:-/root}"
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin${PATH:+:$PATH}"
+
+DRY_RUN=0
+ASSUME_YES=0
+
+# ----------------------------------------------------------------------------- output
+if [[ -t 1 ]]; then C_B=$'\e[1m' C_R=$'\e[31m' C_G=$'\e[32m' C_Y=$'\e[33m' C_0=$'\e[0m'
+else C_B="" C_R="" C_G="" C_Y="" C_0=""; fi
+log()  { printf '%s==>%s %s\n' "$C_B" "$C_0" "$*"; }
+ok()   { printf '%s ok%s %s\n' "$C_G" "$C_0" "$*"; }
+warn() { printf '%sWARNING:%s %s\n' "$C_Y" "$C_0" "$*" >&2; }
+die()  { printf '%sERROR:%s %s\n' "$C_R" "$C_0" "$*" >&2; exit 1; }
+on_err() { printf '%sERROR:%s command failed (exit %s) at line %s: %s\n' "$C_R" "$C_0" "$1" "$2" "$3" >&2; }
+trap 'on_err "$?" "$LINENO" "$BASH_COMMAND"' ERR
+
+# Run a state-changing command (printed instead with --dry-run).
+run() {
+  if (( DRY_RUN )); then printf '[dry-run] %s\n' "$*"; return 0; fi
+  "$@"
+}
+
+need_root() { [[ $EUID -eq 0 ]] || die "run as root (sudo cnapp-ctl $*)"; }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+confirm() { # confirm "question" -> 0 if yes
+  (( ASSUME_YES )) && return 0
+  [[ -t 0 ]] || die "$1 - refusing without a terminal; pass --yes to confirm"
+  local a; read -r -p "$1 [y/N] " a
+  [[ "$a" =~ ^[Yy]([Ee][Ss])?$ ]]
+}
+
+with_lock() { # serialise update/backup/restore (timers vs. admin)
+  exec 9>"$LOCK_FILE"
+  flock -w "${CNAPP_LOCK_WAIT:-600}" 9 || die "another cnapp-ctl operation is running (lock $LOCK_FILE)"
+}
+
+rand_hex() { openssl rand -hex "$1"; }
+rand_password() { # 24 chars, unambiguous alphabet, >= 128 bits
+  local p=""
+  while (( ${#p} < 24 )); do p+=$(openssl rand -base64 48 | tr -dc 'A-HJ-NP-Za-km-z2-9'); done
+  printf '%s' "${p:0:24}"
+}
+
+# ----------------------------------------------------------------------------- config files
+# KEY=VALUE files; values never go through a shell (no `source`).
+conf_get() { # conf_get KEY [file] -> value of the last KEY= line, quotes stripped
+  local key=$1 file=${2:-$CONF} line v
+  [[ -r "$file" ]] || return 0
+  line=$(grep -E "^${key}=" "$file" | tail -n1 || true)
+  v=${line#*=}
+  if [[ ${#v} -ge 2 && ( "$v" == \"*\" || "$v" == \'*\' ) ]]; then v=${v:1:${#v}-2}; fi
+  printf '%s' "$v"
+}
+
+conf_set() { # conf_set KEY VALUE [file] - replace or append, keeps mode 0600
+  local key=$1 val=$2 file=${3:-$CONF}
+  if (( DRY_RUN )); then printf '[dry-run] set %s in %s\n' "$key" "$file"; return 0; fi
+  [[ "$val" == *$'\n'* ]] && die "value for $key must be a single line"
+  local tmp; tmp=$(mktemp "${file}.XXXXXX")
+  if [[ -f "$file" ]] && grep -qE "^${key}=" "$file"; then
+    K="$key" V="$val" awk 'BEGIN{k=ENVIRON["K"]; v=ENVIRON["V"]}
+      index($0, k"=")==1 { if (!done) { print k"="v; done=1 }; next } { print }' "$file" >"$tmp"
+  else
+    { [[ -f "$file" ]] && cat "$file"; printf '%s=%s\n' "$key" "$val"; } >"$tmp"
+  fi
+  chmod 0600 "$tmp"; mv -f "$tmp" "$file"
+}
+
+registry() { local r; r=$(conf_get IMAGE_REGISTRY); printf '%s' "${r:-$DEFAULT_REGISTRY}"; }
+image_ref() { # image_ref backend|frontend [tag]
+  local tag=${2:-$(conf_get IMAGE_TAG)}
+  printf '%s/cloudsecurity-%s:%s' "$(registry)" "$1" "$tag"
+}
+public_url() { printf 'https://%s' "$(conf_get CNAPP_HOSTNAME)"; }
+
+compose() {
+  docker compose -p "$PROJECT" --project-directory "$APP_DIR" \
+    --env-file "$CONF" --env-file "$GEN_ENV" -f "$APP_DIR/docker-compose.prod.yml" "$@"
+}
+
+require_installed() {
+  [[ -f "$CONF" && -f "$GEN_ENV" && -f "$APP_DIR/docker-compose.prod.yml" ]] \
+    || die "CNAPP is not installed in $CNAPP_HOME (run: sudo cnapp-ctl install ...)"
+}
+
+# ----------------------------------------------------------------------------- health
+container_health() { # container_health service -> healthy|unhealthy|starting|running|missing
+  local id; id=$(compose ps -q "$1" 2>/dev/null || true)
+  [[ -n "$id" ]] || { echo missing; return; }
+  docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$id" 2>/dev/null || echo missing
+}
+
+https_health() { # end-to-end check through nginx + TLS, verified against our CA/chain
+  local host; host=$(conf_get CNAPP_HOSTNAME)
+  local args=(-fsS --max-time 10 --resolve "${host}:443:127.0.0.1")
+  [[ -f "$TLS_DIR/ca-bundle.crt" ]] && args+=(--cacert "$TLS_DIR/ca-bundle.crt")
+  local body; body=$(curl "${args[@]}" "https://${host}/api/health" 2>/dev/null || true)
+  [[ $body == *'"status":"ok"'* ]]
+}
+
+wait_healthy() { # wait_healthy timeout_seconds
+  local timeout=${1:-300} start=$SECONDS b f
+  (( DRY_RUN )) && return 0
+  log "Waiting up to ${timeout}s for the stack to become healthy"
+  while (( SECONDS - start < timeout )); do
+    b=$(container_health backend); f=$(container_health frontend)
+    if [[ $b == healthy && $f == healthy ]] && https_health; then
+      ok "healthy after $(( SECONDS - start ))s (backend=$b frontend=$f, HTTPS /api/health ok)"
+      return 0
+    fi
+    [[ $b == exited || $b == missing ]] && (( SECONDS - start > 30 )) && break
+    sleep 5
+  done
+  warn "not healthy after $(( SECONDS - start ))s (backend=$(container_health backend) frontend=$(container_health frontend))"
+  return 1
+}
+
+alembic_revision() {
+  compose exec -T postgres psql -U cnapp -d cnapp -tAc \
+    "SELECT version_num FROM alembic_version" 2>/dev/null | tr -d '[:space:]' || true
+}
+
+image_label() { # image_label image label
+  docker image inspect -f "{{ index .Config.Labels \"$2\" }}" "$1" 2>/dev/null || true
+}
+image_id() { docker image inspect -f '{{.Id}}' "$1" 2>/dev/null || true; }
+running_image_id() { # running_image_id service
+  local id; id=$(compose ps -q "$1" 2>/dev/null || true)
+  [[ -n "$id" ]] && docker inspect -f '{{.Image}}' "$id" 2>/dev/null || true
+}
+
+# ============================================================================ TLS
+# Built-in mode: a long-lived local root CA ($CA_DIR, key root-only 0600, never
+# mounted into a container) signs a server certificate with the right SANs.
+# BYO mode: `tls import` your internal CA's (e.g. AD CS) certificate and key.
+tls_gid() { getent group cnapp-tls | cut -d: -f3; }
+
+csv_items() { tr ',; ' '\n' <<<"$1" | sed '/^$/d'; }
+
+tls_sans() { # -> "DNS:a,DNS:b,IP:1.2.3.4"
+  local host=$1 dns=$2 ips=$3 x out
+  out="DNS:$host"
+  while read -r x; do [[ -n $x && $x != "$host" ]] && out+=",DNS:$x"; done < <(csv_items "$dns")
+  while read -r x; do [[ -n $x ]] && out+=",IP:$x"; done < <(csv_items "$ips")
+  printf '%s' "$out"
+}
+
+tls_fix_perms() {
+  local gid; gid=$(tls_gid)
+  run chown root:"$gid" "$TLS_DIR"; run chmod 0750 "$TLS_DIR"
+  [[ -f "$TLS_DIR/server.key" ]] && { run chown root:"$gid" "$TLS_DIR/server.key"; run chmod 0640 "$TLS_DIR/server.key"; }
+  local f; for f in server.crt ca-bundle.crt cnapp-root-ca.crt; do
+    [[ -f "$TLS_DIR/$f" ]] && { run chown root:root "$TLS_DIR/$f"; run chmod 0644 "$TLS_DIR/$f"; }
+  done
+  return 0
+}
+
+tls_reload_nginx() {
+  (( DRY_RUN )) && { echo "[dry-run] reload nginx"; return 0; }
+  if [[ "$(container_health frontend)" != missing ]]; then
+    compose exec -T frontend nginx -t >/dev/null 2>&1 && compose exec -T frontend nginx -s reload >/dev/null \
+      && ok "nginx reloaded with the new certificate" || warn "nginx reload failed; run: cnapp-ctl restart"
+  fi
+}
+
+tls_issue_server() { # issue/renew the server certificate from the local CA
+  local host ips dns days sans tmp
+  host=$(conf_get CNAPP_HOSTNAME); ips=$(conf_get CNAPP_TLS_IPS); dns=$(conf_get CNAPP_TLS_EXTRA_DNS)
+  days=$(conf_get CNAPP_TLS_SERVER_DAYS); days=${days:-397}
+  [[ -n $host ]] || die "CNAPP_HOSTNAME is not set"
+  [[ -f "$CA_DIR/ca.key" && -f "$CA_DIR/ca.crt" ]] || die "no local CA in $CA_DIR (run: cnapp-ctl tls init)"
+  sans=$(tls_sans "$host" "$dns" "$ips")
+  if (( DRY_RUN )); then echo "[dry-run] issue server certificate for $sans ($days days)"; return 0; fi
+  tmp=$(mktemp -d); trap 'rm -rf "$tmp"; trap - RETURN' RETURN
+  cat >"$tmp/ext.cnf" <<EOF
+basicConstraints = critical, CA:FALSE
+keyUsage = critical, digitalSignature
+extendedKeyUsage = serverAuth
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always
+subjectAltName = $sans
+EOF
+  openssl ecparam -name prime256v1 -genkey -noout -out "$tmp/server.key" 2>/dev/null
+  openssl req -new -key "$tmp/server.key" -subj "/CN=${host}/O=CloudSecurity CNAPP" -out "$tmp/server.csr"
+  openssl x509 -req -in "$tmp/server.csr" -CA "$CA_DIR/ca.crt" -CAkey "$CA_DIR/ca.key" \
+    -CAserial "$CA_DIR/ca.srl" -CAcreateserial -days "$days" -sha256 -extfile "$tmp/ext.cnf" \
+    -out "$tmp/server.crt" 2>/dev/null
+  openssl verify -CAfile "$CA_DIR/ca.crt" "$tmp/server.crt" >/dev/null || die "issued certificate does not verify"
+  install -m 0640 -o root -g "$(tls_gid)" "$tmp/server.key" "$TLS_DIR/server.key"
+  install -m 0644 -o root -g root "$tmp/server.crt" "$TLS_DIR/server.crt"
+  install -m 0644 -o root -g root "$CA_DIR/ca.crt" "$TLS_DIR/ca-bundle.crt"
+  install -m 0644 -o root -g root "$CA_DIR/ca.crt" "$TLS_DIR/cnapp-root-ca.crt"
+  chmod 0600 "$CA_DIR"/ca.srl 2>/dev/null || true
+  ok "server certificate issued for ${sans} (valid ${days} days)"
+}
+
+cmd_tls_init() {
+  local host="" ips="" dns="" force_ca=0 ca_days=3650 constrain=1
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --hostname) host=$2; shift 2 ;;
+      --ip) ips+="${ips:+,}$2"; shift 2 ;;
+      --dns) dns+="${dns:+,}$2"; shift 2 ;;
+      --new-ca) force_ca=1; shift ;;
+      --ca-days) ca_days=$2; shift 2 ;;
+      --no-name-constraints) constrain=0; shift ;;
+      --dry-run) DRY_RUN=1; shift ;;
+      *) die "tls init: unknown option $1" ;;
+    esac
+  done
+  need_root tls init
+  [[ -f "$CONF" ]] || die "run cnapp-ctl install first (it calls tls init for you)"
+  [[ -n $host ]] && conf_set CNAPP_HOSTNAME "$host"
+  [[ -n $ips ]] && conf_set CNAPP_TLS_IPS "$ips"
+  [[ -n $dns ]] && conf_set CNAPP_TLS_EXTRA_DNS "$dns"
+  conf_set CNAPP_TLS_MODE builtin
+  tls_create_ca "$force_ca" "$ca_days" "$constrain"
+  tls_issue_server
+  tls_reload_nginx
+  tls_print_trust_help
+}
+
+tls_create_ca() { # tls_create_ca force days constrain
+  local force=$1 days=$2 constrain=$3 host ips dns nc="" x tmp
+  if [[ -f "$CA_DIR/ca.key" && $force -eq 0 ]]; then ok "keeping the existing local CA ($CA_DIR/ca.crt)"; return 0; fi
+  host=$(conf_get CNAPP_HOSTNAME); ips=$(conf_get CNAPP_TLS_IPS); dns=$(conf_get CNAPP_TLS_EXTRA_DNS)
+  if (( constrain )); then
+    # Name constraints: even if the CA key leaked, it could only sign for these names/IPs.
+    nc="nameConstraints = critical, permitted;DNS:${host}"
+    while read -r x; do [[ -n $x && $x != "$host" ]] && nc+=", permitted;DNS:$x"; done < <(csv_items "$dns")
+    while read -r x; do
+      [[ -z $x ]] && continue
+      if [[ $x == *:* ]]; then nc+=", permitted;IP:${x}/ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"
+      else nc+=", permitted;IP:${x}/255.255.255.255"; fi
+    done < <(csv_items "$ips")
+  fi
+  if (( DRY_RUN )); then echo "[dry-run] create local root CA in $CA_DIR ($days days) ${nc}"; return 0; fi
+  install -d -m 0700 -o root -g root "$CA_DIR"
+  tmp=$(mktemp -d); trap 'rm -rf "$tmp"; trap - RETURN' RETURN
+  cat >"$tmp/ca.cnf" <<EOF
+[req]
+distinguished_name = dn
+x509_extensions = v3_ca
+prompt = no
+[dn]
+CN = CloudSecurity CNAPP Internal Root CA (${host})
+O = CloudSecurity CNAPP
+[v3_ca]
+basicConstraints = critical, CA:TRUE, pathlen:0
+keyUsage = critical, keyCertSign, cRLSign
+subjectKeyIdentifier = hash
+${nc}
+EOF
+  (umask 077; openssl ecparam -name secp384r1 -genkey -noout -out "$CA_DIR/ca.key" 2>/dev/null)
+  openssl req -x509 -new -key "$CA_DIR/ca.key" -sha384 -days "$days" -config "$tmp/ca.cnf" -out "$CA_DIR/ca.crt"
+  chmod 0600 "$CA_DIR/ca.key"; chmod 0644 "$CA_DIR/ca.crt"
+  rm -f "$CA_DIR/ca.srl"
+  ok "created local root CA (valid $(( days / 365 )) years); private key: $CA_DIR/ca.key (root-only)"
+}
+
+cmd_tls_renew() {
+  local within=""
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --if-expiring-within) within=$2; shift 2 ;;
+      --dry-run) DRY_RUN=1; shift ;;
+      *) die "tls renew: unknown option $1" ;;
+    esac
+  done
+  need_root tls renew; require_installed
+  [[ "$(conf_get CNAPP_TLS_MODE)" == builtin ]] \
+    || die "the certificate was imported (BYO); renew it at your CA, then: cnapp-ctl tls import --cert ... --key ..."
+  if [[ -n $within ]] && openssl x509 -checkend $(( within * 86400 )) -noout -in "$TLS_DIR/server.crt" >/dev/null 2>&1; then
+    ok "server certificate is valid for more than $within days; nothing to do"; return 0
+  fi
+  tls_issue_server
+  tls_fix_perms
+  tls_reload_nginx
+}
+
+cmd_tls_import() {
+  local cert="" key="" chain="" ca=""
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --cert) cert=$2; shift 2 ;;
+      --key) key=$2; shift 2 ;;
+      --chain) chain=$2; shift 2 ;;
+      --ca) ca=$2; shift 2 ;;
+      --dry-run) DRY_RUN=1; shift ;;
+      *) die "tls import: unknown option $1" ;;
+    esac
+  done
+  need_root tls import
+  [[ -f $cert && -f $key ]] || die "usage: cnapp-ctl tls import --cert server.crt --key server.key [--chain intermediates.pem] [--ca root-ca.pem]"
+  local a b host
+  a=$(openssl x509 -noout -pubkey -in "$cert" | openssl sha256) || die "$cert is not a PEM certificate"
+  b=$(openssl pkey -pubout -in "$key" | openssl sha256) || die "$key is not a PEM private key (an encrypted key is not supported)"
+  [[ $a == "$b" ]] || die "the private key does not match the certificate"
+  openssl x509 -checkend 0 -noout -in "$cert" >/dev/null || die "the certificate has expired"
+  host=$(conf_get CNAPP_HOSTNAME)
+  if [[ -n $host && "$(openssl x509 -noout -checkhost "$host" -in "$cert" 2>/dev/null || true)" != *"does match"* ]]; then
+    warn "the certificate is not valid for $host (check its Subject Alternative Names)"
+  fi
+  if [[ -n $ca ]]; then
+    local vargs=(-CAfile "$ca"); [[ -n $chain ]] && vargs+=(-untrusted "$chain")
+    openssl verify "${vargs[@]}" "$cert" >/dev/null || die "the certificate does not chain to $ca"
+  fi
+  if (( DRY_RUN )); then echo "[dry-run] install $cert (+chain) and $key into $TLS_DIR"; return 0; fi
+  install -d -m 0750 -o root -g "$(tls_gid)" "$TLS_DIR"
+  { cat "$cert"; [[ -n $chain ]] && cat "$chain"; } >"$TLS_DIR/server.crt.new"
+  install -m 0640 -o root -g "$(tls_gid)" "$key" "$TLS_DIR/server.key"
+  mv -f "$TLS_DIR/server.crt.new" "$TLS_DIR/server.crt"
+  if [[ -n $ca ]]; then install -m 0644 "$ca" "$TLS_DIR/ca-bundle.crt"; install -m 0644 "$ca" "$TLS_DIR/cnapp-root-ca.crt"
+  else rm -f "$TLS_DIR/ca-bundle.crt" "$TLS_DIR/cnapp-root-ca.crt"; fi
+  conf_set CNAPP_TLS_MODE byo
+  tls_fix_perms
+  ok "imported certificate: $(openssl x509 -noout -subject -enddate -in "$TLS_DIR/server.crt" | tr '\n' ' ')"
+  tls_reload_nginx
+}
+
+cmd_tls_show() {
+  require_installed
+  local f=$TLS_DIR/server.crt
+  [[ -f $f ]] || die "no certificate in $TLS_DIR"
+  echo "Mode: $(conf_get CNAPP_TLS_MODE)"
+  echo "--- server certificate ($f)"
+  openssl x509 -noout -subject -issuer -startdate -enddate -ext subjectAltName -in "$f" | sed 's/^/  /'
+  if openssl x509 -checkend $(( 30 * 86400 )) -noout -in "$f" >/dev/null; then echo "  status: valid for more than 30 days"
+  else echo "  status: ${C_Y}expires within 30 days - run: cnapp-ctl tls renew${C_0}"; fi
+  if [[ -f "$TLS_DIR/cnapp-root-ca.crt" ]]; then
+    echo "--- root CA to distribute to clients ($TLS_DIR/cnapp-root-ca.crt)"
+    openssl x509 -noout -subject -enddate -fingerprint -sha256 -in "$TLS_DIR/cnapp-root-ca.crt" | sed 's/^/  /'
+  fi
+}
+
+cmd_tls_export_ca() { # print the CA certificate (PEM) to stdout, or copy it to a path
+  require_installed
+  local src=$TLS_DIR/cnapp-root-ca.crt
+  [[ -f $src ]] || die "no CA certificate recorded (BYO mode without --ca): distribute your internal CA's root instead"
+  if [[ $# -gt 0 ]]; then run install -m 0644 "$src" "$1"; ok "CA certificate written to $1"; else cat "$src"; fi
+}
+
+tls_print_trust_help() {
+  [[ -f "$TLS_DIR/cnapp-root-ca.crt" ]] || return 0
+  cat <<EOF
+
+Distribute the root CA certificate to staff browsers and enrolled laptops:
+  file:        $TLS_DIR/cnapp-root-ca.crt   (public; copy it with scp or: cnapp-ctl tls export-ca)
+  fingerprint: $(openssl x509 -noout -fingerprint -sha256 -in "$TLS_DIR/cnapp-root-ca.crt" | cut -d= -f2)
+  Windows:  certutil -addstore -f Root cnapp-root-ca.crt     (or Group Policy, see docs)
+  macOS:    sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain cnapp-root-ca.crt
+  Linux:    sudo cp cnapp-root-ca.crt /usr/local/share/ca-certificates/ && sudo update-ca-certificates
+EOF
+}
+
+cmd_tls() {
+  local sub=${1:-show}; shift || true
+  case $sub in
+    init) cmd_tls_init "$@" ;;
+    renew) cmd_tls_renew "$@" ;;
+    show) cmd_tls_show "$@" ;;
+    import) cmd_tls_import "$@" ;;
+    export-ca) cmd_tls_export_ca "$@" ;;
+    *) die "usage: cnapp-ctl tls init|renew|show|import|export-ca" ;;
+  esac
+}
+
+# ============================================================================ firewall
+# UFW protects the host (SSH, plus 80/443 for anything Docker does not DNAT).
+# Docker's published ports are DNATed before UFW's INPUT rules see them, so the
+# CIDR restriction for 80/443 is enforced in the DOCKER-USER chain as well.
+ssh_port() {
+  local p=""; have sshd && p=$(sshd -T 2>/dev/null | awk '$1=="port"{print $2; exit}' || true)
+  printf '%s' "${p:-22}"
+}
+
+ssh_client_ip() { # the admin's current SSH source address, if any
+  local ip=""
+  [[ -n ${SSH_CONNECTION:-} ]] && ip=${SSH_CONNECTION%% *}
+  if [[ -z $ip ]] && have who; then ip=$(who -m 2>/dev/null | sed -n 's/.*(\([0-9a-fA-F.:]*\)).*/\1/p' | head -n1 || true); fi
+  if [[ -z $ip && -n ${SUDO_USER:-} ]] && have ss; then
+    ip=$(ss -Htn state established "( sport = :$(ssh_port) )" 2>/dev/null | awk '{print $4}' | sed 's/:[0-9]*$//; s/^\[//; s/\]$//' | head -n1 || true)
+  fi
+  printf '%s' "$ip"
+}
+
+fw_configure_ufw() {
+  local allowed ssh_cidrs port c
+  allowed=$(conf_get CNAPP_ALLOWED_CIDRS); ssh_cidrs=$(conf_get CNAPP_SSH_CIDRS); port=$(ssh_port)
+  [[ -n $allowed ]] || die "CNAPP_ALLOWED_CIDRS is empty"
+  have ufw || run apt-get install -y -qq ufw
+  log "Configuring UFW (SSH port $port from: ${ssh_cidrs}; 80/443 from: ${allowed})"
+  # SSH first, so enabling UFW can never cut off the current session.
+  while read -r c; do run ufw allow proto tcp from "$c" to any port "$port" comment 'cnapp-ssh' >/dev/null; done < <(csv_items "$ssh_cidrs")
+  while read -r c; do run ufw allow proto tcp from "$c" to any port 80,443 comment 'cnapp-web' >/dev/null; done < <(csv_items "$allowed")
+  run ufw default deny incoming >/dev/null
+  run ufw default allow outgoing >/dev/null
+  run ufw --force enable >/dev/null
+  ok "UFW enabled"
+}
+
+fw_apply_docker() { # idempotent; also run at boot by cnapp-firewall.service (before dockerd)
+  local allowed c
+  allowed=$(conf_get CNAPP_ALLOWED_CIDRS)
+  [[ "$(conf_get CNAPP_FIREWALL)" == "false" ]] && { ok "firewall management disabled (CNAPP_FIREWALL=false)"; return 0; }
+  [[ -n $allowed ]] || die "CNAPP_ALLOWED_CIDRS is empty"
+  have iptables || die "iptables not found"
+  if (( DRY_RUN )); then echo "[dry-run] restrict published 80/443 to $allowed in DOCKER-USER"; return 0; fi
+  iptables -w -N DOCKER-USER 2>/dev/null || true
+  iptables -w -N "$FW_CHAIN" 2>/dev/null || iptables -w -F "$FW_CHAIN"
+  while read -r c; do iptables -w -A "$FW_CHAIN" -s "$c" -j RETURN; done < <(csv_items "$allowed")
+  iptables -w -A "$FW_CHAIN" -j DROP
+  # New connections from outside the Docker bridges to the frontend's container
+  # ports (8080/8443, i.e. after Docker's DNAT of host ports 80/443).
+  local rule=(-p tcp -m conntrack --ctstate NEW -m multiport --dports "8080,8443" -j "$FW_CHAIN")
+  local j
+  for j in "-i docker0" "-i br-+"; do
+    # shellcheck disable=SC2086
+    iptables -w -C DOCKER-USER $j -j RETURN 2>/dev/null || iptables -w -I DOCKER-USER $j -j RETURN
+  done
+  iptables -w -C DOCKER-USER "${rule[@]}" 2>/dev/null || iptables -w -A DOCKER-USER "${rule[@]}"
+  # Docker creates DOCKER-USER with a trailing RETURN; keep one at the end.
+  iptables -w -D DOCKER-USER -j RETURN 2>/dev/null || true
+  iptables -w -A DOCKER-USER -j RETURN
+  ok "published ports 80/443 restricted to: $allowed"
+}
+
+fw_remove() {
+  local allowed ssh_cidrs port c
+  allowed=$(conf_get CNAPP_ALLOWED_CIDRS); ssh_cidrs=$(conf_get CNAPP_SSH_CIDRS); port=$(ssh_port)
+  if have iptables; then
+    local rule=(-p tcp -m conntrack --ctstate NEW -m multiport --dports "8080,8443" -j "$FW_CHAIN")
+    run iptables -w -D DOCKER-USER "${rule[@]}" 2>/dev/null || true
+    run iptables -w -F "$FW_CHAIN" 2>/dev/null || true
+    run iptables -w -X "$FW_CHAIN" 2>/dev/null || true
+  fi
+  if have ufw && [[ "$(ufw status 2>/dev/null || true)" == *"Status: active"* ]]; then
+    while read -r c; do run ufw delete allow proto tcp from "$c" to any port 80,443 >/dev/null 2>&1 || true; done < <(csv_items "$allowed")
+    warn "UFW stays enabled and the SSH rules (port $port from $ssh_cidrs) are kept so you are not locked out"
+  fi
+}
+
+cmd_firewall() {
+  local sub=${1:-status}; shift || true
+  case $sub in
+    apply|apply-docker) need_root firewall; [[ -f $CONF ]] || exit 0; fw_apply_docker ;;
+    configure) need_root firewall; require_installed; fw_configure_ufw; fw_apply_docker ;;
+    status)
+      have ufw && { ufw status verbose 2>/dev/null || true; }
+      have iptables && { echo "--- DOCKER-USER"; iptables -w -S DOCKER-USER 2>/dev/null || true; iptables -w -S "$FW_CHAIN" 2>/dev/null || true; } ;;
+    *) die "usage: cnapp-ctl firewall status|configure|apply-docker" ;;
+  esac
+}
+
+# ============================================================================ install
+os_field() { # os_field KEY -> value from /etc/os-release (parsed, not sourced)
+  { sed -n "s/^$1=//p" /etc/os-release 2>/dev/null | tr -d '"' | head -n1; } || true
+}
+
+preflight() { # preflight force
+  local force=$1 id ver cpus mem_kb disk_gb
+  id=$(os_field ID); ver=$(os_field VERSION_ID)
+  if [[ $id != ubuntu || $ver != 24.04 ]]; then
+    (( force )) || die "supported on Ubuntu Server 24.04 LTS only (found ${id:-?} ${ver:-?}); --force to try anyway"
+    warn "untested OS ${id} ${ver} (--force)"
+  else ok "Ubuntu $ver"; fi
+  [[ $(uname -m) == x86_64 ]] || warn "images are published for linux/amd64; $(uname -m) is not supported"
+  cpus=$(nproc); mem_kb=$(awk '/MemTotal/{print $2}' /proc/meminfo)
+  disk_gb=$(df -Pk /var/lib 2>/dev/null | awk 'NR==2{print int($4/1048576)}')
+  (( cpus >= 2 )) && ok "$cpus vCPU" || warn "$cpus vCPU: at least 2 recommended"
+  (( mem_kb >= 3500000 )) && ok "$(( mem_kb / 1024 )) MiB RAM" || warn "$(( mem_kb / 1024 )) MiB RAM: 4 GB recommended (memory limits assume 4 GB)"
+  (( disk_gb >= 15 )) && ok "${disk_gb} GB free under /var/lib" || warn "only ${disk_gb} GB free under /var/lib: 50 GB disk recommended"
+  local p
+  for p in 80 443; do
+    local listen ours; listen=$(ss -Hltn "( sport = :$p )" 2>/dev/null || true)
+    ours=$(docker ps --format '{{.Names}}' 2>/dev/null || true)
+    if [[ -n $listen && $'\n'$ours != *$'\n'"${PROJECT}-frontend"* ]]; then
+      (( force )) || die "port $p is already in use by another service ($(ss -Hltnp "( sport = :$p )" | head -n1)); --force to continue"
+      warn "port $p is in use"
+    fi
+  done
+}
+
+install_docker() {
+  if have docker && docker compose version >/dev/null 2>&1; then
+    ok "Docker already installed: $(docker --version | cut -d, -f1), compose $(docker compose version --short)"
+    return 0
+  fi
+  log "Installing Docker Engine + compose plugin from Docker's official apt repository"
+  run install -d -m 0755 /etc/apt/keyrings
+  local key=/etc/apt/keyrings/docker.asc tmp fpr
+  tmp=$(mktemp)
+  curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o "$tmp"
+  fpr=$(gpg --show-keys --with-colons "$tmp" 2>/dev/null | awk -F: '$1=="fpr"{print $10; exit}')
+  [[ $fpr == "$DOCKER_GPG_FINGERPRINT" ]] || { rm -f "$tmp"; die "Docker apt key fingerprint mismatch (got '$fpr', expected $DOCKER_GPG_FINGERPRINT)"; }
+  ok "Docker apt key fingerprint verified ($fpr)"
+  run install -m 0644 "$tmp" "$key"; rm -f "$tmp"
+  local codename; codename=$(os_field UBUNTU_CODENAME); codename=${codename:-$(os_field VERSION_CODENAME)}
+  if (( DRY_RUN )); then echo "[dry-run] write /etc/apt/sources.list.d/docker.list"; else
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=$key] https://download.docker.com/linux/ubuntu $codename stable" \
+      >/etc/apt/sources.list.d/docker.list
+    chmod 0644 /etc/apt/sources.list.d/docker.list
+  fi
+  run apt-get update -qq
+  run env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  if [[ ! -f /etc/docker/daemon.json ]] && (( ! DRY_RUN )); then
+    install -d -m 0755 /etc/docker
+    cat >/etc/docker/daemon.json <<'EOF'
+{
+  "log-driver": "json-file",
+  "log-opts": { "max-size": "10m", "max-file": "5" }
+}
+EOF
+    systemctl restart docker
+  fi
+  run systemctl enable --now docker
+  ok "Docker $(docker --version 2>/dev/null | cut -d, -f1)"
+}
+
+install_packages() {
+  local pkgs=(ca-certificates curl gnupg openssl ufw unattended-upgrades iptables) missing=() p
+  for p in "${pkgs[@]}"; do dpkg -s "$p" >/dev/null 2>&1 || missing+=("$p"); done
+  if (( ${#missing[@]} )); then
+    log "Installing ${missing[*]}"
+    run apt-get update -qq
+    run env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${missing[@]}"
+  fi
+}
+
+enable_unattended_upgrades() {
+  log "Enabling unattended security upgrades"
+  if (( DRY_RUN )); then echo "[dry-run] write /etc/apt/apt.conf.d/20auto-upgrades"; return 0; fi
+  cat >/etc/apt/apt.conf.d/20auto-upgrades <<'EOF'
+// Written by cnapp-ctl: daily package lists + unattended *security* upgrades
+// (origins in /etc/apt/apt.conf.d/50unattended-upgrades; Docker's repo is not
+// included, so Docker Engine is only upgraded when you run apt upgrade).
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+APT::Periodic::AutocleanInterval "7";
+EOF
+  chmod 0644 /etc/apt/apt.conf.d/20auto-upgrades
+  systemctl enable --now unattended-upgrades >/dev/null 2>&1 || true
+  ok "unattended-upgrades enabled (security updates; reboot as needed: see /var/run/reboot-required)"
+}
+
+write_default_config() { # write_default_config host admin_email tag registry allowed ssh mfa ips dns
+  local host=$1 email=$2 tag=$3 reg=$4 allowed=$5 ssh=$6 mfa=$7 ips=$8 dns=$9
+  if [[ -f $CONF ]]; then
+    ok "keeping existing $CONF (only options passed on the command line are changed)"
+    [[ -n $host ]] && conf_set CNAPP_HOSTNAME "$host" && conf_set PUBLIC_BASE_URL "https://$host" \
+      && conf_set ENTRA_REDIRECT_URI "https://$host/api/auth/sso/entra/callback"
+    [[ -n $email ]] && conf_set ADMIN_EMAIL "$email"
+    [[ -n $tag ]] && conf_set IMAGE_TAG "$tag"
+    [[ -n $reg ]] && conf_set IMAGE_REGISTRY "$reg"
+    [[ -n $allowed ]] && conf_set CNAPP_ALLOWED_CIDRS "$allowed"
+    [[ -n $ssh ]] && conf_set CNAPP_SSH_CIDRS "$ssh"
+    [[ -n $ips ]] && conf_set CNAPP_TLS_IPS "$ips"
+    [[ -n $dns ]] && conf_set CNAPP_TLS_EXTRA_DNS "$dns"
+    [[ $mfa != "-" ]] && conf_set MFA_REQUIRED_ROLES "$mfa"
+    conf_set CNAPP_TLS_GID "$(tls_gid)"
+    return 0
+  fi
+  [[ -n $host ]] || die "--hostname is required (the internal DNS name staff will use, e.g. cnapp.corp.local)"
+  [[ -n $email ]] || die "--admin-email is required"
+  [[ $mfa == "-" ]] && mfa="admin"
+  if (( DRY_RUN )); then echo "[dry-run] write $CONF"; return 0; fi
+  cat >"$CONF" <<EOF
+# CloudSecurity CNAPP on-prem settings (mode 0600, root only).
+# Edit, then apply with: sudo cnapp-ctl restart
+# Values containing '\$' must be wrapped in single quotes.
+# Reference for every application setting: .env.example in the repository.
+
+# --- Deployment (cnapp-ctl / docker compose) ---------------------------------
+CNAPP_HOSTNAME=$host
+# Extra TLS names / IP addresses for the built-in certificate (comma-separated)
+CNAPP_TLS_EXTRA_DNS=$dns
+CNAPP_TLS_IPS=$ips
+CNAPP_TLS_MODE=builtin
+CNAPP_TLS_GID=$(tls_gid)
+IMAGE_REGISTRY=${reg:-$DEFAULT_REGISTRY}
+# Pin a commit SHA tag for reproducible deployments (cnapp-ctl update --check lists them)
+IMAGE_TAG=${tag:-latest}
+# GitHub user owning the read-only GHCR token
+GHCR_USER=
+# Clients allowed to reach 80/443 (LAN / VPN ranges) and SSH (admin ranges)
+CNAPP_ALLOWED_CIDRS=${allowed:-10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}
+CNAPP_SSH_CIDRS=$ssh
+CNAPP_FIREWALL=true
+# Publish 80/443 on one address only (default: all interfaces)
+CNAPP_BIND_ADDRESS=0.0.0.0
+# Docker network for the stack: change if it overlaps your LAN/VPN
+CNAPP_DOCKER_SUBNET=172.30.252.0/24
+
+# --- Sizing (defaults for 2 vCPU / 4 GB; see docs/DEPLOY_ONPREM.md) ------------
+WEB_CONCURRENCY=2
+PG_MEM_LIMIT=1g
+PG_SHARED_BUFFERS=256MB
+PG_EFFECTIVE_CACHE_SIZE=768MB
+BACKEND_MEM_LIMIT=1280m
+FRONTEND_MEM_LIMIT=128m
+
+# --- Backups -----------------------------------------------------------------
+BACKUP_RETENTION_DAYS=14
+# Also copy each backup to a mounted share (NFS/SMB), e.g. /mnt/backup/cnapp
+BACKUP_COPY_DIR=
+# Also copy the config + secrets archive there (needed to restore on a new server;
+# it contains encryption keys - only enable for a protected share)
+BACKUP_COPY_CONFIG=false
+
+# --- Application ----------------------------------------------------------------
+APP_ENV=production
+LOG_FORMAT=json
+PUBLIC_BASE_URL=https://$host
+# The UI calls the API same-origin through nginx: no cross-origin access needed.
+CORS_ORIGINS=
+SIMULATION_MODE=false
+SIMULATOR_ENABLED=false
+# First admin = break-glass account (password login always allowed for it)
+ADMIN_EMAIL=$email
+MFA_REQUIRED_ROLES=$mfa
+SESSION_MAX_AGE_HOURS=8
+SESSION_IDLE_MINUTES=30
+# Link shown on the enrollment page for downloading agent builds (internal share)
+AGENT_DOWNLOAD_URL=
+
+# --- Microsoft Entra ID single sign-on (optional, docs/AUTH.md) -----------------
+# Browser-based flow: the server needs outbound HTTPS to login.microsoftonline.com.
+ENTRA_TENANT_ID=
+ENTRA_CLIENT_ID=
+ENTRA_CLIENT_SECRET=
+ENTRA_CLIENT_AUTH=secret
+ENTRA_REDIRECT_URI=https://$host/api/auth/sso/entra/callback
+ENTRA_JIT_PROVISIONING=false
+ENTRA_DEFAULT_ROLE=viewer
+ENTRA_ROLE_MAP=CNAPP.Admin=admin,CNAPP.Analyst=analyst,CNAPP.Viewer=viewer
+
+# --- Azure read-only scanner (optional): service principal with Reader role -------
+AZURE_AUTH_MODE=client_secret
+AZURE_TENANT_ID=
+AZURE_CLIENT_ID=
+AZURE_CLIENT_SECRET=
+AZURE_SUBSCRIPTION_IDS=
+
+# --- Notifications (optional, docs/NOTIFICATIONS.md) ------------------------------
+# Allow an SMTP relay on a private IP address (internal mail server)
+NOTIFICATIONS_SMTP_ALLOW_PRIVATE=false
+EOF
+  chmod 0600 "$CONF"
+  ok "wrote $CONF"
+}
+
+ensure_secrets() {
+  local changed=0
+  if (( DRY_RUN )); then echo "[dry-run] generate missing secrets in $GEN_ENV"; return 0; fi
+  touch "$GEN_ENV"; chmod 0600 "$GEN_ENV"
+  gen() { # gen KEY value - only when missing: never rotate silently
+    [[ -n "$(conf_get "$1" "$GEN_ENV")" ]] && return 0
+    conf_set "$1" "$2" "$GEN_ENV"; changed=1
+  }
+  gen POSTGRES_PASSWORD "$(rand_hex 24)"
+  gen SESSION_SECRET "$(rand_hex 32)"
+  gen INGEST_API_TOKEN "$(rand_hex 32)"
+  gen MFA_ENCRYPTION_KEY "$(rand_hex 32)"
+  gen NOTIFICATIONS_ENCRYPTION_KEY "$(openssl rand -base64 32 | tr '+/' '-_')"
+  if (( changed )); then ok "generated secrets in $GEN_ENV (never printed; cnapp-ctl show-secret NAME)"
+  else ok "keeping existing secrets in $GEN_ENV"; fi
+}
+
+install_files() { # copy the package (compose, nginx, units, docs) and the CLI
+  local src=$1
+  run install -d -m 0755 -o root -g root "$CNAPP_HOME" "$APP_DIR" "$APP_DIR/nginx"
+  run install -d -m 0700 -o root -g root "$SECRETS_DIR" "$DOCKER_CONFIG" "$BACKUP_DIR" "$STATE_DIR"
+  run install -d -m 0750 -o root -g "$(tls_gid)" "$TLS_DIR"
+  if [[ "$src" != "$APP_DIR" ]]; then
+    run install -m 0644 "$src/docker-compose.prod.yml" "$APP_DIR/docker-compose.prod.yml"
+    run install -m 0644 "$src/nginx/onprem.conf.template" "$APP_DIR/nginx/onprem.conf.template"
+  fi
+  [[ -f "$src/QUICKSTART.md" && "$src" != "$APP_DIR" ]] && run install -m 0644 "$src/QUICKSTART.md" "$APP_DIR/QUICKSTART.md"
+  run install -d -m 0755 -o root -g root "$APP_DIR/systemd"
+  local u
+  for u in "$src"/systemd/*.service "$src"/systemd/*.timer; do
+    [[ "$src" == "$APP_DIR" ]] || run install -m 0644 "$u" "$APP_DIR/systemd/$(basename "$u")"
+    run install -m 0644 "$u" "$SYSTEMD_DIR/$(basename "$u")"
+  done
+  # Keep a copy of the CLI with the package (reinstall after `uninstall`), and on PATH.
+  local self; self=$(readlink -f "$src/cnapp-ctl")
+  [[ "$self" == "$(readlink -f "$APP_DIR/cnapp-ctl" 2>/dev/null || true)" ]] || run install -m 0755 "$src/cnapp-ctl" "$APP_DIR/cnapp-ctl"
+  [[ "$self" == "$(readlink -f "$BIN_PATH" 2>/dev/null || true)" ]] || run install -m 0755 "$src/cnapp-ctl" "$BIN_PATH"
+  run systemctl daemon-reload
+}
+
+ghcr_login() { # ghcr_login user token_file
+  local user=$1 token_file=$2 token=""
+  if [[ -n $token_file ]]; then token=$(<"$token_file")
+  elif [[ -n ${CNAPP_GHCR_TOKEN:-} ]]; then token=$CNAPP_GHCR_TOKEN
+  elif [[ -t 0 ]]; then
+    echo "A read-only GitHub token (fine-grained or classic PAT with read:packages) is needed to pull the private images."
+    [[ -n $user ]] || read -r -p "GitHub username: " user
+    read -r -s -p "GHCR read-only token (input hidden): " token; echo
+  else
+    die "no GHCR token: pass --ghcr-token-file FILE (or CNAPP_GHCR_TOKEN), or --skip-ghcr-login"
+  fi
+  token=${token//[$'\r\n ']/}
+  [[ -n $user && -n $token ]] || die "GHCR username and token are required (--ghcr-user, --ghcr-token-file)"
+  conf_set GHCR_USER "$user"
+  if (( DRY_RUN )); then echo "[dry-run] docker login ghcr.io -u $user"; return 0; fi
+  printf '%s' "$token" | docker login ghcr.io -u "$user" --password-stdin >/dev/null \
+    || die "GHCR login failed: check the token has read:packages and access to the repository's packages"
+  printf '%s' "$token" >"$SECRETS_DIR/ghcr-token"; chmod 0600 "$SECRETS_DIR/ghcr-token"
+  chmod -R go-rwx "$DOCKER_CONFIG"
+  ok "logged in to ghcr.io as $user (credentials stored root-only in $DOCKER_CONFIG)"
+}
+
+pull_images() { # pull_images tag -> pulls when needed (mutable 'latest' always, pinned tags when missing)
+  local tag=$1 svc img
+  for svc in backend frontend; do
+    img=$(image_ref "$svc" "$tag")
+    if [[ $tag == latest || -z "$(image_id "$img")" ]]; then
+      log "Pulling $img"
+      run docker pull -q "$img" >/dev/null || return 1
+    else
+      ok "$img present locally"
+    fi
+  done
+  local pg; pg=$(conf_get POSTGRES_IMAGE); pg=${pg:-postgres:16-alpine}
+  if [[ -z "$(image_id "$pg")" ]]; then log "Pulling $pg"; run docker pull -q "$pg" >/dev/null || return 1; fi
+}
+
+bootstrap_admin() { # bootstrap_admin email password_file
+  local email=$1 pw_file=$2 pw out
+  pw=$(rand_password)
+  if (( DRY_RUN )); then echo "[dry-run] create admin $email"; return 0; fi
+  if ! out=$(printf '%s\n' "$pw" | compose exec -T backend python -m app.cli create-user \
+      --email "$email" --role admin --name Administrator --password-stdin 2>&1); then
+    if grep -q "already exists" <<<"$out"; then
+      ok "admin $email already exists (forgot the password? cnapp-ctl reset-password --email $email)"; return 0
+    fi
+    die "creating the admin user failed: $out"
+  fi
+  if [[ -n $pw_file ]]; then
+    (umask 077; printf '%s\n' "$pw" >"$pw_file"); ok "admin $email created; password written to $pw_file (0600) - delete it after first login"
+  else
+    cat <<EOF
+
+${C_B}+------------------------------------------------------------------+
+| First admin account - the password is shown ONCE, store it now   |
++------------------------------------------------------------------+${C_0}
+  URL:      $(public_url)
+  Email:    $email
+  Password: $pw
+${C_B}You will be asked to set up MFA (authenticator app) at first login.${C_0}
+
+EOF
+  fi
+}
+
+cmd_install() {
+  local host="" email="" tag="" reg="" allowed="" ssh="" mfa="-" ips="" dns="" force=0 skip_fw=0 skip_uu=0
+  local skip_login=0 gh_user="" gh_token_file="" pw_file="" no_admin=0 timeout=600 src
+  src=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --hostname) host=$2; shift 2 ;;
+      --ip) ips+="${ips:+,}$2"; shift 2 ;;
+      --dns) dns+="${dns:+,}$2"; shift 2 ;;
+      --admin-email) email=$2; shift 2 ;;
+      --image-tag|--tag) tag=$2; shift 2 ;;
+      --registry) reg=$2; shift 2 ;;
+      --allowed-cidrs) allowed=$2; shift 2 ;;
+      --ssh-cidrs|--admin-cidr) ssh+="${ssh:+,}$2"; shift 2 ;;
+      --mfa-required-roles) mfa=$2; shift 2 ;;
+      --ghcr-user) gh_user=$2; shift 2 ;;
+      --ghcr-token-file) gh_token_file=$2; shift 2 ;;
+      --skip-ghcr-login) skip_login=1; shift ;;
+      --skip-firewall) skip_fw=1; shift ;;
+      --skip-unattended-upgrades) skip_uu=1; shift ;;
+      --admin-password-file) pw_file=$2; shift 2 ;;
+      --no-admin) no_admin=1; shift ;;
+      --health-timeout) timeout=$2; shift 2 ;;
+      --force) force=1; shift ;;
+      --yes|-y) ASSUME_YES=1; shift ;;
+      --dry-run) DRY_RUN=1; shift ;;
+      *) die "install: unknown option $1 (see: cnapp-ctl help)" ;;
+    esac
+  done
+  need_root install
+  [[ -f "$src/docker-compose.prod.yml" ]] || src=$APP_DIR
+  [[ -f "$src/docker-compose.prod.yml" && -f "$src/cnapp-ctl" ]] \
+    || die "run install from the deploy/onprem directory of the repository (package files not found in $src)"
+  if [[ -z $email && ! -f $CONF && -t 0 ]]; then read -r -p "Admin email: " email; fi
+  if [[ -z $host && ! -f $CONF && -t 0 ]]; then read -r -p "Internal hostname (e.g. cnapp.corp.local): " host; fi
+  if [[ -z $ips && ! -f $CONF ]]; then
+    ips=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}' || true)
+    [[ -n $ips ]] && log "Server IP for the certificate: $ips (override with --ip)"
+  fi
+
+  log "Preflight checks"; preflight "$force"
+  install_packages
+  install_docker
+  getent group cnapp-tls >/dev/null || run groupadd --system cnapp-tls
+  (( DRY_RUN )) && ! getent group cnapp-tls >/dev/null && { echo "[dry-run] (stopping: the remaining steps need the cnapp-tls group)"; return 0; }
+  install_files "$src"
+
+  # SSH access to keep: explicit ranges + the address of the current SSH session.
+  if [[ -z $ssh && ! -f $CONF ]]; then
+    local me; me=$(ssh_client_ip)
+    if [[ -n $me ]]; then ssh=$me; [[ $me == *:* ]] || ssh="$me/32"; log "Allowing SSH from your current address $ssh"
+    else ssh=${allowed:-10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}; warn "could not detect your SSH address; allowing SSH from $ssh"; fi
+  fi
+  write_default_config "$host" "$email" "$tag" "$reg" "$allowed" "$ssh" "$mfa" "$ips" "$dns"
+  ensure_secrets
+
+  if [[ -f "$TLS_DIR/server.crt" && -f "$TLS_DIR/server.key" ]]; then
+    ok "using the existing certificate in $TLS_DIR ($(conf_get CNAPP_TLS_MODE))"
+  else
+    log "Creating the built-in internal CA and server certificate"
+    tls_create_ca 0 3650 1
+    tls_issue_server
+  fi
+  tls_fix_perms
+
+  if (( skip_login )); then warn "skipping GHCR login (--skip-ghcr-login): images must already be present locally"
+  elif [[ -s "$DOCKER_CONFIG/config.json" && -z $gh_token_file && -z ${CNAPP_GHCR_TOKEN:-} ]]; then ok "already logged in to ghcr.io"
+  else ghcr_login "${gh_user:-$(conf_get GHCR_USER)}" "$gh_token_file"; fi
+
+  if (( skip_fw )); then warn "skipping firewall configuration (--skip-firewall)"; conf_set CNAPP_FIREWALL false
+  else conf_set CNAPP_FIREWALL true; fw_configure_ufw; fw_apply_docker; fi
+  (( skip_uu )) || enable_unattended_upgrades
+
+  log "Pulling images ($(image_ref backend))"
+  pull_images "$(conf_get IMAGE_TAG)" || die "could not pull the images: check IMAGE_TAG and the GHCR login (cnapp-ctl update --check)"
+  log "Starting the stack"
+  run systemctl enable cnapp-firewall.service cnapp.service >/dev/null 2>&1
+  run compose up -d --remove-orphans
+  wait_healthy "$timeout" || { compose logs --tail 80 backend frontend >&2 || true; die "the stack did not become healthy (see the logs above; cnapp-ctl logs backend)"; }
+  record_state "$(conf_get IMAGE_TAG)" "install"
+  run systemctl enable --now cnapp-backup.timer >/dev/null 2>&1
+  ok "nightly backups enabled (cnapp-backup.timer, 02:30, kept $(conf_get BACKUP_RETENTION_DAYS) days)"
+  (( no_admin )) || bootstrap_admin "$(conf_get ADMIN_EMAIL)" "$pw_file"
+
+  cat <<EOF
+${C_G}CloudSecurity CNAPP is running at $(public_url)${C_0}
+  Image tag:  $(conf_get IMAGE_TAG)    Config: $CONF    Backups: $BACKUP_DIR
+  Next steps: docs/DEPLOY_ONPREM.md (or $APP_DIR/QUICKSTART.md)
+    1. DNS: $(conf_get CNAPP_HOSTNAME) -> $(conf_get CNAPP_TLS_IPS)
+    2. Trust the CA on clients (below), sign in, set up MFA
+    3. Devices > Enroll: create an enrollment token, install the agent with the CA file
+EOF
+  tls_print_trust_help
+}
+
+record_state() { # record_state tag reason
+  (( DRY_RUN )) && return 0
+  local b; b=$(running_image_id backend)
+  printf '%s %s tag=%s backend=%s revision=%s alembic=%s\n' "$(date -u +%FT%TZ)" "$2" "$1" "${b:0:19}" \
+    "$(image_label "$(image_ref backend "$1")" org.opencontainers.image.revision)" "$(alembic_revision)" >>"$STATE_DIR/history.log"
+  printf '%s\n' "$1" >"$STATE_DIR/current_tag"
+}
+
+# ============================================================================ backup / restore
+backup_db() { # backup_db outfile -> pg_dump (custom format) | gzip, verified
+  local out=$1 tmp="${1}.partial"
+  compose exec -T postgres pg_dump -U cnapp -d cnapp -Fc -Z0 | gzip -6 >"$tmp"
+  gzip -t "$tmp" || { rm -f "$tmp"; die "backup verification failed (gzip)"; }
+  local magic; magic=$(gunzip -c "$tmp" 2>/dev/null | head -c 5 || true)
+  [[ $magic == PGDMP ]] || { rm -f "$tmp"; die "backup verification failed (not a pg_dump archive)"; }
+  mv -f "$tmp" "$out"; chmod 0600 "$out"
+  (cd "$(dirname "$out")" && sha256sum "$(basename "$out")" >"$(basename "$out").sha256")
+}
+
+backup_config() { # backup_config outfile -> settings, generated secrets and TLS (incl. CA key)
+  local items=(cnapp.env secrets tls state)
+  [[ -d $CA_DIR ]] && items+=(ca)
+  tar -C "$CNAPP_HOME" -czf "$1" --exclude='secrets/docker' --exclude='secrets/ghcr-token' "${items[@]}"
+  chmod 0600 "$1"
+}
+
+prune_backups() { # prune_backups dir
+  local dir=$1 days; days=$(conf_get BACKUP_RETENTION_DAYS); days=${days:-14}
+  # scheduled/manual: older than N days, always keeping the newest 3
+  find "$dir" -maxdepth 1 -name 'cnapp-db-*.dump.gz' -mtime +"$days" -printf '%T@ %p\n' 2>/dev/null \
+    | sort -n | awk '{print $2}' | while read -r f; do
+      (( $(find "$dir" -maxdepth 1 -name 'cnapp-db-*.dump.gz' | wc -l) > 3 )) || break
+      rm -f "$f" "$f.sha256" "${f%.dump.gz}.config.tar.gz"
+    done
+  # pre-update / pre-restore safety copies: keep the newest 5
+  find "$dir" -maxdepth 1 -name 'cnapp-pre-*.dump.gz' -printf '%T@ %p\n' 2>/dev/null | sort -rn | awk 'NR>5{print $2}' \
+    | while read -r f; do rm -f "$f" "$f.sha256" "${f%.dump.gz}.config.tar.gz"; done
+  find "$dir" -maxdepth 1 -name '*.config.tar.gz' -mtime +"$days" -delete 2>/dev/null || true
+}
+
+do_backup() { # do_backup label -> prints the dump path
+  local label=$1 ts f; ts=$(date +%Y%m%d-%H%M%S)
+  [[ "$(container_health postgres)" == healthy ]] || die "PostgreSQL is not running/healthy; cannot back up (cnapp-ctl start)"
+  if [[ $label == scheduled || $label == manual ]]; then f="$BACKUP_DIR/cnapp-db-$ts.dump.gz"
+  else f="$BACKUP_DIR/cnapp-pre-$label-$ts.dump.gz"; fi
+  backup_db "$f"
+  backup_config "${f%.dump.gz}.config.tar.gz"
+  local copy; copy=$(conf_get BACKUP_COPY_DIR)
+  if [[ -n $copy ]]; then
+    if [[ -d $copy && -w $copy ]]; then
+      cp -f "$f" "$f.sha256" "$copy/" && ok "copied to $copy" >&2
+      [[ "$(conf_get BACKUP_COPY_CONFIG)" == true ]] && cp -f "${f%.dump.gz}.config.tar.gz" "$copy/"
+      prune_backups "$copy" || true
+    else warn "BACKUP_COPY_DIR $copy is not a writable directory (share not mounted?); local backup only"; fi
+  fi
+  prune_backups "$BACKUP_DIR" || true
+  printf '%s\n' "$f"
+}
+
+cmd_backup() {
+  local label=manual
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --scheduled) label=scheduled; shift ;;
+      --dry-run) DRY_RUN=1; shift ;;
+      *) die "backup: unknown option $1" ;;
+    esac
+  done
+  need_root backup; require_installed
+  if (( DRY_RUN )); then echo "[dry-run] pg_dump -> $BACKUP_DIR/cnapp-db-<timestamp>.dump.gz (+config archive)"; return 0; fi
+  with_lock
+  local f; f=$(do_backup "$label")
+  ok "backup: $f ($(du -h "$f" | cut -f1)); config+secrets: ${f%.dump.gz}.config.tar.gz"
+  if [[ $label == scheduled && "$(conf_get CNAPP_TLS_MODE)" == builtin ]]; then
+    cmd_tls_renew --if-expiring-within 30 || warn "automatic certificate renewal failed"
+  fi
+}
+
+restore_db() { # restore_db file - replaces the database content
+  local f=$1
+  compose stop backend frontend >/dev/null 2>&1 || true
+  compose exec -T postgres psql -U cnapp -d postgres -v ON_ERROR_STOP=1 -q \
+    -c "DROP DATABASE IF EXISTS cnapp WITH (FORCE)" -c "CREATE DATABASE cnapp OWNER cnapp" >/dev/null
+  gunzip -c "$f" | compose exec -T postgres pg_restore -U cnapp -d cnapp --no-owner --exit-on-error
+}
+
+cmd_restore() {
+  local f="" safety=1 timeout=300
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --yes|-y) ASSUME_YES=1; shift ;;
+      --no-safety-backup) safety=0; shift ;;
+      --health-timeout) timeout=$2; shift 2 ;;
+      --dry-run) DRY_RUN=1; shift ;;
+      -*) die "restore: unknown option $1" ;;
+      *) f=$1; shift ;;
+    esac
+  done
+  need_root restore; require_installed
+  [[ -n $f ]] || { echo "usage: cnapp-ctl restore FILE   (available:)"; find "$BACKUP_DIR" -maxdepth 1 -name '*.dump.gz' -printf '%T@ %p\n' | sort -rn | head -n 20 | cut -d' ' -f2; exit 2; }
+  [[ -f $f ]] || { [[ -f "$BACKUP_DIR/$f" ]] && f="$BACKUP_DIR/$f"; } || true
+  [[ -f $f ]] || die "no such backup: $f"
+  gzip -t "$f" || die "$f is corrupt (gzip test failed)"
+  if [[ -f "$f.sha256" ]]; then (cd "$(dirname "$f")" && sha256sum -c --quiet "$(basename "$f").sha256") || die "checksum mismatch for $f"; fi
+  confirm "Replace ALL current data with $(basename "$f")?" || die "aborted"
+  if (( DRY_RUN )); then echo "[dry-run] safety backup, stop backend, drop+recreate database, pg_restore $f, start"; return 0; fi
+  with_lock
+  if (( safety )); then local s; s=$(do_backup restore); ok "safety backup of the current data: $s"; fi
+  log "Restoring $f"
+  restore_db "$f"
+  compose up -d >/dev/null
+  wait_healthy "$timeout" || die "restored, but the stack is not healthy (cnapp-ctl logs backend)"
+  ok "restore complete (schema revision $(alembic_revision))"
+}
+
+# ============================================================================ update
+ghcr_api_token() { # anonymous-or-PAT bearer token for the registry API
+  local repo=$1 user token
+  user=$(conf_get GHCR_USER); token=$(cat "$SECRETS_DIR/ghcr-token" 2>/dev/null || true)
+  local args=(-fsS --max-time 20)
+  [[ -n $user && -n $token ]] && args+=(-u "$user:$token")
+  curl "${args[@]}" "https://ghcr.io/token?scope=repository:${repo}:pull&service=ghcr.io" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p'
+}
+
+remote_digest() { # remote_digest repo tag bearer
+  curl -fsSI --max-time 20 -H "Authorization: Bearer $3" \
+    -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' \
+    "https://ghcr.io/v2/$1/manifests/$2" | tr -d '\r' | awk -F': ' 'tolower($1)=="docker-content-digest"{print $2}'
+}
+
+cmd_update_check() {
+  require_installed
+  local reg repo bearer tags cur latest_d cur_d t n=0
+  reg=$(registry); [[ $reg == ghcr.io/* ]] || die "update --check supports ghcr.io registries only"
+  repo="${reg#ghcr.io/}/cloudsecurity-backend"; cur=$(conf_get IMAGE_TAG)
+  bearer=$(ghcr_api_token "$repo") || true
+  [[ -n $bearer ]] || die "cannot get a registry token for $repo (check GHCR_USER and the token: cnapp-ctl install --ghcr-token-file ...)"
+  tags=$(curl -fsS --max-time 20 -H "Authorization: Bearer $bearer" "https://ghcr.io/v2/$repo/tags/list?n=1000" \
+    | tr ',' '\n' | sed -n 's/.*"\([^"]*\)".*/\1/p' | grep -vE '^(name|tags|cloudsecurity-backend)$' | grep -v '/' || true)
+  latest_d=$(remote_digest "$repo" latest "$bearer" || true)
+  cur_d=$(docker image inspect -f '{{range .RepoDigests}}{{println .}}{{end}}' "$(image_ref backend)" 2>/dev/null | sed -n 's/.*@//p' | head -n1 || true)
+  echo "Current tag: $cur  (backend digest ${cur_d:-unknown})"
+  echo "Registry 'latest' (main branch): ${latest_d:-unknown}"
+  if [[ -n $latest_d && $latest_d == "$cur_d" ]]; then ok "you are running the newest image"
+  else
+    for t in $(grep -E '^[0-9a-f]{40}$' <<<"$tags" | head -n 200); do
+      (( n++ > 60 )) && break
+      if [[ "$(remote_digest "$repo" "$t" "$bearer")" == "$latest_d" ]]; then
+        echo "${C_G}Update available:${C_0} latest = commit $t"
+        echo "  sudo cnapp-ctl update --tag $t"
+        break
+      fi
+    done
+  fi
+  echo "Recent tags in the registry:"; grep -E '^[0-9a-f]{40}$|^latest$' <<<"$tags" | tail -n 15 | sed 's/^/  /'
+}
+
+cmd_update() {
+  local target="" check=0 auto=0 timeout=300 backup=1
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --tag) target=$2; shift 2 ;;
+      --check) check=1; shift ;;
+      --auto) auto=1; shift ;;
+      --health-timeout) timeout=$2; shift 2 ;;
+      --no-backup) backup=0; shift ;;
+      --yes|-y) ASSUME_YES=1; shift ;;
+      --dry-run) DRY_RUN=1; shift ;;
+      *) die "update: unknown option $1" ;;
+    esac
+  done
+  (( check )) && { cmd_update_check; return; }
+  need_root update; require_installed
+  [[ -z "$(conf_get BACKEND_IMAGE)$(conf_get FRONTEND_IMAGE)" ]] || die "BACKEND_IMAGE/FRONTEND_IMAGE are pinned in $CONF; edit them and run cnapp-ctl restart"
+  local prev; prev=$(conf_get IMAGE_TAG)
+  if (( auto )); then target=$(conf_get AUTO_UPDATE_TAG); target=${target:-latest}; fi
+  target=${target:-$prev}
+  [[ $target =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || die "invalid tag '$target'"
+  if (( DRY_RUN )); then
+    echo "[dry-run] update $prev -> $target: tag running images for rollback, pull, pg_dump backup, recreate, health check (${timeout}s), roll back on failure"
+    return 0
+  fi
+  with_lock
+  log "Update: $prev -> $target"
+  local svc old_b old_f rb_b rb_f old_rev old_label new_b new_f
+  old_b=$(running_image_id backend); old_f=$(running_image_id frontend)
+  [[ -n $old_b && -n $old_f ]] || old_b=$(image_id "$(image_ref backend "$prev")") old_f=$(image_id "$(image_ref frontend "$prev")")
+  # Keep the exact running images under a local tag: 'latest' moves when pulled.
+  rb_b="$(registry)/cloudsecurity-backend:cnapp-rollback"; rb_f="$(registry)/cloudsecurity-frontend:cnapp-rollback"
+  [[ -n $old_b ]] && docker tag "$old_b" "$rb_b"
+  [[ -n $old_f ]] && docker tag "$old_f" "$rb_f"
+  old_rev=$(alembic_revision); old_label=$(image_label "$rb_b" org.opencontainers.image.revision)
+
+  pull_images "$target" || die "pulling $target failed; nothing was changed (cnapp-ctl update --check lists tags)"
+  new_b=$(image_id "$(image_ref backend "$target")"); new_f=$(image_id "$(image_ref frontend "$target")")
+  if [[ $new_b == "$old_b" && $new_f == "$old_f" && $target == "$prev" ]]; then
+    ok "already up to date ($target, $(image_label "$rb_b" org.opencontainers.image.revision | cut -c1-12))"
+    return 0
+  fi
+
+  local pre=""
+  if (( backup )); then
+    pre=$(do_backup "update-${prev:0:12}-to-${target:0:12}")
+    ok "pre-update backup: $pre"
+  else warn "--no-backup: no automatic database restore is possible if the update fails"; fi
+
+  conf_set IMAGE_TAG "$target"
+  log "Recreating containers with $target"
+  if compose up -d --remove-orphans && wait_healthy "$timeout"; then
+    record_state "$target" "update-from-$prev"
+    echo
+    ok "updated $prev -> $target"
+    printf '  backend   %s -> %s\n' "${old_b:7:12}" "${new_b:7:12}"
+    printf '  frontend  %s -> %s\n' "${old_f:7:12}" "${new_f:7:12}"
+    printf '  commit    %s -> %s\n' "${old_label:-?}" "$(image_label "$(image_ref backend "$target")" org.opencontainers.image.revision)"
+    printf '  schema    %s -> %s\n' "${old_rev:-?}" "$(alembic_revision)"
+    return 0
+  fi
+
+  # ---- rollback
+  local logf; logf="$STATE_DIR/failed-update-$(date +%Y%m%d-%H%M%S).log"
+  compose logs --no-color --tail 300 backend frontend >"$logf" 2>&1 || true
+  warn "update to $target FAILED health checks; rolling back to $prev (logs: $logf)"
+  compose stop backend frontend >/dev/null 2>&1 || true
+  local now_rev; now_rev=$(alembic_revision)
+  # Re-point the previous tag at the exact old images (matters for 'latest').
+  [[ -n $old_b ]] && docker tag "$rb_b" "$(image_ref backend "$prev")"
+  [[ -n $old_f ]] && docker tag "$rb_f" "$(image_ref frontend "$prev")"
+  conf_set IMAGE_TAG "$prev"
+  if [[ "$now_rev" != "$old_rev" ]]; then
+    if [[ -n $pre ]]; then
+      warn "the database schema changed ($old_rev -> ${now_rev:-?}); restoring the pre-update backup $pre"
+      restore_db "$pre"
+    else
+      warn "the database schema changed ($old_rev -> ${now_rev:-?}) and no backup was taken (--no-backup): the old version may not start"
+    fi
+  else
+    ok "database schema unchanged ($old_rev): no restore needed, no data lost"
+  fi
+  compose up -d --remove-orphans >/dev/null
+  if wait_healthy "$timeout"; then
+    record_state "$prev" "rollback-from-$target"
+    die "update to $target failed and was rolled back to $prev (healthy). Failure logs: $logf"
+  fi
+  die "update to $target failed AND the rollback to $prev is not healthy. Investigate: cnapp-ctl logs backend; restore manually: cnapp-ctl restore ${pre:-<backup>}"
+}
+
+cmd_auto_update() {
+  local sub=${1:-status}
+  case $sub in
+    enable) need_root auto-update; require_installed
+      [[ -n ${2:-} ]] && conf_set AUTO_UPDATE_TAG "$2"
+      run systemctl enable --now cnapp-update.timer
+      ok "automatic updates enabled: daily ~04:00, tracking tag '$(conf_get AUTO_UPDATE_TAG || true)'"
+      [[ -z "$(conf_get AUTO_UPDATE_TAG)" ]] && echo "  (tracking 'latest' = every successful build of main; pin tags manually for change control)" ;;
+    disable) need_root auto-update; run systemctl disable --now cnapp-update.timer; ok "automatic updates disabled" ;;
+    status) systemctl list-timers cnapp-update.timer --all --no-pager 2>/dev/null || true
+      systemctl is-enabled cnapp-update.timer 2>/dev/null || true ;;
+    *) die "usage: cnapp-ctl auto-update enable [TAG]|disable|status" ;;
+  esac
+}
+
+# ============================================================================ day-2 commands
+cmd_status() {
+  require_installed
+  echo "${C_B}CloudSecurity CNAPP${C_0}  $(public_url)   cnapp-ctl $VERSION"
+  echo "Image tag: $(conf_get IMAGE_TAG)   commit: $(image_label "$(image_ref backend)" org.opencontainers.image.revision)"
+  echo "Schema:    $(alembic_revision)"
+  echo
+  compose ps --format 'table {{.Service}}\t{{.Status}}\t{{.Image}}' 2>/dev/null || compose ps
+  echo
+  if https_health; then ok "HTTPS /api/health ok"; else warn "HTTPS /api/health FAILED"; fi
+  local exp; exp=$(openssl x509 -noout -enddate -in "$TLS_DIR/server.crt" 2>/dev/null | cut -d= -f2)
+  echo "TLS:       $(conf_get CNAPP_TLS_MODE), certificate expires $exp"
+  local last; last=$(find "$BACKUP_DIR" -maxdepth 1 -name '*.dump.gz' -printf '%T@ %f\n' 2>/dev/null | sort -rn | head -n1 | cut -d' ' -f2 || true)
+  echo "Backups:   $(find "$BACKUP_DIR" -maxdepth 1 -name '*.dump.gz' 2>/dev/null | wc -l) in $BACKUP_DIR, newest: ${last:-none}"
+  echo "Timers:    backup=$(systemctl is-enabled cnapp-backup.timer 2>/dev/null || echo n/a) auto-update=$(systemctl is-enabled cnapp-update.timer 2>/dev/null || echo n/a)"
+  echo "Disk:      $(df -h /var/lib/docker 2>/dev/null | awk 'NR==2{print $4" free of "$2" ("$5" used)"}')"
+  docker stats --no-stream --format '  {{.Name}}: mem {{.MemUsage}}  cpu {{.CPUPerc}}' 2>/dev/null | grep "${PROJECT}-" || true
+}
+
+cmd_logs() {
+  require_installed
+  local args=(--tail 200) svc=()
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      -f|--follow) args+=(-f); shift ;;
+      --tail) args=(--tail "$2"); shift 2 ;;
+      *) svc+=("$1"); shift ;;
+    esac
+  done
+  compose logs --no-color "${args[@]}" "${svc[@]}"
+}
+
+cmd_start() {
+  need_root start; require_installed
+  local wait=1; [[ ${1:-} == --no-wait ]] && wait=0
+  [[ "$(conf_get CNAPP_FIREWALL)" == false ]] || fw_apply_docker >/dev/null || warn "firewall rules not applied"
+  run compose up -d --remove-orphans
+  (( wait )) && { wait_healthy 300 || die "not healthy (cnapp-ctl logs backend)"; }
+  return 0
+}
+cmd_stop() { need_root stop; require_installed; run compose stop; }
+cmd_restart() {
+  need_root restart; require_installed
+  local wait=1; [[ ${1:-} == --no-wait ]] && wait=0
+  # 'up' (not 'restart') so edits to cnapp.env are applied
+  run compose up -d --force-recreate --remove-orphans backend frontend
+  (( wait )) && { wait_healthy 300 || die "not healthy (cnapp-ctl logs backend)"; }
+  return 0
+}
+
+prompt_password() { # -> stdout: typed password, or empty to generate
+  local pw pw2
+  [[ -t 0 ]] || return 0
+  read -r -s -p "New password (12+ characters, empty = generate one): " pw; echo >&2
+  [[ -z $pw ]] && return 0
+  read -r -s -p "Repeat: " pw2; echo >&2
+  [[ $pw == "$pw2" ]] || die "passwords do not match"
+  printf '%s' "$pw"
+}
+
+user_cli() { # user_cli create|reset ARGS
+  local mode=$1; shift
+  local email="" role=admin gen=0 pw_file="" pw=""
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --email) email=$2; shift 2 ;;
+      --role) role=$2; shift 2 ;;
+      --generate) gen=1; shift ;;
+      --password-file) pw_file=$2; shift 2 ;;
+      *) die "unknown option $1" ;;
+    esac
+  done
+  need_root "$mode"; require_installed
+  [[ -n $email ]] || die "--email is required"
+  if [[ -n $pw_file ]]; then pw=$(head -n1 "$pw_file"); gen=0
+  else
+    (( gen )) || pw=$(prompt_password)
+    [[ -z $pw ]] && { pw=$(rand_password); gen=1; }
+  fi
+  if [[ $mode == create ]]; then
+    printf '%s\n' "$pw" | compose exec -T backend python -m app.cli create-user --email "$email" --role "$role" --password-stdin
+  else
+    printf '%s\n' "$pw" | compose exec -T backend python -m app.cli reset-password --email "$email" --password-stdin
+  fi
+  (( gen )) && echo "Generated password for $email (shown once): $pw"
+  return 0
+}
+
+cmd_reset_mfa() {
+  need_root reset-mfa; require_installed
+  [[ ${1:-} == --email && -n ${2:-} ]] || die "usage: cnapp-ctl reset-mfa --email EMAIL"
+  compose exec -T backend python -m app.cli reset-mfa --email "$2"
+}
+
+cmd_show_secret() {
+  need_root show-secret; require_installed
+  local k=${1:-}
+  [[ $k =~ ^(INGEST_API_TOKEN|POSTGRES_PASSWORD|SESSION_SECRET|MFA_ENCRYPTION_KEY|NOTIFICATIONS_ENCRYPTION_KEY)$ ]] \
+    || die "usage: cnapp-ctl show-secret INGEST_API_TOKEN|POSTGRES_PASSWORD|SESSION_SECRET|MFA_ENCRYPTION_KEY|NOTIFICATIONS_ENCRYPTION_KEY"
+  conf_get "$k" "$GEN_ENV"; echo
+}
+
+cmd_uninstall() {
+  local purge=0
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --purge) purge=1; shift ;;
+      --yes|-y) ASSUME_YES=1; shift ;;
+      --dry-run) DRY_RUN=1; shift ;;
+      *) die "uninstall: unknown option $1" ;;
+    esac
+  done
+  need_root uninstall
+  if (( purge )); then
+    confirm "PERMANENTLY delete all CNAPP data (database, backups in $BACKUP_DIR, config, secrets, CA)?" || die "aborted"
+  else
+    confirm "Remove the CNAPP containers and services (data in $CNAPP_HOME and the database volume are kept)?" || die "aborted"
+  fi
+  local u
+  for u in cnapp-update.timer cnapp-backup.timer cnapp.service cnapp-firewall.service; do
+    run systemctl disable --now "$u" >/dev/null 2>&1 || true
+  done
+  if [[ -f "$APP_DIR/docker-compose.prod.yml" && -f $CONF && -f $GEN_ENV ]]; then
+    if (( purge )); then run compose down -v --remove-orphans || true; else run compose down --remove-orphans || true; fi
+  fi
+  [[ -f $CONF ]] && fw_remove
+  for u in cnapp.service cnapp-firewall.service cnapp-backup.service cnapp-backup.timer cnapp-update.service cnapp-update.timer; do
+    run rm -f "$SYSTEMD_DIR/$u"
+  done
+  run systemctl daemon-reload
+  if (( purge )); then
+    run docker --config "$DOCKER_CONFIG" logout ghcr.io >/dev/null 2>&1 || true
+    run rm -rf "$CNAPP_HOME"
+    getent group cnapp-tls >/dev/null && run groupdel cnapp-tls
+    ok "CNAPP removed, including all data. Docker Engine was left installed."
+  else
+    ok "CNAPP removed. Kept: $CNAPP_HOME (config, secrets, TLS, backups) and the Docker volume ${PROJECT}_pgdata."
+    echo "  Reinstall (keeps data and secrets): sudo $APP_DIR/cnapp-ctl install"
+  fi
+  run rm -f "$BIN_PATH"
+}
+
+usage() {
+  cat <<EOF
+cnapp-ctl $VERSION - CloudSecurity CNAPP on-prem administration (Ubuntu 24.04, Docker Compose)
+
+Setup
+  install --hostname NAME --admin-email EMAIL [options]
+      --ip ADDR               server IP for the certificate (repeatable; default: auto-detected)
+      --dns NAME              extra DNS name for the certificate (repeatable)
+      --image-tag TAG         image tag to run (commit SHA recommended; default latest)
+      --registry REG          default $DEFAULT_REGISTRY
+      --ghcr-user USER --ghcr-token-file FILE   read-only GHCR token (or env CNAPP_GHCR_TOKEN, or prompt)
+      --skip-ghcr-login       images are already present locally (offline / CI)
+      --allowed-cidrs LIST    who may reach 80/443 (default RFC1918 ranges)
+      --ssh-cidrs LIST        who may SSH in (default: your current SSH address)
+      --mfa-required-roles R  default admin ("" to not force MFA)
+      --skip-firewall  --skip-unattended-upgrades  --no-admin
+      --admin-password-file F write the first admin's password to F instead of printing it
+      --force  --yes  --dry-run
+  uninstall [--purge] [--yes]   keeps data unless --purge
+
+Operations
+  status | logs [service] [-f] [--tail N] | start | stop | restart
+  update [--tag TAG] [--health-timeout S] [--no-backup]   backup, pull, recreate, health check, roll back on failure
+  update --check                list registry tags / is a newer 'latest' available
+  auto-update enable [TAG] | disable | status             daily timer (off by default)
+  backup                        pg_dump -> $BACKUP_DIR (nightly timer, ${C_B}BACKUP_RETENTION_DAYS${C_0})
+  restore FILE [--yes]          safety backup, then replace the database with FILE
+  tls init [--hostname H] [--ip A] [--dns N] [--new-ca] | renew | show | import --cert C --key K [--chain I] [--ca R] | export-ca [PATH]
+  firewall status | configure | apply-docker
+  create-admin --email E [--role admin|analyst|viewer] [--generate]
+  reset-password --email E [--generate]   reset-mfa --email E
+  show-secret INGEST_API_TOKEN|...        print one generated secret (e.g. for the runtime sensor)
+
+Files: $CONF (settings), $SECRETS_DIR (secrets), $TLS_DIR, $CA_DIR, $BACKUP_DIR
+Docs:  docs/DEPLOY_ONPREM.md
+EOF
+}
+
+main() {
+  local cmd=${1:-help}; shift || true
+  case $cmd in
+    install) cmd_install "$@" ;;
+    uninstall) cmd_uninstall "$@" ;;
+    status) cmd_status "$@" ;;
+    logs) cmd_logs "$@" ;;
+    start) cmd_start "$@" ;;
+    stop) cmd_stop "$@" ;;
+    restart) cmd_restart "$@" ;;
+    update) cmd_update "$@" ;;
+    auto-update) cmd_auto_update "$@" ;;
+    backup) cmd_backup "$@" ;;
+    restore) cmd_restore "$@" ;;
+    tls) cmd_tls "$@" ;;
+    firewall) cmd_firewall "$@" ;;
+    create-admin) user_cli create "$@" ;;
+    reset-password) user_cli reset "$@" ;;
+    reset-mfa) cmd_reset_mfa "$@" ;;
+    show-secret) cmd_show_secret "$@" ;;
+    version|--version) echo "$VERSION" ;;
+    help|-h|--help) usage ;;
+    *) usage >&2; die "unknown command '$cmd'" ;;
+  esac
+}
+
+main "$@"

@@ -24,6 +24,7 @@ def _env_bool(name: str, default: bool) -> bool:
 class Config:
     api_url: str = DEFAULT_API_URL
     api_token: Optional[str] = None
+    ca_file: Optional[str] = None
     sensor_id: str = ""
     host: str = ""
     collectors: List[str] = field(default_factory=lambda: list(ALL_COLLECTORS))
@@ -60,6 +61,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="ingest endpoint (env SENSOR_API_URL)")
     p.add_argument("--api-token", default=None,
                    help="bearer token (prefer env SENSOR_API_TOKEN so it is not visible in ps)")
+    p.add_argument("--ca-file", default=e("SENSOR_CA_FILE") or e("CNAPP_CA_FILE"),
+                   help="PEM CA certificate(s) of a private/internal CA to trust in addition to the system "
+                        "store, e.g. an on-prem server's CA (env SENSOR_CA_FILE or CNAPP_CA_FILE)")
     p.add_argument("--sensor-id", default=e("SENSOR_ID"), help="sensor id (env SENSOR_ID, default hostname)")
     p.add_argument("--collectors", default=e("SENSOR_COLLECTORS", ",".join(ALL_COLLECTORS)),
                    help="comma list of process,network,file,library (env SENSOR_COLLECTORS)")
@@ -116,6 +120,7 @@ def load_config(argv: Optional[List[str]] = None) -> Config:
     return Config(
         api_url=args.api_url,
         api_token=args.api_token or os.environ.get("SENSOR_API_TOKEN"),
+        ca_file=args.ca_file or None,
         sensor_id=args.sensor_id or host,
         host=host,
         collectors=collectors,

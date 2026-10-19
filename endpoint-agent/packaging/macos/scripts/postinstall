@@ -4,8 +4,9 @@
 #   sudo /usr/local/cnapp-agent/bin/cnapp-agent enroll --server https://... --token-stdin
 #   sudo /usr/local/cnapp-agent/bin/cnapp-agent install
 # An enrollment can also be supplied at install time (e.g. by your deployment
-# tool) in /var/root/.cnapp-enroll as two lines: server URL, token. It is
-# deleted after use.
+# tool) in /var/root/.cnapp-enroll as two lines: server URL, token, plus an
+# optional third line: path of a PEM CA certificate to trust (private/on-prem
+# CA; the agent keeps its own copy). It is deleted after use.
 bin=/usr/local/cnapp-agent/bin/cnapp-agent
 state="/Library/Application Support/CNAPP Agent/state.json"
 seed=/var/root/.cnapp-enroll
@@ -13,9 +14,12 @@ seed=/var/root/.cnapp-enroll
 if [[ -f "$seed" ]]; then
   server="$(sed -n 1p "$seed")"
   token="$(sed -n 2p "$seed")"
+  ca="$(sed -n 3p "$seed")"
   rm -f "$seed"
+  extra=()
+  [[ -n "$ca" ]] && extra=(--ca-file "$ca")
   if [[ -n "$server" && -n "$token" ]]; then
-    printf '%s\n' "$token" | "$bin" enroll --server "$server" --token-stdin || exit 1
+    printf '%s\n' "$token" | "$bin" enroll --server "$server" --token-stdin ${extra[@]+"${extra[@]}"} || exit 1
   fi
 fi
 

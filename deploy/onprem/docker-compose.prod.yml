@@ -1,0 +1,168 @@
+# CloudSecurity CNAPP - on-prem production stack (single Ubuntu 24.04 server).
+#
+# Managed by `cnapp-ctl` (deploy/onprem/cnapp-ctl); do not run `docker compose`
+# against it by hand unless you pass the same env files:
+#
+#   docker compose -p cnapp --project-directory /opt/cnapp \
+#     --env-file /opt/cnapp/cnapp.env --env-file /opt/cnapp/secrets/generated.env \
+#     -f /opt/cnapp/app/docker-compose.prod.yml ps
+#
+# Layout (see docs/DEPLOY_ONPREM.md):
+#   /opt/cnapp/cnapp.env              settings (0600)       -> backend env + interpolation below
+#   /opt/cnapp/secrets/generated.env  generated secrets (0600)
+#   /opt/cnapp/tls/server.crt|key     TLS certificate (full chain) and key
+#   volume cnapp_pgdata               PostgreSQL data
+#
+# Sized for 2 vCPU / 4 GB RAM by default; every limit is overridable in cnapp.env.
+# Only 80 and 443 are published. PostgreSQL is reachable on the internal network only.
+
+name: cnapp
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: ${LOG_MAX_SIZE:-10m}
+    max-file: "${LOG_MAX_FILE:-5}"
+
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:16-alpine}
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: cnapp
+      POSTGRES_DB: cnapp
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run cnapp-ctl install (POSTGRES_PASSWORD missing)}
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256 --auth-local=trust
+    # Tuned for a 4 GB host where Postgres gets ~1 GB (PG_MEM_LIMIT).
+    # Bigger boxes: shared_buffers ~25% of PG_MEM_LIMIT, effective_cache_size ~75%.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=${PG_SHARED_BUFFERS:-256MB}
+      - -c
+      - effective_cache_size=${PG_EFFECTIVE_CACHE_SIZE:-768MB}
+      - -c
+      - work_mem=${PG_WORK_MEM:-8MB}
+      - -c
+      - maintenance_work_mem=${PG_MAINTENANCE_WORK_MEM:-64MB}
+      - -c
+      - max_connections=${PG_MAX_CONNECTIONS:-60}
+      - -c
+      - wal_buffers=8MB
+      - -c
+      - checkpoint_completion_target=0.9
+      - -c
+      - random_page_cost=1.1
+      - -c
+      - effective_io_concurrency=100
+      - -c
+      - max_wal_size=1GB
+      - -c
+      - log_min_duration_statement=2000
+      - -c
+      - password_encryption=scram-sha-256
+    shm_size: ${PG_SHM_SIZE:-256m}
+    mem_limit: ${PG_MEM_LIMIT:-1g}
+    memswap_limit: ${PG_MEM_LIMIT:-1g}
+    pids_limit: 256
+    security_opt: ["no-new-privileges:true"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks: [internal]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cnapp -d cnapp -h 127.0.0.1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    stop_grace_period: 60s
+    logging: *logging
+
+  backend:
+    image: ${BACKEND_IMAGE:-${IMAGE_REGISTRY:-ghcr.io/amechi-demigod}/cloudsecurity-backend:${IMAGE_TAG:?set IMAGE_TAG in cnapp.env}}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - path: ../cnapp.env
+        required: true
+      - path: ../secrets/generated.env
+        required: true
+    environment:
+      # Always production on-prem; the app refuses to start with an insecure config.
+      APP_ENV: production
+      DATABASE_URL: postgresql://cnapp:${POSTGRES_PASSWORD}@postgres:5432/cnapp
+      # Schema migrations (Alembic) run once at startup, serialised by a
+      # PostgreSQL advisory lock (app/db.py), before workers serve requests.
+      DB_AUTO_MIGRATE: "true"
+      # 2 vCPU -> 2 gunicorn/uvicorn workers (rule of thumb: one per vCPU, max 2x).
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-2}
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-5}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-5}
+      # nginx (frontend) is the only client; it sets X-Forwarded-For.
+      TRUST_PROXY_HEADERS: "true"
+      TRUSTED_PROXY_CIDRS: ${CNAPP_DOCKER_SUBNET:-172.30.252.0/24}
+      COOKIE_SECURE: "true"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: ${BACKEND_MEM_LIMIT:-1280m}
+    memswap_limit: ${BACKEND_MEM_LIMIT:-1280m}
+    pids_limit: 512
+    networks: [internal]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=4)"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      # First start runs all migrations; give it time on a small box.
+      start_period: 120s
+    stop_grace_period: 40s
+    logging: *logging
+
+  frontend:
+    image: ${FRONTEND_IMAGE:-${IMAGE_REGISTRY:-ghcr.io/amechi-demigod}/cloudsecurity-frontend:${IMAGE_TAG:?set IMAGE_TAG in cnapp.env}}
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_started
+    environment:
+      BACKEND_URL: http://backend:8000
+      CNAPP_HOSTNAME: ${CNAPP_HOSTNAME:?set CNAPP_HOSTNAME in cnapp.env}
+    # nginx (uid 101) reads the TLS key through this group (key: root:cnapp-tls 0640).
+    group_add:
+      - "${CNAPP_TLS_GID:?run cnapp-ctl install (CNAPP_TLS_GID missing)}"
+    volumes:
+      # On-prem nginx config: TLS on 8443 (published as 443), 8080 (published as 80) redirects.
+      - ./nginx/onprem.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ../tls:/etc/nginx/tls:ro
+    ports:
+      - "${CNAPP_BIND_ADDRESS:-0.0.0.0}:80:8080"
+      - "${CNAPP_BIND_ADDRESS:-0.0.0.0}:443:8443"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: ${FRONTEND_MEM_LIMIT:-128m}
+    memswap_limit: ${FRONTEND_MEM_LIMIT:-128m}
+    pids_limit: 128
+    networks: [internal]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/healthz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 15s
+    logging: *logging
+
+networks:
+  internal:
+    driver: bridge
+    ipam:
+      config:
+        # Change CNAPP_DOCKER_SUBNET if it overlaps your LAN/VPN ranges.
+        - subnet: ${CNAPP_DOCKER_SUBNET:-172.30.252.0/24}
+
+volumes:
+  pgdata:
