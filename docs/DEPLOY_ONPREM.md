@@ -320,6 +320,164 @@ embed no CA at all.
 * If a central firewall team manages host firewalls: install with `--skip-firewall` (sets `CNAPP_FIREWALL=false`).
 * If `172.30.252.0/24` (the stack's Docker network) overlaps your LAN/VPN, change `CNAPP_DOCKER_SUBNET` before the first start.
 
+### Publishing the agent endpoint to the internet
+
+Laptops off the VPN can only report if the agent API is reachable from the internet. `cnapp-ctl public-agent enable`
+publishes **only** the endpoint-agent API (`/api/agent/*`: enroll, check-in, commands, results, log upload, and future
+`/api/agent/updates/*`) on port 443. The dashboard, the user API (`/api/*`, `/api/auth/*`), `/api/docs` and sensor
+ingest (`/api/runtime/events`) stay internal-only.
+
+```
+ laptop (anywhere) --443--> firewall: DNAT public-IP:443 -> 10.10.11.57:443 (443 only, source address kept)
+                                       |
+                                       v
+                nginx (frontend container, TLS)  -- /api/agent/*  --> backend (device-credential auth)
+                                                 -- anything else from a non-internal address --> 404
+ staff (10.10.0.0/19) --> https://cnapp.wakanow.com --> everything (dashboard, API, SSO)
+```
+
+**How it works**
+
+| Layer | Internal clients (`CNAPP_ALLOWED_CIDRS` + `CNAPP_ADMIN_CIDRS`) | Everyone else |
+|---|---|---|
+| Firewall (UFW + `DOCKER-USER`) | 80 and 443 | **443 only** (80 and SSH stay restricted) |
+| nginx, dashboard name / IP address | everything | `/api/agent/*` only; anything else **404** |
+| nginx, agent name (`agents.wakanow.com`) | `/api/agent/*` only | `/api/agent/*` only |
+| nginx limits on `/api/agent/*` | none | `limit_req` 20 r/s per IP (burst 200), enroll 60 r/min (burst 100), 200 connections per IP, 8 MiB bodies, GET/HEAD/POST only (others 405) |
+| fail2ban (`CNAPP_FAIL2BAN`) | never banned (`ignoreip`) | `cnapp-agent-auth`: 60 rejected agent requests (401/403/405/429) in 10 min -> 1 h ban; `cnapp-probe`: 10 non-agent requests in 10 min -> 24 h ban; repeat offenders get longer bans (up to 7 days) |
+| backend | per-device rate limit, enroll limits | same, plus the alerts below |
+
+* **404 rather than 403** for blocked paths: a scanner gets the same answer as for a path that does not exist and
+  learns nothing about the dashboard behind it.
+* The allowed agent paths are matched on the raw request line (plain path segments only, no `..` and no
+  percent-encoding), so `/api/agent/../auth/login` and encoded variants are blocked, not forwarded.
+* Agents never use cookies: nginx drops any `Cookie` header on `/api/agent/*`, and a device credential is not accepted by
+  any user endpoint (and vice versa), so CORS, CSRF and session cookies are unaffected.
+* Health checks and `cnapp-ctl` reach nginx through Docker's proxy from the stack's network (`CNAPP_DOCKER_SUBNET`),
+  which is treated as internal; IPv6 is not published.
+
+**Client IP addresses.** nginx is the edge: it passes the address it sees as `X-Real-IP` / `X-Forwarded-For`
+(overwriting anything a client sends), and the backend trusts these headers only from the Docker network
+(`TRUSTED_PROXY_CIDRS`). This only shows the real client if the firewall **DNATs without SNAT** (destination NAT that
+keeps the source address - the normal port-forward on FortiGate, Sophos, pfSense, Palo Alto, ...). If the firewall also
+source-NATs (some "virtual server" / reverse-proxy modes, or hairpin NAT for internal clients using the public address),
+every internet client appears as the firewall's address: the per-IP rate limits then apply to the whole internet at
+once, fail2ban would ban the firewall (everything), audit logs and device "last IP" show the firewall, and IP
+geolocation is useless. Use DNAT without SNAT; if that is impossible, run `public-agent enable --no-fail2ban` and raise
+`--rate`/`--burst`.
+
+**Many devices behind one address** (office egress NAT, mobile carrier NAT) share the per-IP budgets. Defaults are
+sized for about 1,000 agents behind one address (an agent polls about once a minute and checks in every 15 minutes).
+Enrollment allows 300 attempts per IP per 10 minutes (`ENROLL_RATE_LIMIT`) but only 20 *failed* ones
+(`ENROLL_FAILURE_LIMIT`), so a mass Intune/GPO rollout works while token guessing is cut off. Device API limits are per
+device, not per IP. Internal clients are never rate limited by nginx.
+
+**Alerts.** The backend counts rejected agent requests (unknown, superseded or revoked credentials, failed enrollments,
+rate limits). When `AGENT_AUTH_ALERT_THRESHOLD` (50) is reached within `AGENT_AUTH_ALERT_WINDOW_SECONDS` (300) it writes
+an `agent_auth_failure_spike` audit record and emits a notification event (source **Agent API security**, event
+`auth_failure_spike`, severity high, with counts by reason and the top source addresses), at most once per window.
+Route it to Teams / Slack / email with a notification rule (Settings > Notifications, source "Agent API security").
+The count is per backend worker (2 by default). Requests nginx rejects itself (rate limits, blocked paths) are handled
+by fail2ban and visible in `/var/log/cnapp/edge-access.log`.
+
+#### Step by step (cnapp.wakanow.com / agents.wakanow.com)
+
+1. **Update the server** to a release that contains this feature (the package files and the images):
+
+   ```bash
+   cd ~/CloudSecurity && git pull                       # the clone used for the install
+   cd deploy/onprem && sudo ./cnapp-ctl install --skip-ghcr-login --no-admin --yes --force   # --force: Ubuntu 26.04
+   sudo cnapp-ctl update --tag <sha of the merge commit>   # or: sudo cnapp-ctl update (when tracking latest)
+   ```
+
+   Re-running `install` keeps the configuration, secrets and certificate; it copies the new compose file and nginx
+   policy, and re-applies the firewall. The dashboard keeps working for `CNAPP_ALLOWED_CIDRS` (from now on nginx also
+   answers 404 to anyone else, as a second layer behind the firewall).
+
+2. **Enable** (on the server):
+
+   ```bash
+   sudo cnapp-ctl public-agent enable --hostname agents.wakanow.com
+   #   optional: --admin-cidrs 10.20.0.0/24      extra networks with dashboard access (e.g. admin VPN)
+   #             --cert agents.crt --key agents.key [--chain chain.pem]   only if *.wakanow.com does not cover the name
+   #             --rate 20r/s --burst 200 --enroll-rate 60r/m             per-IP limits for internet clients
+   #             --no-fail2ban
+   sudo cnapp-ctl public-agent status
+   ```
+
+   It checks that the certificate covers the name (the `*.wakanow.com` wildcard does), sets `CNAPP_PUBLIC_AGENT=true`,
+   `CNAPP_AGENT_HOSTNAME`, `PUBLIC_AGENT_URL=https://agents.wakanow.com`, opens 443 to any address in UFW and
+   `DOCKER-USER` (80 and SSH unchanged), recreates the containers, waits for health, installs fail2ban with the two
+   jails, and probes `https://agents.wakanow.com/api/agent/commands` locally (expects 401). Running it again is safe.
+
+3. **Firewall NAT** (perimeter firewall): one rule, **TCP 443 only**: `public IP:443 -> 10.10.11.57:443`, destination NAT
+   only (no source NAT), plus the matching allow policy. Do not forward 80 or 22. Optional but recommended: geo-blocking
+   to the countries your staff travel to, and the firewall's IPS profile on the rule.
+
+4. **DNS**
+   * Public zone: `agents.wakanow.com  A  <public IP>`.
+   * Internal zone (split-horizon): `agents.wakanow.com  A  10.10.11.57`, so devices in the office reach the server
+     directly instead of hairpinning through the firewall (which would SNAT them). `cnapp.wakanow.com` stays internal
+     only - **never publish it**.
+
+5. **Installers**: download new ones (Devices > Enroll). Generated MSI/PKG installers and the manual enrollment
+   commands now use `PUBLIC_AGENT_URL` (`https://agents.wakanow.com`) instead of `PUBLIC_BASE_URL`; the dashboard,
+   notification links and Entra SSO keep using `https://cnapp.wakanow.com`. Devices enrolled earlier keep the URL they
+   were enrolled with (`https://cnapp.wakanow.com` or `https://10.10.11.57`): they report while on the office network or
+   VPN; re-run a new installer on them (it re-enrolls the same device) to let them report from anywhere.
+
+6. **Verify from outside** (a phone hotspot, not the office network):
+
+   ```bash
+   curl -s -o /dev/null -w '%{http_code}\n' https://agents.wakanow.com/api/agent/commands   # 401 (agent API reachable)
+   curl -s -o /dev/null -w '%{http_code}\n' https://agents.wakanow.com/                     # 404
+   curl -s -o /dev/null -w '%{http_code}\n' -X POST https://agents.wakanow.com/api/auth/login   # 404
+   curl -s -o /dev/null -w '%{http_code}\n' --resolve cnapp.wakanow.com:443:<public IP> https://cnapp.wakanow.com/   # 404
+   curl -s -o /dev/null -w '%{http_code}\n' -k https://<public IP>/api/docs                  # 404
+   curl -sv --max-time 5 http://<public IP>/ 2>&1 | tail -n 2                                 # timeout (80 closed)
+   nc -vz -w 5 <public IP> 22                                                                 # timeout (SSH closed)
+   ```
+
+   Then on the server: `sudo tail /var/log/cnapp/edge-access.log` shows your hotspot address (if it shows the
+   firewall's address instead, the firewall SNATs - fix the NAT rule). Install a freshly downloaded installer on a laptop
+   on the hotspot: it appears under Devices within a minute. Stay below 10 non-agent requests or fail2ban bans your
+   hotspot for 24 h (`sudo fail2ban-client set cnapp-probe unbanip <ip>`).
+
+7. **Disable**: `sudo cnapp-ctl public-agent disable` closes 443 to the outside again and removes the fail2ban jails;
+   `PUBLIC_AGENT_URL` is kept (devices enrolled with `https://agents.wakanow.com` keep working internally through the
+   split-horizon record). `--forget-hostname` also clears it (download new installers afterwards). Remove the NAT rule
+   and the public DNS record.
+
+**What is exposed / not exposed**
+
+| Exposed to the internet | Not exposed |
+|---|---|
+| TCP 443, TLS 1.2/1.3 with the `*.wakanow.com` certificate | Port 80, SSH, PostgreSQL (never published) |
+| `/api/agent/*` (device-credential or enrollment-token auth, rate limited) | Dashboard (SPA), `/api/auth/*` (login, SSO, MFA), all user API endpoints, `/api/docs`, `/api/health` |
+| | Sensor ingest `/api/runtime/events` (opt-in: `CNAPP_PUBLIC_SENSOR_INGEST=true` in `cnapp.env` + `cnapp-ctl restart`) |
+
+**Hardening checklist (internet-facing)**
+
+- [ ] NAT forwards **443 only**, DNAT without SNAT; IPS / geo-blocking on the firewall rule (optional).
+- [ ] `cnapp.wakanow.com` has no public DNS record; `agents.wakanow.com` resolves internally to the server.
+- [ ] From outside: the checks of step 6 give 401 / 404 / timeouts.
+- [ ] fail2ban running (`sudo cnapp-ctl public-agent status`); notification rule for "Agent API security" to Teams/Slack.
+- [ ] Unattended security upgrades on (default), reboots when `/var/run/reboot-required` exists, images updated
+      regularly (`cnapp-ctl update`), Docker Engine updated with `apt upgrade`.
+- [ ] Enrollment tokens / installers with short expiry and a device limit; revoke unused ones (Devices > Enroll).
+- [ ] Watch `sudo cnapp-ctl public-agent status` (bans) and `/var/log/cnapp/edge-access.log` after go-live; HTTPS
+      monitoring of `https://agents.wakanow.com/api/agent/commands` from outside (expects 401).
+
+**Settings** (`/opt/cnapp/cnapp.env`; `cnapp-ctl public-agent enable` sets the first four): `CNAPP_PUBLIC_AGENT`,
+`CNAPP_AGENT_HOSTNAME`, `PUBLIC_AGENT_URL`, `CNAPP_ADMIN_CIDRS`, `CNAPP_AGENT_RATE` / `CNAPP_AGENT_BURST` /
+`CNAPP_AGENT_ENROLL_RATE` / `CNAPP_AGENT_ENROLL_BURST` / `CNAPP_AGENT_CONN_LIMIT` (nginx), `CNAPP_FAIL2BAN`,
+`CNAPP_F2B_AGENT_MAXRETRY` / `_FINDTIME` / `_BANTIME` and `CNAPP_F2B_PROBE_MAXRETRY` / `_FINDTIME` / `_BANTIME`
+(seconds; re-run `public-agent enable` to apply), `ENROLL_RATE_LIMIT`, `ENROLL_FAILURE_LIMIT`,
+`AGENT_AUTH_ALERT_THRESHOLD` / `AGENT_AUTH_ALERT_WINDOW_SECONDS` (backend; `cnapp-ctl restart`). A separate
+certificate for the agent name is stored as `/opt/cnapp/tls/agent.crt|key` and served by SNI. The nginx policy is
+generated at container start by `deploy/onprem/nginx/cnapp-access.sh`; the edge log
+(`/var/log/cnapp/edge-access.log`, external clients only) is rotated daily by logrotate (14 days).
+
 ## 6. Updates (pull-based)
 
 The server pulls images from ghcr.io; nothing connects to it from outside. CI pushes `:<commit-sha>` and `:latest` for
@@ -412,15 +570,19 @@ stack's Docker network (only nginx can reach the API), `COOKIE_SECURE=true`, `CO
 `SENSOR_API_TOKEN=$(sudo cnapp-ctl show-secret INGEST_API_TOKEN)`, `SENSOR_CA_FILE=/etc/runtime-sensor/ca.pem`
 (copy of `cnapp-root-ca.crt`).
 
-**Not exposed to the internet**: there is no public endpoint, so laptops off the VPN queue nothing - agents retry and
-report when back on the network.
+**Not exposed to the internet** by default: laptops off the VPN queue nothing - agents retry and report when back on
+the network. To let them report from anywhere, publish only the agent API:
+[Publishing the agent endpoint to the internet](#publishing-the-agent-endpoint-to-the-internet).
 
 ## 9. Hardening checklist
 
 - [ ] SSH: keys only (`PasswordAuthentication no`, `KbdInteractiveAuthentication no` in `/etc/ssh/sshd_config.d/99-hardening.conf`),
       `PermitRootLogin no`, then `sudo systemctl reload ssh`. Test a second session before closing the first.
 - [ ] SSH only from admin ranges (`CNAPP_SSH_CIDRS`; check `sudo ufw status numbered`).
-- [ ] Optional: `sudo apt-get install fail2ban` (the default sshd jail is enough).
+- [ ] Optional: `sudo apt-get install fail2ban` (the default sshd jail is enough). `cnapp-ctl public-agent enable`
+      installs it with jails for the internet-facing agent endpoint.
+- [ ] Agent endpoint published to the internet? Follow the checklist in
+      [Publishing the agent endpoint to the internet](#publishing-the-agent-endpoint-to-the-internet).
 - [ ] Disk encryption: choose LUKS ("Encrypt the new Ubuntu installation") at install time, or at least for the volume
       holding `/var/lib/docker` and `/opt/cnapp`. Without it, anyone with the disk/VM image has the database and keys.
 - [ ] MFA enforced for admins (default) - consider `MFA_REQUIRED_ROLES=admin,analyst`.

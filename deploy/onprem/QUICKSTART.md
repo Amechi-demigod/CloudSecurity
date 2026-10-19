@@ -98,6 +98,19 @@ built-in certificate is still served for the IP address); download new installer
 Change only the URL (certificate already covers it): `sudo cnapp-ctl set-hostname cnapp.wakanow.com`.
 Full guide: [DEPLOY_ONPREM.md, section 4](../../docs/DEPLOY_ONPREM.md#switch-to-a-dns-name-and-your-own-certificate-pfx).
 
+## Let laptops report from anywhere (publish only the agent API)
+
+```bash
+sudo cnapp-ctl public-agent enable --hostname agents.wakanow.com   # firewall 443, nginx split, fail2ban, PUBLIC_AGENT_URL
+sudo cnapp-ctl public-agent status                                  # disable: sudo cnapp-ctl public-agent disable
+```
+
+Then: firewall NAT `public IP:443 -> 10.10.11.57:443` (443 only, DNAT without SNAT), public DNS
+`agents.wakanow.com -> public IP` (internally -> 10.10.11.57; `cnapp.wakanow.com` stays internal), and download new
+installers. From a phone hotspot `curl -s -o /dev/null -w '%{http_code}\n' https://agents.wakanow.com/api/agent/commands`
+gives 401 and `https://agents.wakanow.com/` gives 404. Full guide:
+[DEPLOY_ONPREM.md, Publishing the agent endpoint](../../docs/DEPLOY_ONPREM.md#publishing-the-agent-endpoint-to-the-internet).
+
 ## Everyday commands
 
 ```bash
@@ -110,6 +123,7 @@ sudo cnapp-ctl restore /opt/cnapp/backups/cnapp-db-<ts>.dump.gz
 sudo cnapp-ctl tls renew              # built-in certificate (397 days; auto-renewed 30 days before expiry)
 sudo cnapp-ctl tls import-pfx --pfx f.pfx [--hostname NAME]   # your certificate (password prompted)
 sudo cnapp-ctl set-hostname NAME      # change the URL agents/installers/users use
+sudo cnapp-ctl public-agent status    # internet-facing agent endpoint, fail2ban bans
 sudo cnapp-ctl reset-password --email you@corp.com
 ```
 
