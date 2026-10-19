@@ -7,9 +7,10 @@
 #   modern-aes.pfx  OpenSSL 3 defaults (AES-256, PBKDF2)
 # Both hold leaf (cnapp2.test) + issuing CA + root, deliberately in the wrong order.
 set -Eeuo pipefail
+# shellcheck disable=SC2034  # PFX_PASS is read by the sourced cnapp-ctl functions
 here="$(cd "$(dirname "$0")" && pwd)"
 fx="$here/fixtures"
-# shellcheck source=../cnapp-ctl
+# shellcheck source=SCRIPTDIR/../cnapp-ctl
 source "$here/../cnapp-ctl"
 PATH="${OPENSSL_BIN_DIR:+$OPENSSL_BIN_DIR:}$PATH"
 openssl version
