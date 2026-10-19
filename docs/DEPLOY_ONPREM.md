@@ -179,8 +179,14 @@ On the server: `sudo cnapp-ctl reset-password --email you@corp.com` / `sudo cnap
 Add colleagues under **Users** (roles admin / analyst / viewer). To require MFA for analysts too, set
 `MFA_REQUIRED_ROLES=admin,analyst` in `cnapp.env` and `sudo cnapp-ctl restart`.
 
-### 3.7 Enroll the first Windows and Mac
-Download the agent binaries (`cnapp-agent-binaries` artifact of the CI run you deploy, or your signed release; publish
+### 3.7 Enroll devices
+**All devices (recommended):** **Devices > Enroll devices > Download installer** gives one pre-configured
+`cnapp-agent-setup.msi` (Windows) or `cnapp-agent-setup.pkg` (macOS) with the server URL (`PUBLIC_BASE_URL`), a
+multi-use enrollment token (default 30 days / 500 devices) and, while you use the built-in CA, that CA. Deploy it with
+GPO, Intune, SCCM, Jamf or Kandji, or double-click it; each device enrolls itself. Step-by-step:
+[DEVICE_MANAGEMENT.md, Roll out to all devices](DEVICE_MANAGEMENT.md#roll-out-to-all-devices).
+
+**One device by hand:** download the agent binaries (`cnapp-agent-binaries` artifact of the CI run you deploy, or your signed release; publish
 them on an internal share and set `AGENT_DOWNLOAD_URL` in `cnapp.env`). In the console: **Devices > Enroll devices >
 Create token**. Then:
 
@@ -241,8 +247,11 @@ runs with.
 
 Renewal: the nightly backup job renews the server certificate automatically when it expires within 30 days (same CA,
 so clients notice nothing); manual: `sudo cnapp-ctl tls renew`. `sudo cnapp-ctl tls show` prints SANs, expiry and the
-CA fingerprint. Changing the hostname or adding a name: `sudo cnapp-ctl tls init --hostname new.corp.local --ip ... --new-ca`
-(a new CA is needed because of the name constraints; redistribute it).
+CA fingerprint. `sudo cnapp-ctl set-hostname NAME` changes the URL (`PUBLIC_BASE_URL`, the HTTP redirect, the Entra
+redirect URI) and re-issues the certificate when NAME is within the CA's name constraints (one of the names/IPs it was
+created for); for a different name import a certificate (below) or recreate the CA with
+`sudo cnapp-ctl tls init --hostname new.corp.local --ip ... --new-ca` (devices enrolled with the old CA then need it
+again, so prefer importing a certificate).
 
 **Bring your own certificate (AD CS / internal PKI).** Request a "Web Server" certificate for `cnapp.corp.local` (SAN
 must contain the DNS name; add the IP if people use it). Export certificate + unencrypted private key as PEM, then:
@@ -254,7 +263,41 @@ sudo cnapp-ctl tls import --cert cnapp.crt --key cnapp.key --chain issuing-ca.cr
 It checks that key and certificate match, the certificate is valid for the hostname and chains to the root, installs it
 with the right permissions and reloads nginx. (Equivalent manual way: put `server.crt` = certificate + intermediates and
 `server.key` in `/opt/cnapp/tls` before running `install`.) Renewal is done at your CA; import the new files the same way.
-For a PFX: `openssl pkcs12 -in cnapp.pfx -nokeys -out cnapp.crt` and `openssl pkcs12 -in cnapp.pfx -nocerts -nodes -out cnapp.key`.
+For a PFX use `tls import-pfx` (next section).
+
+### Switch to a DNS name and your own certificate (PFX)
+
+Example: the server runs as `https://10.10.11.57` with the built-in CA and should become `https://cnapp.wakanow.com`
+with the company's certificate (`wakanow.pfx`, publicly trusted or from the internal CA).
+
+1. **DNS (split-horizon).** On the internal DNS (AD DNS, or the internal view of `wakanow.com`) add an A record
+   `cnapp.wakanow.com -> 10.10.11.57`. Staff and devices resolve it internally; nothing is published on the internet
+   (the server stays reachable only from `CNAPP_ALLOWED_CIDRS`). Check from a laptop: `nslookup cnapp.wakanow.com`.
+   The certificate must contain `cnapp.wakanow.com` (or `*.wakanow.com`) in its Subject Alternative Names.
+2. **Import the PFX and switch the hostname** (copy the file with `scp`; you are prompted for the password, which is
+   never accepted on the command line):
+   ```bash
+   sudo cnapp-ctl tls import-pfx --pfx ~/wakanow.pfx --hostname cnapp.wakanow.com
+   shred -u ~/wakanow.pfx
+   ```
+   It reads the PFX with OpenSSL's defaults and, for older exports protected with RC2-40/3DES (typical of Windows / AD CS;
+   OpenSSL 3 reports `unsupported ... RC2-40-CBC`), automatically retries with OpenSSL's legacy provider. It extracts the
+   certificate matching the private key, orders the intermediates into the chain, checks key match, expiry (warns under
+   30 days) and that the certificate is valid for the hostname, decides whether the chain is publicly trusted (then
+   installers embed no CA) or an enterprise root is included (then it is distributed to agents; pass `--ca root.pem` if the
+   PFX lacks the root, `--no-ca` to force none), installs it, sets `CNAPP_HOSTNAME` / `PUBLIC_BASE_URL` / the Entra redirect
+   URI, recreates the containers and checks HTTPS. Temporary files live in `/run` (RAM) and are shredded.
+   Automation: `--password-file FILE` or the password on stdin.
+3. **Devices already enrolled** with `https://10.10.11.57` keep working: the previous built-in certificate is still served to
+   clients that connect by IP address or by the old name (nginx picks the certificate by the requested name), and those
+   agents still trust the built-in CA. `sudo cnapp-ctl tls renew` keeps renewing that legacy certificate. Use
+   `--no-legacy-cert` if nothing connects by IP any more.
+4. **New installers.** Download new installers in the console: they contain `https://cnapp.wakanow.com` and, for a public
+   certificate, no CA. Revoke the old installers' tokens under *Enrollment tokens*.
+5. **SSO**: update the redirect URI in the Entra app registration to `https://cnapp.wakanow.com/api/auth/sso/entra/callback`.
+6. **Renewal**: import the renewed PFX the same way (`--hostname` is not needed again).
+
+`cnapp-ctl set-hostname NAME` alone changes the URL when the installed certificate already covers NAME.
 
 **Agents and sensors** trust the OS store plus an optional CA file: agent `--ca-file` / `CNAPP_CA_FILE`, sensor
 `--ca-file` / `SENSOR_CA_FILE` / `CNAPP_CA_FILE`.
@@ -434,7 +477,8 @@ the server before `--purge`.
 | `update [--tag T] [--check] [--health-timeout S]` | pull-based update with backup and rollback |
 | `auto-update enable [TAG] / disable / status` | optional daily timer |
 | `backup`, `restore FILE` | database backup/restore |
-| `tls init / renew / show / import / export-ca` | certificates |
+| `tls init / renew / show / import / import-pfx / export-ca` | certificates (`import-pfx` prompts for the password, supports legacy RC2 PFX) |
+| `set-hostname NAME` | change the URL (PUBLIC_BASE_URL, redirects, Entra redirect URI) |
 | `firewall status / configure` | UFW + DOCKER-USER rules |
 | `create-admin`, `reset-password`, `reset-mfa`, `show-secret` | account recovery, secrets |
 | `uninstall [--purge]` | removal |
@@ -443,4 +487,6 @@ The CI job **On-prem** (`.github/workflows/ci.yml`) runs the real `cnapp-ctl ins
 every push, with built-in TLS for `cnapp.test`, then: HTTPS checks with the generated CA, admin login + CSRF, agent
 enrollment with `--ca-file` and check-in, sensor ingest, firewall checks from network namespaces, backup + restore,
 an update to a second tag, a deliberately broken update (new migration + crash) that must roll back and restore the
-database, certificate renewal, password reset, uninstall, reinstall and purge.
+database, certificate renewal, password reset, `tls import-pfx` of a legacy RC2-40 PFX with chain plus a hostname switch
+(the old name and the IP address keep the built-in certificate), `set-hostname`, back to the built-in CA, uninstall,
+reinstall and purge.

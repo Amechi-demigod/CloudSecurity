@@ -55,11 +55,47 @@ Compare the SHA-256 fingerprint with `sudo cnapp-ctl tls show`.
 
 1. Open `https://cnapp.corp.local`, sign in with the printed password, set up MFA (authenticator app), save the recovery codes.
 2. **Users**: add colleagues (or configure Entra SSO, guide section 8).
-3. **Devices > Enroll devices**: create a token, then on each laptop:
-   * Windows (admin PowerShell): `.\install.ps1 -Server https://cnapp.corp.local -Token cne_... -BinaryPath .\cnapp-agent-windows-amd64.exe -CaFile .\cnapp-root-ca.crt`
-   * macOS: `sudo ./install.sh --server https://cnapp.corp.local --binary ./cnapp-agent-darwin-arm64 --ca-file ./cnapp-root-ca.crt`
+3. **Devices > Enroll devices**: roll out the agent (next section).
 4. **Settings > Notifications**: add a Teams/Slack/email channel and send a test.
 5. Azure scanner (optional): Reader-role service principal -> `AZURE_*` in `/opt/cnapp/cnapp.env` -> `sudo cnapp-ctl restart`.
+
+## Roll out to all devices
+
+1. **Devices > Enroll devices > Download installer**: pick *Windows (MSI)* or *macOS (pkg)*, expiry (30 days), maximum
+   devices (500), optional device group. Leave *Include the server's CA* ticked while you use the built-in CA. You get
+   one file with the server URL, a dedicated enrollment token and the CA inside; no per-device token.
+2. Deploy it:
+   * **GPO**: copy `cnapp-agent-setup.msi` to a share readable by *Domain Computers*; GPO on the computers' OU:
+     Computer Configuration > Policies > Software Settings > Software Installation > New > Package (UNC path) > Assigned.
+     Or a startup script: `msiexec /i \\server\share\cnapp-agent-setup.msi /qn`.
+   * **Intune**: Apps > Windows > Add > Line-of-business app (the MSI), assign to a device group. macOS: Apps > macOS > macOS app (PKG).
+   * **SCCM**: Application from the MSI, install `msiexec /i "cnapp-agent-setup.msi" /qn`.
+   * **Jamf / Kandji**: upload the pkg, policy / Blueprint scoped to your Macs.
+   * **By hand**: double-click, or `msiexec /i cnapp-agent-setup.msi /qn` / `sudo installer -pkg cnapp-agent-setup.pkg -target /`.
+3. Devices appear under **Devices** within a couple of minutes. Revoke the installer's token under *Enrollment tokens*
+   when you are done (enrolled devices keep working).
+4. Troubleshooting on a device: `cnapp-agent status` (Windows: `"%ProgramFiles%\CNAPP Agent\cnapp-agent.exe" status`,
+   macOS: `sudo /usr/local/cnapp-agent/bin/cnapp-agent status`); logs in `%ProgramData%\CNAPP Agent\logs\agent.log` /
+   `/Library/Logs/CNAPP Agent/agent.log`. Uninstall: `msiexec /x cnapp-agent-setup.msi /qn` /
+   `sudo /usr/local/cnapp-agent/bin/cnapp-uninstall.sh`.
+
+Signing: the downloaded installers are unsigned (they are modified per download). For SmartScreen-free rollouts sign the
+generic MSI yourself and pass `CNAPP_SERVER` / `CNAPP_TOKEN` as properties. Details:
+[DEVICE_MANAGEMENT.md](../../docs/DEVICE_MANAGEMENT.md#roll-out-to-all-devices).
+
+## Move from the IP address to a DNS name with your PFX
+
+```bash
+# internal DNS first: cnapp.wakanow.com -> 10.10.11.57 (split-horizon / internal zone)
+scp wakanow.pfx you@10.10.11.57:
+sudo cnapp-ctl tls import-pfx --pfx ~/wakanow.pfx --hostname cnapp.wakanow.com   # prompts for the PFX password
+shred -u ~/wakanow.pfx
+```
+
+Old (RC2-40) PFX exports are handled automatically. Agents enrolled with `https://10.10.11.57` keep working (the
+built-in certificate is still served for the IP address); download new installers so new devices use the DNS name.
+Change only the URL (certificate already covers it): `sudo cnapp-ctl set-hostname cnapp.wakanow.com`.
+Full guide: [DEPLOY_ONPREM.md, section 4](../../docs/DEPLOY_ONPREM.md#switch-to-a-dns-name-and-your-own-certificate-pfx).
 
 ## Everyday commands
 
@@ -71,6 +107,8 @@ sudo cnapp-ctl update --tag <sha>     # backup, pull, recreate, health check, au
 sudo cnapp-ctl backup                 # also runs nightly at 02:30 (14 days kept)
 sudo cnapp-ctl restore /opt/cnapp/backups/cnapp-db-<ts>.dump.gz
 sudo cnapp-ctl tls renew              # built-in certificate (397 days; auto-renewed 30 days before expiry)
+sudo cnapp-ctl tls import-pfx --pfx f.pfx [--hostname NAME]   # your certificate (password prompted)
+sudo cnapp-ctl set-hostname NAME      # change the URL agents/installers/users use
 sudo cnapp-ctl reset-password --email you@corp.com
 ```
 

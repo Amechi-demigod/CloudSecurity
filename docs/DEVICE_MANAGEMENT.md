@@ -13,7 +13,8 @@ Linux is not supported yet. The code is split so it can be added later: see [Add
 ## Contents
 
 - [Architecture](#architecture)
-- [Enrolling devices](#enrolling-devices): [Windows](#windows-1011) and [macOS](#macos)
+- [Roll out to all devices](#roll-out-to-all-devices) (one pre-configured MSI / pkg: GPO, Intune, SCCM, Jamf, Kandji)
+- [Enrolling devices](#enrolling-devices) one by one: [Windows](#windows-1011) and [macOS](#macos)
 - [What data is collected](#what-data-is-collected) (privacy)
 - [Device health and issues](#device-health-and-issues)
 - [Remote actions](#remote-actions)
@@ -64,7 +65,110 @@ flowchart LR
 
 When a request fails, the agent backs off exponentially with full jitter (30 s, 1 min, 2 min, ... up to 30 min). If the server rejects the credential (revoked or superseded), the agent logs that it must be re-enrolled and retries only once an hour. It does not exit, so the service manager does not get stuck in a restart loop.
 
+## Roll out to all devices
+
+**One installer file for every device, with no per-device token.** In **Devices → Enroll devices → Download installer** (admin only) choose:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| Platform | Windows (MSI, x64) | or macOS (pkg, Intel + Apple silicon) |
+| Expires after | 30 days | the installer stops enrolling *new* devices after this (1–365) |
+| Maximum devices | 500 | each new device uses one enrollment; re-installs and upgrades do not |
+| Device group | (none) | label applied to every device enrolled with it (filter `GET /api/devices?group=`) |
+| Include the server's CA certificate | on when the server has a private CA | see [TLS and the CA](#tls-and-the-ca) |
+
+The server mints a dedicated **package-bound enrollment token** (stored hashed like every token, listed under *Enrollment tokens* with an "installer" tag, revocable there, every download audit-logged as `agent_installer_created` with the file's SHA-256) and returns one file:
+
+- `cnapp-agent-setup.msi`: the generic MSI with `CNAPP_SERVER`, `CNAPP_TOKEN` and (optional) `CNAPP_CA_B64` added to its `Property` table;
+- `cnapp-agent-setup.pkg`: the generic pkg with `enroll.json` added next to its install scripts.
+
+The plaintext token exists **only inside that file**: it is not stored, logged or shown again. Treat the file like a password until it expires or you revoke its token, and do not post it anywhere public.
+
+**What happens on a device.** The installer puts the agent in place, registers the service (Windows: `CNAPPAgent`, LocalSystem, automatic start, restart on failure; macOS: LaunchDaemon) and stores the enrollment config in the protected state directory (`%ProgramData%\CNAPP Agent\enroll.json` / `/Library/Application Support/CNAPP Agent/enroll.json`, SYSTEM/Administrators or root only). When the service starts it enrolls, retrying with backoff while the server is unreachable, then **deletes enroll.json**. The device shows up in **Devices** within a minute or two.
+
+- Already enrolled (re-install, repair, upgrade): the config is ignored and deleted; the device keeps its identity and uses no enrollment. To move a device on purpose, run `cnapp-agent enroll`, or `uninstall --purge` and reinstall.
+- Token expired, revoked or out of devices: the agent logs `enrollment token rejected by the server ...` and retries every 30 minutes. Download a new installer, or raise the limit by issuing a new one.
+- The same machine enrolling again (for example after a reinstall with `--purge`) gets its **existing device record** back (matched by OS machine id), so counts stay correct.
+
+### Windows: Group Policy, Intune, SCCM, manual
+
+The MSI is per-machine and supports silent install, repair and uninstall:
+
+```bat
+msiexec /i cnapp-agent-setup.msi /qn /l*v %TEMP%\cnapp-agent-install.log
+msiexec /x cnapp-agent-setup.msi /qn            :: or Settings > Apps > CNAPP Endpoint Agent > Uninstall
+```
+
+Uninstall stops and removes the service, the binary, the credential and the logs (set `CNAPP_KEEP_STATE=1` to keep the credential). An upgrade (newer MSI) keeps the device identity.
+
+- **Group Policy (Active Directory).** Copy the MSI to a share that domain computers can read (`\\fileserver\deploy$\cnapp\cnapp-agent-setup.msi`, *Domain Computers*: Read). Create a GPO linked to the computers' OU: **Computer Configuration → Policies → Software Settings → Software Installation → New → Package**, pick the UNC path, choose **Assigned**. Computers install it at the next restart (`gpupdate /force` then reboot to test). A **startup script** works too: Computer Configuration → Policies → Windows Settings → Scripts → Startup → `msiexec.exe /i \\fileserver\deploy$\cnapp\cnapp-agent-setup.msi /qn`.
+- **Intune.** *Apps → Windows → Add → Line-of-business app*, upload the MSI (Intune detects the product code and installs it silently in the device context), assign to a device group. Or as a **Win32 app** (wrap with `IntuneWinAppUtil.exe -c . -s cnapp-agent-setup.msi -o .`): install command `msiexec /i cnapp-agent-setup.msi /qn`, uninstall `msiexec /x {ProductCode} /qn`, install behavior *System*, detection rule *MSI product code*.
+- **SCCM / ConfigMgr.** Create an Application from the MSI (*Windows Installer (\*.msi file)* deployment type); the install program is `msiexec /i "cnapp-agent-setup.msi" /qn`, detection by product code, deploy to a device collection.
+- **Manual.** Double-click the MSI (one UAC prompt, no questions), or run the `msiexec` line above in an elevated prompt.
+
+**Option B: your own signed generic MSI + properties.** The CI artifact `cnapp-agent-windows-msi` (`cnapp-agent-windows-x64.msi`) carries no enrollment. Sign it yourself and pass the enrollment on the command line:
+
+```bat
+msiexec /i cnapp-agent-windows-x64.msi /qn CNAPP_SERVER=https://cnapp.wakanow.com CNAPP_TOKEN=cne_... [CNAPP_CA_B64=<base64 of the CA PEM>]
+```
+
+Create the multi-use token under *Enrollment tokens* (it is shown once). The properties are hidden from MSI logs. For **Group Policy**, which cannot pass properties directly, create a transform with Orca or the Windows SDK's `msitran`/`WiRunSQL.vbs`: add rows `CNAPP_SERVER` and `CNAPP_TOKEN` to the `Property` table and save it as `cnapp.mst`, then on *Software Installation → New → Package → Advanced → Modifications* add the `.mst`. For **Intune**, put the properties on the Win32 app's install command (or the LOB app's *Command-line arguments*). `CNAPP_CA_B64` is only needed for a private CA that the devices do not already trust: `[Convert]::ToBase64String([IO.File]::ReadAllBytes('cnapp-root-ca.crt'))`.
+
+### macOS: Jamf, Kandji, Intune, manual
+
+```bash
+sudo installer -pkg cnapp-agent-setup.pkg -target /
+sudo /usr/local/cnapp-agent/bin/cnapp-uninstall.sh     # uninstall (add --keep-state to keep the credential)
+```
+
+- **Jamf Pro.** *Settings → Computer management → Packages → New*, upload the pkg; add it to a policy (trigger *Recurring check-in* / *Enrollment complete*, execution *Once per computer*) scoped to your Macs.
+- **Kandji.** *Library → Add new → Custom App*, installer type *Package*, upload the pkg, assign to a Blueprint.
+- **Intune.** *Apps → macOS → Add → macOS app (PKG)* (for an unsigned package; the LOB type requires a signed pkg), upload, assign.
+- **Manual.** Double-click (an unsigned downloaded pkg needs right-click → Open the first time), or the `installer` command above.
+
+**MDM with your own signed pkg.** Install the generic, signable pkg (CI artifact `cnapp-agent-macos-pkg`); the LaunchDaemon starts and waits. Then push the enrollment from an MDM script (it is picked up within a minute):
+
+```bash
+printf '%s\n' 'cne_...' | /usr/local/cnapp-agent/bin/cnapp-agent configure --server https://cnapp.wakanow.com --token-stdin [--ca-file /path/cnapp-root-ca.crt]
+```
+
+### TLS and the CA
+
+Agents always verify the server certificate (system trust store, plus a private CA when one is configured). The installer embeds the CA **only when needed**:
+
+- **Built-in CA (`cnapp-ctl` default) or an internal/enterprise CA**: `cnapp-ctl` sets `AGENT_CA_CERT_B64` and the download includes the CA by default. Untick it once your CA is deployed to all devices by GPO/MDM.
+- **Publicly trusted certificate** (for example `cnapp.wakanow.com` from a public CA): no CA is configured, nothing is embedded, and the box is disabled.
+
+The server URL inside the installer is `PUBLIC_BASE_URL` (on-prem: `https://<CNAPP_HOSTNAME>`, changed with `cnapp-ctl set-hostname`). Download new installers after changing the hostname or certificate. Devices that are already enrolled keep using the URL they enrolled with; on-prem, `cnapp-ctl tls import-pfx` keeps serving the old built-in certificate to clients that connect by IP address or by the old name, so they keep working ([DEPLOY_ONPREM.md](DEPLOY_ONPREM.md#switch-to-a-dns-name-and-your-own-certificate-pfx)).
+
+### Token lifetime, limits and revocation
+
+- An installer works until its token **expires** (default 30 days) or reaches **maximum devices** (default 500), whichever comes first. Devices already enrolled are not affected by either: they authenticate with their own per-device credential.
+- **Revoke** the installer's token under *Enrollment tokens* when the rollout is done or if the file leaks. Devices that have not enrolled yet then log the rejection and retry every 30 minutes; enrolled devices keep working.
+- Shorter is safer: pick the smallest expiry and device count that cover your rollout window, and download a fresh installer for later waves.
+
+### Code signing
+
+- The **pre-configured MSI and pkg are unsigned**: injecting the enrollment changes the file, which would invalidate any signature (signing them on the server would need your code-signing key there, which this feature deliberately does not do). Windows SmartScreen and macOS Gatekeeper therefore warn on a *double-click* of a downloaded file. Deployment tools (GPO, Intune, SCCM, Jamf, `installer`) are not affected.
+- The **agent binary inside** can be signed: CI builds it, you sign `cnapp-agent.exe` (Authenticode) or the macOS binary (Developer ID) and build the MSI/pkg from it ([Packaging](#packaging-and-code-signing)). Signing the binary keeps EDR/AV allow-listing simple even when the package is unsigned.
+- For SmartScreen-free rollouts and Intune's macOS LOB type, use **option B**: sign the *generic* MSI / pkg yourself and supply the enrollment via properties (Windows) or `cnapp-agent configure` (macOS). Use the pre-configured download for convenience.
+- Why MSI rather than a `setup.exe`: MSI is what GPO Software Installation, Intune LOB and SCCM install natively (silent, per-machine, repair, clean uninstall, upgrade, product-code detection). A bootstrapper `.exe` would add another unsigned binary without adding a capability, so none is built.
+
+### Troubleshooting
+
+| Check | Windows | macOS |
+|---|---|---|
+| Service running | `sc.exe query CNAPPAgent` / `Get-Service CNAPPAgent` | `sudo launchctl print system/com.cloudsecurity.cnapp-agent` |
+| Enrollment state | `& "$env:ProgramFiles\CNAPP Agent\cnapp-agent.exe" status` (elevated) | `sudo /usr/local/cnapp-agent/bin/cnapp-agent status` |
+| Agent log | `%ProgramData%\CNAPP Agent\logs\agent.log` | `/Library/Logs/CNAPP Agent/agent.log` and `launchd.log` |
+| Installer log | `msiexec /i ... /l*v install.log` (properties shown as `**********`) | `/var/log/install.log` |
+
+`status` prints `"enrolled": false` with `pending_enrollment` while the service is still trying. Typical log lines: `enrollment failed; retrying ... x509: certificate signed by unknown authority` (CA not embedded and not trusted: download with *Include CA*, or deploy the CA), `... no such host` / `connection refused` (DNS / firewall to the server), `enrollment token rejected` (expired, revoked or used up).
+
 ## Enrolling devices
+
+For a handful of devices, or scripted installs, you can also enroll one by one with a token.
+
 
 You need the URL of your CNAPP deployment (for example `https://cnapp-web.<env>.<region>.azurecontainerapps.io`) and an **admin** account.
 
@@ -243,24 +347,33 @@ Every action requires a **reason**. Creating one is written to the audit log (`d
 
 | | Windows | macOS |
 |---|---|---|
-| Install | `cnapp-agent install` (elevated) | `sudo cnapp-agent install` |
+| Install | MSI (above), or `cnapp-agent install` (elevated) | pkg (above), or `sudo cnapp-agent install` |
 | Binary | `C:\Program Files\CNAPP Agent\cnapp-agent.exe` | `/usr/local/cnapp-agent/bin/cnapp-agent` |
 | Service | `CNAPPAgent`, LocalSystem, automatic (delayed), restart on failure (5 s / 30 s / 2 min) | `/Library/LaunchDaemons/com.cloudsecurity.cnapp-agent.plist`, root, `RunAtLoad` + `KeepAlive` |
 | State | `C:\ProgramData\CNAPP Agent\state.json` | `/Library/Application Support/CNAPP Agent/state.json` |
 | Logs | `C:\ProgramData\CNAPP Agent\logs\agent.log` | `/Library/Logs/CNAPP Agent/agent.log` (+ `launchd.log`) |
-| Upgrade | run the new binary's `install` (stops, replaces and restarts) | install the new `.pkg`, or the new binary's `install` |
-| Uninstall | `packaging\windows\uninstall.ps1 [-Purge]` or `cnapp-agent uninstall [--purge]` | `sudo /usr/local/cnapp-agent/bin/cnapp-agent uninstall [--purge]` |
+| Pending enrollment | `C:\ProgramData\CNAPP Agent\enroll.json` (deleted after enrolling) | `/Library/Application Support/CNAPP Agent/enroll.json` (same) |
+| Upgrade | newer MSI (keeps identity), or the new binary's `install` | install the new `.pkg`, or the new binary's `install` |
+| Uninstall | `msiexec /x` / Apps & features (MSI), or `packaging\windows\uninstall.ps1 [-Purge]` / `cnapp-agent uninstall [--purge]` | `sudo /usr/local/cnapp-agent/bin/cnapp-uninstall.sh`, or `sudo cnapp-agent uninstall [--purge]` |
 
 `--purge` also deletes the credential and logs. Revoke or delete the device in the console as well.
 
-Other commands: `status`, `inventory --print [--no-software]`, `checkin` (one check-in and command poll now), `run` (foreground loop, which is what the service runs) and `version`.
+Other commands: `configure` (store a pending enrollment for the service: `--server URL --token-stdin [--ca-file PEM | --ca-b64 B64]` or `--from-file enroll.json`; a no-op on an enrolled device), `purge` (delete credential, pending enrollment and logs), `install --wait-for-enrollment` (install the service before any enrollment), `status`, `inventory --print [--no-software]`, `checkin` (one check-in and command poll now), `run` (foreground loop, which is what the service runs) and `version`.
 
 ## Packaging and code signing
 
 CI produces:
 
 - **`cnapp-agent-binaries`**: static (`CGO_ENABLED=0`) binaries for `windows/amd64`, `windows/arm64`, `darwin/amd64` and `darwin/arm64`, plus `install.ps1`, `uninstall.ps1`, `install.sh` and `SHA256SUMS`;
-- **`cnapp-agent-macos-pkg`**: an unsigned universal (`lipo`) `.pkg` built with `pkgbuild` on the macOS runner.
+- **`cnapp-agent-macos-pkg`**: an unsigned universal (`lipo`) `.pkg` built with `pkgbuild` on the macOS runner;
+- **`cnapp-agent-windows-msi`**: the generic x64 MSI (`endpoint-agent/packaging/windows/msi/cnapp-agent.wxs`, WiX Toolset v5, built on the Windows runner by `build-msi.ps1`).
+
+The two installers are also **bundled into the backend image** (`backend/installers/` with a `manifest.json` of their SHA-256, checked before every use), so pre-configured downloads work offline on-prem. To serve your own (e.g. signed) generic builds instead, put them with a matching `manifest.json` in a directory and set `AGENT_INSTALLERS_DIR`; remember a pre-configured download of a signed MSI/pkg is no longer validly signed.
+
+**How the enrollment is injected** (`backend/app/services/installers.py`):
+
+- **MSI**: msitools' `msibuild` (in the backend image) deletes and re-inserts the `CNAPP_SERVER`, `CNAPP_TOKEN` and `CNAPP_CA_B64` rows of the `Property` table, exactly the public properties an admin could pass to `msiexec`, and sets a new package code. Nothing else in the MSI changes, so the injected and the command-line paths run the same, tested logic: a deferred custom action (as SYSTEM, target hidden from logs) runs `cnapp-agent configure`, which validates the values and writes the protected `enroll.json`. Editing the Property table is robust (no CAB or file-table changes) and needs no Windows tooling on the server.
+- **pkg**: the component package's `Scripts` archive (gzip cpio) gets `enroll.json` added next to `postinstall`; the xar container is rewritten in pure Python (`pkgtools.py`, TOC checksums recomputed, any signature removed). The `Payload` and `Bom` are copied byte-for-byte. The postinstall hands the file to `cnapp-agent configure`.
 
 Signing needs your organization's certificates, so it is a **manual** step:
 
@@ -273,7 +386,7 @@ signtool verify /pa cnapp-agent-windows-amd64.exe
 Set-AuthenticodeSignature -FilePath install.ps1 -Certificate (Get-ChildItem Cert:\CurrentUser\My -CodeSigningCert)[0] -TimestampServer http://timestamp.digicert.com
 ```
 
-Then deploy with `install.ps1 -RequireSignature`. An MSI (for example WiX) is not included yet. The PowerShell installer works with any software-deployment tool that can run an elevated script.
+Then build the MSI from the signed binary and sign the MSI (`build-msi.ps1` shows the `signtool` lines), or deploy with `install.ps1 -RequireSignature`.
 
 **macOS (Developer ID + notarization).** With a *Developer ID Application* and a *Developer ID Installer* certificate in the keychain:
 
@@ -304,9 +417,18 @@ Agent API (device credential):
 
 User API (session; viewer unless noted): `GET /api/devices` (filters `q`, `os`, `health`, `issue`, `connectivity`, `status`), `GET /api/devices/summary`, `GET /api/devices/issue-types`, `GET /api/devices/{id}`, `.../software?q=`, `.../history`, `.../commands`, `POST .../commands` (role per action, `{type, reason, params}`), `POST .../commands/{cid}/cancel` (same role as the action), `GET .../log-bundles/{bid}` (analyst), `POST .../revoke` and `DELETE /api/devices/{id}?reason=` (admin), and `GET/POST /api/devices/enrollment-tokens`, `POST .../enrollment-tokens/{id}/revoke` and `GET /api/devices/enrollment/info` (admin).
 
+Installers (admin; CSRF on POST; `AGENT_INSTALLER_RATE_LIMIT` downloads per admin per `AGENT_INSTALLER_RATE_WINDOW_SECONDS`):
+
+| Method & path | Body / response |
+|---|---|
+| `GET /api/devices/installers` | → `{server_url, server_error, ca_configured, include_ca_default, platforms:{windows-msi|macos-pkg:{available, version, label, filename, reason}}, defaults}` (never a token) |
+| `POST /api/devices/installers` | `{platform: "windows-msi" | "macos-pkg", expires_in_days: 1-365 [30], max_devices: 1-100000 [500], device_group?, name?, include_ca?: bool (null = when configured)}` → the file (`Content-Disposition: attachment`, `Cache-Control: no-store`, headers `X-Content-SHA256`, `X-Enrollment-Token-Id`, `X-Agent-Version`, `X-CA-Included`). 409: `PUBLIC_BASE_URL` missing / not https, or CA requested but none configured; 503: base installer not bundled or checksum mismatch; 429: rate limit. |
+
 ## Configuration
 
 Backend environment variables (defaults in brackets): `AGENT_MAX_REQUEST_BYTES` [6 MiB], `DEVICE_LOG_BUNDLE_MAX_BYTES` [5 MiB], `DEVICE_RATE_LIMIT` [120] per `DEVICE_RATE_WINDOW_SECONDS` [600], `ENROLL_RATE_LIMIT` [20] per `ENROLL_RATE_WINDOW_SECONDS` [600], `DEVICE_STALE_HOURS` [24], `DEVICE_INACTIVE_DAYS` [7], `DEVICE_UPDATES_GRACE_DAYS` [14], `DEVICE_AV_SIGNATURE_MAX_AGE_DAYS` [7], `DEVICE_HISTORY_LIMIT` [200], `DEVICE_COMMAND_TTL_HOURS` [24] and `AGENT_DOWNLOAD_URL` [unset].
+
+Installers: `PUBLIC_BASE_URL` (required, https; embedded in installers), `AGENT_CA_CERT_B64` (base64 PEM of a private CA to embed; set by `cnapp-ctl` on-prem) or `AGENT_CA_CERT_FILE`, `AGENT_INSTALLERS_DIR` [`/app/installers`], `AGENT_INSTALLER_RATE_LIMIT` [10] per `AGENT_INSTALLER_RATE_WINDOW_SECONDS` [600], `AGENT_INSTALLER_MAX_PARALLEL` [2]. Migration `0005_agent_installers` adds the package/group columns.
 
 **Azure deployment.** No infrastructure change is needed. Agents use the public frontend URL (`https://<frontend-fqdn>`). nginx proxies `/api/agent/*` to the internal backend with an 8 MiB body limit, and the Container Apps ingress needs nothing else. Per-IP enrollment rate limiting uses the real client IP through `TRUSTED_PROXY_CIDRS`. The database tables come with Alembic migration `0002_device_management`, applied automatically on startup.
 
@@ -320,6 +442,8 @@ Backend environment variables (defaults in brackets): `AGENT_MAX_REQUEST_BYTES` 
   - `scripts/agent_e2e.py --service`, which starts the real backend, creates a token through the API, enrolls the agent, checks in, runs `recheck_posture`, `collect_logs` and `update_check_in_interval`, then **installs the real Windows service / LaunchDaemon**, waits for its check-in, sends `restart_agent` and verifies that the service manager restarts it, verifies the Windows state-directory ACL, uninstalls, re-enrolls, revokes and checks that the agent is rejected.
   - The macOS leg also builds the `.pkg`.
 - Release binaries are cross-compiled for all four targets.
+- **Installers** (`backend/tests/test_installers.py`): pkg injection read back (enroll.json, untouched Payload/Bom), MSI injection read back with `msiinfo` (properties, new package code, generic MSI unchanged), token limits / expiry / revocation, RBAC and CSRF, rate limit, configuration errors, tampered or missing base artifacts, audit detail, and that the plaintext token is in no database table. Agent: `internal/agent/autoenroll_test.go` (auto-enroll over TLS with the embedded CA, token deleted, idempotent on an enrolled device, rejected-token retry, waiting for a config) and `internal/state/enroll_test.go`.
+- **Installer end-to-end** (`scripts/installer_e2e.py`): the CI `images` job builds the backend image with the bundled installers, runs it, and downloads a pre-configured MSI and pkg through the API (generated on Linux by the image's msitools / Python code; read back with `msiinfo`). Then on real `windows-latest` and `macos-latest` runners the backend runs over HTTPS with a private CA on the same database, and the job installs the package silently (`msiexec /qn` / `installer -pkg`), checks the service is running, the device auto-enrolled (group label, CA trusted from the installer), the token file is gone and absent from the MSI log; re-installs/repairs without re-enrolling; uninstalls and checks service, files, state (and the pkg receipt) are gone; then repeats with the generic MSI + `CNAPP_*` properties and the generic pkg + `cnapp-agent configure`.
 
 `lock_device` is **not** exercised in CI, because CI runners have no interactive user session to lock. Its logic is unit-tested with a stub, but the Windows session-token path and the macOS `pmset` path have to be checked on real hardware before you rely on them.
 
@@ -333,7 +457,9 @@ Backend environment variables (defaults in brackets): `AGENT_MAX_REQUEST_BYTES` 
 - Software inventory covers registry uninstall entries (Windows) and `.app` bundles (macOS). Packages installed without either (for example Homebrew formulae, portable apps or Microsoft Store apps for other users) are not listed.
 - Rate limiting is in-memory per backend process, like the login limiter.
 - Log bundles are stored in the database (capped). Large fleets should move them to Blob Storage.
-- Binaries are not signed by CI. See [Packaging and code signing](#packaging-and-code-signing).
+- Binaries are not signed by CI. See [Packaging and code signing](#packaging-and-code-signing). Pre-configured installers are always unsigned ([Code signing](#code-signing)).
+- The Windows MSI is x64 only (it runs on Windows on ARM through emulation); the native `windows-arm64` binary is available for `install.ps1`.
+- A pre-configured installer contains a live enrollment token: anyone holding the file can enroll devices until it expires, is revoked or hits its device limit.
 
 ### Adding Linux
 
