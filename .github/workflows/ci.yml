@@ -474,7 +474,11 @@ jobs:
           docker run --rm --entrypoint msiinfo -v "$b:/b:ro" cnapp-backend:ci export /b/cnapp-agent-setup.msi Property \
             | cut -f1 | grep '^CNAPP_' | sort | tee "$RUNNER_TEMP/props.txt"
           test "$(tr '\n' ' ' < "$RUNNER_TEMP/props.txt")" = "CNAPP_CA_B64 CNAPP_SERVER CNAPP_TOKEN "
-          docker run --rm --entrypoint msiinfo -v "$b:/b:ro" cnapp-backend:ci suminfo /b/cnapp-agent-setup.msi | grep -E '^(Subject|Template|Revision)'
+          for m in cnapp-agent-windows-x64.msi cnapp-agent-setup.msi; do
+            echo "--- $m"; docker run --rm --entrypoint msiinfo -v "$b:/b:ro" cnapp-backend:ci suminfo "/b/$m"
+            docker run --rm --entrypoint msiinfo -v "$b:/b:ro" cnapp-backend:ci tables "/b/$m" | tr '\n' ' '; echo
+            docker run --rm --entrypoint msiinfo -v "$b:/b:ro" cnapp-backend:ci streams "/b/$m" | tr '\n' ' '; echo
+          done
           ls -l "$b"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: needs.agent.result == 'success'

@@ -198,6 +198,24 @@ def windows_run(api: Api, bundle: Path, tmp: Path) -> None:
             print(text[-6000:])
             raise SystemExit(f"msiexec {' '.join(a)} failed with {p.returncode}")
 
+    def msi_tables(msi: Path) -> list[str]:
+        import msilib
+
+        db = msilib.OpenDatabase(str(msi), msilib.MSIDBOPEN_READONLY)
+        view = db.OpenView("SELECT `Name` FROM `_Tables`")
+        view.Execute(None)
+        names = []
+        while (rec := view.Fetch()) is not None:
+            names.append(rec.GetString(1))
+        view.Close()
+        db.Close()
+        return sorted(names)
+
+    for m in (generic, setup):
+        try:
+            print(f"{m.name}: tables {msi_tables(m)}", flush=True)
+        except Exception as e:  # noqa: BLE001 - diagnostics only
+            print(f"{m.name}: cannot list tables: {e!r}", flush=True)
     token = msi_property(setup, "CNAPP_TOKEN")
     assert token.startswith("cne_"), "pre-configured MSI has no CNAPP_TOKEN"
     assert msi_property(setup, "CNAPP_SERVER") == SERVER
