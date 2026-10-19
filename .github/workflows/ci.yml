@@ -28,14 +28,13 @@ jobs:
         env:
           EVENT: ${{ github.event_name }}
           REF: ${{ github.ref }}
-          BEFORE: ${{ github.event.before }}
           PR_BASE: ${{ github.event.pull_request.base.sha }}
         run: |
           # main always builds everything (the images bundle the installers).
           if [ "$REF" = refs/heads/main ]; then echo "agent=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          # Whole branch vs. main (not just the last push: superseded runs are cancelled).
           base="$PR_BASE"
-          [ "$EVENT" = push ] && base="$BEFORE"
-          if [ -z "$base" ] || ! git cat-file -e "$base^{commit}" 2>/dev/null || [ "$base" = 0000000000000000000000000000000000000000 ]; then
+          if [ "$EVENT" != pull_request ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
             base="$(git merge-base HEAD origin/main 2>/dev/null || true)"
           fi
           if [ -z "$base" ]; then echo "agent=true" >> "$GITHUB_OUTPUT"; exit 0; fi
