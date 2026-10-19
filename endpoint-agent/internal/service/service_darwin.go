@@ -109,3 +109,6 @@ func Uninstall() error {
 	_ = os.Remove("/usr/local/cnapp-agent")
 	return nil
 }
+
+// ConfigureRecovery is a no-op outside Windows (launchd KeepAlive restarts the agent).
+func ConfigureRecovery() error { return nil }

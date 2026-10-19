@@ -20,3 +20,6 @@ func Install(Options) error { return errUnsupported }
 
 // Uninstall is unsupported here.
 func Uninstall() error { return errUnsupported }
+
+// ConfigureRecovery is a no-op outside Windows (launchd KeepAlive restarts the agent).
+func ConfigureRecovery() error { return nil }

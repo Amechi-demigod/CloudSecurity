@@ -26,6 +26,8 @@ COPY --from=build /opt/venv /opt/venv
 COPY --chown=root:root alembic.ini gunicorn.conf.py ./
 COPY --chown=root:root migrations ./migrations
 COPY --chown=root:root app ./app
+# Generic agent installers + manifest.json (placed here by CI; README only otherwise).
+COPY --chown=root:root installers ./installers
 
 USER 10001:10001
 EXPOSE 8000

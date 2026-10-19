@@ -52,6 +52,7 @@ type Client struct {
 type Options struct {
 	InsecureDev bool   // allow http:// (local testing only)
 	CAFile      string // extra PEM CA bundle (private PKI); system roots are always trusted
+	CAPEM       []byte // same, in memory (used instead of CAFile when set)
 	Timeout     time.Duration
 }
 
@@ -62,10 +63,12 @@ func New(serverURL, secret string, o Options) (*Client, error) {
 		return nil, err
 	}
 	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
-	if o.CAFile != "" {
-		pem, err := os.ReadFile(o.CAFile)
-		if err != nil {
-			return nil, fmt.Errorf("reading CA file: %w", err)
+	if o.CAFile != "" || len(o.CAPEM) > 0 {
+		pem := o.CAPEM
+		if len(pem) == 0 {
+			if pem, err = os.ReadFile(o.CAFile); err != nil {
+				return nil, fmt.Errorf("reading CA file: %w", err)
+			}
 		}
 		pool, err := x509.SystemCertPool()
 		if err != nil || pool == nil {

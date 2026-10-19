@@ -128,7 +128,14 @@ func Install(o Options) error {
 		return fmt.Errorf("creating service: %w", err)
 	}
 	defer s.Close()
-	// restart_agent exits non-zero; the SCM then restarts the service.
+	if err := setRecovery(s); err != nil {
+		return err
+	}
+	return s.Start()
+}
+
+// restart_agent exits non-zero; the SCM then restarts the service.
+func setRecovery(s *mgr.Service) error {
 	if err := s.SetRecoveryActions([]mgr.RecoveryAction{
 		{Type: mgr.ServiceRestart, Delay: 5 * time.Second},
 		{Type: mgr.ServiceRestart, Delay: 30 * time.Second},
@@ -137,7 +144,24 @@ func Install(o Options) error {
 		return fmt.Errorf("setting recovery actions: %w", err)
 	}
 	_ = s.SetRecoveryActionsOnNonCrashFailures(true)
-	return s.Start()
+	return nil
+}
+
+// ConfigureRecovery sets the restart-on-failure actions of an existing service
+// (used by the MSI after it registered the service: Windows Installer's own
+// MsiServiceConfigFailureActions rejects restart actions with error 1939).
+func ConfigureRecovery() error {
+	m, err := mgr.Connect()
+	if err != nil {
+		return fmt.Errorf("connecting to the service manager: %w", err)
+	}
+	defer m.Disconnect()
+	s, err := m.OpenService(WindowsServiceName)
+	if err != nil {
+		return fmt.Errorf("opening service %s: %w", WindowsServiceName, err)
+	}
+	defer s.Close()
+	return setRecovery(s)
 }
 
 // Uninstall stops and deletes the service and removes the installed binary.

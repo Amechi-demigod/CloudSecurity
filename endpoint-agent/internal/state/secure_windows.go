@@ -3,6 +3,7 @@
 package state
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -55,4 +56,21 @@ func replaceFile(src, dst string) error {
 		return err
 	}
 	return windows.MoveFileEx(from, to, windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH)
+}
+
+// checkPrivilegedOwner requires the file to be owned by LocalSystem or
+// BUILTIN\Administrators (what an elevated installer or the service creates).
+func checkPrivilegedOwner(path string) error {
+	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION)
+	if err != nil {
+		return err
+	}
+	owner, _, err := sd.Owner()
+	if err != nil {
+		return err
+	}
+	if owner.IsWellKnown(windows.WinLocalSystemSid) || owner.IsWellKnown(windows.WinBuiltinAdministratorsSid) {
+		return nil
+	}
+	return fmt.Errorf("owned by %s, not SYSTEM or Administrators", owner.String())
 }

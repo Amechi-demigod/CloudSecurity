@@ -1,17 +1,22 @@
 #!/bin/bash
-# Upgrade: if this Mac is already enrolled, (re)register and start the LaunchDaemon.
-# New install: enrollment needs a token, so it is a separate step:
-#   sudo /usr/local/cnapp-agent/bin/cnapp-agent enroll --server https://... --token-stdin
-#   sudo /usr/local/cnapp-agent/bin/cnapp-agent install
-# An enrollment can also be supplied at install time (e.g. by your deployment
-# tool) in /var/root/.cnapp-enroll as two lines: server URL, token, plus an
-# optional third line: path of a PEM CA certificate to trust (private/on-prem
-# CA; the agent keeps its own copy). It is deleted after use.
+# Runs as root after the payload (/usr/local/cnapp-agent/bin/cnapp-agent) is installed.
+#
+# Enrollment, in order of precedence:
+#  1. enroll.json next to this script: added by the CNAPP console when you
+#     download a pre-configured package (Devices > Enroll > Download installer).
+#  2. /var/root/.cnapp-enroll (legacy seed for deployment tools): lines
+#     server URL, token, optional path of a PEM CA certificate. Deleted after use.
+#  3. Nothing: the LaunchDaemon still starts and waits; enroll later with
+#       sudo /usr/local/cnapp-agent/bin/cnapp-agent configure --server https://... --token-stdin
+#     (e.g. from an MDM script) or `cnapp-agent enroll`.
+# An already enrolled Mac is never re-enrolled (upgrades keep the device identity).
 bin=/usr/local/cnapp-agent/bin/cnapp-agent
-state="/Library/Application Support/CNAPP Agent/state.json"
+here="$(cd "$(dirname "$0")" && pwd)"
 seed=/var/root/.cnapp-enroll
 
-if [[ -f "$seed" ]]; then
+if [[ -f "$here/enroll.json" ]]; then
+  "$bin" configure --from-file "$here/enroll.json" || exit 1
+elif [[ -f "$seed" ]]; then
   server="$(sed -n 1p "$seed")"
   token="$(sed -n 2p "$seed")"
   ca="$(sed -n 3p "$seed")"
@@ -19,13 +24,9 @@ if [[ -f "$seed" ]]; then
   extra=()
   [[ -n "$ca" ]] && extra=(--ca-file "$ca")
   if [[ -n "$server" && -n "$token" ]]; then
-    printf '%s\n' "$token" | "$bin" enroll --server "$server" --token-stdin ${extra[@]+"${extra[@]}"} || exit 1
+    printf '%s\n' "$token" | "$bin" configure --server "$server" --token-stdin ${extra[@]+"${extra[@]}"} || exit 1
   fi
 fi
 
-if [[ -f "$state" ]]; then
-  "$bin" install || exit 1
-else
-  echo "CNAPP agent installed but not enrolled. Run: sudo $bin enroll --server https://<your-cnapp> --token-stdin && sudo $bin install"
-fi
+"$bin" install --wait-for-enrollment || exit 1
 exit 0

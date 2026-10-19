@@ -1,6 +1,7 @@
 // Command cnapp-agent is the CNAPP endpoint agent for Windows and macOS.
 //
 //	cnapp-agent enroll --server https://cnapp.example.com --token cne_...
+//	cnapp-agent configure --server URL --token-stdin   # pending enrollment for the service (installers, MDM)
 //	cnapp-agent install            # Windows service / macOS LaunchDaemon (elevated)
 //	cnapp-agent status
 //	cnapp-agent inventory --print  # collect and print JSON, no network
@@ -36,8 +37,16 @@ const usage = `cnapp-agent %s - CNAPP endpoint agent (inventory, posture, allow-
 
 Usage:
   cnapp-agent enroll --server URL (--token TOKEN | --token-stdin) [--insecure-dev] [--ca-file PEM]
-  cnapp-agent install                 register and start the OS service (run elevated)
+  cnapp-agent configure --server URL (--token TOKEN | --token-stdin) [--ca-file PEM | --ca-b64 B64]
+  cnapp-agent configure --from-file enroll.json   (the MSI also passes --preset)
+                                      store a pending enrollment (protected enroll.json); the service
+                                      enrolls with it on start, then deletes the token (used by the
+                                      MSI / pkg installers and MDM scripts; no-op if already enrolled)
+  cnapp-agent install [--wait-for-enrollment]
+                                      register and start the OS service (run elevated); without
+                                      enrollment or a pending config it needs --wait-for-enrollment
   cnapp-agent uninstall [--purge]     stop and remove the service (--purge also deletes credentials and logs)
+  cnapp-agent purge                   delete credentials, pending enrollment and logs (service untouched)
   cnapp-agent status                  show enrollment state (never prints the secret)
   cnapp-agent inventory --print       collect inventory/posture and print JSON (no network)
   cnapp-agent checkin                 run one check-in and command poll now
@@ -64,6 +73,12 @@ func main() {
 	switch cmd {
 	case "enroll":
 		err = cmdEnroll(args)
+	case "configure":
+		err = cmdConfigure(args)
+	case "purge":
+		err = cmdPurge(args)
+	case "service-recovery": // used by the MSI (Windows): restart-on-failure actions
+		err = service.ConfigureRecovery()
 	case "install":
 		err = cmdInstall(args)
 	case "uninstall":
@@ -109,18 +124,10 @@ func cmdEnroll(args []string) error {
 			"(env CNAPP_CA_FILE); a copy is kept with the agent's credentials")
 	_ = fs.Parse(args)
 	quietLogs()
-	tok := *token
-	if *tokenStdin {
-		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
-		if err != nil && !errors.Is(err, io.EOF) {
-			return err
-		}
-		tok = line
+	tok, err := readToken(*token, *tokenStdin)
+	if err != nil {
+		return err
 	}
-	if tok == "" {
-		tok = os.Getenv("CNAPP_ENROLL_TOKEN")
-	}
-	tok = strings.TrimSpace(tok)
 	if *server == "" || tok == "" {
 		return errors.New("--server and an enrollment token are required")
 	}
@@ -143,12 +150,124 @@ func cmdEnroll(args []string) error {
 	return nil
 }
 
-func cmdInstall(args []string) error {
-	fs, home := flags("install")
+func readToken(token string, fromStdin bool) (string, error) {
+	tok := token
+	if fromStdin {
+		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
+			return "", err
+		}
+		tok = line
+	}
+	if tok == "" {
+		tok = os.Getenv("CNAPP_ENROLL_TOKEN")
+	}
+	return strings.TrimSpace(tok), nil
+}
+
+// cmdConfigure stores a pending enrollment for the service (installers, MDM).
+func cmdConfigure(args []string) error {
+	fs, home := flags("configure")
+	server := fs.String("server", "", "CNAPP server URL (https://...)")
+	token := fs.String("token", "", "enrollment token (or --token-stdin / CNAPP_ENROLL_TOKEN)")
+	tokenStdin := fs.Bool("token-stdin", false, "read the enrollment token from stdin")
+	caFile := fs.String("ca-file", "", "PEM CA certificate(s) of a private CA (optional)")
+	caB64 := fs.String("ca-b64", "", "base64 of the PEM (or DER) CA certificate (optional; MSI property CNAPP_CA_B64)")
+	fromFile := fs.String("from-file", "", "read server, token and CA from an enroll.json document")
+	preset := fs.String("preset", "", "MSI property CNAPP_PRESET (set by a pre-configured download; used by the MSI)")
 	_ = fs.Parse(args)
 	quietLogs()
-	if _, err := state.Load(state.Resolve(*home)); err != nil {
-		return fmt.Errorf("%w; enroll before installing the service", err)
+	p := state.Resolve(*home)
+	var cfg *state.EnrollConfig
+	tok, err := readToken(*token, *tokenStdin)
+	if err != nil {
+		return err
+	}
+	// The MSI passes every source; explicit CNAPP_SERVER/CNAPP_TOKEN properties win over
+	// the preset, and with neither (generic MSI, no properties) there is nothing to do.
+	msiMode := isFlagSet(fs, "preset")
+	if msiMode && *fromFile == "" && tok == "" {
+		if cfg, err = state.DecodePreset(*preset); err != nil {
+			return err
+		}
+		if cfg == nil {
+			fmt.Println("No enrollment configuration given (generic MSI without CNAPP_SERVER/CNAPP_TOKEN): " +
+				"the service waits for `cnapp-agent configure` or `cnapp-agent enroll`.")
+			return nil
+		}
+	} else if *fromFile != "" {
+		b, err := os.ReadFile(*fromFile)
+		if err != nil {
+			return err
+		}
+		if cfg, err = state.ParseEnrollConfig(b); err != nil {
+			return fmt.Errorf("%s: %w", *fromFile, err)
+		}
+	} else {
+		cfg = &state.EnrollConfig{ServerURL: *server, Token: tok}
+		switch {
+		case *caFile != "":
+			b, err := os.ReadFile(*caFile)
+			if err != nil {
+				return fmt.Errorf("reading CA file: %w", err)
+			}
+			cfg.CAPEM = string(b)
+		case strings.TrimSpace(*caB64) != "":
+			if cfg.CAPEM, err = state.DecodeCAB64(*caB64); err != nil {
+				return err
+			}
+		}
+	}
+	if st, err := state.Load(p); err == nil {
+		fmt.Printf("Already enrolled as device %s with %s: enrollment config not written "+
+			"(use `cnapp-agent enroll` to re-enroll).\n", st.DeviceID, st.ServerURL)
+		return nil
+	}
+	if err := state.SaveEnrollConfig(p, cfg); err != nil {
+		return err
+	}
+	fmt.Printf("Enrollment config for %s saved to %s; the service enrolls with it on start.\n", cfg.ServerURL, p.EnrollFile())
+	return nil
+}
+
+func isFlagSet(fs *flag.FlagSet, name string) bool {
+	set := false
+	fs.Visit(func(f *flag.Flag) { set = set || f.Name == name })
+	return set
+}
+
+func purge(p state.Paths) error {
+	if err := state.Remove(p); err != nil {
+		return err
+	}
+	_ = os.RemoveAll(p.LogDir)
+	_ = os.Remove(p.StateDir)
+	return nil
+}
+
+func cmdPurge(args []string) error {
+	fs, home := flags("purge")
+	_ = fs.Parse(args)
+	quietLogs()
+	if err := purge(state.Resolve(*home)); err != nil {
+		return err
+	}
+	fmt.Println("Credentials, pending enrollment and logs deleted.")
+	return nil
+}
+
+func cmdInstall(args []string) error {
+	fs, home := flags("install")
+	wait := fs.Bool("wait-for-enrollment", false,
+		"install even if not enrolled and no enrollment config is present (the service waits for one)")
+	_ = fs.Parse(args)
+	quietLogs()
+	p := state.Resolve(*home)
+	if _, err := state.Load(p); err != nil {
+		if _, cerr := state.LoadEnrollConfig(p); cerr != nil && !*wait {
+			return fmt.Errorf("%w; enroll (or `cnapp-agent configure`) before installing the service, "+
+				"or pass --wait-for-enrollment", err)
+		}
 	}
 	if err := service.Install(service.Options{Home: *home}); err != nil {
 		return err
@@ -159,19 +278,16 @@ func cmdInstall(args []string) error {
 
 func cmdUninstall(args []string) error {
 	fs, home := flags("uninstall")
-	purge := fs.Bool("purge", false, "also delete the device credential and agent logs")
+	purgeAll := fs.Bool("purge", false, "also delete the device credential and agent logs")
 	_ = fs.Parse(args)
 	quietLogs()
 	if err := service.Uninstall(); err != nil {
 		return err
 	}
-	if *purge {
-		p := state.Resolve(*home)
-		if err := state.Remove(p); err != nil {
+	if *purgeAll {
+		if err := purge(state.Resolve(*home)); err != nil {
 			return err
 		}
-		_ = os.RemoveAll(p.LogDir)
-		_ = os.Remove(p.StateDir)
 		fmt.Println("Service removed; credentials and logs deleted. Revoke or delete the device in the CNAPP console as well.")
 		return nil
 	}
@@ -184,10 +300,22 @@ func cmdStatus(args []string) error {
 	_ = fs.Parse(args)
 	p := state.Resolve(*home)
 	st, err := state.Load(p)
+	if errors.Is(err, state.ErrNotEnrolled) {
+		cfg, cerr := state.LoadEnrollConfig(p)
+		if cerr != nil {
+			return err
+		}
+		out := map[string]any{"agent_version": version.Version, "enrolled": false, "log_file": p.LogFile(),
+			"pending_enrollment": map[string]any{"server_url": cfg.ServerURL, "config_file": p.EnrollFile(),
+				"private_ca": cfg.CAPEM != ""}}
+		b, _ := json.MarshalIndent(out, "", "  ")
+		fmt.Println(string(b))
+		return nil
+	}
 	if err != nil {
 		return err
 	}
-	out := map[string]any{"agent_version": version.Version, "state_file": p.StateFile(), "log_file": p.LogFile(),
+	out := map[string]any{"enrolled": true, "agent_version": version.Version, "state_file": p.StateFile(), "log_file": p.LogFile(),
 		"state": st.Redacted()}
 	b, _ := json.MarshalIndent(out, "", "  ")
 	fmt.Println(string(b))
@@ -209,6 +337,29 @@ func cmdInventory(args []string) error {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(r)
+}
+
+// enrolledAgent waits for (auto-)enrollment if needed, then loads the agent.
+func enrolledAgent(ctx context.Context, home string) (*agent.Agent, error) {
+	p := state.Resolve(home)
+	if !p.Custom {
+		// Re-assert the protected ACL / mode of the system state directory.
+		if err := state.SecureDir(p.StateDir); err != nil {
+			slog.Warn("could not secure the state directory", "dir", p.StateDir, "err", err)
+		}
+	}
+	st, err := state.Load(p)
+	switch {
+	case err == nil:
+		agent.DiscardEnrollConfig(p, st)
+	case errors.Is(err, state.ErrNotEnrolled):
+		if err := agent.AutoEnroll(ctx, p); err != nil {
+			return nil, err
+		}
+	default:
+		return nil, err
+	}
+	return load(home)
 }
 
 func load(home string) (*agent.Agent, error) {
@@ -255,13 +406,16 @@ func runLoop(home string, console bool) error {
 		return fmt.Errorf("opening log file: %w", err)
 	}
 	defer closer.Close()
-	a, err := load(home)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	a, err := enrolledAgent(ctx, home)
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
 		slog.Error("cannot start", "err", err)
 		return err
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	return a.Run(ctx)
 }
 
@@ -286,8 +440,11 @@ func runService() int {
 			return err
 		}
 		defer closer.Close()
-		a, err := load(home)
+		a, err := enrolledAgent(ctx, home)
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
 			slog.Error("cannot start", "err", err)
 			return err
 		}

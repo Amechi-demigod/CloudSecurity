@@ -98,6 +98,8 @@ def enroll(body: EnrollRequest, request: Request, db: Session = Depends(get_db))
     device.agent_version = info.agent_version
     device.status, device.revoked_at = "active", None
     device.enrolled_at, device.enrollment_token_id = now, token.id
+    if token.device_group:
+        device.device_group = token.device_group
     device.last_seen_at, device.last_ip = now, ip
     if existing is None:
         db.add(device)
@@ -105,7 +107,7 @@ def enroll(body: EnrollRequest, request: Request, db: Session = Depends(get_db))
     secret = svc.issue_credential(db, device)
     audit(db, "device_reenrolled" if existing else "device_enrolled", actor_email=f"enrollment-token:{token.name}"[:320],
           target=f"device:{device.id}", ip=ip, hostname=device.hostname, os_family=device.os_family,
-          token_id=token.id, previously_revoked=was_revoked)
+          token_id=token.id, previously_revoked=was_revoked, installer=token.package_platform)
     db.commit()
     log.info("device %s (%s) %s", device.id, device.hostname, "re-enrolled" if existing else "enrolled")
     return EnrollResponse(device_id=device.id, device_secret=secret,
