@@ -275,7 +275,10 @@ authorityKeyIdentifier = keyid:always
 subjectAltName = $sans
 EOF
   openssl ecparam -name prime256v1 -genkey -noout -out "$tmp/server.key" 2>/dev/null
-  openssl req -new -key "$tmp/server.key" -subj "/CN=${host}/O=CloudSecurity CNAPP" -out "$tmp/server.csr"
+  # An IP address in the CN would be checked against the CA's DNS name constraints
+  # (and is ignored by clients anyway): the SAN carries it.
+  local cn=$host; is_ip "$host" && cn="CNAPP server"
+  openssl req -new -key "$tmp/server.key" -subj "/CN=${cn}/O=CloudSecurity CNAPP" -out "$tmp/server.csr"
   openssl x509 -req -in "$tmp/server.csr" -CA "$CA_DIR/ca.crt" -CAkey "$CA_DIR/ca.key" \
     -CAserial "$CA_DIR/ca.srl" -CAcreateserial -days "$days" -sha256 -extfile "$tmp/ext.cnf" \
     -out "$tmp/server.crt" 2>/dev/null
