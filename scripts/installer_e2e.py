@@ -194,8 +194,18 @@ def windows_run(api: Api, bundle: Path, tmp: Path) -> None:
     def msiexec(*a: str, log: str) -> None:
         p = sh("msiexec.exe", *a, "/qn", "/norestart", "/l*v", str(tmp / log), check=False)
         if p.returncode not in (0, 3010):
-            text = read_log(tmp / log)
-            print(text[-6000:])
+            lines = read_log(tmp / log).splitlines()
+            hits = [i for i, line in enumerate(lines) if "Return value 3" in line or "Error " in line
+                    or "error code" in line.lower() or "CustomAction" in line]
+            shown: set[int] = set()
+            for i in hits[:12]:
+                for j in range(max(0, i - 25), min(len(lines), i + 3)):
+                    if j not in shown:
+                        print(lines[j])
+                        shown.add(j)
+            agent_log = pd / "logs" / "agent.log"
+            if agent_log.exists():
+                print("--- agent.log\n" + agent_log.read_text(errors="replace")[-3000:])
             raise SystemExit(f"msiexec {' '.join(a)} failed with {p.returncode}")
 
     def preset(msi: Path) -> dict | None:
