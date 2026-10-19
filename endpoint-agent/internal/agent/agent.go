@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"sync"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/commands"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/model"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/state"
+	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/update"
 )
 
 const (
@@ -38,7 +40,16 @@ type Agent struct {
 	// Collect is replaceable in tests.
 	Collect func(ctx context.Context, o collect.Options) *model.Report
 	Lock    func(ctx context.Context) (string, error)
+
+	// Updater applies signed self-updates (nil: self-update disabled, e.g. not
+	// running under the service manager).
+	Updater    *update.Updater
+	offer      *update.Offer
+	nextUpdate time.Time
 }
+
+// UpdateTransport exposes the API client to the updater.
+func (a *Agent) UpdateTransport() update.Transport { return a.client }
 
 // Load reads the enrollment state and builds the API client.
 func Load(p state.Paths) (*Agent, error) {
@@ -109,6 +120,7 @@ func (a *Agent) CheckIn(ctx context.Context) error {
 	a.st.LastCheckIn = time.Now().UTC()
 	err = a.save()
 	a.mu.Unlock()
+	a.afterCheckIn(ctx, resp.Update)
 	slog.Info("check-in complete", "duration", time.Since(start).Round(time.Millisecond), "issues", resp.Issues,
 		"pending_commands", resp.PendingCommands, "collector_errors", len(r.Errors))
 	return err
@@ -170,6 +182,68 @@ func (a *Agent) handle(ctx context.Context, c model.Command) {
 	}
 }
 
+// afterCheckIn completes a pending update's health check and schedules an
+// offered update with random jitter (so a fleet does not download at once).
+func (a *Agent) afterCheckIn(ctx context.Context, offer *update.Offer) {
+	if a.Updater == nil {
+		if offer != nil {
+			slog.Debug("update offered but self-update is disabled in this mode", "version", offer.Version)
+		}
+		return
+	}
+	a.Updater.MarkHealthy()
+	a.Updater.ReportOutcome(ctx)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if offer == nil {
+		a.offer = nil
+		return
+	}
+	if a.offer != nil && a.offer.ReleaseID == offer.ReleaseID {
+		return // already scheduled
+	}
+	o := *offer
+	a.offer = &o
+	delay := time.Duration(0)
+	if o.JitterSeconds > 0 {
+		delay = time.Duration(rand.Int64N(int64(min(o.JitterSeconds, 6*3600))+1)) * time.Second
+	}
+	a.nextUpdate = time.Now().Add(delay)
+	slog.Info("update offered", "version", o.Version, "release_id", o.ReleaseID, "starts_in", delay)
+}
+
+// maybeUpdate applies a scheduled offer when due. It returns true when the
+// agent must exit so the service manager starts the new binary.
+func (a *Agent) maybeUpdate(ctx context.Context) bool {
+	a.mu.Lock()
+	o := a.offer
+	due := o != nil && !time.Now().Before(a.nextUpdate)
+	if due {
+		a.offer = nil // re-offered at the next check-in if it failed transiently
+	}
+	a.mu.Unlock()
+	if !due || a.Updater == nil {
+		return false
+	}
+	err := a.Updater.Apply(ctx, *o)
+	if errors.Is(err, update.ErrRestartRequired) {
+		return true
+	}
+	if err != nil {
+		slog.Warn("update not applied", "version", o.Version, "err", err)
+	}
+	return false
+}
+
+func (a *Agent) updateWait() (time.Duration, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.offer == nil {
+		return 0, false
+	}
+	return time.Until(a.nextUpdate), true
+}
+
 func (a *Agent) setInterval(seconds int) error {
 	if seconds < commands.MinIntervalSeconds || seconds > commands.MaxIntervalSeconds {
 		return fmt.Errorf("interval %d out of range", seconds)
@@ -194,6 +268,9 @@ func (a *Agent) Run(ctx context.Context) error {
 		if w := time.Until(nextPoll); w < wait {
 			wait = w
 		}
+		if w, ok := a.updateWait(); ok && w < wait {
+			wait = w
+		}
 		if wait > 0 {
 			t := time.NewTimer(wait)
 			select {
@@ -214,6 +291,10 @@ func (a *Agent) Run(ctx context.Context) error {
 		if !time.Now().Before(nextPoll) {
 			err := a.PollCommands(ctx)
 			pollFailures, nextPoll = a.schedule(err, pollFailures, a.pollInterval(), "command poll")
+		}
+		if a.maybeUpdate(ctx) && a.Restart != nil {
+			a.Restart()
+			return nil
 		}
 	}
 }

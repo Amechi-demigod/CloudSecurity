@@ -21,6 +21,8 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -30,6 +32,7 @@ import (
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/logx"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/service"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/state"
+	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/update"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/version"
 )
 
@@ -52,6 +55,11 @@ Usage:
   cnapp-agent checkin                 run one check-in and command poll now
   cnapp-agent run                     run in the foreground (used by the service)
   cnapp-agent version
+  cnapp-agent update-keys             list the release-signing keys this build trusts for self-update
+
+Self-update: the service installs agent releases the CNAPP server offers, but only
+if their manifest is signed by a release key compiled into this binary (see
+docs/AGENT_UPDATES.md); a failed update is rolled back automatically.
 
 --ca-file PEM (or env CNAPP_CA_FILE) trusts a private/internal CA (e.g. an on-prem server's
               CA) in addition to the system store; it is copied next to the credentials.
@@ -61,6 +69,10 @@ Common flags: --home DIR  keep state and logs under DIR instead of the system lo
 `
 
 func main() {
+	if e2eBrokenBuild && len(os.Args) > 1 && os.Args[1] != "version" {
+		fmt.Fprintln(os.Stderr, "this is a deliberately broken e2e test build: exiting")
+		os.Exit(1)
+	}
 	if service.IsService() {
 		os.Exit(runService())
 	}
@@ -93,6 +105,10 @@ func main() {
 		err = cmdRun(args)
 	case "version", "--version", "-v":
 		fmt.Println(version.Version)
+	case "update-keys":
+		err = cmdUpdateKeys()
+	case "update-watchdog": // started detached by the service during a self-update
+		err = cmdUpdateWatchdog(args)
 	case "help", "--help", "-h":
 		fmt.Printf(usage, version.Version)
 	default:
@@ -316,7 +332,7 @@ func cmdStatus(args []string) error {
 		return err
 	}
 	out := map[string]any{"enrolled": true, "agent_version": version.Version, "state_file": p.StateFile(), "log_file": p.LogFile(),
-		"state": st.Redacted()}
+		"state": st.Redacted(), "update": update.LoadFile(p)}
 	b, _ := json.MarshalIndent(out, "", "  ")
 	fmt.Println(string(b))
 	return nil
@@ -367,11 +383,92 @@ func load(home string) (*agent.Agent, error) {
 	if err != nil {
 		return nil, err
 	}
-	a.Restart = func() {
-		slog.Info("restart requested; exiting so the service manager restarts the agent")
-		os.Exit(3)
-	}
+	a.Restart = restart
 	return a, nil
+}
+
+func restart() {
+	slog.Info("restart requested; exiting so the service manager restarts the agent")
+	os.Exit(3)
+}
+
+// newUpdater builds the self-updater for the running binary.
+func newUpdater(home string, t update.Transport) (*update.Updater, error) {
+	keys, err := update.BuiltinKeys()
+	if err != nil {
+		return nil, err
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	}
+	var wargs []string
+	if home != "" {
+		wargs = []string{"--home", home}
+	}
+	return &update.Updater{Keys: keys, Current: version.Version, GOOS: runtime.GOOS, GOARCH: runtime.GOARCH,
+		BinaryPath: exe, Paths: state.Resolve(home), Transport: t, Platform: update.OSPlatform{},
+		WatchdogArgs: wargs}, nil
+}
+
+// startUpdates runs the update start-up hook and enables self-update when the
+// OS service manager runs the agent (it is what starts the new binary).
+func startUpdates(home string, a *agent.Agent) {
+	if !service.ManagedByServiceManager() {
+		slog.Info("self-update disabled: not running under the service manager")
+		return
+	}
+	u, err := newUpdater(home, a.UpdateTransport())
+	if err != nil {
+		slog.Error("self-update disabled", "err", err)
+		return
+	}
+	if u.OnStart() {
+		restart()
+	}
+	if len(u.Keys) == 0 {
+		slog.Warn("self-update disabled: this build trusts no release-signing keys")
+		return
+	}
+	a.Updater = u
+}
+
+func cmdUpdateKeys() error {
+	keys, err := update.BuiltinKeys()
+	if err != nil {
+		return err
+	}
+	if len(keys) == 0 {
+		fmt.Println("This build trusts no release-signing keys: self-update is disabled.")
+		return nil
+	}
+	for _, k := range keys {
+		fmt.Println(k.ID)
+	}
+	return nil
+}
+
+// cmdUpdateWatchdog rolls a self-update back if the new binary does not check
+// in successfully in time. It runs from the previous binary (the backup).
+func cmdUpdateWatchdog(args []string) error {
+	fs, home := flags("update-watchdog")
+	_ = fs.Parse(args)
+	p := state.Resolve(*home)
+	if closer, err := logx.Setup(p.LogFile(), false, slog.LevelInfo); err == nil {
+		defer closer.Close()
+	}
+	slog.Info("update watchdog started", "pid", os.Getpid(), "version", version.Version)
+	u := &update.Updater{Current: version.Version, Paths: p, Platform: update.OSPlatform{}}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
+	defer cancel()
+	err := u.Watchdog(ctx, 2*time.Second)
+	if err != nil {
+		slog.Error("update watchdog failed", "err", err)
+	}
+	return err
 }
 
 func cmdCheckin(args []string) error {
@@ -416,6 +513,7 @@ func runLoop(home string, console bool) error {
 		slog.Error("cannot start", "err", err)
 		return err
 	}
+	startUpdates(home, a)
 	return a.Run(ctx)
 }
 
@@ -448,6 +546,7 @@ func runService() int {
 			slog.Error("cannot start", "err", err)
 			return err
 		}
+		startUpdates(home, a)
 		return a.Run(ctx)
 	})
 	if err != nil {

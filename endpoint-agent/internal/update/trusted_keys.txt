@@ -1,0 +1,13 @@
+# Trusted release-signing public keys for agent auto-update (Ed25519).
+#
+# One key per line: <key id> <base64 public key> [# comment]
+# Generate a key pair with scripts/agent-release-keygen (it prints the line to
+# add here and to backend/app/agent_update_keys.txt; the two files must match).
+# The PRIVATE key is stored only as the GitHub Actions secret
+# AGENT_UPDATE_SIGNING_KEY (or offline); never commit it.
+#
+# Key rotation: add the new key, ship an agent release signed by the OLD key
+# that trusts both, then sign with the new key and later remove the old line.
+# See docs/AGENT_UPDATES.md.
+#
+# With no key listed, agents built from this file refuse every update.

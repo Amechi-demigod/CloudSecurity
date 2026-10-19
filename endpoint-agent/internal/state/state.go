@@ -131,6 +131,12 @@ func SaveCA(p Paths, pem []byte) (string, error) {
 	return p.CAFile(), nil
 }
 
+// WriteFile writes name inside the protected state directory atomically, with
+// the same restrictive permissions as state.json (used for update.json).
+func WriteFile(p Paths, name string, data []byte) error {
+	return writeSecure(p.StateDir, filepath.Join(p.StateDir, name), data)
+}
+
 // writeSecure writes data to dst (inside dir) atomically with restrictive permissions.
 func writeSecure(dir, dst string, data []byte) error {
 	if err := SecureDir(dir); err != nil {
