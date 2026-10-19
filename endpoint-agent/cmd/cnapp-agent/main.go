@@ -77,6 +77,8 @@ func main() {
 		err = cmdConfigure(args)
 	case "purge":
 		err = cmdPurge(args)
+	case "service-recovery": // used by the MSI (Windows): restart-on-failure actions
+		err = service.ConfigureRecovery()
 	case "install":
 		err = cmdInstall(args)
 	case "uninstall":

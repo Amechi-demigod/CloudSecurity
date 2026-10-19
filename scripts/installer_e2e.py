@@ -234,6 +234,11 @@ def windows_run(api: Api, bundle: Path, tmp: Path) -> None:
     install_log = read_log(tmp / "install.log")
     assert token not in install_log, "the enrollment token leaked into the MSI log"
     wait_for("CNAPPAgent service running", lambda: svc_state() == "RUNNING", 120)
+    qf = sh("sc.exe", "qfailure", "CNAPPAgent", quiet=True).stdout
+    print(qf)
+    assert qf.count("RESTART") >= 3, "recovery (restart on failure) actions not configured"
+    qc = sh("sc.exe", "qc", "CNAPPAgent", quiet=True).stdout
+    assert "AUTO_START" in qc and "LocalSystem" in qc, qc
     wait_for("device auto-enrolled from the MSI", lambda: package_token(api, "windows-msi")["use_count"] == 1, 240)
     wait_for("first check-in", lambda: any(d["last_checkin_at"] for d in api.devices()), 240)
     devices = api.devices()
