@@ -10,6 +10,10 @@
 #   CODESIGN_IDENTITY="Developer ID Application: Example Corp (TEAMID)"  signs the binary (hardened runtime)
 #   PKG_SIGN_IDENTITY="Developer ID Installer: Example Corp (TEAMID)"     signs the .pkg
 # Notarization is a separate manual step (see docs/DEVICE_MANAGEMENT.md).
+#
+# This is the generic package (no enrollment). The CNAPP console's "Download
+# installer" adds enroll.json to its Scripts for a pre-configured copy, which
+# removes any package signature (see docs/DEVICE_MANAGEMENT.md, Code signing).
 set -euo pipefail
 
 version="${1:?usage: build-pkg.sh <version> <binary> [output.pkg]}"
@@ -22,6 +26,7 @@ trap 'rm -rf "$work"' EXIT
 root="$work/root"
 install -d -m 0755 "$root/usr/local/cnapp-agent/bin"
 install -m 0755 "$binary" "$root/usr/local/cnapp-agent/bin/cnapp-agent"
+install -m 0755 "$here/uninstall.sh" "$root/usr/local/cnapp-agent/bin/cnapp-uninstall.sh"
 
 if [[ -n "${CODESIGN_IDENTITY:-}" ]]; then
   codesign --force --options runtime --timestamp --sign "$CODESIGN_IDENTITY" "$root/usr/local/cnapp-agent/bin/cnapp-agent"
@@ -32,6 +37,8 @@ if [[ -n "${PKG_SIGN_IDENTITY:-}" ]]; then
   sign_args=(--sign "$PKG_SIGN_IDENTITY" --timestamp)
 fi
 
+# No AppleDouble (._*) files in the archives.
+export COPYFILE_DISABLE=1
 pkgbuild --root "$root" \
   --identifier com.cloudsecurity.cnapp-agent \
   --version "$version" \

@@ -12,6 +12,41 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Changed areas (gates the Windows/macOS jobs)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      agent: ${{ steps.diff.outputs.agent }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Agent, installers or device code changed?
+        id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          BEFORE: ${{ github.event.before }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          # main always builds everything (the images bundle the installers).
+          if [ "$REF" = refs/heads/main ]; then echo "agent=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          base="$PR_BASE"
+          [ "$EVENT" = push ] && base="$BEFORE"
+          if [ -z "$base" ] || ! git cat-file -e "$base^{commit}" 2>/dev/null || [ "$base" = 0000000000000000000000000000000000000000 ]; then
+            base="$(git merge-base HEAD origin/main 2>/dev/null || true)"
+          fi
+          if [ -z "$base" ]; then echo "agent=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          changed="$(git diff --name-only "$base" HEAD)"
+          echo "$changed"
+          if echo "$changed" | grep -Eq '^(endpoint-agent/|scripts/(agent|installer)_e2e\.py|backend/(Dockerfile|requirements|installers/|app/(api/(agent|devices)\.py|services/(devices|installers|pkgtools)\.py|schemas_devices\.py|models\.py|config\.py))|\.github/workflows/)'; then
+            echo "agent=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "agent=false" >> "$GITHUB_OUTPUT"
+          fi
+
   backend:
     name: Backend (ruff + pytest, ${{ matrix.database }})
     runs-on: ubuntu-24.04
@@ -46,8 +81,10 @@ jobs:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: backend/requirements*.txt
-      - name: Install dependencies
-        run: python -m pip install -r requirements-dev.txt
+      - name: Install dependencies (+ msitools for the MSI injection tests)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends msitools
+          python -m pip install -r requirements-dev.txt
       - name: Lint (ruff)
         run: ruff check --output-format=github .
       - name: Test (pytest, includes sensor -> API end-to-end tests)
@@ -101,6 +138,8 @@ jobs:
 
   agent:
     name: Endpoint agent (${{ matrix.os }})
+    needs: [changes]
+    if: needs.changes.outputs.agent == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -173,15 +212,36 @@ jobs:
         run: |
           python -m pip install -r backend/requirements.txt
           python scripts/agent_e2e.py --agent "endpoint-agent/cnapp-agent$(cd endpoint-agent && go env GOEXE)" --service
+      - name: Windows installer (generic MSI, WiX v5) from a versioned x64 binary
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $sha = $env:GITHUB_SHA.Substring(0, 7)
+          $ver = "0.1.$env:GITHUB_RUN_NUMBER"
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $env:CGO_ENABLED = '0'; $env:GOARCH = 'amd64'
+          go build -trimpath -ldflags "-s -w -X github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/version.Version=$ver+$sha" -o dist/cnapp-agent-windows-amd64.exe ./cmd/cnapp-agent
+          if ($LASTEXITCODE -ne 0) { throw 'go build failed' }
+          $errs = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path packaging/windows/msi/build-msi.ps1), [ref]$null, [ref]$errs) | Out-Null
+          if ($errs) { $errs | Format-List; throw 'parse errors in build-msi.ps1' }
+          ./packaging/windows/msi/build-msi.ps1 -AgentExe dist/cnapp-agent-windows-amd64.exe -Version $ver -Output dist/cnapp-agent-windows-x64.msi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: runner.os == 'Windows'
+        with:
+          name: cnapp-agent-windows-msi
+          path: endpoint-agent/dist/cnapp-agent-windows-x64.msi
+          retention-days: 30
       - name: macOS installer package (unsigned) from a universal binary
         if: runner.os == 'macOS'
         run: |
           mkdir -p dist
-          GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o dist/amd64 ./cmd/cnapp-agent
-          GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -o dist/arm64 ./cmd/cnapp-agent
+          ldflags="-s -w -X github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/version.Version=0.1.${GITHUB_RUN_NUMBER}+${GITHUB_SHA::7}"
+          GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o dist/amd64 ./cmd/cnapp-agent
+          GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o dist/arm64 ./cmd/cnapp-agent
           lipo -create -output dist/cnapp-agent dist/amd64 dist/arm64
           lipo -info dist/cnapp-agent
-          packaging/macos/build-pkg.sh "0.1.0-ci" dist/cnapp-agent dist/cnapp-agent-macos-universal.pkg
+          packaging/macos/build-pkg.sh "0.1.${GITHUB_RUN_NUMBER}" dist/cnapp-agent dist/cnapp-agent-macos-universal.pkg
           pkgutil --payload-files dist/cnapp-agent-macos-universal.pkg
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: runner.os == 'macOS'
@@ -274,8 +334,13 @@ jobs:
           "$RUNNER_TEMP/actionlint" -color
 
   images:
-    name: Images (build, smoke test, push to GHCR on main)
-    needs: [backend, frontend]
+    name: Images (build with bundled installers, smoke test, installer generation, push to GHCR on main)
+    needs: [backend, frontend, agent]
+    # Runs when the agent jobs were skipped (no agent/installer changes); the
+    # image then has no bundled installers (the download feature reports that).
+    if: >-
+      always() && needs.backend.result == 'success' && needs.frontend.result == 'success' &&
+      (needs.agent.result == 'success' || needs.agent.result == 'skipped')
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -285,6 +350,27 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Download the generic installers (MSI, pkg)
+        if: needs.agent.result == 'success'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: cnapp-agent-*-{msi,pkg}
+          path: ${{ runner.temp }}/generic
+          merge-multiple: true
+      - name: Bundle them into the backend build context (+ manifest.json with SHA-256)
+        if: needs.agent.result == 'success'
+        run: |
+          src="$RUNNER_TEMP/generic"
+          ls -l "$src"
+          install -m 0644 "$src/cnapp-agent-windows-x64.msi" "$src/cnapp-agent-macos-universal.pkg" backend/installers/
+          python3 - "0.1.${GITHUB_RUN_NUMBER}+${GITHUB_SHA::7}" <<'PY'
+          import hashlib, json, pathlib, sys
+          d = pathlib.Path("backend/installers")
+          files = {f: hashlib.sha256((d / f).read_bytes()).hexdigest()
+                   for f in ("cnapp-agent-windows-x64.msi", "cnapp-agent-macos-universal.pkg")}
+          (d / "manifest.json").write_text(json.dumps({"version": sys.argv[1], "files": files}, indent=2) + "\n")
+          print((d / "manifest.json").read_text())
+          PY
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Image names
         id: names
@@ -357,6 +443,45 @@ jobs:
       - name: Container logs
         if: always()
         run: docker compose -f docker-compose.yml -f docker-compose.postgres.yml logs --no-color --tail 200 || true
+      - name: Generate pre-configured installers in the real image (msitools, pkg injection) for the Windows/macOS e2e
+        if: needs.agent.result == 'success'
+        run: |
+          b="$RUNNER_TEMP/bundle" d="$RUNNER_TEMP/idata"
+          mkdir -p "$b" "$d" && chmod 0777 "$d"
+          cd "$b"
+          # Throwaway private CA + server certificate for 127.0.0.1 (CI only).
+          openssl ecparam -name prime256v1 -genkey -noout -out ca.key
+          openssl req -x509 -new -key ca.key -sha256 -days 3 -subj "/CN=CNAPP CI Root CA" \
+            -addext "basicConstraints=critical,CA:TRUE,pathlen:0" -addext "keyUsage=critical,keyCertSign,cRLSign" -out ca.crt
+          openssl ecparam -name prime256v1 -genkey -noout -out server.key
+          openssl req -new -key server.key -subj "/CN=127.0.0.1" -out server.csr
+          printf 'subjectAltName=IP:127.0.0.1,DNS:localhost\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth\n' > ext.cnf
+          openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days 3 -sha256 -extfile ext.cnf -out server.crt
+          rm -f ca.key ca.srl server.csr ext.cnf
+          cd "$GITHUB_WORKSPACE"
+          cp backend/installers/cnapp-agent-windows-x64.msi backend/installers/cnapp-agent-macos-universal.pkg "$b/"
+          docker run -d --name cnapp-inst -p 127.0.0.1:18000:8000 -v "$d:/data" \
+            -e APP_ENV=development -e DATABASE_URL=sqlite:////data/cnapp.db -e SIMULATION_MODE=false \
+            -e ADMIN_EMAIL=installer-e2e@example.com -e ADMIN_PASSWORD=installer-e2e-password-123 \
+            -e INGEST_API_TOKEN=ci-unused-token-0000000000000000 -e COOKIE_SECURE=false \
+            -e PUBLIC_BASE_URL=https://127.0.0.1:8443 -e AGENT_CA_CERT_B64="$(base64 -w0 "$b/ca.crt")" \
+            cnapp-backend:ci
+          python3 scripts/installer_e2e.py prepare --base http://127.0.0.1:18000 --out "$b"
+          docker logs cnapp-inst 2>&1 | tail -n 30
+          docker stop -t 30 cnapp-inst
+          cp "$d"/cnapp.db* "$b/"
+          # Read back the generated MSI with msitools from the image (property names only).
+          docker run --rm --entrypoint msiinfo -v "$b:/b:ro" cnapp-backend:ci export /b/cnapp-agent-setup.msi Property \
+            | cut -f1 | grep '^CNAPP_' | sort | tee "$RUNNER_TEMP/props.txt"
+          test "$(tr '\n' ' ' < "$RUNNER_TEMP/props.txt")" = "CNAPP_CA_B64 CNAPP_SERVER CNAPP_TOKEN "
+          docker run --rm --entrypoint msiinfo -v "$b:/b:ro" cnapp-backend:ci suminfo /b/cnapp-agent-setup.msi | grep -E '^(Subject|Template|Revision)'
+          ls -l "$b"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: needs.agent.result == 'success'
+        with:
+          name: installer-e2e-bundle
+          path: ${{ runner.temp }}/bundle/
+          retention-days: 3
       - name: Log in to GHCR
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
@@ -396,7 +521,49 @@ jobs:
         if: always()
         run: |
           docker compose -f docker-compose.yml -f docker-compose.postgres.yml down -v || true
+          docker rm -f cnapp-inst >/dev/null 2>&1 || true
           rm -f .env
+
+  installers-e2e:
+    name: Installer e2e (${{ matrix.os }}) - pre-configured package generated on Linux, silent install, auto-enroll, uninstall
+    needs: [agent, images]
+    if: always() && needs.images.result == 'success' && needs.agent.result == 'success'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: installer-e2e-bundle
+          path: ${{ runner.temp }}/bundle
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements*.txt
+      - name: Install backend requirements
+        run: python -m pip install -r backend/requirements.txt
+      - name: Install, verify auto-enrollment, re-install, uninstall (pre-configured and generic packages)
+        run: python scripts/installer_e2e.py run --bundle "$RUNNER_TEMP/bundle"
+      - name: Agent logs and MSI/installer diagnostics
+        if: failure()
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            cat "/c/ProgramData/CNAPP Agent/logs/agent.log" 2>/dev/null | tail -n 100 || true
+            sc.exe query CNAPPAgent || true
+          else
+            sudo tail -n 100 "/Library/Logs/CNAPP Agent/agent.log" "/Library/Logs/CNAPP Agent/launchd.log" 2>/dev/null || true
+            sudo tail -n 60 /var/log/install.log || true
+          fi
 
   onprem:
     name: On-prem (cnapp-ctl install, TLS, agent, sensor, backup/restore, update, rollback, uninstall)
@@ -527,13 +694,13 @@ jobs:
       - name: Forced failing update (new migration, then crash) rolls back and restores the database
         run: |
           ctx="$RUNNER_TEMP/bad"; mkdir -p "$ctx"
-          cat > "$ctx/0005_ci_probe.py" <<'PY'
+          cat > "$ctx/0099_ci_probe.py" <<'PY'
           """CI only: a migration from a broken release."""
           import sqlalchemy as sa
           from alembic import op
 
-          revision = "0005_ci_probe"
-          down_revision = "0004_mfa_sso"
+          revision = "0099_ci_probe"
+          down_revision = "0005_agent_installers"
           branch_labels = None
           depends_on = None
 
@@ -545,10 +712,10 @@ jobs:
           def downgrade() -> None:
               op.drop_table("ci_rollback_probe")
           PY
-          sed -i 's/^          //' "$ctx/0005_ci_probe.py"
+          sed -i 's/^          //' "$ctx/0099_ci_probe.py"
           cat > "$ctx/Dockerfile" <<EOF
           FROM $REG/cloudsecurity-backend:ci-2
-          COPY 0005_ci_probe.py /app/migrations/versions/
+          COPY 0099_ci_probe.py /app/migrations/versions/
           CMD ["sh", "-c", "python -m app.cli migrate && echo 'simulated broken release' && exit 1"]
           EOF
           docker build -q -t "$REG/cloudsecurity-backend:ci-bad" "$ctx"
@@ -556,7 +723,7 @@ jobs:
           if sudo cnapp-ctl update --tag ci-bad --health-timeout 90; then echo "::error::broken update reported success"; exit 1; fi
           test "$(sudo grep '^IMAGE_TAG=' /opt/cnapp/cnapp.env)" = IMAGE_TAG=ci-2
           rev="$(docker exec cnapp-postgres-1 psql -U cnapp -d cnapp -tAc 'select version_num from alembic_version' | tr -d '[:space:]')"
-          test "$rev" = 0004_mfa_sso
+          test "$rev" = 0005_agent_installers
           test -z "$(docker exec cnapp-postgres-1 psql -U cnapp -d cnapp -tAc "select to_regclass('ci_rollback_probe')" | tr -d '[:space:]')"
           sudo cat /opt/cnapp/state/history.log
           python3 deploy/onprem/tests/onprem_e2e.py --base "https://$HOST" --ca "$CA" --email "$ADMIN" --password-file "$RUNNER_TEMP/admin.pw" expect before-backup present

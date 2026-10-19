@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  CNAPP endpoint agent - Windows Installer package (WiX Toolset v5).
+
+  Build (see build-msi.ps1):
+    wix build cnapp-agent.wxs -arch x64 -d Version=0.1.42 -d AgentExe=..\..\..\dist\cnapp-agent-windows-amd64.exe -o cnapp-agent-windows-x64.msi
+
+  Install silently (GPO / Intune / SCCM):
+    msiexec /i cnapp-agent-windows-x64.msi /qn CNAPP_SERVER=https://cnapp.example.com CNAPP_TOKEN=cne_... [CNAPP_CA_B64=<base64 PEM>]
+  A pre-configured download from the CNAPP console already carries these
+  properties in its Property table, so `msiexec /i cnapp-agent-setup.msi /qn` is enough.
+
+  What it does:
+    * installs cnapp-agent.exe to %ProgramFiles%\CNAPP Agent
+    * registers the "CNAPP Endpoint Agent" service (LocalSystem, automatic
+      delayed start, restart on failure) and starts it
+    * if CNAPP_TOKEN is set: runs `cnapp-agent configure` (deferred, as SYSTEM),
+      which writes %ProgramData%\CNAPP Agent\enroll.json (SYSTEM/Administrators
+      only); the service enrolls with it and deletes the token. Nothing happens
+      on an already enrolled device (upgrade/repair keep the identity).
+    * uninstall (not upgrade) runs `cnapp-agent purge`: credentials, pending
+      enrollment and logs are deleted. Set CNAPP_KEEP_STATE=1 to keep them.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="CNAPP Endpoint Agent"
+           Manufacturer="CloudSecurity CNAPP"
+           Version="$(var.Version)"
+           UpgradeCode="1BF4A817-9E25-4EDB-98AF-1ACC342DFF75"
+           Language="1033"
+           Scope="perMachine"
+           Compressed="yes"
+           InstallerVersion="500">
+    <SummaryInformation Description="CNAPP Endpoint Agent" Manufacturer="CloudSecurity CNAPP" />
+
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <!-- Enrollment (public, so they can be passed on the command line; hidden from MSI logs). -->
+    <Property Id="CNAPP_SERVER" Secure="yes" />
+    <Property Id="CNAPP_TOKEN" Secure="yes" Hidden="yes" />
+    <Property Id="CNAPP_CA_B64" Secure="yes" Hidden="yes" />
+    <Property Id="CNAPP_KEEP_STATE" Secure="yes" />
+
+    <Property Id="ARPNOMODIFY" Value="1" />
+    <Property Id="ARPCOMMENTS" Value="Reports device inventory and security posture to your CNAPP server." />
+
+    <Launch Condition="Installed OR VersionNT64" Message="[ProductName] requires 64-bit Windows 10 or later." />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="CNAPP Agent">
+        <Component Id="AgentComponent" Bitness="always64">
+          <File Id="AgentExe" Name="cnapp-agent.exe" Source="$(var.AgentExe)" KeyPath="yes" />
+          <ServiceInstall Id="AgentService"
+                          Name="CNAPPAgent"
+                          DisplayName="CNAPP Endpoint Agent"
+                          Description="Reports device inventory and security posture to the CNAPP server and runs allow-listed remote actions."
+                          Type="ownProcess"
+                          Start="auto"
+                          ErrorControl="normal"
+                          Account="LocalSystem"
+                          Arguments="run"
+                          Vital="yes">
+            <ServiceConfig DelayedAutoStart="yes" OnInstall="yes" OnReinstall="yes" />
+            <ServiceConfigFailureActions OnInstall="yes" OnReinstall="yes" ResetPeriod="86400">
+              <Failure Action="restart" Delay="5000" />
+              <Failure Action="restart" Delay="30000" />
+              <Failure Action="restart" Delay="120000" />
+            </ServiceConfigFailureActions>
+          </ServiceInstall>
+          <!-- Remove="both" also replaces a service created earlier by `cnapp-agent install` / install.ps1. -->
+          <ServiceControl Id="AgentServiceControl" Name="CNAPPAgent" Start="install" Stop="both" Remove="both" Wait="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <Feature Id="Main" Title="CNAPP Endpoint Agent" Level="1">
+      <ComponentRef Id="AgentComponent" />
+    </Feature>
+
+    <!-- Runs the installed binary as SYSTEM; HideTarget keeps the token out of verbose logs. -->
+    <CustomAction Id="CnappConfigure"
+                  FileRef="AgentExe"
+                  ExeCommand="configure --server=&quot;[CNAPP_SERVER]&quot; --token=&quot;[CNAPP_TOKEN]&quot; --ca-b64=&quot;[CNAPP_CA_B64]&quot;"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="check"
+                  HideTarget="yes" />
+    <CustomAction Id="CnappPurge"
+                  FileRef="AgentExe"
+                  ExeCommand="purge"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="ignore" />
+
+    <InstallExecuteSequence>
+      <Custom Action="CnappConfigure" After="InstallFiles" Condition="NOT REMOVE AND CNAPP_TOKEN" />
+      <Custom Action="CnappPurge" After="DeleteServices"
+              Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE AND NOT CNAPP_KEEP_STATE" />
+    </InstallExecuteSequence>
+  </Package>
+</Wix>
