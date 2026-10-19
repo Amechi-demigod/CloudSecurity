@@ -195,11 +195,12 @@ def windows_run(api: Api, bundle: Path, tmp: Path) -> None:
         p = sh("msiexec.exe", *a, "/qn", "/norestart", "/l*v", str(tmp / log), check=False)
         if p.returncode not in (0, 3010):
             lines = read_log(tmp / log).splitlines()
-            hits = [i for i, line in enumerate(lines) if "Return value 3" in line or "Error " in line
-                    or "error code" in line.lower() or "CustomAction" in line]
+            hits = [i for i, line in enumerate(lines) if "Return value 3" in line]
+            hits += [i for i, line in enumerate(lines) if "actual error code" in line or "Error 1" in line
+                     or "Product: " in line]
             shown: set[int] = set()
-            for i in hits[:12]:
-                for j in range(max(0, i - 25), min(len(lines), i + 3)):
+            for i in hits[:8]:
+                for j in range(max(0, i - 40), min(len(lines), i + 3)):
                     if j not in shown:
                         print(lines[j])
                         shown.add(j)
