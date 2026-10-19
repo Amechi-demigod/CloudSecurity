@@ -190,3 +190,28 @@ func RemoveEnrollConfig(p Paths) error {
 	}
 	return nil
 }
+
+// MSI preset (property CNAPP_PRESET): a fixed-length value the CNAPP server
+// overwrites in a copy of the generic MSI for a pre-configured download.
+const (
+	presetUnset = "CNAPPPRESET:UNSET"
+	presetV1    = "CNAPPPRESET:v1:"
+)
+
+// DecodePreset returns the enrollment config carried by an MSI preset, or nil
+// for the generic MSI's placeholder (or an empty value).
+func DecodePreset(s string) (*EnrollConfig, error) {
+	s = strings.TrimRight(strings.TrimSpace(s), ".")
+	switch {
+	case s == "" || strings.HasPrefix(s, presetUnset):
+		return nil, nil
+	case strings.HasPrefix(s, presetV1):
+		raw, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(s, presetV1))
+		if err != nil {
+			return nil, fmt.Errorf("MSI enrollment preset is not valid base64: %w", err)
+		}
+		return ParseEnrollConfig(raw)
+	default:
+		return nil, errors.New("unrecognized MSI enrollment preset")
+	}
+}

@@ -6,17 +6,18 @@ SHA-256). For a download, the server copies one and injects the enrollment
 config (server URL, a fresh package-bound enrollment token, and the private CA
 only when the server's certificate is not publicly trusted):
 
-* Windows MSI: rows are added to the MSI ``Property`` table (``CNAPP_SERVER``,
-  ``CNAPP_TOKEN``, ``CNAPP_CA_B64``) with msitools' ``msibuild``, exactly the
-  properties an admin could pass on the msiexec command line, and the package
-  code is renewed. The MSI's deferred custom action hands them to
-  ``cnapp-agent configure``, which writes a protected enroll.json.
+* Windows MSI: the fixed-length placeholder value of the hidden ``CNAPP_PRESET``
+  property is overwritten in place with the enroll.json document (base64) and
+  the package code is renewed (see msipatch; no MSI tables are rewritten). The
+  MSI's deferred custom action hands it to ``cnapp-agent configure``, which
+  writes a protected enroll.json. Admins can instead pass ``CNAPP_SERVER`` /
+  ``CNAPP_TOKEN`` / ``CNAPP_CA_B64`` on the msiexec command line (they win).
 * macOS pkg: ``enroll.json`` is added to the component package's Scripts
   archive (pure Python, see pkgtools); the postinstall script hands it to
   ``cnapp-agent configure``.
 
 The plaintext token only exists in the returned bytes: nothing is written to
-the database except its hash, and the temporary MSI copy is deleted.
+the database except its hash, and the copies are only built in memory.
 """
 from __future__ import annotations
 
@@ -24,17 +25,13 @@ import base64
 import hashlib
 import json
 import re
-import shutil
-import subprocess  # noqa: S404 - fixed argv, validated values, no shell
-import tempfile
 import threading
 import time
-import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
 from .. import config
-from . import pkgtools
+from . import msipatch, pkgtools
 
 PLATFORMS: dict[str, dict[str, str]] = {
     "windows-msi": {"artifact": "cnapp-agent-windows-x64.msi", "download": "cnapp-agent-setup.msi",
@@ -48,7 +45,6 @@ MAX_CA_BYTES = 64 << 10
 
 _SERVER_RE = re.compile(r"^https://[A-Za-z0-9.\-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~\-/]*)?$")
 _TOKEN_RE = re.compile(r"^cne_[A-Za-z0-9_\-]{8,124}$")
-_B64_RE = re.compile(r"^[A-Za-z0-9+/]*={0,2}$")
 
 
 class InstallerUnavailable(RuntimeError):
@@ -174,63 +170,10 @@ def enroll_document(server: str, token: str, ca_pem: str | None) -> bytes:
     return (json.dumps(doc, indent=2) + "\n").encode()
 
 
-def _check_values(server: str, token: str, ca_b64: str) -> None:
-    # msibuild's SQL has no escaping: only allow characters that cannot end a
-    # string literal or a statement.
-    if not _SERVER_RE.fullmatch(server) or ";" in server or "'" in server:
-        raise InstallerConfigError("server URL contains unsupported characters")
+def build_msi(base: Path, server: str, token: str, ca_pem: str | None) -> bytes:
     if not _TOKEN_RE.fullmatch(token):
         raise ValueError("malformed enrollment token")
-    if not _B64_RE.fullmatch(ca_b64):
-        raise ValueError("malformed CA encoding")
-
-
-def _run(argv: list[str], timeout: float = 120) -> str:
-    try:
-        p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)  # noqa: S603
-    except FileNotFoundError:
-        raise InstallerUnavailable(f"{argv[0]} is not installed on the server (msitools package)") from None
-    if p.returncode != 0:
-        # Never echo the arguments: they contain the token.
-        raise RuntimeError(f"{Path(argv[0]).name} failed (exit {p.returncode}): {p.stderr.strip()[-500:]}")
-    return p.stdout
-
-
-def _summary(msi: Path) -> dict[str, str]:
-    out = {}
-    for line in _run(["msiinfo", "suminfo", str(msi)]).splitlines():
-        k, sep, v = line.partition(":")
-        if sep:
-            out[k.strip().lower()] = v.strip()
-    return out
-
-
-def build_msi(base: Path, server: str, token: str, ca_pem: str | None) -> bytes:
-    ca_b64 = base64.b64encode(ca_pem.encode()).decode() if ca_pem else ""
-    _check_values(server, token, ca_b64)
-    tmpdir = Path(tempfile.mkdtemp(prefix="cnapp-msi-"))
-    try:
-        msi = tmpdir / "setup.msi"
-        shutil.copyfile(base, msi)
-        msi.chmod(0o600)
-        props = {"CNAPP_SERVER": server, "CNAPP_TOKEN": token}
-        if ca_b64:
-            props["CNAPP_CA_B64"] = ca_b64
-        # Values were checked by _check_values (no quotes or semicolons possible).
-        queries = [f"DELETE FROM `Property` WHERE `Property` = '{k}'"  # noqa: S608
-                   for k in ("CNAPP_SERVER", "CNAPP_TOKEN", "CNAPP_CA_B64")]
-        queries += [f"INSERT INTO `Property` (`Property`, `Value`) VALUES ('{k}', '{v}')"  # noqa: S608
-                    for k, v in props.items()]
-        _run(["msibuild", str(msi), "-q", *queries])
-        # A new package code: Windows Installer requires one per distinct package.
-        # (msibuild's -s must be the last option, so it is a separate call.)
-        si = _summary(msi)
-        if si.get("subject") and si.get("author") and si.get("template"):
-            _run(["msibuild", str(msi), "-s", si["subject"], si["author"], si["template"],
-                  "{" + str(uuid.uuid4()).upper() + "}"])
-        return msi.read_bytes()
-    finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
+    return msipatch.inject(base.read_bytes(), enroll_document(server, token, ca_pem))
 
 
 def build_pkg(base: Path, server: str, token: str, ca_pem: str | None) -> bytes:

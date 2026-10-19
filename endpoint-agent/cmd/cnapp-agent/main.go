@@ -38,7 +38,7 @@ const usage = `cnapp-agent %s - CNAPP endpoint agent (inventory, posture, allow-
 Usage:
   cnapp-agent enroll --server URL (--token TOKEN | --token-stdin) [--insecure-dev] [--ca-file PEM]
   cnapp-agent configure --server URL (--token TOKEN | --token-stdin) [--ca-file PEM | --ca-b64 B64]
-  cnapp-agent configure --from-file enroll.json
+  cnapp-agent configure --from-file enroll.json   (the MSI also passes --preset)
                                       store a pending enrollment (protected enroll.json); the service
                                       enrolls with it on start, then deletes the token (used by the
                                       MSI / pkg installers and MDM scripts; no-op if already enrolled)
@@ -172,11 +172,28 @@ func cmdConfigure(args []string) error {
 	caFile := fs.String("ca-file", "", "PEM CA certificate(s) of a private CA (optional)")
 	caB64 := fs.String("ca-b64", "", "base64 of the PEM (or DER) CA certificate (optional; MSI property CNAPP_CA_B64)")
 	fromFile := fs.String("from-file", "", "read server, token and CA from an enroll.json document")
+	preset := fs.String("preset", "", "MSI property CNAPP_PRESET (set by a pre-configured download; used by the MSI)")
 	_ = fs.Parse(args)
 	quietLogs()
 	p := state.Resolve(*home)
 	var cfg *state.EnrollConfig
-	if *fromFile != "" {
+	tok, err := readToken(*token, *tokenStdin)
+	if err != nil {
+		return err
+	}
+	// The MSI passes every source; explicit CNAPP_SERVER/CNAPP_TOKEN properties win over
+	// the preset, and with neither (generic MSI, no properties) there is nothing to do.
+	msiMode := isFlagSet(fs, "preset")
+	if msiMode && *fromFile == "" && tok == "" {
+		if cfg, err = state.DecodePreset(*preset); err != nil {
+			return err
+		}
+		if cfg == nil {
+			fmt.Println("No enrollment configuration given (generic MSI without CNAPP_SERVER/CNAPP_TOKEN): " +
+				"the service waits for `cnapp-agent configure` or `cnapp-agent enroll`.")
+			return nil
+		}
+	} else if *fromFile != "" {
 		b, err := os.ReadFile(*fromFile)
 		if err != nil {
 			return err
@@ -185,10 +202,6 @@ func cmdConfigure(args []string) error {
 			return fmt.Errorf("%s: %w", *fromFile, err)
 		}
 	} else {
-		tok, err := readToken(*token, *tokenStdin)
-		if err != nil {
-			return err
-		}
 		cfg = &state.EnrollConfig{ServerURL: *server, Token: tok}
 		switch {
 		case *caFile != "":
@@ -213,6 +226,12 @@ func cmdConfigure(args []string) error {
 	}
 	fmt.Printf("Enrollment config for %s saved to %s; the service enrolls with it on start.\n", cfg.ServerURL, p.EnrollFile())
 	return nil
+}
+
+func isFlagSet(fs *flag.FlagSet, name string) bool {
+	set := false
+	fs.Visit(func(f *flag.Flag) { set = set || f.Name == name })
+	return set
 }
 
 func purge(p state.Paths) error {

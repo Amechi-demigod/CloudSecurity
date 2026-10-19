@@ -3,7 +3,7 @@
 CI (`.github/workflows/ci.yml`, job `images`) places the generic, unconfigured
 installers here before building the backend image:
 
-* `cnapp-agent-windows-x64.msi`    - WiX MSI (no enrollment properties set)
+* `cnapp-agent-windows-x64.msi`    - WiX MSI (CNAPP_PRESET still the placeholder)
 * `cnapp-agent-macos-universal.pkg` - pkgbuild component package
 * `manifest.json`                  - `{"version": "...", "files": {"<name>": "<sha256>"}}`
 

@@ -7,14 +7,15 @@
 
   Install silently (GPO / Intune / SCCM):
     msiexec /i cnapp-agent-windows-x64.msi /qn CNAPP_SERVER=https://cnapp.example.com CNAPP_TOKEN=cne_... [CNAPP_CA_B64=<base64 PEM>]
-  A pre-configured download from the CNAPP console already carries these
-  properties in its Property table, so `msiexec /i cnapp-agent-setup.msi /qn` is enough.
+  A pre-configured download from the CNAPP console carries the same settings in
+  CNAPP_PRESET, so `msiexec /i cnapp-agent-setup.msi /qn` is enough.
 
   What it does:
     * installs cnapp-agent.exe to %ProgramFiles%\CNAPP Agent
     * registers the "CNAPP Endpoint Agent" service (LocalSystem, automatic
       delayed start, restart on failure) and starts it
-    * if CNAPP_TOKEN is set: runs `cnapp-agent configure` (deferred, as SYSTEM),
+    * runs `cnapp-agent configure` (deferred, as SYSTEM) with CNAPP_SERVER /
+      CNAPP_TOKEN / CNAPP_CA_B64 or else CNAPP_PRESET; with none it does nothing,
       which writes %ProgramData%\CNAPP Agent\enroll.json (SYSTEM/Administrators
       only); the service enrolls with it and deletes the token. Nothing happens
       on an already enrolled device (upgrade/repair keep the identity).
@@ -41,6 +42,10 @@
     <Property Id="CNAPP_TOKEN" Secure="yes" Hidden="yes" />
     <Property Id="CNAPP_CA_B64" Secure="yes" Hidden="yes" />
     <Property Id="CNAPP_KEEP_STATE" Secure="yes" />
+    <!-- Fixed-length placeholder that the CNAPP server overwrites in place for a
+         pre-configured download (backend/app/services/msipatch.py); ignored by
+         `cnapp-agent configure` until then. Length and prefix must not change. -->
+    <Property Id="CNAPP_PRESET" Value="$(var.PresetPlaceholder)" Hidden="yes" />
 
     <Property Id="ARPNOMODIFY" Value="1" />
     <Property Id="ARPCOMMENTS" Value="Reports device inventory and security posture to your CNAPP server." />
@@ -81,7 +86,7 @@
     <!-- Runs the installed binary as SYSTEM; HideTarget keeps the token out of verbose logs. -->
     <CustomAction Id="CnappConfigure"
                   FileRef="AgentExe"
-                  ExeCommand="configure --server=&quot;[CNAPP_SERVER]&quot; --token=&quot;[CNAPP_TOKEN]&quot; --ca-b64=&quot;[CNAPP_CA_B64]&quot;"
+                  ExeCommand="configure --server=&quot;[CNAPP_SERVER]&quot; --token=&quot;[CNAPP_TOKEN]&quot; --ca-b64=&quot;[CNAPP_CA_B64]&quot; --preset=&quot;[CNAPP_PRESET]&quot;"
                   Execute="deferred"
                   Impersonate="no"
                   Return="check"
@@ -94,7 +99,7 @@
                   Return="ignore" />
 
     <InstallExecuteSequence>
-      <Custom Action="CnappConfigure" After="InstallFiles" Condition="NOT REMOVE AND CNAPP_TOKEN" />
+      <Custom Action="CnappConfigure" After="InstallFiles" Condition="NOT REMOVE" />
       <Custom Action="CnappPurge" After="DeleteServices"
               Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE AND NOT CNAPP_KEEP_STATE" />
     </InstallExecuteSequence>

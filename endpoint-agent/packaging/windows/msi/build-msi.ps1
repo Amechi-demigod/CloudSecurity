@@ -33,7 +33,10 @@ if (-not (Get-Command wix -ErrorAction SilentlyContinue)) {
 wix --version | Out-Host
 
 $exe = (Resolve-Path -LiteralPath $AgentExe).Path
+# CNAPP_PRESET placeholder: exactly 16000 characters (backend/app/services/msipatch.py PRESET_LENGTH).
+$prefix = 'CNAPPPRESET:UNSET:'
+$placeholder = $prefix + ('.' * (16000 - $prefix.Length))
 $wxs = Join-Path $PSScriptRoot 'cnapp-agent.wxs'
-wix build $wxs -arch x64 -d "Version=$Version" -d "AgentExe=$exe" -o $Output
+wix build $wxs -arch x64 -d "Version=$Version" -d "AgentExe=$exe" -d "PresetPlaceholder=$placeholder" -o $Output
 if ($LASTEXITCODE -ne 0) { throw "wix build failed ($LASTEXITCODE)" }
 Get-Item $Output | Format-Table -AutoSize Name, Length

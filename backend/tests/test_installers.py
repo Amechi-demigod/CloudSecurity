@@ -21,7 +21,7 @@ from sqlalchemy import inspect, text
 
 from app import db
 from app.models import EnrollmentToken, utcnow
-from app.services import installers, pkgtools
+from app.services import msipatch, pkgtools
 from tests.conftest import login, make_user
 from tests.test_devices import agent_client, enroll
 
@@ -48,7 +48,7 @@ def make_test_msi(path: Path) -> None:
                     "CREATE TABLE `Property` (`Property` CHAR(72) NOT NULL, `Value` LONGCHAR NOT NULL LOCALIZABLE "
                     "PRIMARY KEY `Property`)",
                     "INSERT INTO `Property` (`Property`, `Value`) VALUES ('ProductName', 'CNAPP Endpoint Agent')",
-                    "INSERT INTO `Property` (`Property`, `Value`) VALUES ('CNAPP_TOKEN', 'cne_placeholder00')"],
+                    f"INSERT INTO `Property` (`Property`, `Value`) VALUES ('CNAPP_PRESET', '{msipatch.placeholder()}')"],
                    check=True)
     subprocess.run(["msibuild", str(path), "-s", "CNAPP Endpoint Agent", "CloudSecurity CNAPP", "x64;1033",
                     "{11111111-2222-3333-4444-555555555555}"], check=True)
@@ -65,7 +65,18 @@ def msi_properties(path: Path) -> dict[str, str]:
 
 
 def msi_summary(path: Path) -> dict[str, str]:
-    return installers._summary(path)
+    out = {}
+    for line in subprocess.run(["msiinfo", "suminfo", str(path)], check=True, capture_output=True,
+                               text=True).stdout.splitlines():
+        k, sep, v = line.partition(":")
+        if sep:
+            out[k.strip().lower()] = v.strip()
+    return out
+
+
+def preset_config(value: str) -> dict:
+    assert value.startswith(msipatch.PRESET_PREFIX), value[:40]
+    return json.loads(base64.b64decode(value[len(msipatch.PRESET_PREFIX):].rstrip(".")))
 
 
 @pytest.fixture()
@@ -284,44 +295,51 @@ def test_cpio_round_trip():
 
 # ----------------------------------------------------------------------------- Windows MSI
 @pytest.mark.skipif(not HAVE_MSITOOLS, reason="msitools (msibuild/msiinfo) not installed")
-def test_msi_download_sets_properties(admin, bundle, ca_pem):
+def test_msi_download_sets_preset(admin, bundle, ca_pem):
     base = bundle / "cnapp-agent-windows-x64.msi"
     before = msi_summary(base)
+    base_bytes = base.read_bytes()
     r = download(admin, platform="windows-msi")
     assert r.status_code == 200, r.text
     assert r.headers["content-disposition"] == 'attachment; filename="cnapp-agent-setup.msi"'
+    assert len(r.content) == len(base_bytes)  # patched in place: same size, same layout
     out = bundle.parent / "out.msi"
     out.write_bytes(r.content)
+    # Read back with an independent MSI implementation (msitools).
     props = msi_properties(out)
     assert props["ProductName"] == "CNAPP Endpoint Agent"
-    assert props["CNAPP_SERVER"] == SERVER
-    token = props["CNAPP_TOKEN"]
-    assert token.startswith("cne_") and token != "cne_placeholder00"
-    assert base64.b64decode(props["CNAPP_CA_B64"]).decode().strip() == ca_pem.strip()
+    value = props["CNAPP_PRESET"]
+    assert len(value) == msipatch.PRESET_LENGTH
+    cfg = preset_config(value)
+    assert cfg["version"] == 1 and cfg["server_url"] == SERVER and cfg["token"].startswith("cne_")
+    assert cfg["ca_pem"].strip() == ca_pem.strip()
     after = msi_summary(out)
     assert after["revision number (uuid)"] != before["revision number (uuid)"]  # new package code
     for k in ("subject", "author", "template"):
         assert after[k] == before[k]
+    assert sum(a != b for a, b in zip(base_bytes, r.content, strict=True)) < 20000  # only the preset + GUID
     # The bundled generic MSI is never modified.
-    assert "CNAPP_SERVER" not in msi_properties(base)
+    assert msi_properties(base)["CNAPP_PRESET"] == msipatch.placeholder()
     agent = agent_client(admin.app)
-    assert enroll(agent, token).status_code == 200
-    assert token not in all_db_text()
+    assert enroll(agent, cfg["token"]).status_code == 200
+    assert cfg["token"] not in all_db_text()
     t = admin.get("/api/devices/enrollment-tokens").json()[0]
     assert t["package_platform"] == "windows-msi" and t["use_count"] == 1
 
 
 @pytest.mark.skipif(not HAVE_MSITOOLS, reason="msitools (msibuild/msiinfo) not installed")
-def test_msi_without_ca_has_no_ca_property(admin, bundle):
+def test_msi_without_ca(admin, bundle):
     r = download(admin, platform="windows-msi", include_ca=False)
     out = bundle.parent / "noca.msi"
     out.write_bytes(r.content)
-    assert "CNAPP_CA_B64" not in msi_properties(out)
+    assert "ca_pem" not in preset_config(msi_properties(out)["CNAPP_PRESET"])
 
 
-def test_msi_values_are_validated():
-    for server, token, ca in (("https://x.example';DROP", "cne_abcdefghij", ""),
-                              ("https://x.example", "cne_abc'defghij", ""),
-                              ("https://x.example", "cne_abcdefghij", "AB;C")):
-        with pytest.raises(ValueError):
-            installers._check_values(server, token, ca)
+def test_msi_preset_limits_and_names():
+    assert len(msipatch.placeholder()) == msipatch.PRESET_LENGTH
+    assert len(msipatch.encode_preset(b"{}")) == msipatch.PRESET_LENGTH
+    with pytest.raises(msipatch.MsiPatchError):
+        msipatch.encode_preset(b"x" * msipatch.PRESET_LENGTH)
+    assert msipatch.decode_stream_name("\u4840") == "!" and msipatch.decode_stream_name("abc") == "abc"
+    with pytest.raises(msipatch.MsiPatchError):
+        msipatch.inject(b"not an msi" * 100, b"{}")

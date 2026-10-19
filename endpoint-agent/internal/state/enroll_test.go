@@ -103,3 +103,24 @@ func TestDecodeCAB64(t *testing.T) {
 		t.Error("garbage accepted")
 	}
 }
+
+func TestDecodePreset(t *testing.T) {
+	// Exactly what the server writes (backend/app/services/msipatch.py), padded with dots.
+	doc := `{"version":1,"server_url":"https://cnapp.example.com","token":"cne_abcdefghijklmnop"}`
+	preset := "CNAPPPRESET:v1:" + base64.StdEncoding.EncodeToString([]byte(doc))
+	preset += strings.Repeat(".", 16000-len(preset))
+	c, err := DecodePreset(preset)
+	if err != nil || c == nil || c.ServerURL != "https://cnapp.example.com" || c.Token != "cne_abcdefghijklmnop" {
+		t.Fatalf("got %+v %v", c, err)
+	}
+	for _, unset := range []string{"", "  ", "CNAPPPRESET:UNSET:" + strings.Repeat(".", 100)} {
+		if c, err := DecodePreset(unset); c != nil || err != nil {
+			t.Errorf("placeholder %q: %+v %v", unset[:min(len(unset), 20)], c, err)
+		}
+	}
+	for _, bad := range []string{"garbage", "CNAPPPRESET:v1:!!!", "CNAPPPRESET:v1:" + base64.StdEncoding.EncodeToString([]byte(`{"server_url":"http://x"}`))} {
+		if _, err := DecodePreset(bad); err == nil {
+			t.Errorf("accepted %q", bad)
+		}
+	}
+}

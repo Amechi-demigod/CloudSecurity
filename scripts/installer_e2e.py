@@ -198,47 +198,18 @@ def windows_run(api: Api, bundle: Path, tmp: Path) -> None:
             print(text[-6000:])
             raise SystemExit(f"msiexec {' '.join(a)} failed with {p.returncode}")
 
-    def msi_tables(msi: Path) -> list[str]:
-        import msilib
+    def preset(msi: Path) -> dict | None:
+        value = msi_property(msi, "CNAPP_PRESET").rstrip(".")
+        if value.startswith("CNAPPPRESET:UNSET"):
+            return None
+        assert value.startswith("CNAPPPRESET:v1:"), value[:30]
+        return json.loads(base64.b64decode(value[len("CNAPPPRESET:v1:"):]))
 
-        db = msilib.OpenDatabase(str(msi), msilib.MSIDBOPEN_READONLY)
-        view = db.OpenView("SELECT `Name` FROM `_Tables`")
-        view.Execute(None)
-        names = []
-        while (rec := view.Fetch()) is not None:
-            names.append(rec.GetString(1))
-        view.Close()
-        db.Close()
-        return sorted(names)
-
-    def msi_rows(msi: Path) -> list[tuple[str, int]]:
-        import msilib
-
-        db = msilib.OpenDatabase(str(msi), msilib.MSIDBOPEN_READONLY)
-        view = db.OpenView("SELECT `Property`, `Value` FROM `Property`")
-        view.Execute(None)
-        rows = []
-        while (rec := view.Fetch()) is not None:
-            rows.append((rec.GetString(1), len(rec.GetString(2))))
-        view.Close()
-        db.Close()
-        return rows
-
-    for m in (generic, setup):
-        for what, fn in (("tables", msi_tables), ("property rows (name, value length)", msi_rows)):
-            try:
-                print(f"{m.name}: {what} {fn(m)}", flush=True)
-            except Exception as e:  # noqa: BLE001 - diagnostics only
-                print(f"{m.name}: cannot read {what}: {e!r}", flush=True)
-        for prop in ("ProductCode", "CNAPP_SERVER"):
-            try:
-                print(f"{m.name}: {prop} = {msi_property(m, prop)!r}", flush=True)
-            except Exception as e:  # noqa: BLE001 - diagnostics only
-                print(f"{m.name}: cannot read {prop}: {e!r}", flush=True)
-    token = msi_property(setup, "CNAPP_TOKEN")
-    assert token.startswith("cne_"), "pre-configured MSI has no CNAPP_TOKEN"
-    assert msi_property(setup, "CNAPP_SERVER") == SERVER
-    assert msi_property(generic, "CNAPP_TOKEN") == "", "generic MSI must not carry a token"
+    cfg = preset(setup)
+    assert cfg and cfg["server_url"] == SERVER and cfg.get("ca_pem"), "pre-configured MSI has no usable preset"
+    token = cfg["token"]
+    assert preset(generic) is None, "generic MSI must not carry a preset"
+    assert msi_property(generic, "CNAPP_TOKEN") == ""
     pt = package_token(api, "windows-msi")
     assert token.startswith(pt["token_prefix"]) and pt["use_count"] == 0
 
