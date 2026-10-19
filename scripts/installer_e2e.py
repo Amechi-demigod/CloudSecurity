@@ -199,8 +199,13 @@ def windows_run(api: Api, bundle: Path, tmp: Path) -> None:
             raise SystemExit(f"msiexec {' '.join(a)} failed with {p.returncode}")
 
     def preset(msi: Path) -> dict | None:
-        value = msi_property(msi, "CNAPP_PRESET").rstrip(".")
-        if value.startswith("CNAPPPRESET:UNSET"):
+        # msilib cannot return a 16,000-character string (ERROR_MORE_DATA), so read the
+        # value with the backend's parser; msiexec below is what proves Windows reads it.
+        sys.path.insert(0, str(ROOT / "backend"))
+        from app.services import msipatch
+
+        value = msipatch.read_preset(msi.read_bytes())
+        if value is None:
             return None
         assert value.startswith("CNAPPPRESET:v1:"), value[:30]
         return json.loads(base64.b64decode(value[len("CNAPPPRESET:v1:"):]))
