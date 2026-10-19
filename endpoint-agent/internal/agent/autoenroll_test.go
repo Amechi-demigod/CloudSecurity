@@ -20,10 +20,11 @@ const goodToken = "cne_installer-token-0123456789abcdef"
 
 // enrollServer is an HTTPS server with a private certificate that accepts goodToken.
 type enrollServer struct {
-	mu       sync.Mutex
-	srv      *httptest.Server
-	attempts int
-	accept   bool
+	mu          sync.Mutex
+	srv         *httptest.Server
+	attempts    int
+	accept      bool
+	rejectFirst int // reject this many attempts with 401 (token "exhausted"), then accept
 }
 
 func newEnrollServer(t *testing.T) *enrollServer {
@@ -40,7 +41,7 @@ func newEnrollServer(t *testing.T) *enrollServer {
 			Token string `json:"token"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		if !e.accept || body.Token != goodToken {
+		if !e.accept || body.Token != goodToken || e.attempts <= e.rejectFirst {
 			w.WriteHeader(401)
 			_, _ = io.WriteString(w, `{"detail":"invalid, expired, revoked or used-up enrollment token"}`)
 			return
@@ -119,24 +120,18 @@ func TestAutoEnrollIsIdempotentWhenEnrolled(t *testing.T) {
 func TestAutoEnrollRetriesRejectedTokenThenSucceeds(t *testing.T) {
 	fastTimings(t)
 	e := newEnrollServer(t)
-	e.accept = false
+	e.rejectFirst = 2 // e.g. until the admin raised the device limit
 	p := state.Resolve(t.TempDir())
 	if err := state.SaveEnrollConfig(p, &state.EnrollConfig{ServerURL: e.srv.URL, Token: goodToken, CAPEM: e.caPEM()}); err != nil {
 		t.Fatal(err)
 	}
-	go func() {
-		time.Sleep(300 * time.Millisecond)
-		e.mu.Lock()
-		e.accept = true // e.g. the admin raised the device limit
-		e.mu.Unlock()
-	}()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	if err := AutoEnroll(ctx, p); err != nil {
 		t.Fatal(err)
 	}
-	if e.attempts < 2 {
-		t.Fatalf("expected retries, got %d attempts", e.attempts)
+	if e.attempts != 3 {
+		t.Fatalf("expected 2 rejected attempts then success, got %d attempts", e.attempts)
 	}
 	if _, err := os.Stat(p.EnrollFile()); !os.IsNotExist(err) {
 		t.Fatal("token not deleted")
