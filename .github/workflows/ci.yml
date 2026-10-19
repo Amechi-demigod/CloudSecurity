@@ -579,7 +579,9 @@ jobs:
         with:
           persist-credentials: false
       - name: shellcheck
-        run: shellcheck deploy/onprem/cnapp-ctl
+        run: shellcheck -x deploy/onprem/cnapp-ctl deploy/onprem/tests/test_pfx.sh
+      - name: PFX parsing (legacy RC2-40 and AES PFX with intermediate + root, wrong password, missing legacy provider)
+        run: deploy/onprem/tests/test_pfx.sh
       - name: cnapp-ctl --dry-run and help (no changes)
         run: |
           deploy/onprem/cnapp-ctl help | head -n 5
@@ -738,6 +740,46 @@ jobs:
           systemctl is-active cnapp.service
           printf 'a-new-password-for-ci-123\n' > "$RUNNER_TEMP/new.pw"
           sudo cnapp-ctl reset-password --email "$ADMIN" --password-file "$RUNNER_TEMP/new.pw"
+          python3 deploy/onprem/tests/onprem_e2e.py --base "https://$HOST" --ca "$CA" --email "$ADMIN" --password-file "$RUNNER_TEMP/new.pw" expect before-backup present
+      - name: tls import-pfx (legacy RC2 PFX + chain, password on stdin) with hostname switch; IP/old-name clients keep the built-in cert; set-hostname; back to built-in
+        run: |
+          fx=deploy/onprem/tests/fixtures
+          echo "127.0.0.1 cnapp2.test" | sudo tee -a /etc/hosts
+          conf() { sudo grep "^$1=" /opt/cnapp/cnapp.env | tail -n1 | cut -d= -f2-; }
+          # The password is never accepted on the command line.
+          if sudo cnapp-ctl tls import-pfx --pfx "$fx/legacy-rc2.pfx" --password x 2>"$RUNNER_TEMP/err.txt"; then exit 1; fi
+          grep -q "never taken on the command line" "$RUNNER_TEMP/err.txt"
+          # Wrong name without --hostname is refused.
+          if sudo cnapp-ctl tls import-pfx --pfx "$fx/legacy-rc2.pfx" < "$fx/pfx-password.txt"; then echo "::error::accepted a certificate for another name"; exit 1; fi
+          sudo cnapp-ctl tls import-pfx --pfx "$fx/legacy-rc2.pfx" --hostname cnapp2.test < "$fx/pfx-password.txt"
+          test "$(conf PUBLIC_BASE_URL)" = https://cnapp2.test
+          test "$(conf CNAPP_TLS_MODE)" = byo && test "$(conf CNAPP_TLS_LEGACY_CERT)" = builtin
+          test "$(docker exec cnapp-backend-1 printenv PUBLIC_BASE_URL)" = https://cnapp2.test
+          # New name: imported certificate, full chain (leaf + intermediate) served, enterprise root trusted.
+          curl -fsS --cacert "$fx/test-root-ca.crt" https://cnapp2.test/api/health
+          test "$(openssl s_client -connect 127.0.0.1:443 -servername cnapp2.test -showcerts </dev/null 2>/dev/null | grep -c 'BEGIN CERTIFICATE')" = 2
+          # Old name and IP address (no SNI): still the built-in certificate, so enrolled agents keep working.
+          curl -fsS --cacert "$CA" "https://$HOST/api/health"
+          curl -fsS --cacert "$CA" https://127.0.0.1/api/health
+          # Installers now embed the enterprise root instead of the built-in CA.
+          test "$(conf AGENT_CA_CERT_B64 | base64 -d | openssl x509 -noout -fingerprint -sha256)" = "$(openssl x509 -noout -fingerprint -sha256 -in "$fx/test-root-ca.crt")"
+          # No key material left in temporary directories.
+          test -z "$(sudo find /run /tmp -maxdepth 1 -name 'cnapp-pfx.*' 2>/dev/null)"
+          sudo cnapp-ctl tls show
+          # set-hostname refuses a name the imported certificate does not cover.
+          if sudo cnapp-ctl set-hostname other.test; then echo "::error::set-hostname accepted an uncovered name"; exit 1; fi
+          # Back to the built-in CA and the original name.
+          sudo cnapp-ctl tls init --hostname "$HOST"
+          test "$(conf CNAPP_TLS_MODE)" = builtin && test -z "$(conf CNAPP_TLS_LEGACY_CERT)"
+          test "$(conf AGENT_CA_CERT_B64 | base64 -d | openssl x509 -noout -fingerprint -sha256)" = "$(openssl x509 -noout -fingerprint -sha256 -in "$CA")"
+          curl -fsS --cacert "$CA" "https://$HOST/api/health"
+          # set-hostname in built-in mode: an IP inside the CA's name constraints works, another name is refused.
+          sudo cnapp-ctl set-hostname 127.0.0.1
+          test "$(conf PUBLIC_BASE_URL)" = https://127.0.0.1
+          curl -fsS --cacert "$CA" https://127.0.0.1/api/health
+          if sudo cnapp-ctl set-hostname other.test; then echo "::error::name constraints ignored"; exit 1; fi
+          sudo cnapp-ctl set-hostname "$HOST"
+          test "$(conf PUBLIC_BASE_URL)" = "https://$HOST"
           python3 deploy/onprem/tests/onprem_e2e.py --base "https://$HOST" --ca "$CA" --email "$ADMIN" --password-file "$RUNNER_TEMP/new.pw" expect before-backup present
       - name: Uninstall keeps data; reinstall picks it up; purge removes everything
         run: |

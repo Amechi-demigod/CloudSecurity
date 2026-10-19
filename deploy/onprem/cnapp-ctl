@@ -6,7 +6,8 @@
 #   cnapp-ctl status | logs [service] | start | stop | restart
 #   cnapp-ctl update [--tag TAG] | update --check | auto-update enable|disable|status
 #   cnapp-ctl backup | restore FILE
-#   cnapp-ctl tls init|renew|show|import|export-ca
+#   cnapp-ctl tls init|renew|show|import|import-pfx|export-ca
+#   cnapp-ctl set-hostname NAME
 #   cnapp-ctl create-admin --email E | reset-password --email E
 #   cnapp-ctl uninstall [--purge]
 #
@@ -175,22 +176,76 @@ tls_gid() { getent group cnapp-tls | cut -d: -f3; }
 
 csv_items() { tr ',; ' '\n' <<<"$1" | sed '/^$/d'; }
 
-tls_sans() { # -> "DNS:a,DNS:b,IP:1.2.3.4"
+tls_sans() { # -> "DNS:a,DNS:b,IP:1.2.3.4" (a hostname that is an IP address becomes an IP entry)
   local host=$1 dns=$2 ips=$3 x out
-  out="DNS:$host"
+  if is_ip "$host"; then out="IP:$host"; else out="DNS:$host"; fi
   while read -r x; do [[ -n $x && $x != "$host" ]] && out+=",DNS:$x"; done < <(csv_items "$dns")
-  while read -r x; do [[ -n $x ]] && out+=",IP:$x"; done < <(csv_items "$ips")
+  while read -r x; do [[ -n $x && $x != "$host" ]] && out+=",IP:$x"; done < <(csv_items "$ips")
   printf '%s' "$out"
 }
 
 tls_fix_perms() {
   local gid; gid=$(tls_gid)
+  tls_sync_legacy_cert
   run chown root:"$gid" "$TLS_DIR"; run chmod 0750 "$TLS_DIR"
-  [[ -f "$TLS_DIR/server.key" ]] && { run chown root:"$gid" "$TLS_DIR/server.key"; run chmod 0640 "$TLS_DIR/server.key"; }
-  local f; for f in server.crt ca-bundle.crt cnapp-root-ca.crt; do
+  local f
+  for f in server.key legacy.key; do
+    [[ -f "$TLS_DIR/$f" ]] && { run chown root:"$gid" "$TLS_DIR/$f"; run chmod 0640 "$TLS_DIR/$f"; }
+  done
+  for f in server.crt legacy.crt ca-bundle.crt cnapp-root-ca.crt; do
     [[ -f "$TLS_DIR/$f" ]] && { run chown root:root "$TLS_DIR/$f"; run chmod 0644 "$TLS_DIR/$f"; }
   done
+  agent_ca_sync || true
   return 0
+}
+
+# nginx serves legacy.crt to clients that do not ask for CNAPP_HOSTNAME (e.g. agents
+# enrolled by IP address). It is a copy of server.crt, unless `tls import-pfx`
+# kept the built-in certificate there when switching to an imported one.
+tls_sync_legacy_cert() {
+  (( DRY_RUN )) && return 0
+  [[ -f "$TLS_DIR/server.crt" && -f "$TLS_DIR/server.key" ]] || return 0
+  if [[ "$(conf_get CNAPP_TLS_LEGACY_CERT)" == builtin && -f "$TLS_DIR/legacy.crt" && -f "$TLS_DIR/legacy.key" ]]; then
+    return 0
+  fi
+  install -m 0644 -o root -g root "$TLS_DIR/server.crt" "$TLS_DIR/legacy.crt"
+  install -m 0640 -o root -g "$(tls_gid)" "$TLS_DIR/server.key" "$TLS_DIR/legacy.key"
+}
+
+# The backend embeds this CA in downloadable agent installers (AGENT_CA_CERT_B64):
+# the built-in CA, or the --ca given to `tls import`; empty for a publicly trusted
+# certificate. Returns 0 when the value changed (the backend must be recreated).
+agent_ca_sync() {
+  local v=""
+  [[ -f "$TLS_DIR/cnapp-root-ca.crt" ]] && v=$(base64 -w0 <"$TLS_DIR/cnapp-root-ca.crt")
+  [[ "$(conf_get AGENT_CA_CERT_B64)" == "$v" ]] && return 1
+  conf_set AGENT_CA_CERT_B64 "$v"
+  return 0
+}
+
+# Apply TLS/hostname changes: recreate the containers whose settings changed
+# (compose compares the env files), then wait for HTTPS to answer.
+apply_changes() {
+  (( DRY_RUN )) && { echo "[dry-run] compose up -d"; return 0; }
+  if [[ "$(container_health backend)" == missing ]]; then return 0; fi
+  run compose up -d --remove-orphans
+  tls_reload_nginx
+  wait_healthy 300 || die "not healthy after the change (cnapp-ctl logs frontend / backend)"
+}
+
+set_hostname_conf() { # set_hostname_conf NAME
+  conf_set CNAPP_HOSTNAME "$1"
+  conf_set PUBLIC_BASE_URL "https://$1"
+  conf_set ENTRA_REDIRECT_URI "https://$1/api/auth/sso/entra/callback"
+}
+
+is_ip() { [[ $1 =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ || $1 == *:* ]]; }
+
+cert_covers() { # cert_covers CERT NAME -> 0 if valid for NAME (DNS name or IP)
+  local out
+  if is_ip "$2"; then out=$(openssl x509 -noout -checkip "$2" -in "$1" 2>/dev/null || true)
+  else out=$(openssl x509 -noout -checkhost "$2" -in "$1" 2>/dev/null || true); fi
+  [[ $out == *"does match"* ]]
 }
 
 tls_reload_nginx() {
@@ -201,9 +256,10 @@ tls_reload_nginx() {
   fi
 }
 
-tls_issue_server() { # issue/renew the server certificate from the local CA
-  local host ips dns days sans tmp
-  host=$(conf_get CNAPP_HOSTNAME); ips=$(conf_get CNAPP_TLS_IPS); dns=$(conf_get CNAPP_TLS_EXTRA_DNS)
+tls_issue_server() { # tls_issue_server [name] [host] - issue/renew <name>.crt/.key (default: server) from the local CA
+  local name=${1:-server} host=${2:-} ips dns days sans tmp
+  [[ -n $host ]] || host=$(conf_get CNAPP_HOSTNAME)
+  ips=$(conf_get CNAPP_TLS_IPS); dns=$(conf_get CNAPP_TLS_EXTRA_DNS)
   days=$(conf_get CNAPP_TLS_SERVER_DAYS); days=${days:-397}
   [[ -n $host ]] || die "CNAPP_HOSTNAME is not set"
   [[ -f "$CA_DIR/ca.key" && -f "$CA_DIR/ca.crt" ]] || die "no local CA in $CA_DIR (run: cnapp-ctl tls init)"
@@ -224,12 +280,14 @@ EOF
     -CAserial "$CA_DIR/ca.srl" -CAcreateserial -days "$days" -sha256 -extfile "$tmp/ext.cnf" \
     -out "$tmp/server.crt" 2>/dev/null
   openssl verify -CAfile "$CA_DIR/ca.crt" "$tmp/server.crt" >/dev/null || die "issued certificate does not verify"
-  install -m 0640 -o root -g "$(tls_gid)" "$tmp/server.key" "$TLS_DIR/server.key"
-  install -m 0644 -o root -g root "$tmp/server.crt" "$TLS_DIR/server.crt"
-  install -m 0644 -o root -g root "$CA_DIR/ca.crt" "$TLS_DIR/ca-bundle.crt"
-  install -m 0644 -o root -g root "$CA_DIR/ca.crt" "$TLS_DIR/cnapp-root-ca.crt"
+  install -m 0640 -o root -g "$(tls_gid)" "$tmp/server.key" "$TLS_DIR/$name.key"
+  install -m 0644 -o root -g root "$tmp/server.crt" "$TLS_DIR/$name.crt"
+  if [[ $name == server ]]; then
+    install -m 0644 -o root -g root "$CA_DIR/ca.crt" "$TLS_DIR/ca-bundle.crt"
+    install -m 0644 -o root -g root "$CA_DIR/ca.crt" "$TLS_DIR/cnapp-root-ca.crt"
+  fi
   chmod 0600 "$CA_DIR"/ca.srl 2>/dev/null || true
-  ok "server certificate issued for ${sans} (valid ${days} days)"
+  ok "$name certificate issued for ${sans} (valid ${days} days)"
 }
 
 cmd_tls_init() {
@@ -248,13 +306,15 @@ cmd_tls_init() {
   done
   need_root tls init
   [[ -f "$CONF" ]] || die "run cnapp-ctl install first (it calls tls init for you)"
-  [[ -n $host ]] && conf_set CNAPP_HOSTNAME "$host"
   [[ -n $ips ]] && conf_set CNAPP_TLS_IPS "$ips"
   [[ -n $dns ]] && conf_set CNAPP_TLS_EXTRA_DNS "$dns"
   conf_set CNAPP_TLS_MODE builtin
+  conf_set CNAPP_TLS_LEGACY_CERT ""
+  [[ -n $host ]] && set_hostname_conf "$host"
   tls_create_ca "$force_ca" "$ca_days" "$constrain"
   tls_issue_server
-  tls_reload_nginx
+  tls_fix_perms
+  apply_changes
   tls_print_trust_help
 }
 
@@ -264,7 +324,9 @@ tls_create_ca() { # tls_create_ca force days constrain
   host=$(conf_get CNAPP_HOSTNAME); ips=$(conf_get CNAPP_TLS_IPS); dns=$(conf_get CNAPP_TLS_EXTRA_DNS)
   if (( constrain )); then
     # Name constraints: even if the CA key leaked, it could only sign for these names/IPs.
-    nc="nameConstraints = critical, permitted;DNS:${host}"
+    nc="nameConstraints = critical"
+    if is_ip "$host"; then [[ ",$ips," == *",$host,"* ]] || ips="$host${ips:+,$ips}"
+    else nc+=", permitted;DNS:${host}"; fi
     while read -r x; do [[ -n $x && $x != "$host" ]] && nc+=", permitted;DNS:$x"; done < <(csv_items "$dns")
     while read -r x; do
       [[ -z $x ]] && continue
@@ -306,12 +368,18 @@ cmd_tls_renew() {
     esac
   done
   need_root tls renew; require_installed
-  [[ "$(conf_get CNAPP_TLS_MODE)" == builtin ]] \
-    || die "the certificate was imported (BYO); renew it at your CA, then: cnapp-ctl tls import --cert ... --key ..."
-  if [[ -n $within ]] && openssl x509 -checkend $(( within * 86400 )) -noout -in "$TLS_DIR/server.crt" >/dev/null 2>&1; then
-    ok "server certificate is valid for more than $within days; nothing to do"; return 0
+  local name=server
+  if [[ "$(conf_get CNAPP_TLS_MODE)" != builtin ]]; then
+    [[ "$(conf_get CNAPP_TLS_LEGACY_CERT)" == builtin ]] \
+      || die "the certificate was imported (BYO); renew it at your CA, then: cnapp-ctl tls import-pfx --pfx ... (or tls import --cert ... --key ...)"
+    name=legacy
+    log "the main certificate was imported (renew it at your CA); renewing the built-in legacy certificate (clients connecting by IP / old name)"
   fi
-  tls_issue_server
+  if [[ -n $within ]] && openssl x509 -checkend $(( within * 86400 )) -noout -in "$TLS_DIR/$name.crt" >/dev/null 2>&1; then
+    ok "$name certificate is valid for more than $within days; nothing to do"; return 0
+  fi
+  if [[ $name == legacy ]]; then tls_issue_server legacy "$(conf_get CNAPP_TLS_LEGACY_HOSTNAME)"
+  else tls_issue_server; fi
   tls_fix_perms
   tls_reload_nginx
 }
@@ -353,7 +421,7 @@ cmd_tls_import() {
   conf_set CNAPP_TLS_MODE byo
   tls_fix_perms
   ok "imported certificate: $(openssl x509 -noout -subject -enddate -in "$TLS_DIR/server.crt" | tr '\n' ' ')"
-  tls_reload_nginx
+  apply_changes
 }
 
 cmd_tls_show() {
@@ -391,6 +459,227 @@ Distribute the root CA certificate to staff browsers and enrolled laptops:
 EOF
 }
 
+# ----------------------------------------------------------------------------- PFX import
+# The PFX password is read from the terminal (no echo), a --password-file, or
+# stdin - never from the command line - and reaches openssl through a pipe on
+# fd 3 (-passin fd:3), so it never appears in argv or the environment.
+PFX_PASS=""
+PFX_LEGACY=()
+
+pfx_openssl() { # pfx_openssl PFX ARGS... -> openssl pkcs12 output (stderr kept in $PFX_ERR file)
+  local pfx=$1; shift
+  openssl pkcs12 ${PFX_LEGACY[@]+"${PFX_LEGACY[@]}"} -in "$pfx" -passin fd:3 "$@" 3< <(printf '%s' "$PFX_PASS") 2>"$PFX_ERR"
+}
+
+pfx_split() { # pfx_split BUNDLE DIR PREFIX -> DIR/PREFIX-N.pem, one clean certificate each
+  awk -v d="$2" -v p="$3" '/-----BEGIN CERTIFICATE-----/{n++; f=sprintf("%s/%s-%d.pem", d, p, n)} f{print > f} /-----END CERTIFICATE-----/{close(f); f=""}' "$1"
+}
+
+pfx_spki() { openssl x509 -noout -pubkey -in "$1" 2>/dev/null | openssl sha256 | awk '{print $NF}'; }
+
+# pfx_extract PFX DIR: DIR/key.pem (unencrypted), DIR/leaf.pem, DIR/chain.pem
+# (intermediates, leaf issuer first; may be empty) and DIR/root.pem (when the PFX
+# contains the self-signed root). Tries the default (AES) algorithms first, then
+# OpenSSL's legacy provider (RC2-40-CBC / 3DES, as exported by older Windows / AD CS).
+pfx_extract() {
+  local pfx=$1 dir=$2 err
+  PFX_ERR="$dir/openssl.err"
+  PFX_LEGACY=()
+  # One pass over the whole file: legacy PFX files often protect the key with 3DES
+  # but the certificates with RC2-40, so a key-only read could succeed.
+  if ! pfx_openssl "$pfx" -nodes -out "$dir/all.raw"; then
+    err=$(cat "$PFX_ERR")
+    if grep -qiE 'mac verify|invalid password|bad decrypt' <<<"$err" && ! grep -qiE 'unsupported|RC2|legacy' <<<"$err"; then
+      die "cannot open $pfx: wrong password?"
+    fi
+    log "the PFX uses legacy encryption (e.g. RC2-40-CBC); retrying with OpenSSL's legacy provider"
+    PFX_LEGACY=(-legacy)
+    # One pass over the whole file: legacy PFX files often protect the key with 3DES
+  # but the certificates with RC2-40, so a key-only read could succeed.
+  if ! pfx_openssl "$pfx" -nodes -out "$dir/all.raw"; then
+      err=$(cat "$PFX_ERR")
+      if grep -qiE 'provider|legacy' <<<"$err" && ! openssl list -providers -provider legacy >/dev/null 2>&1; then
+        die "the PFX needs OpenSSL's legacy provider, which is not available on this server (openssl list -providers -provider legacy).
+  Install it (Ubuntu: it ships with libssl3 as ossl-modules/legacy.so), or re-export the PFX with AES, e.g. on Windows:
+    certutil -exportPFX -p <password> My <thumbprint> cnapp.pfx 'nochain' / Export-PfxCertificate -CryptoAlgorithmOption AES256_SHA256
+  or with OpenSSL elsewhere: openssl pkcs12 -legacy -in old.pfx -nodes | openssl pkcs12 -export -out new.pfx"
+      fi
+      grep -qiE 'mac verify|invalid password' <<<"$err" && die "cannot open $pfx: wrong password?"
+      die "cannot read $pfx: $(tail -n 3 "$PFX_ERR" | tr '\n' ' ')"
+    fi
+  fi
+  [[ $(grep -c 'BEGIN .*PRIVATE KEY-----' "$dir/all.raw" || true) -eq 1 ]] || die "the PFX must contain exactly one private key"
+  openssl pkey -in "$dir/all.raw" -out "$dir/key.pem" 2>/dev/null || die "the PFX contains no usable private key"
+  mkdir -p "$dir/c"
+  pfx_split "$dir/all.raw" "$dir/c" cert
+  local keyspki c leaf="" n=0
+  keyspki=$(openssl pkey -in "$dir/key.pem" -pubout 2>/dev/null | openssl sha256 | awk '{print $NF}')
+  for c in "$dir"/c/cert-*.pem; do
+    [[ -f $c ]] || continue
+    n=$((n + 1))
+    if [[ -z $leaf && "$(pfx_spki "$c")" == "$keyspki" ]]; then leaf=$c; fi
+  done
+  (( n > 0 )) || die "the PFX contains no certificate"
+  [[ -n $leaf ]] || die "no certificate in the PFX matches its private key"
+  openssl x509 -in "$leaf" -out "$dir/leaf.pem"
+  # Build the chain by following issuers (subject/issuer hashes, then a signature check).
+  : >"$dir/chain.pem"; rm -f "$dir/root.pem"
+  local cur=$leaf issuer next used=" $leaf " guard=0
+  while (( guard++ < 10 )); do
+    issuer=$(openssl x509 -noout -issuer_hash -in "$cur")
+    [[ $issuer == "$(openssl x509 -noout -subject_hash -in "$cur")" ]] && break  # self-signed leaf
+    next=""
+    for c in "$dir"/c/cert-*.pem; do
+      [[ $used == *" $c "* ]] && continue
+      [[ "$(openssl x509 -noout -subject_hash -in "$c")" == "$issuer" ]] || continue
+      openssl verify -partial_chain -CAfile "$c" "$cur" >/dev/null 2>&1 \
+        || openssl verify -partial_chain -no_check_time -CAfile "$c" "$cur" >/dev/null 2>&1 || continue
+      next=$c; break
+    done
+    [[ -n $next ]] || break
+    used+="$next "
+    if [[ "$(openssl x509 -noout -subject_hash -in "$next")" == "$(openssl x509 -noout -issuer_hash -in "$next")" ]]; then
+      openssl x509 -in "$next" -out "$dir/root.pem"; break
+    fi
+    openssl x509 -in "$next" >>"$dir/chain.pem"
+    cur=$next
+  done
+  for c in "$dir"/c/cert-*.pem; do
+    [[ $used == *" $c "* ]] || warn "ignoring a certificate in the PFX that is not part of the chain: $(openssl x509 -noout -subject -in "$c")"
+  done
+  return 0
+}
+
+pfx_cleanup() { # securely delete the temporary key material
+  local dir=$1
+  [[ -n $dir && -d $dir ]] || return 0
+  if have shred; then find "$dir" -type f -exec shred -u -z {} + 2>/dev/null || true; fi
+  rm -rf "$dir"
+}
+
+cmd_tls_import_pfx() {
+  local pfx="" pwfile="" host="" ca="" no_ca=0 force=0 keep_legacy=1
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --pfx) pfx=$2; shift 2 ;;
+      --password-file) pwfile=$2; shift 2 ;;
+      --hostname) host=$2; shift 2 ;;
+      --ca) ca=$2; shift 2 ;;
+      --no-ca) no_ca=1; shift ;;
+      --no-legacy-cert) keep_legacy=0; shift ;;
+      --force) force=1; shift ;;
+      --dry-run) DRY_RUN=1; shift ;;
+      --password|--pass|-p) die "the PFX password is never taken on the command line: you will be prompted (or use --password-file FILE / stdin)" ;;
+      *) die "tls import-pfx: unknown option $1" ;;
+    esac
+  done
+  need_root tls import-pfx; require_installed
+  [[ -f $pfx ]] || die "usage: cnapp-ctl tls import-pfx --pfx FILE [--hostname NAME] [--ca ROOT.pem | --no-ca] [--password-file F]"
+  [[ -z $host ]] || [[ $host =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || die "invalid hostname: $host"
+  if [[ -n $pwfile ]]; then PFX_PASS=$(head -n1 "$pwfile")
+  elif [[ -t 0 ]]; then read -r -s -p "Password for $pfx: " PFX_PASS; echo >&2
+  else IFS= read -r PFX_PASS || true; fi
+
+  local tmp target prev_mode
+  tmp=$(mktemp -d /run/cnapp-pfx.XXXXXX 2>/dev/null || mktemp -d)
+  chmod 0700 "$tmp"
+  # shellcheck disable=SC2064  # expand $tmp now
+  trap "pfx_cleanup '$tmp'" EXIT
+  pfx_extract "$pfx" "$tmp"
+  PFX_PASS=""
+  local leaf=$tmp/leaf.pem
+  ok "certificate: $(openssl x509 -noout -subject -in "$leaf" | sed 's/^subject=//')"
+  openssl x509 -noout -ext subjectAltName -in "$leaf" 2>/dev/null | sed -n '2,$s/^ */  names: /p' || true
+  echo "  valid until: $(openssl x509 -noout -enddate -in "$leaf" | cut -d= -f2)"
+  echo "  chain: $(grep -c 'BEGIN CERTIFICATE' "$tmp/chain.pem" || true) intermediate(s)$([[ -f $tmp/root.pem ]] && echo ', plus the root')"
+
+  openssl x509 -checkend 0 -noout -in "$leaf" >/dev/null || die "the certificate has expired"
+  openssl x509 -checkend $(( 30 * 86400 )) -noout -in "$leaf" >/dev/null || warn "the certificate expires within 30 days"
+  target=${host:-$(conf_get CNAPP_HOSTNAME)}
+  if ! cert_covers "$leaf" "$target"; then
+    (( force )) || die "the certificate is not valid for $target (check its names above; --hostname NAME, or --force)"
+    warn "the certificate is not valid for $target (--force)"
+  fi
+
+  # Which CA do agents (and the health check) need?
+  if [[ -n $ca ]]; then
+    [[ -f $ca ]] || die "CA file not found: $ca"
+  elif (( no_ca )); then
+    ca=""
+  elif if [[ -s $tmp/chain.pem ]]; then openssl verify -untrusted "$tmp/chain.pem" "$leaf"; else openssl verify "$leaf"; fi >/dev/null 2>&1; then
+    ok "the chain is publicly trusted (system trust store): installers will not embed a CA"
+  elif [[ -f $tmp/root.pem ]]; then
+    ca=$tmp/root.pem
+    ok "private/enterprise CA (root included in the PFX): installers will embed it; deploy it to browsers too"
+  else
+    (( force )) || die "the certificate does not chain to a trusted root and the PFX has no root certificate: pass --ca ROOT.pem (your enterprise root CA), or --force"
+    warn "the certificate does not chain to a trusted root (--force)"
+  fi
+
+  prev_mode=$(conf_get CNAPP_TLS_MODE)
+  if (( DRY_RUN )); then echo "[dry-run] import $pfx (mode $prev_mode -> byo${host:+, hostname $host})"; return 0; fi
+  # Keep the built-in certificate for clients that do not ask for the new name
+  # (agents enrolled as https://<ip> or the old name keep working).
+  if (( keep_legacy )) && [[ $prev_mode == builtin && -f "$CA_DIR/ca.key" ]]; then
+    conf_set CNAPP_TLS_LEGACY_HOSTNAME "$(conf_get CNAPP_HOSTNAME)"
+    install -m 0644 -o root -g root "$TLS_DIR/server.crt" "$TLS_DIR/legacy.crt"
+    install -m 0640 -o root -g "$(tls_gid)" "$TLS_DIR/server.key" "$TLS_DIR/legacy.key"
+    conf_set CNAPP_TLS_LEGACY_CERT builtin
+    ok "kept the built-in certificate for clients connecting by IP address / the old name ($(conf_get CNAPP_TLS_LEGACY_HOSTNAME))"
+  elif (( ! keep_legacy )); then
+    conf_set CNAPP_TLS_LEGACY_CERT ""
+  fi
+  [[ -n $host ]] && set_hostname_conf "$host"
+  local args=(--cert "$leaf" --key "$tmp/key.pem")
+  [[ -s $tmp/chain.pem ]] && args+=(--chain "$tmp/chain.pem")
+  [[ -n $ca ]] && args+=(--ca "$ca")
+  cmd_tls_import "${args[@]}"
+  pfx_cleanup "$tmp"; trap - EXIT
+  ok "PFX imported; agents and installers now use $(public_url)"
+  echo "  Download new installers (Devices > Enroll) so new devices use $(public_url)."
+  [[ -n $host ]] && echo "  DNS: make sure $host resolves to this server for staff and devices (split-horizon / internal zone)."
+  return 0
+}
+
+cmd_set_hostname() {
+  local host="" force=0
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --force) force=1; shift ;;
+      --dry-run) DRY_RUN=1; shift ;;
+      -*) die "set-hostname: unknown option $1" ;;
+      *) host=$1; shift ;;
+    esac
+  done
+  need_root set-hostname; require_installed
+  [[ $host =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || die "usage: cnapp-ctl set-hostname NAME (DNS name or IP address)"
+  [[ $host == "$(conf_get CNAPP_HOSTNAME)" ]] && { ok "hostname is already $host"; return 0; }
+  if [[ "$(conf_get CNAPP_TLS_MODE)" == builtin ]]; then
+    local nc
+    nc=$(openssl x509 -noout -ext nameConstraints -in "$CA_DIR/ca.crt" 2>/dev/null || true)
+    if [[ -n $nc && $nc != *"DNS:$host"* && $nc != *"IP:$host/"* ]] && (( ! force )); then
+      die "the built-in CA is name-constrained and cannot issue a certificate for $host. Either import a certificate for it
+  (cnapp-ctl tls import-pfx --pfx FILE --hostname $host), or recreate the CA (cnapp-ctl tls init --hostname $host --new-ca;
+  devices enrolled with the old CA then need it re-distributed or a new installer)"
+    fi
+    if is_ip "$host"; then
+      [[ ",$(conf_get CNAPP_TLS_IPS)," == *",$host,"* ]] || conf_set CNAPP_TLS_IPS "$(conf_get CNAPP_TLS_IPS)${host:+,}$host"
+    fi
+    set_hostname_conf "$host"
+    tls_issue_server
+    tls_fix_perms
+  else
+    if ! cert_covers "$TLS_DIR/server.crt" "$host"; then
+      (( force )) || die "the installed certificate is not valid for $host: import one first (cnapp-ctl tls import-pfx --pfx FILE --hostname $host)"
+      warn "the installed certificate is not valid for $host (--force)"
+    fi
+    set_hostname_conf "$host"
+  fi
+  apply_changes
+  ok "hostname set to $host: $(public_url) (PUBLIC_BASE_URL, Entra redirect URI and the HTTP redirect updated)"
+  echo "  Update DNS, the Entra ID app registration redirect URI (if SSO is used), and download new agent installers."
+}
+
 cmd_tls() {
   local sub=${1:-show}; shift || true
   case $sub in
@@ -398,8 +687,9 @@ cmd_tls() {
     renew) cmd_tls_renew "$@" ;;
     show) cmd_tls_show "$@" ;;
     import) cmd_tls_import "$@" ;;
+    import-pfx) cmd_tls_import_pfx "$@" ;;
     export-ca) cmd_tls_export_ca "$@" ;;
-    *) die "usage: cnapp-ctl tls init|renew|show|import|export-ca" ;;
+    *) die "usage: cnapp-ctl tls init|renew|show|import|import-pfx|export-ca" ;;
   esac
 }
 
@@ -1319,6 +1609,9 @@ Operations
   backup                        pg_dump -> $BACKUP_DIR (nightly timer, ${C_B}BACKUP_RETENTION_DAYS${C_0})
   restore FILE [--yes]          safety backup, then replace the database with FILE
   tls init [--hostname H] [--ip A] [--dns N] [--new-ca] | renew | show | import --cert C --key K [--chain I] [--ca R] | export-ca [PATH]
+  tls import-pfx --pfx FILE [--hostname NAME] [--ca ROOT.pem | --no-ca] [--password-file F] [--no-legacy-cert] [--force]
+                                prompts for the PFX password (never on the command line); legacy RC2/3DES PFX supported
+  set-hostname NAME [--force]   change the URL (PUBLIC_BASE_URL, redirects, Entra redirect URI); re-issues the built-in cert
   firewall status | configure | apply-docker
   create-admin --email E [--role admin|analyst|viewer] [--generate]
   reset-password --email E [--generate]   reset-mfa --email E
@@ -1349,10 +1642,12 @@ main() {
     reset-password) user_cli reset "$@" ;;
     reset-mfa) cmd_reset_mfa "$@" ;;
     show-secret) cmd_show_secret "$@" ;;
+    set-hostname) cmd_set_hostname "$@" ;;
     version|--version) echo "$VERSION" ;;
     help|-h|--help) usage ;;
     *) usage >&2; die "unknown command '$cmd'" ;;
   esac
 }
 
-main "$@"
+# Allow `source cnapp-ctl` (tests) without running a command.
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then main "$@"; fi
