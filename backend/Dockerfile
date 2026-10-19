@@ -18,6 +18,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     DATABASE_URL=sqlite:////data/cnapp.db \
     PORT=8000 \
     WEB_CONCURRENCY=2
+# msitools: msibuild/msiinfo write the enrollment properties into downloadable MSIs.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends msitools \
+    && rm -rf /var/lib/apt/lists/*
 RUN groupadd --gid 10001 cnapp \
     && useradd --uid 10001 --gid cnapp --no-create-home --shell /usr/sbin/nologin cnapp \
     && mkdir -p /data && chown cnapp:cnapp /data
@@ -26,6 +30,8 @@ COPY --from=build /opt/venv /opt/venv
 COPY --chown=root:root alembic.ini gunicorn.conf.py ./
 COPY --chown=root:root migrations ./migrations
 COPY --chown=root:root app ./app
+# Generic agent installers + manifest.json (placed here by CI; README only otherwise).
+COPY --chown=root:root installers ./installers
 
 USER 10001:10001
 EXPOSE 8000

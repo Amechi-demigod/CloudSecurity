@@ -186,6 +186,7 @@ class DeviceSummaryOut(ORM):
     last_seen_at: UTCDateTime | None
     last_checkin_at: UTCDateTime | None
     logged_in_users: list[str] = []
+    device_group: str | None = None
     health: Literal["healthy", "warning", "critical", "unknown"]
     connectivity: Literal["active", "stale", "inactive", "never"]
     issues: list[DeviceIssue]
@@ -261,10 +262,26 @@ class EnrollmentTokenCreate(BaseModel):
     expires_in_hours: float = Field(24, gt=0, le=24 * 90)
 
 
+class InstallerCreate(BaseModel):
+    """A downloadable installer with a dedicated multi-use enrollment token."""
+    model_config = ConfigDict(extra="forbid")
+
+    platform: Literal["windows-msi", "macos-pkg"]
+    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=128)] | None = None
+    expires_in_days: int = Field(30, ge=1, le=365)
+    max_devices: int = Field(500, ge=1, le=100000)
+    device_group: Annotated[str, StringConstraints(strip_whitespace=True, max_length=64,
+                                                   pattern=r"^[A-Za-z0-9][A-Za-z0-9 ._\-]*$")] | None = None
+    # None: include the private CA when the server has one configured.
+    include_ca: bool | None = None
+
+
 class EnrollmentTokenOut(ORM):
     id: str
     name: str
     token_prefix: str
+    package_platform: str | None = None
+    device_group: str | None = None
     max_uses: int | None
     use_count: int
     created_by: str | None

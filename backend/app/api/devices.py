@@ -9,6 +9,8 @@ Every remote action needs a reason and is written to the audit log.
 """
 from __future__ import annotations
 
+import hashlib
+import logging
 import secrets
 from datetime import timedelta
 
@@ -17,7 +19,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from .. import config
-from ..auth import ROLE_RANK, audit, client_ip, current_user, require_admin, require_analyst
+from ..auth import ROLE_RANK, RateLimiter, audit, client_ip, current_user, require_admin, require_analyst
 from ..db import get_db
 from ..models import (
     Device,
@@ -39,12 +41,16 @@ from ..schemas_devices import (
     EnrollmentTokenCreate,
     EnrollmentTokenCreated,
     EnrollmentTokenOut,
+    InstallerCreate,
     SnapshotOut,
     SoftwareOut,
 )
 from ..services import devices as svc
+from ..services import installers
 
+log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/devices", tags=["devices"])
+installer_limiter = RateLimiter()
 DeviceId = Path(pattern=r"^[0-9a-f]{32}$")
 
 
@@ -56,7 +62,8 @@ def _get_device(db: Session, device_id: str) -> Device:
 
 
 def _token_out(t: EnrollmentToken, cls=EnrollmentTokenOut, **extra):
-    return cls(id=t.id, name=t.name, token_prefix=t.token_prefix, max_uses=t.max_uses, use_count=t.use_count,
+    return cls(id=t.id, name=t.name, token_prefix=t.token_prefix, package_platform=t.package_platform,
+               device_group=t.device_group, max_uses=t.max_uses, use_count=t.use_count,
                created_by=t.created_by, created_at=t.created_at, expires_at=t.expires_at,
                last_used_at=t.last_used_at, revoked_at=t.revoked_at, state=svc.token_state(t), **extra)
 
@@ -70,12 +77,15 @@ def list_devices(db: Session = Depends(get_db),
                  issue: str | None = Query(None, max_length=64),
                  connectivity: str | None = Query(None, pattern="^(active|stale|inactive|never)$"),
                  status: str = Query("active", pattern="^(active|revoked|all)$"),
+                 group: str | None = Query(None, max_length=64),
                  limit: int = Query(500, ge=1, le=5000)):
     stmt = select(Device)
     if status != "all":
         stmt = stmt.where(Device.status == status)
     if os:
         stmt = stmt.where(Device.os_family == os)
+    if group:
+        stmt = stmt.where(Device.device_group == group)
     if q:
         like = f"%{q.lower()}%"
         stmt = stmt.where(or_(Device.hostname.ilike(like), Device.serial_number.ilike(like),
@@ -134,6 +144,77 @@ def create_token(body: EnrollmentTokenCreate, request: Request, admin: User = De
           name=t.name, max_uses=t.max_uses, expires_at=t.expires_at.isoformat() + "Z")
     db.commit()
     return _token_out(t, EnrollmentTokenCreated, token=raw)
+
+
+@router.get("/installers", dependencies=[Depends(require_admin)])
+def installer_info():
+    """What a pre-configured installer would contain (never the token) and which platforms are available."""
+    try:
+        server, server_error = installers.server_url(), None
+    except installers.InstallerConfigError as e:
+        server, server_error = None, str(e)
+    try:
+        ca, ca_error = installers.server_ca_pem(), None
+    except installers.InstallerConfigError as e:
+        ca, ca_error = None, str(e)
+    return {"server_url": server, "server_error": server_error, "ca_configured": ca is not None,
+            "ca_error": ca_error, "include_ca_default": ca is not None, "platforms": installers.availability(),
+            "defaults": {"expires_in_days": 30, "max_devices": 500}}
+
+
+@router.post("/installers")
+def create_installer(body: InstallerCreate, request: Request, admin: User = Depends(require_admin),
+                     db: Session = Depends(get_db)):
+    """Mint a package-bound enrollment token and return the installer with it embedded.
+
+    The token's plaintext exists only in the response body (the file); the
+    database keeps its hash like any other enrollment token, so it is listed,
+    limited and revocable under Enrollment tokens."""
+    s = config.settings
+    if not installer_limiter.hit(f"user:{admin.id}", s.agent_installer_rate_limit,
+                                 s.agent_installer_rate_window_seconds):
+        raise HTTPException(429, "too many installer downloads; try again later", headers={"Retry-After": "60"})
+    include_ca = body.include_ca
+    try:
+        if include_ca is None:
+            include_ca = installers.server_ca_pem() is not None
+        installers.server_url()
+        installers.artifact(body.platform, verify=False)
+    except installers.InstallerConfigError as e:
+        raise HTTPException(409, str(e)) from None
+    except installers.InstallerUnavailable as e:
+        raise HTTPException(503, str(e)) from None
+    spec = installers.PLATFORMS[body.platform]
+    raw = svc.new_enrollment_token()
+    now = utcnow()
+    name = body.name or f"Installer {spec['label']} {now:%Y-%m-%d}"
+    t = EnrollmentToken(name=name[:128], token_hash=svc.hash_secret(raw), token_prefix=raw[:10],
+                        max_uses=body.max_devices, created_by=admin.email, created_at=now,
+                        expires_at=now + timedelta(days=body.expires_in_days), package_platform=body.platform,
+                        device_group=body.device_group or None)
+    try:
+        data, art, ca_included = installers.build(body.platform, raw, include_ca)
+    except installers.InstallerConfigError as e:
+        raise HTTPException(409, str(e)) from None
+    except installers.InstallerUnavailable as e:
+        raise HTTPException(503, str(e)) from None
+    except Exception:
+        log.exception("building the %s installer failed", body.platform)
+        raise HTTPException(500, "building the installer failed; see the server log") from None
+    del raw  # the plaintext token now only exists inside `data`
+    digest = hashlib.sha256(data).hexdigest()
+    t.package_sha256 = digest
+    db.add(t)
+    db.flush()
+    audit(db, "agent_installer_created", actor=admin, target=f"enrollment-token:{t.id}", ip=client_ip(request),
+          name=t.name, platform=body.platform, agent_version=art.version, base_sha256=art.sha256,
+          sha256=digest, size_bytes=len(data), max_uses=t.max_uses, expires_at=t.expires_at.isoformat() + "Z",
+          device_group=t.device_group, ca_included=ca_included, server_url=installers.server_url())
+    db.commit()
+    return Response(content=data, media_type=spec["media_type"], headers={
+        "Content-Disposition": f'attachment; filename="{spec["download"]}"',
+        "Cache-Control": "no-store", "X-Content-SHA256": digest, "X-Enrollment-Token-Id": t.id,
+        "X-Agent-Version": art.version, "X-CA-Included": "true" if ca_included else "false"})
 
 
 @router.post("/enrollment-tokens/{token_id}/revoke", response_model=EnrollmentTokenOut)

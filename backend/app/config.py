@@ -188,6 +188,25 @@ class Settings:
     # Optional link shown on the enrollment page for downloading agent builds
     # (e.g. your GitHub release or an internal file share).
     agent_download_url: str | None = field(default_factory=lambda: os.getenv("AGENT_DOWNLOAD_URL") or None)
+    # --- Pre-configured agent installers (Devices > Enroll > Download installer) ---
+    # https:// URL agents use to reach this server; embedded in generated
+    # installers (also used for notification deep links).
+    public_base_url: str = field(default_factory=lambda: (os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/"))
+    # Generic MSI / pkg (+ manifest.json with their SHA-256) bundled into the image
+    # by CI; point it at another directory to serve your own (e.g. signed) builds.
+    agent_installers_dir: str = field(default_factory=lambda: os.getenv("AGENT_INSTALLERS_DIR") or str(
+        __import__("pathlib").Path(__file__).resolve().parents[1] / "installers"))
+    # Private CA that issued the server certificate (base64 of the PEM bundle, or
+    # a PEM file path). Embedded in installers so agents trust the server; leave
+    # empty when the certificate is publicly trusted. cnapp-ctl sets
+    # AGENT_CA_CERT_B64 on-prem when the built-in CA (or `tls import --ca`) is used.
+    agent_ca_cert_b64: str = field(default_factory=lambda: (os.getenv("AGENT_CA_CERT_B64") or "").strip())
+    agent_ca_cert_file: str | None = field(default_factory=lambda: os.getenv("AGENT_CA_CERT_FILE") or None)
+    # Installer downloads per admin per window, and parallel builds per process.
+    agent_installer_rate_limit: int = field(default_factory=lambda: int(os.getenv("AGENT_INSTALLER_RATE_LIMIT", "10")))
+    agent_installer_rate_window_seconds: float = field(
+        default_factory=lambda: float(os.getenv("AGENT_INSTALLER_RATE_WINDOW_SECONDS", "600")))
+    agent_installer_max_parallel: int = field(default_factory=lambda: int(os.getenv("AGENT_INSTALLER_MAX_PARALLEL", "2")))
     # --- Multi-factor authentication (TOTP) -------------------------------------
     # Key(s) encrypting TOTP secrets at rest. Any string of 32+ characters (e.g.
     # `openssl rand -hex 32`); comma-separate several to rotate: the first one

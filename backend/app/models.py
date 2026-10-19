@@ -290,6 +290,12 @@ class EnrollmentToken(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Set when the token was minted for a downloadable installer ("windows-msi" |
+    # "macos-pkg"): its plaintext only exists inside that file.
+    package_platform: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    package_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Group label applied to devices enrolling with this token.
+    device_group: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class Device(Base):
@@ -313,6 +319,7 @@ class Device(Base):
     status: Mapped[str] = mapped_column(String(16), default="active", index=True)  # active | revoked
     enrolled_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     enrollment_token_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    device_group: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
     last_checkin_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)

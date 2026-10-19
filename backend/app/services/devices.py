@@ -275,6 +275,7 @@ def summarize(device: Device, now: datetime | None = None) -> dict[str, Any]:
         "agent_version": device.agent_version, "status": device.status, "enrolled_at": device.enrolled_at,
         "last_seen_at": device.last_seen_at, "last_checkin_at": device.last_checkin_at,
         "logged_in_users": list(inv.get("logged_in_users") or [])[:10],
+        "device_group": device.device_group,
         "health": health_from_issues(device, issues), "connectivity": connectivity(device, now), "issues": issues,
     }
 
