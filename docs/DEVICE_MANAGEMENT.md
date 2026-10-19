@@ -92,7 +92,7 @@ The plaintext token exists **only inside that file**: it is not stored, logged o
 
 ### Windows: Group Policy, Intune, SCCM, manual
 
-The MSI is per-machine and supports silent install, repair and uninstall:
+The MSI is per-machine and supports silent install, repair and uninstall. It registers the `CNAPPAgent` service (LocalSystem, automatic delayed start) and sets its recovery actions (restart after 5 s / 30 s / 2 min) through a small deferred action that runs `cnapp-agent service-recovery`, because Windows Installer's own `MsiServiceConfigFailureActions` table rejects restart actions (error 1939).
 
 ```bat
 msiexec /i cnapp-agent-setup.msi /qn /l*v %TEMP%\cnapp-agent-install.log
@@ -137,7 +137,7 @@ printf '%s\n' 'cne_...' | /usr/local/cnapp-agent/bin/cnapp-agent configure --ser
 Agents always verify the server certificate (system trust store, plus a private CA when one is configured). The installer embeds the CA **only when needed**:
 
 - **Built-in CA (`cnapp-ctl` default) or an internal/enterprise CA**: `cnapp-ctl` sets `AGENT_CA_CERT_B64` and the download includes the CA by default. Untick it once your CA is deployed to all devices by GPO/MDM.
-- **Publicly trusted certificate** (for example `cnapp.wakanow.com` from a public CA): no CA is configured, nothing is embedded, and the box is disabled.
+- **Publicly trusted certificate**: no CA is configured, nothing is embedded, and the box is disabled. This is the Wakanow production setup: `https://cnapp.wakanow.com` with a publicly trusted DigiCert wildcard certificate (`*.wakanow.com`, imported with `cnapp-ctl tls import-pfx`). Installers downloaded there contain only `https://cnapp.wakanow.com` and the token; Windows and macOS already trust DigiCert, so devices need no CA file, GPO certificate deployment or MDM certificate payload. (If `AGENT_CA_CERT_B64` is still set from the earlier built-in CA, re-run `cnapp-ctl tls import-pfx` or set it empty and `cnapp-ctl restart`; `GET /api/devices/installers` shows `ca_configured: false` when correct.)
 
 The server URL inside the installer is `PUBLIC_BASE_URL` (on-prem: `https://<CNAPP_HOSTNAME>`, changed with `cnapp-ctl set-hostname`). Download new installers after changing the hostname or certificate. Devices that are already enrolled keep using the URL they enrolled with; on-prem, `cnapp-ctl tls import-pfx` keeps serving the old built-in certificate to clients that connect by IP address or by the old name, so they keep working ([DEPLOY_ONPREM.md](DEPLOY_ONPREM.md#switch-to-a-dns-name-and-your-own-certificate-pfx)).
 

@@ -92,7 +92,8 @@ sudo cnapp-ctl tls import-pfx --pfx ~/wakanow.pfx --hostname cnapp.wakanow.com  
 shred -u ~/wakanow.pfx
 ```
 
-Old (RC2-40) PFX exports are handled automatically. Agents enrolled with `https://10.10.11.57` keep working (the
+Production today: `https://cnapp.wakanow.com` with a publicly trusted DigiCert wildcard certificate, so installers carry
+no CA and devices need no certificate deployment. Old (RC2-40) PFX exports are handled automatically. Agents enrolled with `https://10.10.11.57` keep working (the
 built-in certificate is still served for the IP address); download new installers so new devices use the DNS name.
 Change only the URL (certificate already covers it): `sudo cnapp-ctl set-hostname cnapp.wakanow.com`.
 Full guide: [DEPLOY_ONPREM.md, section 4](../../docs/DEPLOY_ONPREM.md#switch-to-a-dns-name-and-your-own-certificate-pfx).

@@ -267,8 +267,10 @@ For a PFX use `tls import-pfx` (next section).
 
 ### Switch to a DNS name and your own certificate (PFX)
 
-Example: the server runs as `https://10.10.11.57` with the built-in CA and should become `https://cnapp.wakanow.com`
-with the company's certificate (`wakanow.pfx`, publicly trusted or from the internal CA).
+Example (the Wakanow production move): the server ran as `https://10.10.11.57` with the built-in CA and now runs as
+`https://cnapp.wakanow.com` with the company's publicly trusted DigiCert wildcard certificate (`*.wakanow.com`, exported
+as `wakanow.pfx`). Because DigiCert is trusted by Windows and macOS out of the box, installers downloaded after the switch
+embed no CA at all.
 
 1. **DNS (split-horizon).** On the internal DNS (AD DNS, or the internal view of `wakanow.com`) add an A record
    `cnapp.wakanow.com -> 10.10.11.57`. Staff and devices resolve it internally; nothing is published on the internet
