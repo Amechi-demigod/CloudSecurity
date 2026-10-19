@@ -211,11 +211,30 @@ def windows_run(api: Api, bundle: Path, tmp: Path) -> None:
         db.Close()
         return sorted(names)
 
+    def msi_rows(msi: Path) -> list[tuple[str, int]]:
+        import msilib
+
+        db = msilib.OpenDatabase(str(msi), msilib.MSIDBOPEN_READONLY)
+        view = db.OpenView("SELECT `Property`, `Value` FROM `Property`")
+        view.Execute(None)
+        rows = []
+        while (rec := view.Fetch()) is not None:
+            rows.append((rec.GetString(1), len(rec.GetString(2))))
+        view.Close()
+        db.Close()
+        return rows
+
     for m in (generic, setup):
-        try:
-            print(f"{m.name}: tables {msi_tables(m)}", flush=True)
-        except Exception as e:  # noqa: BLE001 - diagnostics only
-            print(f"{m.name}: cannot list tables: {e!r}", flush=True)
+        for what, fn in (("tables", msi_tables), ("property rows (name, value length)", msi_rows)):
+            try:
+                print(f"{m.name}: {what} {fn(m)}", flush=True)
+            except Exception as e:  # noqa: BLE001 - diagnostics only
+                print(f"{m.name}: cannot read {what}: {e!r}", flush=True)
+        for prop in ("ProductCode", "CNAPP_SERVER"):
+            try:
+                print(f"{m.name}: {prop} = {msi_property(m, prop)!r}", flush=True)
+            except Exception as e:  # noqa: BLE001 - diagnostics only
+                print(f"{m.name}: cannot read {prop}: {e!r}", flush=True)
     token = msi_property(setup, "CNAPP_TOKEN")
     assert token.startswith("cne_"), "pre-configured MSI has no CNAPP_TOKEN"
     assert msi_property(setup, "CNAPP_SERVER") == SERVER
