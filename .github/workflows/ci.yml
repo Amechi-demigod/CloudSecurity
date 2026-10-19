@@ -468,7 +468,8 @@ jobs:
           python3 scripts/installer_e2e.py prepare --base http://127.0.0.1:18000 --out "$b"
           docker logs cnapp-inst 2>&1 | tail -n 30
           docker stop -t 30 cnapp-inst
-          cp "$d"/cnapp.db* "$b/"
+          for f in cnapp.db cnapp.db-wal cnapp.db-shm; do [ ! -e "$d/$f" ] || sudo cp "$d/$f" "$b/"; done
+          sudo chown -R "$(id -u):$(id -g)" "$b"
           # Read back the generated MSI with msitools from the image (property names only).
           docker run --rm --entrypoint msiinfo -v "$b:/b:ro" cnapp-backend:ci export /b/cnapp-agent-setup.msi Property \
             | cut -f1 | grep '^CNAPP_' | sort | tee "$RUNNER_TEMP/props.txt"
@@ -557,7 +558,7 @@ jobs:
         if: failure()
         run: |
           if [ "$RUNNER_OS" = Windows ]; then
-            cat "/c/ProgramData/CNAPP Agent/logs/agent.log" 2>/dev/null | tail -n 100 || true
+            tail -n 100 "/c/ProgramData/CNAPP Agent/logs/agent.log" 2>/dev/null || true
             sc.exe query CNAPPAgent || true
           else
             sudo tail -n 100 "/Library/Logs/CNAPP Agent/agent.log" "/Library/Logs/CNAPP Agent/launchd.log" 2>/dev/null || true
@@ -749,8 +750,9 @@ jobs:
           if sudo cnapp-ctl tls import-pfx --pfx "$fx/legacy-rc2.pfx" --password x 2>"$RUNNER_TEMP/err.txt"; then exit 1; fi
           grep -q "never taken on the command line" "$RUNNER_TEMP/err.txt"
           # Wrong name without --hostname is refused.
-          if cat "$fx/pfx-password.txt" | sudo cnapp-ctl tls import-pfx --pfx "$fx/legacy-rc2.pfx"; then echo "::error::accepted a certificate for another name"; exit 1; fi
-          cat "$fx/pfx-password.txt" | sudo cnapp-ctl tls import-pfx --pfx "$fx/legacy-rc2.pfx" --hostname cnapp2.test
+          pw="$(head -n1 "$fx/pfx-password.txt")"
+          if sudo cnapp-ctl tls import-pfx --pfx "$fx/legacy-rc2.pfx" <<<"$pw"; then echo "::error::accepted a certificate for another name"; exit 1; fi
+          sudo cnapp-ctl tls import-pfx --pfx "$fx/legacy-rc2.pfx" --hostname cnapp2.test <<<"$pw"
           test "$(conf PUBLIC_BASE_URL)" = https://cnapp2.test
           test "$(conf CNAPP_TLS_MODE)" = byo && test "$(conf CNAPP_TLS_LEGACY_CERT)" = builtin
           test "$(docker exec cnapp-backend-1 printenv PUBLIC_BASE_URL)" = https://cnapp2.test

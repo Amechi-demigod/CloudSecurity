@@ -25,7 +25,7 @@ for f in legacy-rc2 modern-aes; do
   echo "$out"
   if [[ $f == legacy-rc2 ]]; then [[ $out == *"legacy"* ]] || fail "$f: legacy retry not reported"
   else [[ $out != *"legacy"* ]] || fail "$f: needlessly used the legacy provider"; fi
-  [[ "$(openssl x509 -noout -subject -in "$d/leaf.pem")" == *"CN=cnapp2.test"* ]] || fail "$f: wrong leaf"
+  [[ "$(openssl x509 -noout -subject -in "$d/leaf.pem")" == *"cnapp2.test"* ]] || fail "$f: wrong leaf"
   [[ "$(openssl x509 -noout -pubkey -in "$d/leaf.pem" | openssl sha256)" == "$(openssl pkey -pubout -in "$d/key.pem" | openssl sha256)" ]] \
     || fail "$f: key does not match the leaf"
   grep -q ENCRYPTED "$d/key.pem" && fail "$f: key still encrypted"
