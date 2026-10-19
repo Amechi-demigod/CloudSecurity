@@ -295,6 +295,7 @@ export interface DeviceSummary {
   last_seen_at: string | null;
   last_checkin_at: string | null;
   logged_in_users: string[];
+  device_group: string | null;
   health: DeviceHealth;
   connectivity: Connectivity;
   issues: DeviceIssue[];
@@ -387,6 +388,8 @@ export interface EnrollmentToken {
   id: string;
   name: string;
   token_prefix: string;
+  package_platform: InstallerPlatform | null;
+  device_group: string | null;
   max_uses: number | null;
   use_count: number;
   created_by: string | null;
@@ -395,6 +398,27 @@ export interface EnrollmentToken {
   last_used_at: string | null;
   revoked_at: string | null;
   state: "active" | "expired" | "exhausted" | "revoked";
+}
+
+export type InstallerPlatform = "windows-msi" | "macos-pkg";
+
+export interface InstallerInfo {
+  server_url: string | null;
+  server_error: string | null;
+  ca_configured: boolean;
+  ca_error: string | null;
+  include_ca_default: boolean;
+  platforms: Record<InstallerPlatform, { available: boolean; label: string; filename: string; version?: string; size_bytes?: number; reason?: string }>;
+  defaults: { expires_in_days: number; max_devices: number };
+}
+
+export interface InstallerRequest {
+  platform: InstallerPlatform;
+  name?: string | null;
+  expires_in_days: number;
+  max_devices: number;
+  device_group?: string | null;
+  include_ca: boolean;
 }
 
 const BASE = import.meta.env.VITE_API_BASE ?? "";
@@ -453,6 +477,27 @@ export async function request<T>(path: string, init?: RequestInit & { skipAuthHa
   }
   if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
+}
+
+/** POST that returns a file (e.g. a generated installer): the bytes plus the suggested filename. */
+export async function requestFile(path: string, body: unknown): Promise<{ blob: Blob; filename: string; sha256: string | null }> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (csrfToken) headers["X-CSRF-Token"] = csrfToken;
+  const res = await fetch(`${BASE}${path}`, { method: "POST", credentials: "same-origin", headers, body: JSON.stringify(body) });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const b = await res.json();
+      detail = typeof b.detail === "string" ? b.detail : JSON.stringify(b.detail);
+    } catch {
+      /* ignore */
+    }
+    if (res.status === 401) onUnauthorized?.();
+    throw new ApiError(res.status, detail || `HTTP ${res.status}`);
+  }
+  const cd = res.headers.get("Content-Disposition") ?? "";
+  const m = /filename="([^"]+)"/.exec(cd);
+  return { blob: await res.blob(), filename: m ? m[1] : "installer", sha256: res.headers.get("X-Content-SHA256") };
 }
 
 export function qs(params: Record<string, string | number | boolean | undefined | null>): string {
@@ -550,6 +595,8 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  installerInfo: () => request<InstallerInfo>("/api/devices/installers"),
+  downloadInstaller: (body: InstallerRequest) => requestFile("/api/devices/installers", body),
   revokeEnrollmentToken: (id: string) =>
     request<EnrollmentToken>(`/api/devices/enrollment-tokens/${id}/revoke`, { method: "POST" }),
   // --- platform ---

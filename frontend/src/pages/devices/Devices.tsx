@@ -119,6 +119,9 @@ export default function Devices() {
                   <Link to={`/devices/${d.id}`} className="font-medium hover:text-accent" onClick={(e) => e.stopPropagation()}>
                     {d.hostname}
                   </Link>
+                  {d.device_group && (
+                    <span className="ml-2 rounded border border-line px-1.5 py-0.5 text-[10px] text-ink-3">{d.device_group}</span>
+                  )}
                   <div className="text-[11px] text-ink-3">
                     {[d.manufacturer, d.model].filter(Boolean).join(" ")} {d.serial_number && `· ${d.serial_number}`}
                   </div>
