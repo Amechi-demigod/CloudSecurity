@@ -1234,7 +1234,7 @@ ADMIN_EMAIL=$email
 MFA_REQUIRED_ROLES=$mfa
 SESSION_MAX_AGE_HOURS=8
 SESSION_IDLE_MINUTES=30
-# Link shown on the enrollment page for downloading agent builds (internal share)
+# Deprecated (no longer shown in the console): location of agent builds for manual installs
 AGENT_DOWNLOAD_URL=
 
 # --- Microsoft Entra ID single sign-on (optional, docs/AUTH.md) -----------------

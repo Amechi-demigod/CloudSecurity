@@ -52,6 +52,13 @@ need your current password **and** a current app or recovery code (users who
 only sign in with Microsoft have no local password, so only the code is asked).
 Turning MFA off signs out your other sessions.
 
+MFA is asked **only at sign-in**. Once signed in, actions inside the app
+(user management, device actions, agent update releases/rings/pins,
+notifications, …) need no further authenticator code; they are protected by the
+session, role-based access control and CSRF, and every change is written to the
+audit log. Only managing your own MFA (turning it off, new recovery codes) asks
+for a current code, as above.
+
 ### For administrators
 
 * **Require MFA for roles**: `MFA_REQUIRED_ROLES=admin,analyst`. Users with these
