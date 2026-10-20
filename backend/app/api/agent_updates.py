@@ -9,9 +9,8 @@ internet like the rest of /api/agent/):
 User side (/api/updates/*, session + RBAC; deliberately NOT under /api/agent/):
   viewer: read releases, rings, keys, fleet summary, per-device update state
   admin : import / withdraw releases, manage rings, assign / pin devices.
-          Changes that make devices install something (import, ring target,
-          percentage, resume, pin) need an MFA step-up (X-MFA-Code) when the
-          admin has MFA enabled. Everything is audited.
+          The signed-in admin session is enough (MFA is enforced at sign-in,
+          not per action). Everything is audited.
 """
 from __future__ import annotations
 
@@ -19,12 +18,12 @@ import logging
 import threading
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Body, Depends, Header, HTTPException, Path, Query, Request, Response
+from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import config, mfa
+from .. import config
 from ..auth import audit, client_ip, require_admin, require_viewer
 from ..db import get_db
 from ..models import AgentRelease, AgentUpdateEvent, AgentUpdateRing, Device, User, utcnow
@@ -120,22 +119,6 @@ def report_status(body: StatusIn, device: Device = Depends(current_device), db: 
 
 
 # ----------------------------------------------------------------------------- helpers
-def step_up(db: Session, user: User, code: str | None) -> str:
-    """Require a fresh second factor for changes that deploy code, when the admin has MFA."""
-    if not user.mfa_enabled:
-        return "unavailable"
-    if not code or not code.strip():
-        raise HTTPException(403, "mfa_step_up_required: enter a current authenticator (or recovery) code")
-    method = mfa.verify_second_factor(db, user, code.strip())
-    if method is None:
-        db.commit()  # keep the consumed-step bookkeeping consistent
-        raise HTTPException(403, "invalid or already used MFA code")
-    return method
-
-
-MfaHeader = Header(None, alias="X-MFA-Code", max_length=64)
-
-
 def _release_out(r: AgentRelease, adoption: dict[str, int] | None = None) -> dict:
     return {"id": r.id, "version": r.version, "key_id": r.key_id, "released_at": _z(r.released_at),
             "expires_at": _z(r.expires_at), "min_supported_version": r.min_supported_version, "notes": r.notes,
@@ -218,10 +201,8 @@ def device_update_state(device_id: str = Id32(), limit: int = Query(50, ge=1, le
 # ----------------------------------------------------------------------------- user API: admin
 @router.post("/releases", status_code=201)
 def import_release(request: Request, data: bytes = Body(..., media_type="application/gzip"),
-                   x_mfa_code: str | None = MfaHeader, admin: User = Depends(require_admin),
-                   db: Session = Depends(get_db)):
+                   admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     """Import a signed release bundle (.tar.gz: manifest.json + binaries)."""
-    stepped = step_up(db, admin, x_mfa_code)
     try:
         rel = svc.import_bundle(db, data, admin.email)
     except svc.ReleaseError as e:
@@ -231,7 +212,7 @@ def import_release(request: Request, data: bytes = Body(..., media_type="applica
         db.commit()
         raise HTTPException(422, str(e)) from None
     audit(db, "agent_release_imported", actor=admin, target=f"agent-release:{rel.id}", ip=client_ip(request),
-          version=rel.version, key_id=rel.key_id, bundle_sha256=rel.bundle_sha256, step_up=stepped,
+          version=rel.version, key_id=rel.key_id, bundle_sha256=rel.bundle_sha256,
           artifacts=[f"{a.os}/{a.arch} {a.sha256}" for a in rel.artifacts])
     db.commit()
     return _release_out(rel)
@@ -279,18 +260,13 @@ class RingIn(BaseModel):
         return sorted(set(v)) if v is not None else v
 
 
-def _apply_ring(db: Session, ring: AgentUpdateRing, body: RingIn, admin: User, code: str | None) -> dict:
+def _apply_ring(db: Session, ring: AgentUpdateRing, body: RingIn, admin: User) -> dict:
     changes: dict = {}
-    deploys = False
     for f in ("name", "description", "position", "device_groups", "rollout_percent", "paused"):
         v = getattr(body, f)
         if v is not None and v != getattr(ring, f):
             changes[f] = {"from": getattr(ring, f), "to": v}
             setattr(ring, f, v)
-    if "rollout_percent" in changes and changes["rollout_percent"]["to"] > (changes["rollout_percent"]["from"] or 0):
-        deploys = True
-    if "paused" in changes and not ring.paused:
-        deploys = True
     if body.clear_target and ring.target_release_id is not None:
         changes["target_release_id"] = {"from": ring.target_release_id, "to": None}
         ring.target_release_id = None
@@ -302,17 +278,15 @@ def _apply_ring(db: Session, ring: AgentUpdateRing, body: RingIn, admin: User, c
             raise HTTPException(409, f"release {rel.version} is withdrawn")
         changes["target_release_id"] = {"from": ring.target_release_id, "to": rel.id, "version": rel.version}
         ring.target_release_id = rel.id
-        deploys = True
     if "name" in changes and db.scalar(select(AgentUpdateRing).where(AgentUpdateRing.name == ring.name,
                                                                      AgentUpdateRing.id != ring.id)):
         raise HTTPException(409, "a ring with this name already exists")
-    changes["step_up"] = step_up(db, admin, code) if deploys else "not needed"
     ring.updated_at, ring.updated_by = utcnow(), admin.email
     return changes
 
 
 @router.post("/rings", status_code=201)
-def create_ring(body: RingIn, request: Request, x_mfa_code: str | None = MfaHeader,
+def create_ring(body: RingIn, request: Request,
                 admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     if not body.name:
         raise HTTPException(422, "name is required")
@@ -322,7 +296,7 @@ def create_ring(body: RingIn, request: Request, x_mfa_code: str | None = MfaHead
     if db.scalar(select(AgentUpdateRing).where(AgentUpdateRing.name == body.name)):
         raise HTTPException(409, "a ring with this name already exists")
     db.add(ring)
-    changes = _apply_ring(db, ring, body.model_copy(update={"name": None}), admin, x_mfa_code)
+    changes = _apply_ring(db, ring, body.model_copy(update={"name": None}), admin)
     db.flush()
     audit(db, "agent_update_ring_created", actor=admin, target=f"agent-ring:{ring.id}", ip=client_ip(request),
           name=ring.name, changes=changes, reason=body.reason)
@@ -331,12 +305,12 @@ def create_ring(body: RingIn, request: Request, x_mfa_code: str | None = MfaHead
 
 
 @router.patch("/rings/{ring_id}")
-def update_ring(body: RingIn, request: Request, ring_id: str = Id32(), x_mfa_code: str | None = MfaHeader,
+def update_ring(body: RingIn, request: Request, ring_id: str = Id32(),
                 admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     ring = db.get(AgentUpdateRing, ring_id)
     if ring is None:
         raise HTTPException(404, "ring not found")
-    changes = _apply_ring(db, ring, body, admin, x_mfa_code)
+    changes = _apply_ring(db, ring, body, admin)
     audit(db, "agent_update_ring_changed", actor=admin, target=f"agent-ring:{ring.id}", ip=client_ip(request),
           name=ring.name, changes=changes, reason=body.reason)
     db.commit()
@@ -371,14 +345,12 @@ class DeviceUpdateIn(BaseModel):
 
 @router.put("/devices/{device_id}")
 def set_device_update(body: DeviceUpdateIn, request: Request, device_id: str = Id32(),
-                      x_mfa_code: str | None = MfaHeader, admin: User = Depends(require_admin),
-                      db: Session = Depends(get_db)):
+                      admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     """Assign a device to a ring explicitly and/or pin it to a release (pin overrides the ring)."""
     d = db.get(Device, device_id)
     if d is None:
         raise HTTPException(404, "device not found")
     changes: dict = {}
-    deploys = False
     if body.clear_ring:
         changes["ring"] = {"from": d.update_ring_id, "to": None}
         d.update_ring_id = None
@@ -386,7 +358,7 @@ def set_device_update(body: DeviceUpdateIn, request: Request, device_id: str = I
         if db.get(AgentUpdateRing, body.ring_id) is None:
             raise HTTPException(404, "ring not found")
         changes["ring"] = {"from": d.update_ring_id, "to": body.ring_id}
-        d.update_ring_id, deploys = body.ring_id, True
+        d.update_ring_id = body.ring_id
     if body.clear_pin:
         changes["pin"] = {"from": d.update_pinned_release_id, "to": None}
         d.update_pinned_release_id = None
@@ -397,10 +369,9 @@ def set_device_update(body: DeviceUpdateIn, request: Request, device_id: str = I
         if rel.withdrawn_at is not None:
             raise HTTPException(409, f"release {rel.version} is withdrawn")
         changes["pin"] = {"from": d.update_pinned_release_id, "to": rel.id, "version": rel.version}
-        d.update_pinned_release_id, deploys = rel.id, True
+        d.update_pinned_release_id = rel.id
     if not changes:
         raise HTTPException(422, "nothing to change")
-    changes["step_up"] = step_up(db, admin, x_mfa_code) if deploys else "not needed"
     audit(db, "agent_update_device_changed", actor=admin, target=f"device:{d.id}", ip=client_ip(request),
           hostname=d.hostname, changes=changes, reason=body.reason)
     db.commit()

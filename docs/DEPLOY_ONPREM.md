@@ -187,7 +187,7 @@ GPO, Intune, SCCM, Jamf or Kandji, or double-click it; each device enrolls itsel
 [DEVICE_MANAGEMENT.md, Roll out to all devices](DEVICE_MANAGEMENT.md#roll-out-to-all-devices).
 
 **One device by hand:** download the agent binaries (`cnapp-agent-binaries` artifact of the CI run you deploy, or your signed release; publish
-them on an internal share and set `AGENT_DOWNLOAD_URL` in `cnapp.env`). In the console: **Devices > Enroll devices >
+them on an internal share). In the console: **Devices > Enroll devices >
 Create token**. Then:
 
 * **Windows** (elevated PowerShell, files in one folder):

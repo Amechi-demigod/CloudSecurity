@@ -578,11 +578,10 @@ export async function requestFile(path: string, body: unknown): Promise<{ blob: 
   return { blob: await res.blob(), filename: m ? m[1] : "installer", sha256: res.headers.get("X-Content-SHA256") };
 }
 
-/** Upload a signed agent release bundle (raw .tar.gz body), with an optional MFA step-up code. */
-export async function uploadAgentRelease(file: File, mfaCode: string): Promise<AgentRelease> {
+/** Upload a signed agent release bundle (raw .tar.gz body). */
+export async function uploadAgentRelease(file: File): Promise<AgentRelease> {
   const headers: Record<string, string> = { "Content-Type": "application/gzip" };
   if (csrfToken) headers["X-CSRF-Token"] = csrfToken;
-  if (mfaCode.trim()) headers["X-MFA-Code"] = mfaCode.trim();
   const res = await fetch(`${BASE}/api/updates/releases`, { method: "POST", credentials: "same-origin", headers, body: file });
   if (!res.ok) {
     let detail = res.statusText;
@@ -596,10 +595,6 @@ export async function uploadAgentRelease(file: File, mfaCode: string): Promise<A
     throw new ApiError(res.status, detail || `HTTP ${res.status}`);
   }
   return res.json();
-}
-
-function mfaHeaders(code?: string): Record<string, string> {
-  return code && code.trim() ? { "X-MFA-Code": code.trim() } : {};
 }
 
 export function qs(params: Record<string, string | number | boolean | undefined | null>): string {
@@ -687,10 +682,6 @@ export const api = {
   deleteDevice: (id: string, reason: string) =>
     request<void>(`/api/devices/${id}${qs({ reason })}`, { method: "DELETE" }),
   logBundleUrl: (id: string, bundleId: string) => `${BASE}/api/devices/${id}/log-bundles/${bundleId}`,
-  enrollmentInfo: () =>
-    request<{ agent_download_url: string | null; server_url?: string | null; default_check_in_interval_seconds: number; command_poll_seconds: number }>(
-      "/api/devices/enrollment/info",
-    ),
   enrollmentTokens: () => request<EnrollmentToken[]>("/api/devices/enrollment-tokens"),
   createEnrollmentToken: (body: { name: string; max_uses: number | null; expires_in_hours: number }) =>
     request<EnrollmentToken & { token: string }>("/api/devices/enrollment-tokens", {
@@ -708,23 +699,16 @@ export const api = {
   withdrawRelease: (id: string, reason: string) =>
     request<AgentRelease>(`/api/updates/releases/${id}/withdraw`, { method: "POST", body: JSON.stringify({ reason }) }),
   updateRings: () => request<UpdateRing[]>("/api/updates/rings"),
-  createRing: (body: UpdateRingPatch, mfaCode?: string) =>
-    request<UpdateRing>("/api/updates/rings", { method: "POST", body: JSON.stringify(body), headers: mfaHeaders(mfaCode), skipAuthHandling: true }),
-  updateRing: (id: string, body: UpdateRingPatch, mfaCode?: string) =>
-    request<UpdateRing>(`/api/updates/rings/${id}`, { method: "PATCH", body: JSON.stringify(body), headers: mfaHeaders(mfaCode), skipAuthHandling: true }),
+  createRing: (body: UpdateRingPatch) =>
+    request<UpdateRing>("/api/updates/rings", { method: "POST", body: JSON.stringify(body) }),
+  updateRing: (id: string, body: UpdateRingPatch) =>
+    request<UpdateRing>(`/api/updates/rings/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   deleteRing: (id: string, reason: string) => request<void>(`/api/updates/rings/${id}${qs({ reason })}`, { method: "DELETE" }),
   deviceUpdate: (id: string) => request<DeviceUpdateState>(`/api/updates/devices/${id}`),
   setDeviceUpdate: (
     id: string,
     body: { ring_id?: string; clear_ring?: boolean; pinned_release_id?: string; clear_pin?: boolean; reason: string },
-    mfaCode?: string,
-  ) =>
-    request<DeviceUpdateState>(`/api/updates/devices/${id}`, {
-      method: "PUT",
-      body: JSON.stringify(body),
-      headers: mfaHeaders(mfaCode),
-      skipAuthHandling: true,
-    }),
+  ) => request<DeviceUpdateState>(`/api/updates/devices/${id}`, { method: "PUT", body: JSON.stringify(body) }),
   // --- platform ---
   health: () => request<Health>("/api/health"),
   dashboard: () => request<Dashboard>("/api/dashboard"),
