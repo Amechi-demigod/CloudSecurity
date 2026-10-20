@@ -48,7 +48,8 @@ from .schemas import (
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/it-assets", tags=["it-assets"], dependencies=[Depends(require_viewer)])
-Id32 = Path(pattern=r"^[0-9a-f]{32}$")
+def Id32():  # noqa: N802 - a fresh Path() per parameter (FastAPI binds it to the name)
+    return Path(pattern=r"^[0-9a-f]{32}$")
 UPLOAD_PREFIXES = ("/api/it-assets/import", "/api/it-assets/certificates/")
 
 # Accepted certificate types: declared Content-Type -> magic bytes.
