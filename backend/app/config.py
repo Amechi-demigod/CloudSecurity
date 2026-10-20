@@ -232,8 +232,30 @@ class Settings:
     agent_update_max_bundle_bytes: int = field(
         default_factory=lambda: int(os.getenv("AGENT_UPDATE_MAX_BUNDLE_BYTES", str(256 * 1024 * 1024))))
     # Agents start an offered update after a random delay of up to this many
-    # seconds, so a fleet does not download at once.
-    agent_update_jitter_seconds: int = field(default_factory=lambda: int(os.getenv("AGENT_UPDATE_JITTER_SECONDS", "900")))
+    # seconds, so a fleet does not download at once. Bigger fleets get more
+    # automatically: at least ceil(active devices / max parallel downloads) x 15 s
+    # (app/services/agent_updates.py:effective_jitter_seconds).
+    agent_update_jitter_seconds: int = field(default_factory=lambda: int(os.getenv("AGENT_UPDATE_JITTER_SECONDS", "120")))
+    # Background job (leader-elected): automatic rollout (Pilot first, everyone
+    # after the soak period) and the optional GitHub Releases auto-import.
+    agent_update_worker_enabled: bool = field(default_factory=lambda: _bool("AGENT_UPDATE_WORKER_ENABLED", True))
+    # Initial update mode for a new installation (changed in the console):
+    # "automatic" (new releases go to Pilot, then everyone) or "manual" (rings only).
+    agent_update_default_mode: str = field(
+        default_factory=lambda: os.getenv("AGENT_UPDATE_DEFAULT_MODE", "automatic").strip().lower())
+    agent_update_default_soak_hours: int = field(
+        default_factory=lambda: int(os.getenv("AGENT_UPDATE_SOAK_HOURS", "24")))
+    # Poll GitHub Releases for new signed agent bundles (tags agent-v*) and import
+    # them through the normal verification. Default for a new installation; the
+    # console setting overrides it. On by default on-prem (docker-compose.prod.yml).
+    # Uses HTTPS_PROXY / HTTP_PROXY / NO_PROXY from the environment.
+    agent_update_auto_import: bool = field(default_factory=lambda: _bool("AGENT_UPDATE_AUTO_IMPORT", False))
+    agent_update_releases_repo: str = field(
+        default_factory=lambda: os.getenv("AGENT_UPDATE_RELEASES_REPO", "Amechi-demigod/CloudSecurity").strip())
+    agent_update_releases_api: str = field(
+        default_factory=lambda: os.getenv("AGENT_UPDATE_RELEASES_API", "https://api.github.com").strip().rstrip("/"))
+    agent_update_auto_import_interval_minutes: int = field(
+        default_factory=lambda: int(os.getenv("AGENT_UPDATE_AUTO_IMPORT_INTERVAL_MINUTES", "60")))
     # A new agent version must check in successfully within this window after the
     # swap, otherwise the agent restores the previous binary (60-3600).
     agent_update_health_timeout_seconds: int = field(

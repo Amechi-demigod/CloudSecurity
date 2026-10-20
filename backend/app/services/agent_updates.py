@@ -304,6 +304,9 @@ def import_bundle(db: Session, data: bytes, actor: str) -> AgentRelease:
                                                   size_bytes=a["size"], data=files[a["name"]]))
     db.add(rel)
     db.flush()
+    # Automatic mode: a new newest release goes to the Pilot ring right away.
+    from .agent_update_auto import auto_tick  # noqa: PLC0415 (circular import)
+    auto_tick(db)
     return rel
 
 
@@ -387,12 +390,72 @@ def has_artifact(db: Session, release_id: str, goos: str, goarch: str) -> bool:
         AgentReleaseArtifact.arch == goarch)) > 0
 
 
+UPDATE_NOW_WINDOW = timedelta(minutes=30)
+MAX_UPDATE_NOW_DELAY = 600
+JITTER_PER_DOWNLOAD_SLOT = 15  # seconds of spread per "wave" of parallel downloads
+MAX_JITTER = 6 * 3600
+
+
+def effective_jitter_seconds(db: Session) -> int:
+    """Random start delay for offers: AGENT_UPDATE_JITTER_SECONDS (default 120 s),
+    raised for bigger fleets so roughly AGENT_UPDATE_MAX_PARALLEL_DOWNLOADS
+    devices start per 15 s: max(configured, ceil(active devices / parallel) x 15 s),
+    capped at 6 h. 10 devices: 120 s; 1,000 devices (4 parallel): ~63 min."""
+    s = config.settings
+    base = max(0, s.agent_update_jitter_seconds)
+    active = db.scalar(select(func.count()).select_from(Device).where(Device.status == "active")) or 0
+    slots = max(1, s.agent_update_max_parallel_downloads)
+    fleet = -(-active // slots) * JITTER_PER_DOWNLOAD_SLOT
+    return min(MAX_JITTER, max(base, fleet))
+
+
+def update_now_active(device: Device, now: datetime) -> bool:
+    at = device.update_now_requested_at
+    return at is not None and now - at < UPDATE_NOW_WINDOW
+
+
+def platform_of(device: Device) -> tuple[str, str] | None:
+    """(goos, goarch) from the device record, for explanations in the console
+    (offers themselves use the User-Agent of the check-in)."""
+    goos = OS_FAMILY_TO_GOOS.get(device.os_family or "")
+    arch = (device.architecture or "").strip().lower()
+    goarch = {"x86_64": "amd64", "amd64": "amd64", "x64": "amd64", "arm64": "arm64", "aarch64": "arm64"}.get(arch)
+    return (goos, goarch) if goos and goarch else None
+
+
+def offer_blocker(db: Session, device: Device, rel: AgentRelease, current: str, goos: str | None,
+                  goarch: str | None, now: datetime) -> str | None:
+    """Why `rel` would not be offered to this device (None: it would be)."""
+    if rel.withdrawn_at is not None:
+        return f"release {rel.version} is withdrawn"
+    if rel.expires_at <= now:
+        return f"release {rel.version} has expired"
+    try:
+        cmp = compare_versions(rel.version, current)
+    except ValueError:
+        return f"the device reports an unparsable agent version ({current or 'unknown'})"
+    if cmp == 0:
+        return "already running the target version"
+    if cmp < 0 and current not in (rel.manifest.get("rollback_allowed_from") or []):
+        return f"the device runs a newer version ({current}); agents never downgrade unless the release is signed for it"
+    if goos and goarch and not has_artifact(db, rel.id, goos, goarch):
+        return f"release {rel.version} has no {goos}/{goarch} binary"
+    failed = db.scalar(select(AgentUpdateEvent.status).where(
+        AgentUpdateEvent.device_id == device.id, AgentUpdateEvent.release_id == rel.id,
+        AgentUpdateEvent.status.in_(("rolled_back", "rejected"))).limit(1))
+    if failed:
+        return (f"{rel.version} was {failed.replace('_', ' ')} on this device and is not offered again; "
+                "publish a newer release")
+    return None
+
+
 def offer_for(db: Session, device: Device, user_agent: str | None, now: datetime | None = None) -> dict | None:
     """The update offer returned to an agent at check-in, or None.
 
     Only offers what the agent would accept anyway (newer version, or an
     explicitly signed rollback), skips releases that already failed on this
-    device, and never anything for a platform the release does not cover."""
+    device, and never anything for a platform the release does not cover.
+    Records the offer on the device (caller commits) for the console."""
     now = now or utcnow()
     ua = parse_user_agent(user_agent)
     if ua is None or device.status != "active":
@@ -400,29 +463,23 @@ def offer_for(db: Session, device: Device, user_agent: str | None, now: datetime
     current, goos, goarch = ua
     t = target_for(db, device)
     rel = t.release
-    if rel is None or rel.withdrawn_at is not None or rel.expires_at <= now:
-        return None
-    try:
-        cmp = compare_versions(rel.version, current)
-    except ValueError:
-        return None
-    if cmp == 0:
-        return None
-    if cmp < 0 and current not in (rel.manifest.get("rollback_allowed_from") or []):
-        return None
-    if not has_artifact(db, rel.id, goos, goarch):
-        return None
-    failed = db.scalar(select(func.count()).select_from(AgentUpdateEvent).where(
-        AgentUpdateEvent.device_id == device.id, AgentUpdateEvent.release_id == rel.id,
-        AgentUpdateEvent.status.in_(("rolled_back", "rejected"))))
-    if failed:
+    if rel is None or offer_blocker(db, device, rel, current, goos, goarch, now) is not None:
         return None
     s = config.settings
+    immediate = update_now_active(device, now)
+    jitter = (max(0, min(MAX_UPDATE_NOW_DELAY, device.update_now_delay_seconds or 0)) if immediate
+              else effective_jitter_seconds(db))
+    if device.update_offered_release_id != rel.id or immediate or device.update_offered_at is None:
+        device.update_offered_at, device.update_offered_release_id = now, rel.id
+        device.update_offer_jitter_seconds = jitter
     base = f"/api/agent/updates/releases/{rel.id}"
-    return {"release_id": rel.id, "version": rel.version, "manifest_path": f"{base}/manifest",
-            "artifact_path": f"{base}/artifacts/{goos}/{goarch}",
-            "health_timeout_seconds": max(60, min(3600, s.agent_update_health_timeout_seconds)),
-            "jitter_seconds": max(0, min(6 * 3600, s.agent_update_jitter_seconds))}
+    offer = {"release_id": rel.id, "version": rel.version, "manifest_path": f"{base}/manifest",
+             "artifact_path": f"{base}/artifacts/{goos}/{goarch}",
+             "health_timeout_seconds": max(60, min(3600, s.agent_update_health_timeout_seconds)),
+             "jitter_seconds": jitter}
+    if immediate:
+        offer["immediate"] = True
+    return offer
 
 
 def artifact_with_data(db: Session, release_id: str, goos: str, goarch: str) -> AgentReleaseArtifact | None:
@@ -441,6 +498,8 @@ def record_status(db: Session, device: Device, *, release_id: str | None, from_v
     db.add(ev)
     device.update_status, device.update_status_version = status, to_version[:64]
     device.update_status_detail, device.update_status_at = (detail or "")[:500], now
+    if status in ("installed", "rolled_back", "rejected"):
+        device.update_now_requested_at = device.update_now_delay_seconds = None
     return ev
 
 

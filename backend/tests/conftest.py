@@ -29,6 +29,12 @@ os.environ.update({
     "API_DOCS_PUBLIC": "false",
     # Notification tests drive the dispatcher explicitly (no background thread).
     "NOTIFICATIONS_WORKER_ENABLED": "false",
+    # Agent update automation: tests drive it explicitly (no background thread,
+    # no GitHub access); existing ring tests run in manual mode, the automation
+    # tests switch to automatic themselves.
+    "AGENT_UPDATE_WORKER_ENABLED": "false",
+    "AGENT_UPDATE_AUTO_IMPORT": "false",
+    "AGENT_UPDATE_DEFAULT_MODE": "manual",
 })
 for k in ("AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET", "AZURE_SUBSCRIPTION_IDS", "AZURE_AUTH_MODE",
           "AZURE_MANAGED_IDENTITY_CLIENT_ID", "AZURE_USE_DEFAULT_CREDENTIAL", "SESSION_SECRET", "DEBUG",
