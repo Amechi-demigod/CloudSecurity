@@ -1,5 +1,5 @@
 """Agent auto-update: signed bundle import (signature, hashes, tampering), RBAC
-and MFA step-up, device-credential-only update endpoints, ring / percentage /
+(no per-action MFA step-up), device-credential-only update endpoints, ring / percentage /
 pin targeting, status reporting, audit and notifications."""
 from __future__ import annotations
 
@@ -112,7 +112,7 @@ def test_import_valid_bundle_and_list(admin, key, tmp_path):
     assert {(a["os"], a["arch"]) for a in body["artifacts"]} == {("windows", "amd64"), ("darwin", "arm64")}
     assert [x["version"] for x in admin.get("/api/updates/releases").json()] == ["1.1.0"]
     a = audits("agent_release_imported")
-    assert len(a) == 1 and a[0].detail["version"] == "1.1.0" and a[0].detail["step_up"] == "unavailable"
+    assert len(a) == 1 and a[0].detail["version"] == "1.1.0" and "step_up" not in a[0].detail
     # Same version twice is refused.
     again = upload(admin, make_bundle(tmp_path, "1.1.0", [key]))
     assert again.status_code == 422 and "already imported" in again.json()["detail"]
@@ -181,7 +181,7 @@ def test_python_and_go_compatible_signature_context():
 
 
 # ----------------------------------------------------------------------------- RBAC / auth
-def test_rbac_and_step_up(admin, key, tmp_path, monkeypatch):
+def test_rbac_and_no_step_up(admin, key, tmp_path, monkeypatch):
     data = make_bundle(tmp_path, "1.1.0", [key])
     for role in ("viewer", "analyst"):
         make_user(admin, role)
@@ -193,28 +193,31 @@ def test_rbac_and_step_up(admin, key, tmp_path, monkeypatch):
         assert c.patch(f"/api/updates/rings/{ring(admin)['id']}", json={"reason": "nope", "paused": True}).status_code == 403
     anon = TestClient(admin.app, base_url=BASE_URL)
     assert anon.get("/api/updates/releases").status_code == 401
-    # MFA step-up once the admin has MFA.
+    # An admin WITH MFA enabled needs no fresh code for previously step-up-gated
+    # changes: MFA is enforced at sign-in only; the session (RBAC + CSRF) is enough.
     secret = admin.post("/api/auth/mfa/totp/setup").json()["secret"]
     now = [float(int(__import__("time").time() // 30) * 30 + 5)]
     monkeypatch.setattr(mfa.time, "time", lambda: now[0])
     assert admin.post("/api/auth/mfa/totp/enable", json={"code": pyotp.TOTP(secret).at(now[0])}).status_code == 200
-    now[0] += 30
+    assert admin.get("/api/auth/me").json()["user"]["mfa_enabled"] is True
     r = upload(admin, data)
-    assert r.status_code == 403 and "mfa_step_up_required" in r.json()["detail"]
-    assert upload(admin, data, **{"X-MFA-Code": "000000" if pyotp.TOTP(secret).at(now[0]) != "000000" else "111111"}
-                  ).status_code == 403
-    r = upload(admin, data, **{"X-MFA-Code": pyotp.TOTP(secret).at(now[0])})
     assert r.status_code == 201, r.text
-    assert audits("agent_release_imported")[0].detail["step_up"] == "totp"
-    # Pointing a ring at it deploys code: step-up again (a fresh code).
+    assert "step_up" not in audits("agent_release_imported")[0].detail
     rid = ring(admin)["id"]
-    body = {"reason": "go live", "target_release_id": r.json()["id"]}
-    assert admin.patch(f"/api/updates/rings/{rid}", json=body).status_code == 403
-    now[0] += 30
-    ok = admin.patch(f"/api/updates/rings/{rid}", json=body, headers={"X-MFA-Code": pyotp.TOTP(secret).at(now[0])})
+    ok = admin.patch(f"/api/updates/rings/{rid}", json={"reason": "go live", "target_release_id": r.json()["id"],
+                                                       "rollout_percent": 100})
     assert ok.status_code == 200, ok.text
-    # Pausing does not need a step-up.
     assert admin.patch(f"/api/updates/rings/{rid}", json={"reason": "stop", "paused": True}).status_code == 200
+    assert admin.patch(f"/api/updates/rings/{rid}", json={"reason": "resume", "paused": False}).status_code == 200
+    _, device_id = enrolled_device(admin)
+    pin = admin.put(f"/api/updates/devices/{device_id}", json={"reason": "pin it", "pinned_release_id": r.json()["id"]})
+    assert pin.status_code == 200, pin.text
+    # Everything stays audited.
+    changed = audits("agent_update_ring_changed")
+    assert len(changed) == 3 and all(a.actor_email == "admin@example.com" for a in changed)
+    assert changed[0].detail["changes"]["target_release_id"]["version"] == "1.1.0"
+    dev = audits("agent_update_device_changed")
+    assert len(dev) == 1 and dev[0].detail["changes"]["pin"]["version"] == "1.1.0"
 
 
 def test_update_endpoints_require_device_credential(admin, key, tmp_path):

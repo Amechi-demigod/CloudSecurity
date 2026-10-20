@@ -120,7 +120,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_api.admin_router)
     app.include_router(notifications_api.router)  # analyst read-only, admin writes
     app.include_router(mfa_sso_api.admin_router)
-    app.include_router(agent_updates_api.router)  # /api/updates/*: viewer reads, admin (+MFA step-up) writes
+    app.include_router(agent_updates_api.router)  # /api/updates/*: viewer reads, admin writes (all audited)
     if s.api_docs_enabled:
         _add_docs(app)
     return app
