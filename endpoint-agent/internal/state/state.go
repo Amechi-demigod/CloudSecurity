@@ -36,6 +36,9 @@ type State struct {
 	CommandPollSeconds     int       `json:"command_poll_seconds"`
 	LastCheckIn            time.Time `json:"last_check_in,omitempty"`
 	ExecutedCommands       []string  `json:"executed_commands,omitempty"`
+	// ScriptBundleVersion is the highest signed script-bundle version this agent
+	// has run a script from; older bundles are refused (anti-rollback).
+	ScriptBundleVersion string `json:"script_bundle_version,omitempty"`
 }
 
 // Paths are the agent's directories.
@@ -165,13 +168,13 @@ func writeSecure(dir, dst string, data []byte) error {
 	return replaceFile(tmp.Name(), dst)
 }
 
-// Remove deletes the state file, the stored CA bundle and any pending
-// enrollment config (uninstall --purge).
+// Remove deletes the state file, the stored CA bundle, the local policy, the
+// lost-mode record and any pending enrollment config (uninstall --purge).
 func Remove(p Paths) error {
 	if err := RemoveEnrollConfig(p); err != nil {
 		return err
 	}
-	for _, f := range []string{p.StateFile(), p.CAFile()} {
+	for _, f := range []string{p.StateFile(), p.CAFile(), p.PolicyFile(), filepath.Join(p.StateDir, "lostmode.json")} {
 		if err := os.Remove(f); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}

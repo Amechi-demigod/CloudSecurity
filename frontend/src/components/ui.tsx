@@ -19,9 +19,10 @@ export function SeverityBadge({ severity }: { severity: string }) {
   );
 }
 
-export function Tag({ children, tone = "default" }: { children: ReactNode; tone?: "default" | "warn" | "good" | "accent" }) {
+export function Tag({ children, tone = "default" }: { children: ReactNode; tone?: "default" | "warn" | "good" | "accent" | "critical" }) {
   const tones = {
     default: "border-line text-ink-2",
+    critical: "border-sev-critical/60 bg-sev-critical/10 text-sev-critical",
     warn: "border-sev-high/60 text-sev-high",
     good: "border-good/60 text-good",
     accent: "border-accent/60 text-accent",

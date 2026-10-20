@@ -30,10 +30,13 @@ import (
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/agent"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/collect"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/logx"
+	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/lostmode"
+	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/scripts"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/service"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/state"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/update"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/version"
+	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/wipe"
 )
 
 const usage = `cnapp-agent %s - CNAPP endpoint agent (inventory, posture, allow-listed remote actions)
@@ -42,6 +45,9 @@ Usage:
   cnapp-agent enroll --server URL (--token TOKEN | --token-stdin) [--insecure-dev] [--ca-file PEM]
   cnapp-agent configure --server URL (--token TOKEN | --token-stdin) [--ca-file PEM | --ca-b64 B64]
   cnapp-agent configure --from-file enroll.json   (the MSI also passes --preset)
+  cnapp-agent configure --allow-wipe=1|0          opt this device in to / out of remote wipe (Windows; MSI
+                                      property CNAPP_ALLOW_WIPE). Stored in the protected local policy;
+                                      the CNAPP server cannot change it
                                       store a pending enrollment (protected enroll.json); the service
                                       enrolls with it on start, then deletes the token (used by the
                                       MSI / pkg installers and MDM scripts; no-op if already enrolled)
@@ -56,6 +62,8 @@ Usage:
   cnapp-agent run                     run in the foreground (used by the service)
   cnapp-agent version
   cnapp-agent update-keys             list the release-signing keys this build trusts for self-update
+  cnapp-agent script-keys             list the script-signing keys this build trusts for approved scripts
+  cnapp-agent wipe-readiness          print the remote-wipe readiness JSON (run as SYSTEM: WinRE, MDM_RemoteWipe)
 
 Self-update: the service installs agent releases the CNAPP server offers, but only
 if their manifest is signed by a release key compiled into this binary (see
@@ -107,6 +115,10 @@ func main() {
 		fmt.Println(version.Version)
 	case "update-keys":
 		err = cmdUpdateKeys()
+	case "script-keys":
+		err = cmdScriptKeys()
+	case "wipe-readiness":
+		err = cmdWipeReadiness(args)
 	case "update-watchdog": // started detached by the service during a self-update
 		err = cmdUpdateWatchdog(args)
 	case "help", "--help", "-h":
@@ -191,13 +203,27 @@ func cmdConfigure(args []string) error {
 	caB64 := fs.String("ca-b64", "", "base64 of the PEM (or DER) CA certificate (optional; MSI property CNAPP_CA_B64)")
 	fromFile := fs.String("from-file", "", "read server, token and CA from an enroll.json document")
 	preset := fs.String("preset", "", "MSI property CNAPP_PRESET (set by a pre-configured download; used by the MSI)")
+	allowWipe := fs.String("allow-wipe", "", "1 or 0: opt this device in to / out of remote wipe (MSI property "+
+		"CNAPP_ALLOW_WIPE; empty = keep the current setting)")
 	_ = fs.Parse(args)
 	quietLogs()
 	p := state.Resolve(*home)
 	var cfg *state.EnrollConfig
+	wipeSetting, err := state.ParseBoolSetting(*allowWipe)
+	if err != nil {
+		return fmt.Errorf("--allow-wipe: %w", err)
+	}
+	if wipeSetting != nil {
+		if err := setWipePolicy(p, *wipeSetting, "configure --allow-wipe"); err != nil {
+			return err
+		}
+	}
 	tok, err := readToken(*token, *tokenStdin)
 	if err != nil {
 		return err
+	}
+	if wipeSetting != nil && *server == "" && tok == "" && *fromFile == "" && !isFlagSet(fs, "preset") {
+		return nil // only the wipe opt-in was changed
 	}
 	// The MSI passes every source; explicit CNAPP_SERVER/CNAPP_TOKEN properties win over
 	// the preset, and with neither (generic MSI, no properties) there is nothing to do.
@@ -234,6 +260,11 @@ func cmdConfigure(args []string) error {
 			}
 		}
 	}
+	if cfg.AllowWipe && wipeSetting == nil {
+		if err := setWipePolicy(p, true, "installer preset (Allow remote wipe)"); err != nil {
+			return err
+		}
+	}
 	if st, err := state.Load(p); err == nil {
 		fmt.Printf("Already enrolled as device %s with %s: enrollment config not written "+
 			"(use `cnapp-agent enroll` to re-enroll).\n", st.DeviceID, st.ServerURL)
@@ -252,7 +283,35 @@ func isFlagSet(fs *flag.FlagSet, name string) bool {
 	return set
 }
 
+// setWipePolicy records the local remote-wipe opt-in (policy.json).
+func setWipePolicy(p state.Paths, allow bool, source string) error {
+	pol, err := state.LoadPolicy(p)
+	if err != nil {
+		pol = state.Policy{}
+	}
+	pol.AllowWipe, pol.UpdatedAt, pol.Source = allow, time.Now().UTC(), source
+	if err := state.SavePolicy(p, pol); err != nil {
+		return fmt.Errorf("saving the local policy: %w", err)
+	}
+	if allow {
+		fmt.Println("Remote wipe ENABLED for this device: after a two-person approval in the console, an admin can " +
+			"reset this device (Windows only).")
+		if runtime.GOOS != "windows" {
+			fmt.Println("Note: remote wipe is only supported on Windows; the setting has no effect here.")
+		}
+	} else {
+		fmt.Println("Remote wipe disabled for this device.")
+	}
+	return nil
+}
+
 func purge(p state.Paths) error {
+	// Leave no lost-mode message behind: restore the previous sign-in notice first.
+	if out, err := lostmode.New(p, nil).Disable(context.Background()); err != nil {
+		fmt.Fprintln(os.Stderr, "warning: could not restore the pre-lost-mode settings:", err)
+	} else if !strings.Contains(out, "not active") {
+		fmt.Println(out)
+	}
 	if err := state.Remove(p); err != nil {
 		return err
 	}
@@ -331,8 +390,14 @@ func cmdStatus(args []string) error {
 	if err != nil {
 		return err
 	}
+	pol, perr := state.LoadPolicy(p)
+	policy := map[string]any{"allow_wipe": pol.AllowWipe, "source": pol.Source}
+	if perr != nil {
+		policy["error"] = perr.Error()
+	}
 	out := map[string]any{"enrolled": true, "agent_version": version.Version, "state_file": p.StateFile(), "log_file": p.LogFile(),
-		"state": st.Redacted(), "update": update.LoadFile(p)}
+		"state": st.Redacted(), "update": update.LoadFile(p), "policy": policy,
+		"lost_mode": lostmode.New(p, nil).Status()}
 	b, _ := json.MarshalIndent(out, "", "  ")
 	fmt.Println(string(b))
 	return nil
@@ -448,6 +513,37 @@ func cmdUpdateKeys() error {
 	for _, k := range keys {
 		fmt.Println(k.ID)
 	}
+	return nil
+}
+
+func cmdScriptKeys() error {
+	keys, err := scripts.BuiltinKeys()
+	if err != nil {
+		return err
+	}
+	if len(keys) == 0 {
+		fmt.Println("This build trusts no script-signing keys: approved scripts are disabled.")
+		return nil
+	}
+	for _, k := range keys {
+		fmt.Println(k.ID)
+	}
+	return nil
+}
+
+// cmdWipeReadiness prints what the agent reports about remote wipe (CI runs it
+// as SYSTEM on windows-latest to check that MDM_RemoteWipe and its methods
+// exist, without calling them).
+func cmdWipeReadiness(args []string) error {
+	fs, home := flags("wipe-readiness")
+	_ = fs.Parse(args)
+	quietLogs()
+	pol, _ := state.LoadPolicy(state.Resolve(*home))
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	r := wipe.Probe(ctx, pol.AllowWipe)
+	b, _ := json.MarshalIndent(r, "", "  ")
+	fmt.Println(string(b))
 	return nil
 }
 

@@ -39,6 +39,9 @@ type EnrollConfig struct {
 	// PEM bundle of the private CA that issued the server certificate; empty
 	// when the server's certificate is publicly (or already machine-) trusted.
 	CAPEM string `json:"ca_pem,omitempty"`
+	// AllowWipe is set by a pre-configured installer downloaded with "Allow
+	// remote wipe" (Windows): `configure` stores it in policy.json.
+	AllowWipe bool `json:"allow_wipe,omitempty"`
 }
 
 // EnrollFile is the full path of enroll.json.

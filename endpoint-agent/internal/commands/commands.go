@@ -1,8 +1,12 @@
 // Package commands executes remote actions from a strict allowlist.
 //
 // The agent has NO generic "run this command/script" capability. Whatever the
-// server sends, only the handful of action types below are executed, with
-// validated parameters, each at most once, and only before it expires.
+// server sends, only the action types below are executed, with validated
+// parameters, each at most once, and only before it expires. run_script only
+// runs scripts from a bundle signed by a script-signing key compiled into the
+// agent, with parameters validated against the signed schema (internal/scripts);
+// wipe_device only works on Windows devices that opted in at install time
+// (internal/wipe).
 package commands
 
 import (
@@ -10,9 +14,14 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"regexp"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/model"
+	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/scripts"
+	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/wipe"
 )
 
 // Allowed command types.
@@ -22,7 +31,16 @@ const (
 	CollectLogs           = "collect_logs"
 	RestartAgent          = "restart_agent"
 	UpdateCheckInInterval = "update_check_in_interval"
+	EnableLostMode        = "enable_lost_mode"
+	DisableLostMode       = "disable_lost_mode"
+	WipeDevice            = "wipe_device"
+	RunScript             = "run_script"
 )
+
+// Lost-mode message limits (also enforced server-side).
+const MaxLostMessage = 300
+
+var phoneRe = regexp.MustCompile(`^[0-9+][0-9 ()./+-]{2,31}$`)
 
 // Interval bounds (also enforced server-side).
 const (
@@ -37,6 +55,10 @@ var allowedParams = map[string][]string{
 	CollectLogs:           {},
 	RestartAgent:          {},
 	UpdateCheckInInterval: {"interval_seconds"},
+	EnableLostMode:        {"message", "phone"},
+	DisableLostMode:       {},
+	WipeDevice:            {"mode", "hostname"},
+	RunScript:             {"bundle_id", "bundle_version", "script", "script_sha256", "parameters"},
 }
 
 // Allowed reports whether a command type is in the allowlist.
@@ -73,12 +95,43 @@ func Validate(c model.Command, deviceID string, now time.Time) error {
 			return fmt.Errorf("%w: unexpected parameter %q for %s", ErrRejected, k, c.Type)
 		}
 	}
-	if c.Type == UpdateCheckInInterval {
-		if _, err := IntervalParam(c.Params); err != nil {
-			return fmt.Errorf("%w: %v", ErrRejected, err)
-		}
+	var err error
+	switch c.Type {
+	case UpdateCheckInInterval:
+		_, err = IntervalParam(c.Params)
+	case EnableLostMode:
+		_, _, err = LostModeParams(c.Params)
+	case WipeDevice:
+		err = wipe.ValidateParams(c)
+	case RunScript:
+		err = scripts.ValidateCommand(c)
+	}
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrRejected, err)
 	}
 	return nil
+}
+
+// LostModeParams extracts and validates the lost-mode message and phone.
+func LostModeParams(p map[string]any) (string, string, error) {
+	msg, ok1 := p["message"].(string)
+	phone, ok2 := p["phone"].(string)
+	if !ok1 || !ok2 {
+		return "", "", fmt.Errorf("message and phone are required")
+	}
+	msg = strings.TrimSpace(msg)
+	if n := utf8.RuneCountInString(msg); n == 0 || n > MaxLostMessage || strings.Count(msg, "\n") > 5 {
+		return "", "", fmt.Errorf("message must be 1-%d characters and at most 6 lines", MaxLostMessage)
+	}
+	for _, r := range msg {
+		if (r < 0x20 && r != '\n') || r == 0x7f {
+			return "", "", fmt.Errorf("message must not contain control characters")
+		}
+	}
+	if phone = strings.TrimSpace(phone); !phoneRe.MatchString(phone) {
+		return "", "", fmt.Errorf("phone must be 3-32 characters: digits, spaces and + ( ) . / -")
+	}
+	return msg, phone, nil
 }
 
 // IntervalParam extracts and validates interval_seconds.
@@ -97,14 +150,18 @@ type Deps struct {
 	UploadLogs  func(ctx context.Context, c model.Command, gz []byte) error
 	SetInterval func(seconds int) error
 	Lock        func(ctx context.Context) (string, error)
+	LostMode    func(ctx context.Context, enable bool, message, phone string) (string, error)
+	Wipe        func(ctx context.Context, c model.Command) Outcome
+	RunScript   func(ctx context.Context, c model.Command) Outcome
 }
 
 // Outcome of an executed command. After (if set) runs once the result has been
 // reported, e.g. to restart the agent.
 type Outcome struct {
-	Status string // succeeded | failed | rejected
-	Output string
-	After  func()
+	Status   string // succeeded | failed | rejected
+	Output   string
+	After    func()
+	ExitCode *int // run_script
 }
 
 // Execute runs an already validated command.
@@ -141,6 +198,26 @@ func Execute(ctx context.Context, c model.Command, d Deps, restart func()) Outco
 			return Outcome{Status: "failed", Output: out + err.Error()}
 		}
 		return Outcome{Status: "succeeded", Output: out}
+	case EnableLostMode, DisableLostMode:
+		if d.LostMode == nil {
+			return Outcome{Status: "rejected", Output: "lost mode is not available"}
+		}
+		msg, phone, _ := LostModeParams(c.Params)
+		out, err := d.LostMode(ctx, c.Type == EnableLostMode, msg, phone)
+		if err != nil {
+			return Outcome{Status: "failed", Output: strings.TrimSpace(out + "\n" + err.Error())}
+		}
+		return Outcome{Status: "succeeded", Output: out}
+	case WipeDevice:
+		if d.Wipe == nil {
+			return Outcome{Status: "rejected", Output: "remote wipe is not available"}
+		}
+		return d.Wipe(ctx, c)
+	case RunScript:
+		if d.RunScript == nil {
+			return Outcome{Status: "rejected", Output: "scripts are not available"}
+		}
+		return d.RunScript(ctx, c)
 	}
 	return Outcome{Status: "rejected", Output: "command type not in allowlist"}
 }

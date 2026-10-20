@@ -215,11 +215,34 @@ func (c *Client) Commands(ctx context.Context) (*model.CommandList, error) {
 
 // Result reports a command's outcome.
 func (c *Client) Result(ctx context.Context, cmd model.Command, status, output string) error {
+	return c.ResultWithExit(ctx, cmd, status, output, nil)
+}
+
+// ResultWithExit reports a command's outcome with a script exit code.
+func (c *Client) ResultWithExit(ctx context.Context, cmd model.Command, status, output string, exitCode *int) error {
 	if len(output) > 16000 {
 		output = output[:16000] + "\n[truncated]"
 	}
-	return c.postJSON(ctx, "/api/agent/commands/"+cmd.ID+"/result",
-		map[string]string{"nonce": cmd.Nonce, "status": status, "output": output}, nil)
+	body := map[string]any{"nonce": cmd.Nonce, "status": status, "output": output}
+	if exitCode != nil {
+		body["exit_code"] = *exitCode
+	}
+	return c.postJSON(ctx, "/api/agent/commands/"+cmd.ID+"/result", body, nil)
+}
+
+// Ack sends the final acknowledgement of a wipe_device command. It succeeds
+// only when the server confirms with {"proceed": true}.
+func (c *Client) Ack(ctx context.Context, cmd model.Command) error {
+	var out struct {
+		Proceed bool `json:"proceed"`
+	}
+	if err := c.postJSON(ctx, "/api/agent/commands/"+cmd.ID+"/ack", map[string]string{"nonce": cmd.Nonce}, &out); err != nil {
+		return err
+	}
+	if !out.Proceed {
+		return errors.New("server did not confirm the acknowledgement")
+	}
+	return nil
 }
 
 // UploadLogs uploads a gzip log bundle for a collect_logs command.
@@ -228,10 +251,12 @@ func (c *Client) UploadLogs(ctx context.Context, cmd model.Command, gz []byte) e
 		map[string]string{"X-Command-Nonce": cmd.Nonce}, nil)
 }
 
-// Fetch downloads an /api/agent/updates/ resource into w (at most max bytes;
-// more is an error). Only paths on the enrolled server are ever fetched.
+// Fetch downloads an /api/agent/updates/ or /api/agent/scripts/ resource into
+// w (at most max bytes; more is an error). Only paths on the enrolled server
+// are ever fetched.
 func (c *Client) Fetch(ctx context.Context, path string, max int64, w io.Writer) (int64, error) {
-	if !strings.HasPrefix(path, "/api/agent/updates/") || strings.Contains(path, "..") || strings.ContainsAny(path, "?#\\") {
+	allowed := strings.HasPrefix(path, "/api/agent/updates/") || strings.HasPrefix(path, "/api/agent/scripts/")
+	if !allowed || strings.Contains(path, "..") || strings.ContainsAny(path, "?#\\") {
 		return 0, fmt.Errorf("refusing to fetch %q", path)
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)

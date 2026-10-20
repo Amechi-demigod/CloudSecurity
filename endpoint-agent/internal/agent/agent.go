@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"runtime"
 	"sync"
 	"time"
 
@@ -14,10 +15,16 @@ import (
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/client"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/collect"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/commands"
+	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/lostmode"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/model"
+	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/scripts"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/state"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/update"
+	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/wipe"
 )
+
+// wipeProbeTTL: how long the (slow-ish) wipe readiness probe result is reused.
+const wipeProbeTTL = time.Hour
 
 const (
 	defaultInterval    = 15 * time.Minute
@@ -46,6 +53,19 @@ type Agent struct {
 	Updater    *update.Updater
 	offer      *update.Offer
 	nextUpdate time.Time
+
+	// Lost mode, remote wipe and approved scripts (replaceable in tests).
+	LostMode     *lostmode.Manager
+	WipeProbe    func(ctx context.Context, optIn bool) wipe.Readiness
+	WipeExec     wipe.Executor
+	GOOS         string
+	ScriptKeys   []update.TrustedKey
+	ScriptRunner scripts.Runner
+
+	hostname   string
+	probe      *wipe.Readiness
+	probedAt   time.Time
+	nextRelock time.Time
 }
 
 // UpdateTransport exposes the API client to the updater.
@@ -61,7 +81,15 @@ func Load(p state.Paths) (*Agent, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Agent{Paths: p, st: st, client: c, policy: backoff.Default, Collect: collect.Collect, Lock: commands.Lock}, nil
+	a := &Agent{Paths: p, st: st, client: c, policy: backoff.Default, Collect: collect.Collect, Lock: commands.Lock,
+		WipeProbe: wipe.Probe, WipeExec: wipe.WMIExecutor{}, GOOS: runtime.GOOS, ScriptRunner: scripts.OSRunner{}}
+	a.LostMode = lostmode.New(p, func(ctx context.Context) (string, error) { return a.Lock(ctx) })
+	if keys, err := scripts.BuiltinKeys(); err != nil {
+		slog.Error("script-signing keys unusable; scripts disabled", "err", err)
+	} else {
+		a.ScriptKeys = keys
+	}
+	return a, nil
 }
 
 // State returns a copy of the current state.
@@ -111,6 +139,7 @@ func (a *Agent) serverNow() time.Time {
 func (a *Agent) CheckIn(ctx context.Context) error {
 	start := time.Now()
 	r := a.Collect(ctx, collect.Options{Software: true})
+	a.addAgentPosture(ctx, r)
 	resp, err := a.client.CheckIn(ctx, r)
 	if err != nil {
 		return err
@@ -172,9 +201,12 @@ func (a *Agent) handle(ctx context.Context, c model.Command) {
 		UploadLogs:  a.client.UploadLogs,
 		SetInterval: a.setInterval,
 		Lock:        a.Lock,
+		LostMode:    a.lostMode,
+		Wipe:        a.wipe,
+		RunScript:   a.runScript,
 	}, a.Restart)
 	log.Info("command finished", "status", out.Status, "output", out.Output)
-	if err := a.client.Result(ctx, c, out.Status, out.Output); err != nil {
+	if err := a.client.ResultWithExit(ctx, c, out.Status, out.Output, out.ExitCode); err != nil {
 		log.Warn("reporting result failed", "err", err)
 	}
 	if out.After != nil {
@@ -296,6 +328,7 @@ func (a *Agent) Run(ctx context.Context) error {
 			a.Restart()
 			return nil
 		}
+		a.maybeRelock(ctx)
 	}
 }
 

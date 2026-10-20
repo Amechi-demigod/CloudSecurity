@@ -3,7 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { api } from "../../api";
 import { useAuth } from "../../auth/context";
 import { ConnectivityTag, HealthBadge, IssueList } from "../../components/devices";
-import { Card, Empty, ErrorNote, PageHeader, Select, Stat, Table } from "../../components/ui";
+import { Card, Empty, ErrorNote, PageHeader, Select, Stat, Table, Tag } from "../../components/ui";
 import { OS_LABEL } from "../../lib/devices";
 import { fmtAgo } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
@@ -31,6 +31,9 @@ export default function Devices() {
           <div className="flex items-center gap-2">
             <Link to="/devices/updates" className="rounded border border-line bg-surface-2 px-3 py-1.5 text-sm font-medium text-ink hover:bg-line">
               Agent updates
+            </Link>
+            <Link to="/devices/scripts" className="rounded border border-line bg-surface-2 px-3 py-1.5 text-sm font-medium text-ink hover:bg-line">
+              Scripts
             </Link>
             {can("admin") && (
               <Link to="/devices/enrollment" className="rounded bg-accent px-3 py-1.5 text-sm font-medium text-white hover:brightness-110">
@@ -124,6 +127,8 @@ export default function Devices() {
                   <Link to={`/devices/${d.id}`} className="font-medium hover:text-accent" onClick={(e) => e.stopPropagation()}>
                     {d.hostname}
                   </Link>
+                  {d.device_state === "lost" && <span className="ml-2"><Tag tone="warn">Lost</Tag></span>}
+                  {d.device_state === "wipe_pending" && <span className="ml-2"><Tag tone="critical">Wipe pending</Tag></span>}
                   {d.device_group && (
                     <span className="ml-2 rounded border border-line px-1.5 py-0.5 text-[10px] text-ink-3">{d.device_group}</span>
                   )}

@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -91,6 +92,74 @@ func TestExecute(t *testing.T) {
 		t.Errorf("%+v", o)
 	}
 	if o := Execute(ctx, cmd("run_script", nil), d, nil); o.Status != "rejected" {
+		t.Errorf("%+v", o)
+	}
+}
+
+func TestNewCommandValidation(t *testing.T) {
+	ok := []model.Command{
+		cmd(EnableLostMode, map[string]any{"message": "Lost laptop.\nPlease call.", "phone": "+234 (1) 234-5678"}),
+		cmd(DisableLostMode, nil),
+		cmd(WipeDevice, map[string]any{"mode": "protected", "hostname": "LAPTOP-1"}),
+		cmd(RunScript, map[string]any{"bundle_id": strings.Repeat("a", 32), "bundle_version": "1.0.0",
+			"script": "windows-list-local-admins", "script_sha256": strings.Repeat("b", 64), "parameters": map[string]any{}}),
+	}
+	ok[2].IssuedAt = now
+	for _, c := range ok {
+		if err := Validate(c, "dev", now); err != nil {
+			t.Errorf("%s: %v", c.Type, err)
+		}
+	}
+	bad := []model.Command{
+		cmd(EnableLostMode, map[string]any{"message": "", "phone": "123456"}),
+		cmd(EnableLostMode, map[string]any{"message": "hi", "phone": "call me"}),
+		cmd(EnableLostMode, map[string]any{"message": "a\x07b", "phone": "123456"}),
+		cmd(EnableLostMode, map[string]any{"message": strings.Repeat("x", 301), "phone": "123456"}),
+		cmd(EnableLostMode, map[string]any{"message": "hi", "phone": "123456", "script": "x"}),
+		cmd(DisableLostMode, map[string]any{"message": "x"}),
+		cmd(WipeDevice, map[string]any{"mode": "persist_user_data", "hostname": "x"}),
+		cmd(WipeDevice, map[string]any{"mode": "protected"}),
+		cmd(RunScript, map[string]any{"bundle_id": "x", "bundle_version": "1", "script": "a", "script_sha256": "c"}),
+		cmd(RunScript, map[string]any{"bundle_id": strings.Repeat("a", 32), "bundle_version": "1.0.0",
+			"script": "x-y", "script_sha256": strings.Repeat("b", 64), "command": "whoami"}),
+	}
+	for i, c := range bad {
+		if err := Validate(c, "dev", now); !errors.Is(err, ErrRejected) {
+			t.Errorf("bad[%d] %s accepted", i, c.Type)
+		}
+	}
+}
+
+func TestExecuteNewCommands(t *testing.T) {
+	var got []string
+	d := Deps{
+		LostMode: func(_ context.Context, enable bool, msg, phone string) (string, error) {
+			got = append(got, fmt.Sprintf("%v|%s|%s", enable, msg, phone))
+			return "ok", nil
+		},
+		Wipe: func(context.Context, model.Command) Outcome { return Outcome{Status: "succeeded", Output: "wiping"} },
+		RunScript: func(context.Context, model.Command) Outcome {
+			c := 0
+			return Outcome{Status: "succeeded", ExitCode: &c}
+		},
+	}
+	ctx := context.Background()
+	if o := Execute(ctx, cmd(EnableLostMode, map[string]any{"message": " Lost ", "phone": "123456"}), d, nil); o.Status != "succeeded" {
+		t.Errorf("%+v", o)
+	}
+	if o := Execute(ctx, cmd(DisableLostMode, nil), d, nil); o.Status != "succeeded" {
+		t.Errorf("%+v", o)
+	}
+	if strings.Join(got, ",") != "true|Lost|123456,false||" {
+		t.Errorf("%q", got)
+	}
+	if o := Execute(ctx, cmd(WipeDevice, nil), d, nil); o.Output != "wiping" {
+		t.Errorf("%+v", o)
+	}
+	if o := Execute(ctx, cmd(RunScript, nil), d, nil); o.ExitCode == nil {
+		t.Errorf("%+v", o)
+	}
+	if o := Execute(ctx, cmd(WipeDevice, nil), Deps{}, nil); o.Status != "rejected" {
 		t.Errorf("%+v", o)
 	}
 }

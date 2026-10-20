@@ -111,6 +111,7 @@ function InstallerDownload({ onCreated }: { onCreated: () => void }) {
   const [group, setGroup] = useState("");
   const [name, setName] = useState("");
   const [includeCa, setIncludeCa] = useState<boolean | null>(null);
+  const [allowWipe, setAllowWipe] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<{ filename: string; sha256: string | null } | null>(null);
@@ -131,6 +132,7 @@ function InstallerDownload({ onCreated }: { onCreated: () => void }) {
         max_devices: Number(maxDevices),
         device_group: group.trim() || null,
         include_ca: ca,
+        ...(platform === "windows-msi" ? { allow_wipe: allowWipe } : {}),
       });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -188,6 +190,17 @@ function InstallerDownload({ onCreated }: { onCreated: () => void }) {
               {info?.ca_configured
                 ? "Needed while the server uses its built-in/internal CA. Untick once it has a publicly trusted certificate (or your CA is deployed by GPO/MDM)."
                 : "No private CA is configured on the server: the certificate must be publicly trusted (or already trusted by the devices)."}
+            </span>
+          </span>
+        </label>
+        <label className="flex items-start gap-2 text-sm md:col-span-2">
+          <input type="checkbox" className="mt-1" checked={platform === "windows-msi" && allowWipe} disabled={platform !== "windows-msi"}
+            onChange={(e) => setAllowWipe(e.target.checked)} />
+          <span>
+            Allow remote wipe on devices installed with this package (Windows only)
+            <span className={`block text-xs ${allowWipe && platform === "windows-msi" ? "text-sev-high" : "text-ink-3"}`}>
+              Lets admins erase these devices after a two-person approval. It cannot be turned on later from the server, only by reinstalling
+              with this option or the MSI property <code>CNAPP_ALLOW_WIPE=1</code>.
             </span>
           </span>
         </label>
