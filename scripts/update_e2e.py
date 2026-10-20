@@ -206,7 +206,7 @@ def main() -> int:
                 if cond():
                     print(f"ok: {what}", flush=True)
                     return
-                if time.time() - last_kick > 90:  # make the agent check in (and start the update) soon
+                if kick != "none" and time.time() - last_kick > 90:  # make the agent check in (and update) soon
                     try:
                         if kick == "update_now":
                             update_now()
@@ -242,15 +242,31 @@ def main() -> int:
         assert pending["state"] in ("waiting_checkin", "offered") and pending["update_now_supported"], pending
         queued = update_now()["queued"]
         assert [q["command"] for q in queued] == ["check_for_update"], queued
+        queued_at = upd()["pending"]["update_now_requested_at"] or ""
+        assert queued_at, upd()["pending"]
         assert upd()["pending"]["state"] in ("update_now_requested", "offered", "updating", "up_to_date")
         t0 = time.time()
         wait("agent self-updated to 1.1.0 and reported installed",
              lambda: device()["agent_version"] == "1.1.0" and upd()["status"] == "installed", 600)
-        cmds = [c for c in api.call("GET", f"/api/devices/{dev_id}/commands") if c["type"] == "check_for_update"]
-        print("check_for_update:", [(c["status"], c["output"]) for c in cmds])
-        assert any(c["status"] == "succeeded" and "1.1.0" in (c["output"] or "") and "starting now" in c["output"]
-                   for c in cmds), cmds
-        print(f"PASS: update now -> installed {time.time() - t0:.0f}s later (start jitter configured: 3600 s)")
+        took = time.time() - t0
+        # The download started right after "Update now", not after the random delay of up to 1 h.
+        hist = upd()["history"]
+        started = min(h["created_at"] for h in hist if h["status"] == "downloading" and h["to_version"] == "1.1.0")
+        from datetime import datetime
+        delay = (datetime.fromisoformat(started.replace("Z", "+00:00"))
+                 - datetime.fromisoformat(queued_at.replace("Z", "+00:00"))).total_seconds()
+        print(f"download started {delay:.0f}s after update now; installed {took:.0f}s after it")
+        assert delay < 240, f"update started {delay:.0f}s after update now: jitter was not skipped"
+
+        def cfu() -> list[dict]:
+            return [c for c in api.call("GET", f"/api/devices/{dev_id}/commands") if c["type"] == "check_for_update"]
+
+        # The command itself completes too (before the update, or right after when the
+        # immediate offer of an earlier check-in already started it).
+        wait("check_for_update command completed", lambda: any(c["status"] == "succeeded" for c in cfu()), 300,
+             kick="none")
+        print("check_for_update:", [(c["status"], c["output"]) for c in cfu()])
+        print(f"PASS: update now -> installed {took:.0f}s later (start jitter configured: 3600 s)")
         hist = [h["status"] for h in upd()["history"]][::-1]
         print("history:", hist)
         for s in ("downloading", "verified", "installing", "installed"):
