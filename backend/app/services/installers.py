@@ -127,15 +127,24 @@ def availability() -> dict[str, dict]:
 
 # ----------------------------------------------------------------------------- server identity
 def server_url() -> str:
-    """PUBLIC_BASE_URL, validated: agents only talk https, without credentials."""
-    url = config.settings.public_base_url
+    """The URL agents use: PUBLIC_AGENT_URL when set (e.g. a dedicated, internet-facing
+    https://agents.example.com), else PUBLIC_BASE_URL. Validated: https only, no credentials."""
+    s = config.settings
+    name, url = ("PUBLIC_AGENT_URL", s.public_agent_url) if s.public_agent_url else ("PUBLIC_BASE_URL", s.public_base_url)
     if not url:
         raise InstallerConfigError("PUBLIC_BASE_URL is not set: installers need the https:// address agents "
                                    "use to reach this server (on-prem: cnapp-ctl set-hostname NAME)")
     if not _SERVER_RE.fullmatch(url):
-        raise InstallerConfigError(f"PUBLIC_BASE_URL must be an https:// URL without credentials or query "
+        raise InstallerConfigError(f"{name} must be an https:// URL without credentials or query "
                                    f"(got {url!r})")
     return url
+
+
+def server_url_or_none() -> str | None:
+    try:
+        return server_url()
+    except InstallerConfigError:
+        return None
 
 
 def server_ca_pem() -> str | None:

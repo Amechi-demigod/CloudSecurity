@@ -5,6 +5,12 @@
 #   CNAPP_HOSTNAME         canonical internal hostname (HTTP -> HTTPS redirect target)
 #   NGINX_LOCAL_RESOLVERS  from /etc/resolv.conf (Docker's embedded DNS)
 # nginx runs unprivileged: 8080 is published as 80, 8443 as 443.
+#
+# Access policy (rendered by cnapp-access.sh into conf.d/00-cnapp-access.conf and
+# the cnapp-*.inc files): clients outside CNAPP_INTERNAL_CIDRS get 404 for
+# everything except the endpoint-agent API (/api/agent/), which is what
+# `cnapp-ctl public-agent enable` exposes to the internet. 404 rather than 403:
+# an internet scanner learns nothing about what else runs here.
 
 resolver ${NGINX_LOCAL_RESOLVERS} valid=30s ipv6=off;
 
@@ -12,6 +18,12 @@ resolver ${NGINX_LOCAL_RESOLVERS} valid=30s ipv6=off;
 server {
   listen 8080 default_server;
   server_tokens off;
+  include /etc/nginx/conf.d/cnapp-server.inc;
+
+  # Port 80 is never published to the internet (cnapp-ctl keeps it internal-only).
+  if ($cnapp_internal = 0) {
+    return 404;
+  }
 
   location = /healthz {
     access_log off;
@@ -51,6 +63,12 @@ server {
   ssl_session_timeout 1d;
   ssl_session_tickets off;
 
+  include /etc/nginx/conf.d/cnapp-server.inc;
+  # Outside the internal networks only the agent API exists.
+  if ($cnapp_block) {
+    return 404;
+  }
+
   # Matches the backend's MAX_REQUEST_BYTES default (1 MiB)
   client_max_body_size 1m;
 
@@ -76,7 +94,9 @@ server {
     proxy_http_version 1.1;
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-Host $host;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    # nginx is the edge: the client address it saw, never values a client sent.
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $remote_addr;
     proxy_set_header X-Forwarded-Proto https;
     proxy_read_timeout 120s;
     proxy_hide_header X-Content-Type-Options;
@@ -85,23 +105,10 @@ server {
     proxy_hide_header Strict-Transport-Security;
   }
 
-  # Endpoint-agent API: larger bodies for check-ins with big software lists and
-  # collect_logs bundles (backend: AGENT_MAX_REQUEST_BYTES, 6 MiB by default).
-  location /api/agent/ {
-    client_max_body_size 8m;
-    set $backend_upstream "${BACKEND_URL}";
-    proxy_pass $backend_upstream;
-    proxy_http_version 1.1;
-    proxy_set_header Host $host;
-    proxy_set_header X-Forwarded-Host $host;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto https;
-    proxy_read_timeout 120s;
-    proxy_hide_header X-Content-Type-Options;
-    proxy_hide_header X-Frame-Options;
-    proxy_hide_header Referrer-Policy;
-    proxy_hide_header Strict-Transport-Security;
-  }
+  # Endpoint-agent API (cnapp-agent-locations.inc): larger bodies for check-ins
+  # and collect_logs bundles (8 MiB; backend AGENT_MAX_REQUEST_BYTES 6 MiB), per-IP
+  # rate / connection limits for external clients, GET/HEAD/POST only.
+  include /etc/nginx/conf.d/cnapp-agent-locations.inc;
 
   # Fingerprinted build assets can be cached forever.
   location /assets/ {

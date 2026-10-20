@@ -39,8 +39,9 @@ function trimSlash(s: string) {
   return s.replace(/\/+$/, "");
 }
 
-function InstallCommands({ token, downloadUrl }: { token: string; downloadUrl: string | null }) {
-  const server = window.location.origin;
+function InstallCommands({ token, downloadUrl, serverUrl }: { token: string; downloadUrl: string | null; serverUrl?: string | null }) {
+  // PUBLIC_AGENT_URL / PUBLIC_BASE_URL from the server (e.g. the internet-facing agent name), else this page's origin.
+  const server = serverUrl || window.location.origin;
   const base = downloadUrl ? trimSlash(downloadUrl) : null;
   const winDownload = base
     ? `.\\install.ps1 -Server ${server} -Token ${token} \`\n  -DownloadUrl ${base}/cnapp-agent-windows-amd64.exe -Sha256 <SHA-256 from SHA256SUMS>`
@@ -314,7 +315,7 @@ export default function Enrollment() {
           </p>
           <CopyBlock label="Token" text={newToken} />
           <div className="mt-4">
-            <InstallCommands token={newToken} downloadUrl={info?.agent_download_url ?? null} />
+            <InstallCommands token={newToken} downloadUrl={info?.agent_download_url ?? null} serverUrl={info?.server_url} />
           </div>
         </Card>
       )}
@@ -367,7 +368,7 @@ export default function Enrollment() {
         <p className="mb-3 text-sm text-ink-2">
           Templates with a placeholder token. Create a token above to get commands with the token filled in.
         </p>
-        <InstallCommands token={PLACEHOLDER} downloadUrl={info?.agent_download_url ?? null} />
+        <InstallCommands token={PLACEHOLDER} downloadUrl={info?.agent_download_url ?? null} serverUrl={info?.server_url} />
       </Card>
 
       <Card title="Agent downloads">

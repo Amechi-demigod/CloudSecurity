@@ -169,10 +169,20 @@ class Settings:
     device_rate_limit: int = field(default_factory=lambda: int(os.getenv("DEVICE_RATE_LIMIT", "120")))
     device_rate_window_seconds: float = field(
         default_factory=lambda: float(os.getenv("DEVICE_RATE_WINDOW_SECONDS", "600")))
-    # Enrollment attempts per client IP.
-    enroll_rate_limit: int = field(default_factory=lambda: int(os.getenv("ENROLL_RATE_LIMIT", "20")))
+    # Enrollment attempts per client IP. A whole office (or a mass Intune / GPO
+    # rollout) behind one NAT address shares this budget, so it is generous;
+    # failed attempts (wrong / used-up tokens) have their own, smaller budget.
+    enroll_rate_limit: int = field(default_factory=lambda: int(os.getenv("ENROLL_RATE_LIMIT", "300")))
+    enroll_failure_limit: int = field(default_factory=lambda: int(os.getenv("ENROLL_FAILURE_LIMIT", "20")))
     enroll_rate_window_seconds: float = field(
         default_factory=lambda: float(os.getenv("ENROLL_RATE_WINDOW_SECONDS", "600")))
+    # Alert (audit log + notification source "agent_security") when rejected
+    # agent requests (bad / revoked credentials, failed enrollments, rate limits)
+    # reach this many within the window, per backend worker process. 0 disables.
+    agent_auth_alert_threshold: int = field(
+        default_factory=lambda: int(os.getenv("AGENT_AUTH_ALERT_THRESHOLD", "50")))
+    agent_auth_alert_window_seconds: float = field(
+        default_factory=lambda: float(os.getenv("AGENT_AUTH_ALERT_WINDOW_SECONDS", "300")))
     # Device health thresholds.
     device_stale_hours: float = field(default_factory=lambda: float(os.getenv("DEVICE_STALE_HOURS", "24")))
     device_inactive_days: float = field(default_factory=lambda: float(os.getenv("DEVICE_INACTIVE_DAYS", "7")))
@@ -192,6 +202,12 @@ class Settings:
     # https:// URL agents use to reach this server; embedded in generated
     # installers (also used for notification deep links).
     public_base_url: str = field(default_factory=lambda: (os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/"))
+    # Optional https:// URL agents use instead of PUBLIC_BASE_URL, e.g. a
+    # dedicated internet-facing name (https://agents.example.com) when only the
+    # agent API is published (on-prem: cnapp-ctl public-agent enable). Used in
+    # generated installers and enrollment instructions; staff links and SSO keep
+    # using PUBLIC_BASE_URL.
+    public_agent_url: str = field(default_factory=lambda: (os.getenv("PUBLIC_AGENT_URL") or "").strip().rstrip("/"))
     # Generic MSI / pkg (+ manifest.json with their SHA-256) bundled into the image
     # by CI; point it at another directory to serve your own (e.g. signed) builds.
     agent_installers_dir: str = field(default_factory=lambda: os.getenv("AGENT_INSTALLERS_DIR") or str(

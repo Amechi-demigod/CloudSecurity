@@ -9,6 +9,7 @@ See events.py for the event model and docs/NOTIFICATIONS.md for setup.
 from __future__ import annotations
 
 from . import (
+    agent_security,  # noqa: F401  (spikes of rejected endpoint-agent requests)
     builtin,  # noqa: F401  (registers the built-in sources)
     device_source,  # noqa: F401  (endpoint devices: posture issues, connectivity, remote actions)
 )

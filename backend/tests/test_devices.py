@@ -496,3 +496,59 @@ def test_delete_device_removes_everything(admin, device):
     with db.get_session() as s:
         assert s.query(DeviceCommand).count() == 0 and s.query(DevicePostureSnapshot).count() == 0
     assert admin.get("/api/audit-log?action=device_deleted").json()[0]["detail"]["reason"] == "decommissioned"
+
+
+# --------------------------------------------------------------------------- behind NAT / internet-facing agent API
+def test_enroll_failures_limited_separately_from_successes(admin, monkeypatch):
+    """Many devices behind one NAT address can enroll; a client that keeps failing is cut off."""
+    monkeypatch.setenv("ENROLL_FAILURE_LIMIT", "2")
+    config.reload_settings()
+    agent = agent_client(admin.app)
+    token = new_token(admin, max_uses=10)
+    for i in range(4):  # more successes than the failure budget, same source IP
+        assert enroll(agent, token, machine_id=f"{i:064x}", hostname=f"LAPTOP-{i}").status_code == 200
+    assert [enroll(agent, "cne_wrong-token-xxxx").status_code for _ in range(2)] == [401, 401]
+    # The failure budget is used up: even a valid token is refused from this address now.
+    assert enroll(agent, token, machine_id="f" * 64).status_code == 429
+    monkeypatch.delenv("ENROLL_FAILURE_LIMIT")
+    config.reload_settings()
+
+
+def test_spike_of_rejected_agent_requests_is_audited_and_notified(admin, monkeypatch):
+    from sqlalchemy import select
+
+    from app.models import AuditLog
+    from app.notifications import agent_security
+    from app.notifications.events import get_source
+    from app.notifications.models import NotificationEvent
+
+    assert get_source("agent_security") is not None
+    monkeypatch.setenv("AGENT_AUTH_ALERT_THRESHOLD", "5")
+    monkeypatch.setattr(agent_security, "ASYNC_ALERTS", False)
+    config.reload_settings()
+    agent = agent_client(admin.app)
+    agent.headers["Authorization"] = "Bearer cnd_" + "x" * 40
+    assert [agent.get("/api/agent/commands").status_code for _ in range(8)] == [401] * 8
+    with db.get_session() as s:
+        events = list(s.scalars(select(NotificationEvent).where(NotificationEvent.source == "agent_security")))
+        audits = list(s.scalars(select(AuditLog).where(AuditLog.action == "agent_auth_failure_spike")))
+    # One alert per window, not one per rejected request.
+    assert len(events) == 1 and len(audits) == 1
+    ev = events[0]
+    assert ev.event_type == "auth_failure_spike" and ev.severity == "high"
+    assert ev.attributes["count"] == 5 and ev.attributes["by_kind"] == {"invalid_credential": 5}
+    assert audits[0].detail["top_ips"][0]["count"] == 5
+    monkeypatch.delenv("AGENT_AUTH_ALERT_THRESHOLD")
+    config.reload_settings()
+
+
+def test_rejection_monitor_window_and_disable():
+    from app.notifications.agent_security import RejectionMonitor
+
+    m = RejectionMonitor()
+    assert m.record("x", "1.2.3.4", threshold=0, window=60, now=0) is None  # disabled
+    assert [m.record("x", "1.2.3.4", threshold=3, window=60, now=t) for t in (0, 1)] == [None, None]
+    assert m.record("x", "5.6.7.8", threshold=3, window=60, now=2)["distinct_ips"] == 2
+    assert m.record("x", "1.2.3.4", threshold=3, window=60, now=3) is None  # quiet for the window
+    # Old rejections expire.
+    assert m.record("x", "1.2.3.4", threshold=3, window=60, now=200) is None

@@ -582,7 +582,7 @@ jobs:
         with:
           persist-credentials: false
       - name: shellcheck
-        run: shellcheck -x deploy/onprem/cnapp-ctl deploy/onprem/tests/test_pfx.sh
+        run: shellcheck -x deploy/onprem/cnapp-ctl deploy/onprem/nginx/cnapp-access.sh deploy/onprem/tests/test_pfx.sh
       - name: PFX parsing (legacy RC2-40 and AES PFX with intermediate + root, wrong password, missing legacy provider)
         run: deploy/onprem/tests/test_pfx.sh
       - name: cnapp-ctl --dry-run and help (no changes)
@@ -673,6 +673,105 @@ jobs:
             echo "::error::443 reachable from a network outside CNAPP_ALLOWED_CIDRS"; exit 1
           fi
           sudo iptables -S DOCKER-USER; sudo iptables -L CNAPP-INGRESS -v -n
+      - name: Public agent endpoint - only /api/agent/ reachable from an external network; rate limit, real client IP, fail2ban, disable
+        run: |
+          set -x
+          AG=agents.test
+          conf() { sudo grep "^$1=" /opt/cnapp/cnapp.env | tail -n1 | cut -d= -f2-; }
+          e2e() { python3 deploy/onprem/tests/onprem_e2e.py --base "https://$HOST" --ca "$CA" --email "$ADMIN" --password-file "$RUNNER_TEMP/admin.pw" "$@"; }
+          # A separate certificate for the agent name (served by SNI), like a public one would be.
+          openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 2 -subj "/CN=$AG" \
+            -addext "subjectAltName=DNS:$AG" -keyout "$RUNNER_TEMP/agent.key" -out "$RUNNER_TEMP/agent.crt" 2>/dev/null
+          echo "127.0.0.1 $AG" | sudo tee -a /etc/hosts
+          # The external network resolves the agent name to the server's "public" address.
+          sudo mkdir -p /etc/netns/badns && echo "203.0.113.1 $AG" | sudo tee /etc/netns/badns/hosts
+          # Few non-agent requests are tolerated before the probe ban (tested below).
+          echo "CNAPP_F2B_PROBE_MAXRETRY=25" | sudo tee -a /opt/cnapp/cnapp.env >/dev/null
+          # Refused: a name the certificate does not cover.
+          if sudo cnapp-ctl public-agent enable --hostname not-covered.test; then echo "::error::accepted an uncovered name"; exit 1; fi
+          sudo cnapp-ctl public-agent enable --hostname "$AG" --cert "$RUNNER_TEMP/agent.crt" --key "$RUNNER_TEMP/agent.key" \
+            --rate 5r/s --burst 10 --admin-cidrs 192.0.2.0/24
+          # Idempotent.
+          sudo cnapp-ctl public-agent enable --hostname "$AG" --rate 5r/s --burst 10
+          sudo cnapp-ctl public-agent status
+          test "$(conf CNAPP_PUBLIC_AGENT)" = true && test "$(conf PUBLIC_AGENT_URL)" = "https://$AG"
+          test "$(docker exec cnapp-backend-1 printenv PUBLIC_AGENT_URL)" = "https://$AG"
+          test "$(docker exec cnapp-backend-1 printenv PUBLIC_BASE_URL)" = "https://$HOST"
+          # Installers and enrollment instructions now point agents at the public name.
+          e2e get /api/devices/installers | tail -n1 | python3 -c "import json,sys; assert json.load(sys.stdin)['server_url'] == 'https://$AG'"
+          e2e get /api/devices/enrollment/info | tail -n1 | python3 -c "import json,sys; assert json.load(sys.stdin)['server_url'] == 'https://$AG'"
+          sudo iptables -S CNAPP-INGRESS; sudo ufw status | grep -E '^443/tcp +ALLOW +Anywhere'
+
+          ext() { sudo ip netns exec badns curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "$@" || true; }
+          A=(--cacert "$RUNNER_TEMP/agent.crt" --resolve "$AG:443:203.0.113.1")
+          M=(--cacert "$CA" --resolve "$HOST:443:203.0.113.1")
+          # 1. The agent API answers external clients (401 without a device credential), on both names.
+          test "$(ext "${A[@]}" "https://$AG/api/agent/commands")" = 401
+          test "$(ext "${M[@]}" "https://$HOST/api/agent/commands")" = 401
+          test "$(ext "${A[@]}" -X DELETE "https://$AG/api/agent/commands")" = 405
+          # SNI: the agent name gets its own certificate.
+          echo | sudo ip netns exec badns openssl s_client -connect 203.0.113.1:443 -servername "$AG" 2>/dev/null \
+            | openssl x509 -noout -subject | grep -q "CN *= *$AG"
+          # 2. A real agent enrolls and checks in from the external network through the public name.
+          token="$(e2e token external-agent | tail -n1)"; echo "::add-mask::$token"
+          home="$(mktemp -d)"; cp "$RUNNER_TEMP/agent.crt" "$home/ca.crt"
+          sudo ip netns exec badns env CNAPP_AGENT_HOME="$home" "$RUNNER_TEMP/cnapp-agent" enroll --server "https://$AG" --token "$token" --ca-file "$home/ca.crt"
+          sudo ip netns exec badns env CNAPP_AGENT_HOME="$home" "$RUNNER_TEMP/cnapp-agent" checkin
+          # 3. Real client IP reaches the backend (DNAT keeps the source); a spoofed X-Forwarded-For is ignored.
+          body='{"token":"cne_not-a-real-token-000","device":{"hostname":"probe","os_family":"windows","os_version":"1","machine_id":"'"$(printf 'b%.0s' {1..64})"'","agent_version":"0.1.0"}}'
+          test "$(ext "${A[@]}" -H 'Content-Type: application/json' -H 'X-Forwarded-For: 10.1.2.3' -d "$body" "https://$AG/api/agent/enroll")" = 401
+          ip="$(docker exec cnapp-postgres-1 psql -U cnapp -d cnapp -tAc "select ip from audit_log where action='device_enroll_failed' order by id desc limit 1" | tr -d '[:space:]')"
+          test "$ip" = 203.0.113.2
+          last="$(docker exec cnapp-postgres-1 psql -U cnapp -d cnapp -tAc "select last_ip from devices order by last_seen_at desc nulls last limit 1" | tr -d '[:space:]')"
+          test "$last" = 203.0.113.2
+          # 4. Per-IP rate limit (5r/s, burst 10) for external clients -> 429.
+          codes="$(seq 1 40 | xargs -P 20 -I{} sudo ip netns exec badns curl -sS -o /dev/null -w '%{http_code}\n' --max-time 10 \
+            "${A[@]}" "https://$AG/api/agent/commands" | sort | uniq -c)"
+          echo "$codes"; grep -q ' 429$' <<<"$codes" && grep -q ' 401$' <<<"$codes"
+          # 5. Everything else is 404 externally (dashboard, auth, user API, docs, sensor ingest, traversal tricks).
+          for path in / /devices /assets/index.js /api/health /api/auth/login /api/auth/me /api/assets /api/docs /api/openapi.json /api/runtime/events; do
+            test "$(ext "${M[@]}" "https://$HOST$path")" = 404
+          done
+          test "$(ext "${M[@]}" -X POST -H 'Content-Type: application/json' -d '{}' "https://$HOST/api/auth/login")" = 404
+          test "$(ext "${M[@]}" --path-as-is "https://$HOST/api/agent/../auth/me")" = 404
+          test "$(ext "${M[@]}" --path-as-is "https://$HOST/api/agent/%2e%2e/auth/me")" = 404
+          test "$(ext "${M[@]}" --path-as-is "https://$HOST/api/agent/commands/..%2f..%2fauth/me")" = 404
+          test "$(ext "${A[@]}" "https://$AG/")" = 404
+          test "$(ext "${A[@]}" "https://$AG/api/auth/login")" = 404
+          # Without SNI (by IP address): same split.
+          test "$(sudo ip netns exec badns curl -k -sS -o /dev/null -w '%{http_code}' https://203.0.113.1/api/agent/commands)" = 401
+          test "$(sudo ip netns exec badns curl -k -sS -o /dev/null -w '%{http_code}' https://203.0.113.1/)" = 404
+          # Port 80 stays closed to the outside.
+          if sudo ip netns exec badns curl -sS --max-time 5 http://203.0.113.1/; then echo "::error::port 80 reachable externally"; exit 1; fi
+          # 6. Internal clients keep everything (allowed network and the admin range in the firewall).
+          sudo ip netns exec okns curl -fsS --cacert "$CA" --resolve "$HOST:443:198.51.100.1" "https://$HOST/" | grep -q 'id="root"'
+          sudo ip netns exec okns curl -fsS --cacert "$CA" --resolve "$HOST:443:198.51.100.1" "https://$HOST/api/health"
+          test "$(sudo ip netns exec okns curl -sS -o /dev/null -w '%{http_code}' --cacert "$CA" --resolve "$HOST:443:198.51.100.1" \
+            -X POST -H 'Content-Type: application/json' -d '{"email":"x@y.z","password":"wrong-password-1"}' "https://$HOST/api/auth/login")" = 401
+          # ... but the dedicated agent name serves the agent API only, for everyone.
+          test "$(sudo ip netns exec okns curl -sS -o /dev/null -w '%{http_code}' --cacert "$RUNNER_TEMP/agent.crt" --resolve "$AG:443:198.51.100.1" "https://$AG/")" = 404
+          e2e expect external-agent present
+          # The edge log has external requests only.
+          sudo tail -n 5 /var/log/cnapp/edge-access.log
+          if sudo grep -q '^198\.51\.100\.2 ' /var/log/cnapp/edge-access.log; then echo "::error::internal client in the edge log"; exit 1; fi
+          # 7. fail2ban bans an external address that keeps probing non-agent paths.
+          for i in $(seq 1 30); do ext "${M[@]}" "https://$HOST/wp-login.php?$i" >/dev/null; done
+          for i in $(seq 1 30); do sudo fail2ban-client status cnapp-probe | grep -q 203.0.113.2 && break; sleep 2; done
+          sudo fail2ban-client status cnapp-probe | grep -q 203.0.113.2
+          sudo iptables -S DOCKER-USER | grep f2b-cnapp-probe
+          if sudo ip netns exec badns curl -sS --max-time 5 "${A[@]}" "https://$AG/api/agent/commands"; then echo "::error::banned address still connects"; exit 1; fi
+          sudo fail2ban-client set cnapp-probe unbanip 203.0.113.2
+          test "$(ext "${A[@]}" "https://$AG/api/agent/commands")" = 401
+          # 8. disable: back to internal-only (firewall, fail2ban jails), PUBLIC_AGENT_URL forgotten on request.
+          sudo cnapp-ctl public-agent disable --forget-hostname
+          test "$(conf CNAPP_PUBLIC_AGENT)" = false && test -z "$(conf PUBLIC_AGENT_URL)"
+          test -z "$(docker exec cnapp-backend-1 printenv PUBLIC_AGENT_URL)"
+          test ! -e /etc/fail2ban/jail.d/cnapp.local
+          if sudo ip netns exec badns curl -sS --max-time 8 "${A[@]}" "https://$AG/api/agent/commands"; then
+            echo "::error::443 still reachable externally after disable"; exit 1
+          fi
+          sudo ip netns exec okns curl -fsS --cacert "$CA" --resolve "$HOST:443:198.51.100.1" "https://$HOST/api/health"
+          e2e get /api/devices/installers | tail -n1 | python3 -c "import json,sys; assert json.load(sys.stdin)['server_url'] == 'https://$HOST'"
       - name: Backup, then restore (data written after the backup disappears)
         run: |
           e2e() { python3 deploy/onprem/tests/onprem_e2e.py --base "https://$HOST" --ca "$CA" --email "$ADMIN" --password-file "$RUNNER_TEMP/admin.pw" "$@"; }
@@ -796,7 +895,8 @@ jobs:
           sudo cnapp-ctl uninstall --purge --yes
           test ! -e /opt/cnapp && ! docker volume inspect cnapp_pgdata >/dev/null 2>&1
           test ! -e /etc/systemd/system/cnapp.service
-          ! sudo iptables -S CNAPP-INGRESS 2>/dev/null
+          if sudo iptables -S CNAPP-INGRESS 2>/dev/null; then echo "::error::CNAPP-INGRESS left behind"; exit 1; fi
+          test ! -e /etc/fail2ban/jail.d/cnapp.local && test ! -e /etc/logrotate.d/cnapp
       - name: Diagnostics
         if: failure()
         run: |
@@ -806,3 +906,6 @@ jobs:
           sudo ufw status verbose || true
           sudo iptables -S || true
           sudo journalctl -u 'cnapp*' --no-pager | tail -n 100 || true
+          sudo tail -n 50 /var/log/cnapp/edge-access.log || true
+          sudo tail -n 50 /var/log/fail2ban.log || true
+          docker exec cnapp-frontend-1 sh -c 'cat /etc/nginx/conf.d/00-cnapp-access.conf /etc/nginx/conf.d/zz-cnapp-agent-host.conf' || true

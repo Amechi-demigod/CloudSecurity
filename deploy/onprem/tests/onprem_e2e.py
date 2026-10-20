@@ -12,6 +12,8 @@ Sub-commands:
                 headers, login + CSRF, optional: agent enrollment (--ca-file) + check-in, sensor ingest
   mark NAME     create a marker (an enrollment token named NAME) to track data across backup/restore
   expect NAME present|absent
+  token NAME    create an enrollment token and print it (e.g. to enroll an agent from another network)
+  get PATH      print the JSON of an authenticated GET (e.g. /api/devices/installers)
 """
 from __future__ import annotations
 
@@ -179,6 +181,12 @@ def marker(a: argparse.Namespace) -> None:
         api.json("POST", "/api/devices/enrollment-tokens", {"name": a.name})
         print(f"created marker {a.name}")
         return
+    if a.cmd == "token":
+        print(api.json("POST", "/api/devices/enrollment-tokens", {"name": a.name, "max_uses": 5})["token"])
+        return
+    if a.cmd == "get":
+        print(json.dumps(api.json("GET", a.name)))
+        return
     names = {t["name"] for t in api.json("GET", "/api/devices/enrollment-tokens")}
     check((a.name in names) == (a.state == "present"), f"marker {a.name} is {a.state}")
 
@@ -199,6 +207,8 @@ def main() -> None:
     e = sub.add_parser("expect")
     e.add_argument("name")
     e.add_argument("state", choices=["present", "absent"])
+    sub.add_parser("token").add_argument("name")
+    sub.add_parser("get").add_argument("name", metavar="PATH")
     a = p.parse_args()
     verify(a) if a.cmd == "verify" else marker(a)
 
