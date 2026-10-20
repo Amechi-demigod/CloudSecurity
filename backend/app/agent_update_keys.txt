@@ -1,0 +1,4 @@
+# Trusted agent release-signing public keys (Ed25519), same format and content as
+# endpoint-agent/internal/update/trusted_keys.txt (a test checks they match).
+# One key per line: <key id> <base64 public key> [# comment]
+# Add keys with scripts/agent-release-keygen. Never put a private key here.

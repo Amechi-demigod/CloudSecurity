@@ -223,6 +223,24 @@ class Settings:
     agent_installer_rate_window_seconds: float = field(
         default_factory=lambda: float(os.getenv("AGENT_INSTALLER_RATE_WINDOW_SECONDS", "600")))
     agent_installer_max_parallel: int = field(default_factory=lambda: int(os.getenv("AGENT_INSTALLER_MAX_PARALLEL", "2")))
+    # --- Agent auto-update (docs/AGENT_UPDATES.md) --------------------------------
+    # Extra trusted release-signing PUBLIC keys ("<key id> <base64 key>", ";"-separated)
+    # in addition to app/agent_update_keys.txt. The server only uses them to refuse
+    # bundles agents would reject anyway; agents trust the keys compiled into them.
+    agent_update_trusted_keys: str = field(default_factory=lambda: os.getenv("AGENT_UPDATE_TRUSTED_KEYS", ""))
+    # Largest accepted release bundle (tar.gz of the signed manifest + binaries).
+    agent_update_max_bundle_bytes: int = field(
+        default_factory=lambda: int(os.getenv("AGENT_UPDATE_MAX_BUNDLE_BYTES", str(256 * 1024 * 1024))))
+    # Agents start an offered update after a random delay of up to this many
+    # seconds, so a fleet does not download at once.
+    agent_update_jitter_seconds: int = field(default_factory=lambda: int(os.getenv("AGENT_UPDATE_JITTER_SECONDS", "900")))
+    # A new agent version must check in successfully within this window after the
+    # swap, otherwise the agent restores the previous binary (60-3600).
+    agent_update_health_timeout_seconds: int = field(
+        default_factory=lambda: int(os.getenv("AGENT_UPDATE_HEALTH_TIMEOUT_SECONDS", "600")))
+    # Concurrent binary downloads per backend process (more get 503 + Retry-After).
+    agent_update_max_parallel_downloads: int = field(
+        default_factory=lambda: int(os.getenv("AGENT_UPDATE_MAX_PARALLEL_DOWNLOADS", "4")))
     # --- Multi-factor authentication (TOTP) -------------------------------------
     # Key(s) encrypting TOTP secrets at rest. Any string of 32+ characters (e.g.
     # `openssl rand -hex 32`); comma-separate several to rotate: the first one

@@ -332,6 +332,16 @@ class Device(Base):
     # First check-in that reported pending OS updates (cleared when none are pending).
     updates_pending_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Agent auto-update: explicit ring membership (else by device_group / the
+    # default ring), a pinned release (overrides the ring) and the last status
+    # the agent reported (downloading, verified, installing, installed,
+    # rolled_back, failed, rejected).
+    update_ring_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    update_pinned_release_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    update_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    update_status_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    update_status_detail: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    update_status_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class DeviceCredential(Base):
@@ -417,6 +427,89 @@ class DeviceLogBundle(Base):
     sha256: Mapped[str] = mapped_column(String(64))
     content_type: Mapped[str] = mapped_column(String(64), default="application/gzip")
     data: Mapped[bytes] = mapped_column(LargeBinary)
+
+
+# --- Agent auto-update -------------------------------------------------------------
+
+class AgentRelease(Base):
+    """A signed agent release imported by an admin (bundle = signed manifest +
+    binaries). The manifest envelope is stored verbatim: agents verify its
+    Ed25519 signature themselves with the keys compiled into them."""
+
+    __tablename__ = "agent_releases"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    version: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    manifest_envelope: Mapped[str] = mapped_column(Text)
+    manifest: Mapped[dict] = mapped_column(JSON, default=dict)
+    key_id: Mapped[str] = mapped_column(String(64))
+    released_at: Mapped[datetime] = mapped_column(DateTime)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    min_supported_version: Mapped[str] = mapped_column(String(64), default="")
+    notes: Mapped[str] = mapped_column(Text, default="")
+    bundle_sha256: Mapped[str] = mapped_column(String(64))
+    imported_by: Mapped[str] = mapped_column(String(320))
+    imported_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    withdrawn_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    withdrawn_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+    artifacts: Mapped[list[AgentReleaseArtifact]] = relationship(
+        back_populates="release", cascade="all, delete-orphan", passive_deletes=True, order_by="AgentReleaseArtifact.os")
+
+
+class AgentReleaseArtifact(Base):
+    """One platform binary of a release (bytes are only loaded when served)."""
+
+    __tablename__ = "agent_release_artifacts"
+    __table_args__ = (UniqueConstraint("release_id", "os", "arch", name="uq_agent_release_artifact_platform"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    release_id: Mapped[str] = mapped_column(String(32), ForeignKey("agent_releases.id", ondelete="CASCADE"), index=True)
+    os: Mapped[str] = mapped_column(String(16))  # GOOS: windows | darwin
+    arch: Mapped[str] = mapped_column(String(16))  # GOARCH: amd64 | arm64
+    name: Mapped[str] = mapped_column(String(128))
+    sha256: Mapped[str] = mapped_column(String(64))
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    data: Mapped[bytes] = mapped_column(LargeBinary, deferred=True)
+
+    release: Mapped[AgentRelease] = relationship(back_populates="artifacts")
+
+
+class AgentUpdateRing(Base):
+    """Rollout ring: devices (by explicit assignment or device group) and the
+    release they should run, with a percentage rollout and pause switch.
+    Rings are evaluated by `position`; the default ring catches the rest."""
+
+    __tablename__ = "agent_update_rings"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(64), unique=True)
+    description: Mapped[str] = mapped_column(String(500), default="")
+    position: Mapped[int] = mapped_column(Integer, default=100)
+    device_groups: Mapped[list] = mapped_column(JSON, default=list)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False)
+    target_release_id: Mapped[str | None] = mapped_column(
+        String(32), ForeignKey("agent_releases.id", ondelete="SET NULL"), nullable=True)
+    rollout_percent: Mapped[int] = mapped_column(Integer, default=100)
+    paused: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_by: Mapped[str] = mapped_column(String(320), default="system")
+
+
+class AgentUpdateEvent(Base):
+    """Update status history reported by agents."""
+
+    __tablename__ = "agent_update_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    device_id: Mapped[str] = mapped_column(String(32), ForeignKey("devices.id", ondelete="CASCADE"), index=True)
+    release_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    from_version: Mapped[str] = mapped_column(String(64), default="")
+    to_version: Mapped[str] = mapped_column(String(64), default="")
+    status: Mapped[str] = mapped_column(String(16))
+    detail: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
 
 
 # --- MFA (TOTP) and single sign-on --------------------------------------------------
