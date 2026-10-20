@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 
 from . import auth, config, db, locks, logging_setup
 from .api import agent as agent_api
+from .api import agent_updates as agent_updates_api
 from .api import auth as auth_api
 from .api import devices, inventory, platform, runtime, vulns
 from .api import mfa_sso as mfa_sso_api
@@ -99,7 +100,8 @@ def create_app() -> FastAPI:
         allow_headers=["Authorization", "Content-Type", auth.CSRF_HEADER],
     )
     app.add_middleware(BodySizeLimitMiddleware, max_bytes=s.max_request_bytes,
-                       path_limits={"/api/agent/": max(s.agent_max_request_bytes, s.max_request_bytes)})
+                       path_limits={"/api/agent/": max(s.agent_max_request_bytes, s.max_request_bytes),
+                                    "/api/updates/releases": max(s.agent_update_max_bundle_bytes, s.max_request_bytes)})
     app.add_middleware(SecurityHeadersMiddleware, hsts_max_age=s.hsts_max_age if s.is_production else 0)
 
     # Public: health probe, login, sensor ingest (own bearer-token auth) and the
@@ -107,6 +109,7 @@ def create_app() -> FastAPI:
     app.include_router(platform.public_router)
     app.include_router(runtime.ingest_router)
     app.include_router(agent_api.router)
+    app.include_router(agent_updates_api.device_router)  # /api/agent/updates/*: device credentials
     app.include_router(auth_api.router)  # /login is public; the others depend on the session
     app.include_router(mfa_sso_api.router)  # /login/mfa*, /providers and /sso/* are public
     # Everything else requires a logged-in user (viewer or higher). Write
@@ -117,6 +120,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_api.admin_router)
     app.include_router(notifications_api.router)  # analyst read-only, admin writes
     app.include_router(mfa_sso_api.admin_router)
+    app.include_router(agent_updates_api.router)  # /api/updates/*: viewer reads, admin (+MFA step-up) writes
     if s.api_docs_enabled:
         _add_docs(app)
     return app

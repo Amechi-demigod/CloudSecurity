@@ -164,6 +164,40 @@ func ConfigureRecovery() error {
 	return setRecovery(s)
 }
 
+// Restart stops the service (waiting up to 20 s) and starts it again; used by
+// the update watchdog after restoring the previous binary.
+func Restart() error {
+	m, err := mgr.Connect()
+	if err != nil {
+		return fmt.Errorf("connecting to the service manager: %w", err)
+	}
+	defer m.Disconnect()
+	s, err := m.OpenService(WindowsServiceName)
+	if err != nil {
+		return fmt.Errorf("opening service %s: %w", WindowsServiceName, err)
+	}
+	defer s.Close()
+	stopAndWait(s)
+	var lastErr error
+	for i := 0; i < 10; i++ {
+		if st, err := s.Query(); err == nil && (st.State == svc.Running || st.State == svc.StartPending) {
+			return nil // the service manager's own recovery action already started it
+		}
+		if lastErr = s.Start(); lastErr == nil {
+			return nil
+		}
+		time.Sleep(2 * time.Second)
+	}
+	return fmt.Errorf("starting service: %w", lastErr)
+}
+
+// ManagedByServiceManager reports whether the SCM runs this process (self-update
+// only runs then: the service manager restarts the new binary).
+func ManagedByServiceManager() bool { return IsService() }
+
+// InstalledBinaryPath is the binary the service runs.
+func InstalledBinaryPath() string { return BinaryPath() }
+
 // Uninstall stops and deletes the service and removes the installed binary.
 func Uninstall() error {
 	if !isAdmin() {
@@ -184,6 +218,7 @@ func Uninstall() error {
 	}
 	exe, _ := os.Executable()
 	dst := BinaryPath()
+	removeUpdateLeftovers(dst) // self-update side files are never the running binary here
 	if !same(exe, dst) {
 		_ = os.Remove(dst)
 		_ = os.Remove(filepath.Dir(dst))

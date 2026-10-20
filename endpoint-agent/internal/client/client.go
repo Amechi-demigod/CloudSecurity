@@ -22,6 +22,7 @@ import (
 
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/model"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/state"
+	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/update"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/version"
 )
 
@@ -46,6 +47,7 @@ type Client struct {
 	base   string
 	secret string
 	http   *http.Client
+	dl     *http.Client // no overall timeout (large downloads); bounded by the context
 }
 
 // Options configure transport security.
@@ -84,13 +86,11 @@ func New(serverURL, secret string, o Options) (*Client, error) {
 	}
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.TLSClientConfig = tlsCfg
-	return &Client{base: base, secret: secret, http: &http.Client{
-		Transport: tr,
-		Timeout:   o.Timeout,
-		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return errors.New("redirects are not followed")
-		},
-	}}, nil
+	noRedirect := func(*http.Request, []*http.Request) error { return errors.New("redirects are not followed") }
+	return &Client{base: base, secret: secret,
+		http: &http.Client{Transport: tr, Timeout: o.Timeout, CheckRedirect: noRedirect},
+		dl:   &http.Client{Transport: tr, CheckRedirect: noRedirect},
+	}, nil
 }
 
 func (c *Client) do(ctx context.Context, method, path, contentType string, body []byte, hdr map[string]string, out any) error {
@@ -189,6 +189,9 @@ type CheckinResponse struct {
 	ServerTime      time.Time `json:"server_time"`
 	PendingCommands int       `json:"pending_commands"`
 	Issues          []string  `json:"issues"`
+	// Update is set when the server wants this device to run another
+	// (signed) agent release; older servers omit it.
+	Update *update.Offer `json:"update,omitempty"`
 }
 
 // CheckIn sends a full inventory/posture report.
@@ -223,4 +226,45 @@ func (c *Client) Result(ctx context.Context, cmd model.Command, status, output s
 func (c *Client) UploadLogs(ctx context.Context, cmd model.Command, gz []byte) error {
 	return c.do(ctx, http.MethodPost, "/api/agent/commands/"+cmd.ID+"/logs", "application/gzip", gz,
 		map[string]string{"X-Command-Nonce": cmd.Nonce}, nil)
+}
+
+// Fetch downloads an /api/agent/updates/ resource into w (at most max bytes;
+// more is an error). Only paths on the enrolled server are ever fetched.
+func (c *Client) Fetch(ctx context.Context, path string, max int64, w io.Writer) (int64, error) {
+	if !strings.HasPrefix(path, "/api/agent/updates/") || strings.Contains(path, "..") || strings.ContainsAny(path, "?#\\") {
+		return 0, fmt.Errorf("refusing to fetch %q", path)
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+path, nil)
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("User-Agent", version.UserAgent())
+	req.Header.Set("Authorization", "Bearer "+c.secret)
+	resp, err := c.dl.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 2000))
+		return 0, &HTTPError{Status: resp.StatusCode, Detail: strings.TrimSpace(string(b))}
+	}
+	if resp.ContentLength > max {
+		return 0, fmt.Errorf("%w: response of %d bytes exceeds the %d byte limit", update.ErrSizeMismatch, resp.ContentLength, max)
+	}
+	n, err := io.Copy(w, io.LimitReader(resp.Body, max+1))
+	if err != nil {
+		return n, err
+	}
+	if n > max {
+		return n, fmt.Errorf("%w: response exceeds the %d byte limit", update.ErrSizeMismatch, max)
+	}
+	return n, nil
+}
+
+// ReportUpdate sends an update status (downloading, verified, installed, rolled_back, ...).
+func (c *Client) ReportUpdate(ctx context.Context, r update.Report) error {
+	return c.postJSON(ctx, "/api/agent/updates/status", r, nil)
 }

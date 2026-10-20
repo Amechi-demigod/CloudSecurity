@@ -29,6 +29,7 @@ from ..schemas_devices import (
     EnrollRequest,
     EnrollResponse,
 )
+from ..services import agent_updates
 from ..services import devices as svc
 
 log = logging.getLogger(__name__)
@@ -136,7 +137,13 @@ def checkin(body: CheckinRequest, request: Request, device: Device = Depends(cur
     issues = svc.apply_checkin(db, device, body, client_ip(request))
     pending = svc.pending_count(db, device.id)
     db.commit()
-    return CheckinResponse(device_id=device.id, server_time=utcnow(), pending_commands=pending, issues=issues)
+    try:
+        offer = agent_updates.offer_for(db, device, request.headers.get("user-agent"))
+    except Exception:  # an update problem must never break check-ins
+        log.exception("computing the update offer for device %s failed", device.id)
+        offer = None
+    return CheckinResponse(device_id=device.id, server_time=utcnow(), pending_commands=pending, issues=issues,
+                           update=offer)
 
 
 @router.get("/commands", response_model=AgentCommandList)

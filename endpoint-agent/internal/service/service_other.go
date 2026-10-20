@@ -23,3 +23,12 @@ func Uninstall() error { return errUnsupported }
 
 // ConfigureRecovery is a no-op outside Windows (launchd KeepAlive restarts the agent).
 func ConfigureRecovery() error { return nil }
+
+// Restart is unsupported here.
+func Restart() error { return errUnsupported }
+
+// ManagedByServiceManager is always false on this platform (no self-update).
+func ManagedByServiceManager() bool { return false }
+
+// InstalledBinaryPath is empty on this platform.
+func InstalledBinaryPath() string { return "" }

@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Create the Ed25519 key that signs CNAPP agent releases for auto-update.
+#
+#   scripts/agent-release-keygen [--comment "release key 2026"]
+#
+# Prints the PUBLIC key line to commit and writes the PRIVATE key to a 0600
+# file in a fresh temporary directory, with the steps to store it as the GitHub
+# Actions secret AGENT_UPDATE_SIGNING_KEY. Run it on a trusted workstation;
+# never commit the private key, never copy it to the CNAPP server.
+# Needs python3 with the `cryptography` package (pip install cryptography).
+set -euo pipefail
+here="$(cd "$(dirname "$0")" && pwd)"
+comment="release key $(date -u +%Y-%m-%d)"
+if [[ "${1:-}" == "--comment" && -n "${2:-}" ]]; then comment="$2"; fi
+
+umask 077
+dir="$(mktemp -d "${TMPDIR:-/tmp}/cnapp-release-key.XXXXXX")"
+key="$dir/agent-update-signing-key.pem"
+line="$(python3 "$here/agent_release.py" keygen --out "$key" --comment "$comment")"
+
+cat <<EOF
+
+Agent release signing key created.
+
+1) PUBLIC key - add this line to BOTH files and commit (reviewable, not secret):
+     endpoint-agent/internal/update/trusted_keys.txt
+     backend/app/agent_update_keys.txt
+
+   $line
+
+2) PRIVATE key - written to:
+     $key
+   Store it as a GitHub Actions secret, then delete the file (or move it to
+   offline storage, e.g. an encrypted USB key or a password manager):
+
+     gh secret set AGENT_UPDATE_SIGNING_KEY < "$key"
+     shred -u "$key" 2>/dev/null || rm -P "$key" 2>/dev/null || rm -f "$key"; rmdir "$dir"
+
+   (Settings > Secrets and variables > Actions > New repository secret works too;
+   consider an Environment with required reviewers, see docs/AGENT_UPDATES.md.)
+
+3) Agents only trust keys compiled into them: build and roll out an agent
+   release that contains the new trusted_keys.txt before signing with the key
+   (for a first key: the next agent you install via MSI/PKG trusts it).
+EOF

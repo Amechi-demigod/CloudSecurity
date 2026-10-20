@@ -71,6 +71,8 @@
                  action: MsiServiceConfigFailureActions rejects restart actions (error 1939). -->
           </ServiceInstall>
           <!-- Remove="both" also replaces a service created earlier by `cnapp-agent install` / install.ps1. -->
+          <!-- Self-update side files (cnapp-agent.{new,old,failed,restore}.exe, docs/AGENT_UPDATES.md). -->
+          <RemoveFile Id="AgentUpdateLeftovers" Name="cnapp-agent.*.exe" On="uninstall" />
           <ServiceControl Id="AgentServiceControl" Name="CNAPPAgent" Start="install" Stop="both" Remove="both" Wait="yes" />
         </Component>
       </Directory>

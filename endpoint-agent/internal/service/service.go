@@ -54,6 +54,21 @@ func copyFile(src, dst string, mode os.FileMode) error {
 	return os.Chmod(dst, mode)
 }
 
+// removeUpdateLeftovers deletes the self-update side files next to the binary
+// (cnapp-agent.{new,old,failed,restore}[.exe]).
+func removeUpdateLeftovers(bin string) {
+	ext := filepath.Ext(bin)
+	base := bin
+	if ext != ".exe" {
+		ext = ""
+	} else {
+		base = bin[:len(bin)-len(ext)]
+	}
+	for _, kind := range []string{"new", "old", "failed", "restore"} {
+		_ = os.Remove(base + "." + kind + ext)
+	}
+}
+
 func same(a, b string) bool {
 	sa, err1 := os.Stat(a)
 	sb, err2 := os.Stat(b)

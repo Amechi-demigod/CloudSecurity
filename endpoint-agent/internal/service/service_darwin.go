@@ -94,6 +94,18 @@ func Install(o Options) error {
 	return lc("kickstart", "-k", "system/"+LaunchdLabel)
 }
 
+// Restart restarts the LaunchDaemon (kill + start) with the binary now in place.
+func Restart() error { return lc("kickstart", "-k", "system/"+LaunchdLabel) }
+
+// ManagedByServiceManager reports whether launchd started this process (the
+// LaunchDaemon runs `cnapp-agent run` with launchd, pid 1, as its parent).
+func ManagedByServiceManager() bool {
+	return os.Getppid() == 1 || os.Getenv("XPC_SERVICE_NAME") == LaunchdLabel
+}
+
+// InstalledBinaryPath is the binary the LaunchDaemon runs.
+func InstalledBinaryPath() string { return BinaryPath }
+
 // Uninstall stops and removes the LaunchDaemon and the installed binary.
 func Uninstall() error {
 	if os.Geteuid() != 0 {
@@ -105,6 +117,7 @@ func Uninstall() error {
 			return err
 		}
 	}
+	removeUpdateLeftovers(BinaryPath)
 	_ = os.Remove("/usr/local/cnapp-agent/bin")
 	_ = os.Remove("/usr/local/cnapp-agent")
 	return nil

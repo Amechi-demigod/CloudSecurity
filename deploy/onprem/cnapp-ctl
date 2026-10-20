@@ -1824,6 +1824,47 @@ cmd_reset_mfa() {
   compose exec -T backend python -m app.cli reset-mfa --email "$2"
 }
 
+# Agent auto-update releases (docs/AGENT_UPDATES.md). The backend verifies the
+# bundle's Ed25519 signature against the trusted release keys and refuses
+# anything else; agents verify it again themselves.
+cmd_agent_release() {
+  local sub=${1:-}; shift || true
+  case $sub in
+    import)
+      need_root agent-release; require_installed
+      local f=${1:-}
+      [[ -n $f && -f $f ]] || die "usage: cnapp-ctl agent-release import BUNDLE.tar.gz"
+      log "Importing agent release bundle $f ($(sha256sum "$f" | cut -d' ' -f1))"
+      compose exec -T backend python -m app.cli agent-release-import - --actor "cnapp-ctl:${SUDO_USER:-root}" < "$f"
+      ;;
+    fetch)
+      need_root agent-release; require_installed
+      local tag="" repo="Amechi-demigod/CloudSecurity"
+      while [[ $# -gt 0 ]]; do
+        case $1 in
+          --tag) tag=${2:-}; shift 2 ;;
+          --repo) repo=${2:-}; shift 2 ;;
+          *) die "agent-release fetch: unknown option $1" ;;
+        esac
+      done
+      [[ $tag =~ ^agent-v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.+-]+)?$ ]] || die "usage: cnapp-ctl agent-release fetch --tag agent-vX.Y.Z [--repo OWNER/REPO]"
+      [[ $repo =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "invalid --repo"
+      local tmp rc=0; tmp=$(mktemp -d)
+      log "Downloading the signed bundle of $tag from github.com/$repo (verified by the server before import)"
+      curl -fsSL --proto '=https' --max-filesize 268435456 -o "$tmp/bundle.tar.gz" \
+        "https://github.com/$repo/releases/download/$tag/cnapp-agent-update.tar.gz" || { rm -rf "$tmp"; die "download failed"; }
+      (cmd_agent_release import "$tmp/bundle.tar.gz") || rc=$?
+      rm -rf "$tmp"
+      return "$rc"
+      ;;
+    list)
+      need_root agent-release; require_installed
+      compose exec -T backend python -m app.cli agent-release-list
+      ;;
+    *) die "usage: cnapp-ctl agent-release import BUNDLE.tar.gz | fetch --tag agent-vX.Y.Z | list" ;;
+  esac
+}
+
 cmd_show_secret() {
   need_root show-secret; require_installed
   local k=${1:-}
@@ -1916,6 +1957,11 @@ Operations
   reset-password --email E [--generate]   reset-mfa --email E
   show-secret INGEST_API_TOKEN|...        print one generated secret (e.g. for the runtime sensor)
 
+Endpoint agent auto-update (docs/AGENT_UPDATES.md)
+  agent-release import BUNDLE.tar.gz      import a signed agent release (signature checked, audited)
+  agent-release fetch --tag agent-vX.Y.Z [--repo OWNER/REPO]   download it from GitHub Releases, then import
+  agent-release list                      imported releases (assign them to rings in the console)
+
 Files: $CONF (settings), $SECRETS_DIR (secrets), $TLS_DIR, $CA_DIR, $BACKUP_DIR
 Docs:  docs/DEPLOY_ONPREM.md
 EOF
@@ -1941,6 +1987,7 @@ main() {
     reset-password) user_cli reset "$@" ;;
     reset-mfa) cmd_reset_mfa "$@" ;;
     show-secret) cmd_show_secret "$@" ;;
+    agent-release) cmd_agent_release "$@" ;;
     set-hostname) cmd_set_hostname "$@" ;;
     public-agent) cmd_public_agent "$@" ;;
     version|--version) echo "$VERSION" ;;

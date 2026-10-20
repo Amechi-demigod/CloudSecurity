@@ -421,6 +421,84 @@ export interface InstallerRequest {
   include_ca: boolean;
 }
 
+// --- agent auto-update ---
+export interface AgentReleaseArtifact {
+  os: string;
+  arch: string;
+  name: string;
+  sha256: string;
+  size_bytes: number;
+}
+
+export interface AgentRelease {
+  id: string;
+  version: string;
+  key_id: string;
+  released_at: string;
+  expires_at: string;
+  min_supported_version: string;
+  notes: string;
+  rollback_allowed_from: string[];
+  bundle_sha256: string;
+  imported_by: string;
+  imported_at: string;
+  withdrawn_at: string | null;
+  withdrawn_reason: string | null;
+  expired: boolean;
+  artifacts: AgentReleaseArtifact[];
+  devices_running: number;
+}
+
+export interface UpdateRing {
+  id: string;
+  name: string;
+  description: string;
+  position: number;
+  device_groups: string[];
+  is_default: boolean;
+  target_release_id: string | null;
+  target_version: string | null;
+  rollout_percent: number;
+  paused: boolean;
+  updated_at: string;
+  updated_by: string;
+  explicit_devices: number;
+}
+
+export interface UpdateRingPatch {
+  name?: string;
+  description?: string;
+  position?: number;
+  device_groups?: string[];
+  target_release_id?: string;
+  clear_target?: boolean;
+  rollout_percent?: number;
+  paused?: boolean;
+  reason: string;
+}
+
+export interface UpdateSummary {
+  devices: number;
+  versions: { version: string; devices: number }[];
+  statuses: Record<string, number>;
+  rings: { ring_id: string; name: string; devices: number; on_target: number; updating: number; failed: number; target_version: string | null }[];
+}
+
+export interface DeviceUpdateState {
+  device_id: string;
+  agent_version: string;
+  ring: { id: string; name: string } | null;
+  ring_assignment: "explicit" | "group" | "default";
+  pinned_release: { id: string; version: string } | null;
+  target_version: string | null;
+  target_reason: string;
+  status: string | null;
+  status_version: string | null;
+  status_detail: string | null;
+  status_at: string | null;
+  history: { id: number; release_id: string | null; from_version: string; to_version: string; status: string; detail: string; created_at: string }[];
+}
+
 const BASE = import.meta.env.VITE_API_BASE ?? "";
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
@@ -498,6 +576,30 @@ export async function requestFile(path: string, body: unknown): Promise<{ blob: 
   const cd = res.headers.get("Content-Disposition") ?? "";
   const m = /filename="([^"]+)"/.exec(cd);
   return { blob: await res.blob(), filename: m ? m[1] : "installer", sha256: res.headers.get("X-Content-SHA256") };
+}
+
+/** Upload a signed agent release bundle (raw .tar.gz body), with an optional MFA step-up code. */
+export async function uploadAgentRelease(file: File, mfaCode: string): Promise<AgentRelease> {
+  const headers: Record<string, string> = { "Content-Type": "application/gzip" };
+  if (csrfToken) headers["X-CSRF-Token"] = csrfToken;
+  if (mfaCode.trim()) headers["X-MFA-Code"] = mfaCode.trim();
+  const res = await fetch(`${BASE}/api/updates/releases`, { method: "POST", credentials: "same-origin", headers, body: file });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const b = await res.json();
+      detail = typeof b.detail === "string" ? b.detail : JSON.stringify(b.detail);
+    } catch {
+      /* ignore */
+    }
+    if (res.status === 401) onUnauthorized?.();
+    throw new ApiError(res.status, detail || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+function mfaHeaders(code?: string): Record<string, string> {
+  return code && code.trim() ? { "X-MFA-Code": code.trim() } : {};
 }
 
 export function qs(params: Record<string, string | number | boolean | undefined | null>): string {
@@ -599,6 +701,30 @@ export const api = {
   downloadInstaller: (body: InstallerRequest) => requestFile("/api/devices/installers", body),
   revokeEnrollmentToken: (id: string) =>
     request<EnrollmentToken>(`/api/devices/enrollment-tokens/${id}/revoke`, { method: "POST" }),
+  // --- agent auto-update ---
+  updateSummary: () => request<UpdateSummary>("/api/updates/summary"),
+  updateKeys: () => request<{ keys: { key_id: string; source: string }[]; error: string | null }>("/api/updates/keys"),
+  agentReleases: () => request<AgentRelease[]>("/api/updates/releases"),
+  withdrawRelease: (id: string, reason: string) =>
+    request<AgentRelease>(`/api/updates/releases/${id}/withdraw`, { method: "POST", body: JSON.stringify({ reason }) }),
+  updateRings: () => request<UpdateRing[]>("/api/updates/rings"),
+  createRing: (body: UpdateRingPatch, mfaCode?: string) =>
+    request<UpdateRing>("/api/updates/rings", { method: "POST", body: JSON.stringify(body), headers: mfaHeaders(mfaCode), skipAuthHandling: true }),
+  updateRing: (id: string, body: UpdateRingPatch, mfaCode?: string) =>
+    request<UpdateRing>(`/api/updates/rings/${id}`, { method: "PATCH", body: JSON.stringify(body), headers: mfaHeaders(mfaCode), skipAuthHandling: true }),
+  deleteRing: (id: string, reason: string) => request<void>(`/api/updates/rings/${id}${qs({ reason })}`, { method: "DELETE" }),
+  deviceUpdate: (id: string) => request<DeviceUpdateState>(`/api/updates/devices/${id}`),
+  setDeviceUpdate: (
+    id: string,
+    body: { ring_id?: string; clear_ring?: boolean; pinned_release_id?: string; clear_pin?: boolean; reason: string },
+    mfaCode?: string,
+  ) =>
+    request<DeviceUpdateState>(`/api/updates/devices/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+      headers: mfaHeaders(mfaCode),
+      skipAuthHandling: true,
+    }),
   // --- platform ---
   health: () => request<Health>("/api/health"),
   dashboard: () => request<Dashboard>("/api/dashboard"),

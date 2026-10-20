@@ -78,6 +78,7 @@ endpoint-agent/          Go endpoint agent for Windows/macOS: inventory, posture
                          service install, packaging (see docs/DEVICE_MANAGEMENT.md)
 docs/DEPLOY_AZURE.md     Azure deployment guide
 docs/DEVICE_MANAGEMENT.md  device management: agent architecture, enrollment, data collected, security model
+docs/AGENT_UPDATES.md    signed agent auto-update: release key, rollout rings, automatic rollback
 docs/NOTIFICATIONS.md    alert notifications: Teams, Slack, email, signed webhooks, rules
 docs/AUTH.md             MFA (TOTP) and Microsoft Entra ID sign-in, break-glass accounts
 scripts/smoke_test.py    end-to-end smoke test (CI and the deploy workflow)
@@ -87,7 +88,7 @@ docker-compose.yml       local stack (SQLite); docker-compose.postgres.yml adds 
 
 ## Device management (endpoints)
 
-Enroll company **Windows 10/11 and macOS** laptops and desktops with our own lightweight agent (`endpoint-agent/`, a single Go binary): hardware/OS inventory, security posture (disk encryption, firewall, antivirus, screen lock, OS updates, SIP/Gatekeeper, Secure Boot/TPM, local admins), installed software, derived device issues, and a small allow-list of audited remote actions (re-check posture, collect agent logs, lock device, restart agent, change check-in interval). The agent only makes outbound HTTPS requests, authenticates with a per-device credential, and never runs arbitrary commands. Admins create enrollment tokens and copy install commands from **Devices → Enroll devices**. See **[docs/DEVICE_MANAGEMENT.md](docs/DEVICE_MANAGEMENT.md)** for the walkthrough, the data collected, the security model and the packaging/signing steps.
+Enroll company **Windows 10/11 and macOS** laptops and desktops with our own lightweight agent (`endpoint-agent/`, a single Go binary): hardware/OS inventory, security posture (disk encryption, firewall, antivirus, screen lock, OS updates, SIP/Gatekeeper, Secure Boot/TPM, local admins), installed software, derived device issues, and a small allow-list of audited remote actions (re-check posture, collect agent logs, lock device, restart agent, change check-in interval). The agent only makes outbound HTTPS requests, authenticates with a per-device credential, and never runs arbitrary commands. Admins create enrollment tokens and copy install commands from **Devices → Enroll devices**. See **[docs/DEVICE_MANAGEMENT.md](docs/DEVICE_MANAGEMENT.md)** for the walkthrough, the data collected, the security model and the packaging/signing steps. Agents **update themselves** to releases you import and roll out in rings (Pilot → Broad → All, percentages, pins), with automatic rollback; releases must be signed with an Ed25519 release key that never lives on the CNAPP server: **[docs/AGENT_UPDATES.md](docs/AGENT_UPDATES.md)**.
 
 ## Deploy to Azure
 

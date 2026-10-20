@@ -1,0 +1,95 @@
+name: Agent release (signed auto-update bundle)
+
+# Push a tag like `agent-v1.4.0` to build the agent for every platform, sign the
+# update manifest with the release key (secret AGENT_UPDATE_SIGNING_KEY, never on
+# the CNAPP server) and publish a GitHub Release with the bundle. Import it with
+#   sudo cnapp-ctl agent-release fetch --tag agent-v1.4.0
+# or download cnapp-agent-update.tar.gz and upload it in Devices > Agent updates.
+# See docs/AGENT_UPDATES.md.
+
+on:
+  push:
+    tags: ["agent-v*.*.*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build, sign and publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    # Put AGENT_UPDATE_SIGNING_KEY on this environment and require a reviewer
+    # (Settings > Environments) so a tag alone cannot sign a release.
+    environment: agent-release
+    permissions:
+      contents: write # create the GitHub Release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: endpoint-agent/go.mod
+          cache-dependency-path: endpoint-agent/go.sum
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Version from the tag
+        id: v
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          v="${TAG#agent-v}"
+          [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "::error::tag $TAG is not agent-vMAJOR.MINOR.PATCH"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - name: The committed trusted keys are consistent and non-empty
+        run: |
+          diff <(grep -v '^#' endpoint-agent/internal/update/trusted_keys.txt | cut -d'#' -f1 | awk 'NF' | awk '{print $1, $2}') \
+               <(grep -v '^#' backend/app/agent_update_keys.txt | cut -d'#' -f1 | awk 'NF' | awk '{print $1, $2}')
+          n="$(grep -v '^#' endpoint-agent/internal/update/trusted_keys.txt | cut -d'#' -f1 | awk 'NF' | wc -l)"
+          if [ "$n" -eq 0 ]; then
+            echo "::error::endpoint-agent/internal/update/trusted_keys.txt lists no key: agents built from it refuse every update"; exit 1
+          fi
+      - name: Build (release builds trust only the committed keys)
+        working-directory: endpoint-agent
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          mkdir -p dist
+          for target in windows/amd64 windows/arm64 darwin/amd64 darwin/arm64; do
+            os="${target%/*}" arch="${target#*/}" ext=""
+            [ "$os" = windows ] && ext=.exe
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath \
+              -ldflags "-s -w -X github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/version.Version=${VERSION}" \
+              -o "dist/cnapp-agent-${os}-${arch}${ext}" ./cmd/cnapp-agent
+          done
+          (cd dist && sha256sum cnapp-agent-* > SHA256SUMS && cat SHA256SUMS)
+      - name: Sign the update manifest
+        env:
+          AGENT_UPDATE_SIGNING_KEY: ${{ secrets.AGENT_UPDATE_SIGNING_KEY }}
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          if [ -z "$AGENT_UPDATE_SIGNING_KEY" ]; then
+            echo "::error::secret AGENT_UPDATE_SIGNING_KEY is not set (scripts/agent-release-keygen, docs/AGENT_UPDATES.md)"; exit 1
+          fi
+          python -m pip install -q "cryptography>=43"
+          d=endpoint-agent/dist
+          python scripts/agent_release.py bundle --version "$VERSION" --out "$d/cnapp-agent-update.tar.gz" \
+            --notes "CNAPP agent $VERSION (${GITHUB_SHA::7})" \
+            "$d/cnapp-agent-windows-amd64.exe" "$d/cnapp-agent-windows-arm64.exe" "$d/cnapp-agent-darwin-amd64" "$d/cnapp-agent-darwin-arm64"
+          # Agents only accept keys compiled into them: refuse to publish a bundle they would reject.
+          python scripts/agent_release.py verify "$d/cnapp-agent-update.tar.gz" --keys endpoint-agent/internal/update/trusted_keys.txt
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          d=endpoint-agent/dist
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "CNAPP agent ${TAG#agent-v}" --verify-tag \
+            --notes "Signed agent auto-update bundle: cnapp-agent-update.tar.gz. Import on-prem with \`sudo cnapp-ctl agent-release fetch --tag $TAG\`." \
+            "$d/cnapp-agent-update.tar.gz" "$d"/cnapp-agent-windows-* "$d"/cnapp-agent-darwin-* "$d/SHA256SUMS"
