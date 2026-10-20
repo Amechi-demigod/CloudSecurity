@@ -172,17 +172,22 @@ def server_ca_pem() -> str | None:
 
 
 # ----------------------------------------------------------------------------- builders
-def enroll_document(server: str, token: str, ca_pem: str | None) -> bytes:
+def enroll_document(server: str, token: str, ca_pem: str | None, allow_wipe: bool = False) -> bytes:
     doc = {"version": 1, "server_url": server, "token": token}
     if ca_pem:
         doc["ca_pem"] = ca_pem
+    if allow_wipe:
+        # Only written when set, so packages without the option stay readable by
+        # agents that predate it. The agent stores the opt-in in its protected
+        # local state (it is not part of the enrollment and survives re-enrollment).
+        doc["allow_wipe"] = True
     return (json.dumps(doc, indent=2) + "\n").encode()
 
 
-def build_msi(base: Path, server: str, token: str, ca_pem: str | None) -> bytes:
+def build_msi(base: Path, server: str, token: str, ca_pem: str | None, allow_wipe: bool = False) -> bytes:
     if not _TOKEN_RE.fullmatch(token):
         raise ValueError("malformed enrollment token")
-    return msipatch.inject(base.read_bytes(), enroll_document(server, token, ca_pem))
+    return msipatch.inject(base.read_bytes(), enroll_document(server, token, ca_pem, allow_wipe))
 
 
 def build_pkg(base: Path, server: str, token: str, ca_pem: str | None) -> bytes:
@@ -193,7 +198,7 @@ def build_pkg(base: Path, server: str, token: str, ca_pem: str | None) -> bytes:
     return pkg
 
 
-def build(platform: str, token: str, include_ca: bool) -> tuple[bytes, Artifact, bool]:
+def build(platform: str, token: str, include_ca: bool, allow_wipe: bool = False) -> tuple[bytes, Artifact, bool]:
     """Build the pre-configured installer -> (bytes, base artifact, ca_included)."""
     server = server_url()
     ca = server_ca_pem() if include_ca else None
@@ -205,8 +210,10 @@ def build(platform: str, token: str, include_ca: bool) -> tuple[bytes, Artifact,
         raise InstallerUnavailable("too many installer builds in progress; try again shortly")
     try:
         if platform == "windows-msi":
-            data = build_msi(art.path, server, token, ca)
+            data = build_msi(art.path, server, token, ca, allow_wipe)
         else:
+            if allow_wipe:
+                raise InstallerConfigError("remote wipe is only available for Windows devices")
             data = build_pkg(art.path, server, token, ca)
     finally:
         _build_slots.release()

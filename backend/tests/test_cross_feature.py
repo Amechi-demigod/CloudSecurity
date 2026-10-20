@@ -55,8 +55,9 @@ def test_device_source_is_registered_for_the_rule_builder(empty_client):
     for t in ("disk_encryption_off", "firewall_off", "antivirus_off", "av_signatures_outdated",
               "os_updates_pending", "stale", "inactive", "command_succeeded", "command_failed"):
         assert t in src["event_types"]
-    # every issue the device service can raise is a known event type (revoked is an admin action)
-    assert set(svc.ISSUE_DEFS) - {"revoked"} <= set(src["event_types"])
+    # every issue the device service can raise is a known event type (revoked, lost mode and wipe
+    # are admin actions, notified through command results and the device_approvals source)
+    assert set(svc.ISSUE_DEFS) - {"revoked", "lost_mode", "wipe_pending"} <= set(src["event_types"])
 
 
 def test_new_checkin_issues_emit_events_once(device):
