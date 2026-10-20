@@ -125,7 +125,7 @@ def test_pre_alembic_postgres_database_is_stamped():
     try:
         # How Phase 1/2 created schemas: only the baseline tables existed then (the
         # MFA tables are created too, to exercise 0004_mfa_sso's has_table guards).
-        later = ("notification_", "device", "enrollment_tokens")
+        later = ("notification_", "device", "enrollment_tokens", "agent_")
         baseline = [t for t in db.Base.metadata.sorted_tables if not t.name.startswith(later)]
         db.Base.metadata.create_all(eng, tables=baseline)
         db.run_migrations(eng)  # stamped at the baseline, then upgraded
