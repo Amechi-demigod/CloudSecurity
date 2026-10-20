@@ -877,13 +877,15 @@ jobs:
       - name: Forced failing update (new migration, then crash) rolls back and restores the database
         run: |
           ctx="$RUNNER_TEMP/bad"; mkdir -p "$ctx"
+          head="$(docker exec cnapp-postgres-1 psql -U cnapp -d cnapp -tAc 'select version_num from alembic_version' | tr -d '[:space:]')"
+          test -n "$head"
           cat > "$ctx/0099_ci_probe.py" <<'PY'
           """CI only: a migration from a broken release."""
           import sqlalchemy as sa
           from alembic import op
 
           revision = "0099_ci_probe"
-          down_revision = "0006_agent_updates"
+          down_revision = "__HEAD__"
           branch_labels = None
           depends_on = None
 
@@ -895,7 +897,7 @@ jobs:
           def downgrade() -> None:
               op.drop_table("ci_rollback_probe")
           PY
-          sed -i 's/^          //' "$ctx/0099_ci_probe.py"
+          sed -i -e 's/^          //' -e "s/__HEAD__/$head/" "$ctx/0099_ci_probe.py"
           cat > "$ctx/Dockerfile" <<EOF
           FROM $REG/cloudsecurity-backend:ci-2
           COPY 0099_ci_probe.py /app/migrations/versions/
@@ -906,7 +908,7 @@ jobs:
           if sudo cnapp-ctl update --tag ci-bad --health-timeout 90; then echo "::error::broken update reported success"; exit 1; fi
           test "$(sudo grep '^IMAGE_TAG=' /opt/cnapp/cnapp.env)" = IMAGE_TAG=ci-2
           rev="$(docker exec cnapp-postgres-1 psql -U cnapp -d cnapp -tAc 'select version_num from alembic_version' | tr -d '[:space:]')"
-          test "$rev" = 0006_agent_updates
+          test "$rev" = "$head"
           test -z "$(docker exec cnapp-postgres-1 psql -U cnapp -d cnapp -tAc "select to_regclass('ci_rollback_probe')" | tr -d '[:space:]')"
           sudo cat /opt/cnapp/state/history.log
           python3 deploy/onprem/tests/onprem_e2e.py --base "https://$HOST" --ca "$CA" --email "$ADMIN" --password-file "$RUNNER_TEMP/admin.pw" expect before-backup present
