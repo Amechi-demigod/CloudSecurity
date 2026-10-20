@@ -160,7 +160,8 @@ def test_import_rejects_untrusted_tampered_and_malformed(admin, key, tmp_path):
     assert len(audits("agent_release_rejected")) == len(cases)
 
 
-def test_server_without_trusted_keys_refuses(empty_client, tmp_path):
+def test_server_without_trusted_keys_refuses(empty_client, tmp_path, monkeypatch):
+    monkeypatch.setattr(svc, "KEYS_FILE", tmp_path / "no_agent_update_keys.txt")  # ignore the committed keys
     k = Ed25519PrivateKey.generate()
     r = upload(empty_client, make_bundle(tmp_path, "1.0.0", [k]))
     assert r.status_code == 422 and "no trusted release-signing keys" in r.json()["detail"]
