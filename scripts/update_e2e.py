@@ -9,11 +9,13 @@ CI only (installs a real OS service, uses sudo on macOS). It:
     misconfigured server that accepts another key),
  2. builds agent versions A=1.0.0, B=1.1.0, C=1.2.0 (-tags e2e_broken: passes
     the pre-flight check but exits on start), D=1.3.0, E=1.4.0, all trusting K1,
- 3. starts the real backend (SQLite) trusting K1 and K2, enrolls A and installs
-    it as the OS service,
- 4. imports B (signed by K1) via the admin API, targets the "All devices" ring
-    -> the service downloads, verifies, swaps itself to B, restarts, checks in;
-    device id and credential unchanged,
+ 3. starts the real backend (SQLite, automatic update mode, a 1 h start jitter)
+    trusting K1 and K2, enrolls A, installs it as the OS service and assigns it
+    to the Pilot ring,
+ 4. imports B (signed by K1) via the admin API -> automatic mode targets Pilot
+    by itself; "Update now" queues check_for_update -> the service checks in,
+    skips the 1 h jitter, downloads, verifies, swaps itself to B, restarts,
+    checks in; device id and credential unchanged,
  5. imports C via the CLI, targets it -> C fails its health check -> the
     watchdog restores B automatically and B reports rolled_back,
  6. D signed only by K2 -> the server accepts it, the AGENT rejects it,
@@ -161,7 +163,10 @@ def main() -> int:
     env = {**os.environ, "DATABASE_URL": f"sqlite:///{dbfile.as_posix()}", "SIMULATION_MODE": "false",
            "ADMIN_EMAIL": ADMIN_EMAIL, "ADMIN_PASSWORD": ADMIN_PASSWORD, "COOKIE_SECURE": "false",
            "APP_ENV": "development", "INGEST_API_TOKEN": "e2e-unused-token-000000000000",
-           "AGENT_UPDATE_TRUSTED_KEYS": f"{line1};{line2}", "AGENT_UPDATE_JITTER_SECONDS": "0",
+           "AGENT_UPDATE_TRUSTED_KEYS": f"{line1};{line2}",
+           # A long random start delay: only "Update now" (check_for_update) makes these updates fast.
+           "AGENT_UPDATE_JITTER_SECONDS": "3600", "AGENT_UPDATE_DEFAULT_MODE": "automatic",
+           "AGENT_UPDATE_AUTO_IMPORT": "false",
            "AGENT_UPDATE_HEALTH_TIMEOUT_SECONDS": "90"}
     log = open(work / "backend.log", "w")  # noqa: SIM115
     backend = subprocess.Popen([args.python, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port",
@@ -191,38 +196,61 @@ def main() -> int:
         def upd() -> dict:
             return api.call("GET", f"/api/updates/devices/{dev_id}")
 
-        def wait(what: str, cond, timeout: float) -> None:
+        def update_now() -> dict:
+            return api.call("POST", "/api/updates/update-now", {"device_id": dev_id, "reason": "update e2e"})
+
+        def wait(what: str, cond, timeout: float, kick: str = "update_now") -> None:
             deadline = time.time() + timeout
             last_kick = 0.0
             while time.time() < deadline:
                 if cond():
                     print(f"ok: {what}", flush=True)
                     return
-                if time.time() - last_kick > 90:  # make the agent check in (and see the offer) soon
+                if time.time() - last_kick > 90:  # make the agent check in (and start the update) soon
                     try:
-                        api.call("POST", f"/api/devices/{dev_id}/commands",
-                                 {"type": "recheck_posture", "reason": "update e2e: check in now"})
+                        if kick == "update_now":
+                            update_now()
+                        else:
+                            api.call("POST", f"/api/devices/{dev_id}/commands",
+                                     {"type": "recheck_posture", "reason": "update e2e: check in now"})
                     except SystemExit as e:
-                        print("queueing recheck failed:", e)
+                        print(f"{kick} not queued:", e)
                     last_kick = time.time()
                 time.sleep(5)
             print(json.dumps(upd(), indent=1))
             raise SystemExit(f"timed out waiting for: {what}")
 
         wait("service checked in as 1.0.0", lambda: device()["agent_version"] == "1.0.0" and
-             len(api.call("GET", f"/api/devices/{dev_id}/history")) >= 1, 240)
-        all_ring = next(r for r in api.call("GET", "/api/updates/rings") if r["name"] == "All devices")
+             len(api.call("GET", f"/api/devices/{dev_id}/history")) >= 1, 240, kick="recheck")
+        rings = {r["name"]: r for r in api.call("GET", "/api/updates/rings")}
+        pilot = rings["Pilot"]
+        api.call("PUT", f"/api/updates/devices/{dev_id}", {"ring_id": pilot["id"], "reason": "update e2e pilot"})
+        assert api.call("GET", "/api/updates/automation")["mode"] == "automatic"
 
         def target(release_id: str) -> None:
-            api.call("PATCH", f"/api/updates/rings/{all_ring['id']}",
+            api.call("PATCH", f"/api/updates/rings/{pilot['id']}",
                      {"reason": "update e2e", "target_release_id": release_id, "rollout_percent": 100})
 
-        # --- B: signed by K1 -> self-update ------------------------------------------------
+        # --- B: signed by K1 -> automatic mode targets Pilot -> "Update now" ---------------------
         rb = upload(api, bundle(work, "1.1.0", bins["1.1.0"], [k1], "B").read_bytes())
         assert rb["key_id"] == line1.split()[0], rb
-        target(rb["id"])
+        rings = {r["name"]: r for r in api.call("GET", "/api/updates/rings")}
+        assert rings["Pilot"]["target_version"] == "1.1.0", rings  # set by the automatic mode, not by us
+        assert rings["All devices"]["target_version"] is None, rings  # everyone else waits for the soak
+        pending = upd()["pending"]
+        print("pending before update now:", pending)
+        assert pending["state"] in ("waiting_checkin", "offered") and pending["update_now_supported"], pending
+        queued = update_now()["queued"]
+        assert [q["command"] for q in queued] == ["check_for_update"], queued
+        assert upd()["pending"]["state"] in ("update_now_requested", "offered", "updating", "up_to_date")
+        t0 = time.time()
         wait("agent self-updated to 1.1.0 and reported installed",
              lambda: device()["agent_version"] == "1.1.0" and upd()["status"] == "installed", 600)
+        cmds = [c for c in api.call("GET", f"/api/devices/{dev_id}/commands") if c["type"] == "check_for_update"]
+        print("check_for_update:", [(c["status"], c["output"]) for c in cmds])
+        assert any(c["status"] == "succeeded" and "1.1.0" in (c["output"] or "") and "starting now" in c["output"]
+                   for c in cmds), cmds
+        print(f"PASS: update now -> installed {time.time() - t0:.0f}s later (start jitter configured: 3600 s)")
         hist = [h["status"] for h in upd()["history"]][::-1]
         print("history:", hist)
         for s in ("downloading", "verified", "installing", "installed"):

@@ -46,6 +46,12 @@ To size up, edit `/opt/cnapp/cnapp.env` and run `sudo cnapp-ctl restart`:
 | Teams notifications (optional) | `*.webhook.office.com`, `*.logic.azure.com`, `*.api.powerplatform.com` |
 | Slack notifications (optional) | `hooks.slack.com` |
 | Email notifications (optional) | your SMTP relay, port 587/465 (set `NOTIFICATIONS_SMTP_ALLOW_PRIVATE=true` for an internal relay) |
+| Agent release auto-import (on by default, [AGENT_UPDATES.md](AGENT_UPDATES.md)) | `api.github.com`, `github.com`, `release-assets.githubusercontent.com`, `objects.githubusercontent.com` |
+
+The backend uses `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` from `cnapp.env` (passed through by the compose file;
+`localhost`, `127.0.0.1` and the stack's service names are always exempt), and `cnapp-ctl agent-release fetch`
+uses the same values for `curl`. Without internet access the auto-import only logs and shows "offline" in the
+console; import bundles with `cnapp-ctl agent-release import` instead (or set `AGENT_UPDATE_AUTO_IMPORT=false`).
 
 Inbound: only TCP 80 (redirect) and 443 from your LAN/VPN ranges, plus SSH from admin ranges. Nothing else is published.
 
