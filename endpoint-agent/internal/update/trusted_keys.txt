@@ -11,3 +11,4 @@
 # See docs/AGENT_UPDATES.md.
 #
 # With no key listed, agents built from this file refuse every update.
+ed25519:38ab5e030fbeb143 7QPpEeRuvvkPOnw6HjNTN9MIRnVi43zKQxJUuLqovR8=  # CNAPP agent release key 2026

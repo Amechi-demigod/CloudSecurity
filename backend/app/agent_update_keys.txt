@@ -2,3 +2,4 @@
 # endpoint-agent/internal/update/trusted_keys.txt (a test checks they match).
 # One key per line: <key id> <base64 public key> [# comment]
 # Add keys with scripts/agent-release-keygen. Never put a private key here.
+ed25519:38ab5e030fbeb143 7QPpEeRuvvkPOnw6HjNTN9MIRnVi43zKQxJUuLqovR8=  # CNAPP agent release key 2026
