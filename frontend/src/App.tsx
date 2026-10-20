@@ -6,6 +6,7 @@ import UserMenu from "./components/UserMenu";
 import { useApi } from "./lib/useApi";
 import AttackPaths from "./pages/AttackPaths";
 import Connectors from "./pages/Connectors";
+import AgentUpdates from "./pages/devices/AgentUpdates";
 import DeviceDetail from "./pages/devices/DeviceDetail";
 import Devices from "./pages/devices/Devices";
 import Enrollment from "./pages/devices/Enrollment";
@@ -150,6 +151,7 @@ function Shell() {
             <Route path="/connectors" element={<Connectors />} />
             <Route path="/devices" element={<Devices />} />
             <Route path="/devices/enrollment" element={<RequireRole role="admin"><Enrollment /></RequireRole>} />
+            <Route path="/devices/updates" element={<AgentUpdates />} />
             <Route path="/devices/:id" element={<DeviceDetail />} />
             <Route path="/notifications" element={<RequireRole role="analyst"><Notifications /></RequireRole>} />
             <Route path="/account/security" element={<Security />} />

@@ -8,7 +8,7 @@ import { CHECK_LABEL, OS_LABEL, fmtBytes, fmtDuration } from "../../lib/devices"
 import { fmtAgo, fmtTime } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
 
-const TABS = ["Overview", "Posture", "Software", "History", "Commands"] as const;
+const TABS = ["Overview", "Posture", "Software", "History", "Commands", "Updates"] as const;
 type TabName = (typeof TABS)[number];
 
 const ACTIONS: { type: CommandType; label: string; role: Role; help: string; danger?: boolean }[] = [
@@ -431,6 +431,115 @@ function CommandsTab({ device, commands, error, reload }: { device: Device; comm
   );
 }
 
+const UPDATE_TONE: Record<string, "default" | "warn" | "good" | "accent"> = {
+  installed: "good",
+  rolled_back: "warn",
+  failed: "warn",
+  rejected: "warn",
+  downloading: "accent",
+  verified: "accent",
+  installing: "accent",
+};
+
+function UpdatesTab({ id, admin }: { id: string; admin: boolean }) {
+  const st = useApi(() => api.deviceUpdate(id), [id], 15000);
+  const rings = useApi(api.updateRings, []);
+  const releases = useApi(api.agentReleases, []);
+  const [ring, setRing] = useState("");
+  const [pin, setPin] = useState("");
+  const [code, setCode] = useState("");
+  const [reason, setReason] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const s = st.data;
+
+  async function apply(body: { ring_id?: string; clear_ring?: boolean; pinned_release_id?: string; clear_pin?: boolean }) {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.setDeviceUpdate(id, { ...body, reason: reason.trim() || "changed from the device page" }, code);
+      setCode("");
+      st.reload();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <Card title="Agent version and rollout">
+        <ErrorNote error={st.error} />
+        {s && (
+          <dl className="grid grid-cols-1 gap-x-6 gap-y-2 text-sm md:grid-cols-2">
+            <div><dt className="text-ink-3">Running</dt><dd className="font-mono">{s.agent_version || "unknown"}</dd></div>
+            <div><dt className="text-ink-3">Target</dt><dd>{s.target_version ?? "none"} <span className="text-xs text-ink-3">({s.target_reason})</span></dd></div>
+            <div><dt className="text-ink-3">Ring</dt><dd>{s.ring?.name ?? "—"} <span className="text-xs text-ink-3">({s.ring_assignment})</span></dd></div>
+            <div><dt className="text-ink-3">Pinned release</dt><dd>{s.pinned_release?.version ?? "—"}</dd></div>
+            <div className="md:col-span-2">
+              <dt className="text-ink-3">Last update status</dt>
+              <dd>
+                {s.status ? <Tag tone={UPDATE_TONE[s.status] ?? "default"}>{s.status.replace("_", " ")}</Tag> : "—"}{" "}
+                {s.status_version && <span className="font-mono text-xs">{s.status_version}</span>}{" "}
+                {s.status_at && <span className="text-xs text-ink-3">{fmtAgo(s.status_at)}</span>}
+                {s.status_detail && <div className="mt-1 text-xs text-ink-3">{s.status_detail}</div>}
+              </dd>
+            </div>
+          </dl>
+        )}
+      </Card>
+      {admin && (
+        <Card title="Assign ring / pin version">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            <label className="text-sm">
+              <span className="mb-1 block font-medium text-ink-2">Ring</span>
+              <select aria-label="Ring" value={ring} onChange={(e) => setRing(e.target.value)} className="w-full rounded border border-line bg-surface-2 px-2 py-1.5 text-sm">
+                <option value="">— by device group / default —</option>
+                {rings.data?.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+              </select>
+            </label>
+            <label className="text-sm">
+              <span className="mb-1 block font-medium text-ink-2">Pin to release (overrides the ring)</span>
+              <select aria-label="Pinned release" value={pin} onChange={(e) => setPin(e.target.value)} className="w-full rounded border border-line bg-surface-2 px-2 py-1.5 text-sm">
+                <option value="">— no pin —</option>
+                {releases.data?.filter((r) => !r.withdrawn_at).map((r) => <option key={r.id} value={r.id}>{r.version}</option>)}
+              </select>
+            </label>
+            <Field label="Reason" id="upd-reason" value={reason} onChange={(e) => setReason(e.target.value)} />
+            <Field label="Authenticator code (if you use MFA)" id="upd-mfa" inputMode="numeric" autoComplete="one-time-code" value={code} onChange={(e) => setCode(e.target.value)} />
+          </div>
+          <ErrorNote error={error} />
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Button variant="primary" disabled={busy} onClick={() => apply(ring ? { ring_id: ring } : { clear_ring: true })}>Apply ring</Button>
+            <Button disabled={busy} onClick={() => apply(pin ? { pinned_release_id: pin } : { clear_pin: true })}>{pin ? "Pin" : "Remove pin"}</Button>
+          </div>
+          <p className="mt-2 text-xs text-ink-3">
+            The agent never installs an older version than it runs unless the release is signed to allow that rollback. Manage releases and rings under{" "}
+            <Link to="/devices/updates" className="text-accent hover:underline">Agent updates</Link>.
+          </p>
+        </Card>
+      )}
+      <Card title="Update history">
+        {s && s.history.length === 0 && <Empty>No updates reported yet.</Empty>}
+        {s && s.history.length > 0 && (
+          <Table head={["When", "Status", "From", "To", "Detail"]}>
+            {s.history.map((h) => (
+              <tr key={h.id} className="border-t border-line align-top">
+                <td className="py-1.5 pr-3 text-xs" title={fmtTime(h.created_at)}>{fmtAgo(h.created_at)}</td>
+                <td className="py-1.5 pr-3"><Tag tone={UPDATE_TONE[h.status] ?? "default"}>{h.status.replace("_", " ")}</Tag></td>
+                <td className="py-1.5 pr-3 font-mono text-xs">{h.from_version}</td>
+                <td className="py-1.5 pr-3 font-mono text-xs">{h.to_version}</td>
+                <td className="py-1.5 text-xs text-ink-2">{h.detail}</td>
+              </tr>
+            ))}
+          </Table>
+        )}
+      </Card>
+    </div>
+  );
+}
+
 export default function DeviceDetail() {
   const { id = "" } = useParams();
   const navigate = useNavigate();
@@ -507,6 +616,7 @@ export default function DeviceDetail() {
       {tab === "Posture" && <PostureCards device={device} />}
       {tab === "Software" && <SoftwareTab id={device.id} />}
       {tab === "History" && <HistoryTab id={device.id} />}
+      {tab === "Updates" && <UpdatesTab id={device.id} admin={can("admin") && active} />}
       {tab === "Commands" && <CommandsTab device={device} commands={cmds.data} error={cmds.error} reload={cmds.reload} />}
 
       <ActionDialog device={device} action={action} onClose={() => setAction(null)} onDone={() => {

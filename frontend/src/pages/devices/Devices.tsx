@@ -28,11 +28,16 @@ export default function Devices() {
         title="Devices"
         subtitle="Laptops and desktops running the CNAPP endpoint agent: inventory, security posture and remote actions."
         actions={
-          can("admin") && (
-            <Link to="/devices/enrollment" className="rounded bg-accent px-3 py-1.5 text-sm font-medium text-white hover:brightness-110">
-              Enroll devices
+          <div className="flex items-center gap-2">
+            <Link to="/devices/updates" className="rounded border border-line bg-surface-2 px-3 py-1.5 text-sm font-medium text-ink hover:bg-line">
+              Agent updates
             </Link>
-          )
+            {can("admin") && (
+              <Link to="/devices/enrollment" className="rounded bg-accent px-3 py-1.5 text-sm font-medium text-white hover:brightness-110">
+                Enroll devices
+              </Link>
+            )}
+          </div>
         }
       />
       {summary && (
