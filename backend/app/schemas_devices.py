@@ -139,6 +139,8 @@ class CheckinResponse(BaseModel):
     server_time: UTCDateTime
     pending_commands: int
     issues: list[str]
+    # Signed agent release this device should install (docs/AGENT_UPDATES.md).
+    update: dict[str, Any] | None = None
 
 
 class AgentCommand(BaseModel):

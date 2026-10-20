@@ -87,6 +87,26 @@ server {
     return 200 "ok\n";
   }
 
+  # Signed agent release bundles uploaded by admins (Devices > Agent updates;
+  # backend: AGENT_UPDATE_MAX_BUNDLE_BYTES). Session-authenticated admin API,
+  # not part of the device-facing /api/agent/ surface.
+  location = /api/updates/releases {
+    client_max_body_size 256m;
+    set $backend_upstream "${BACKEND_URL}";
+    proxy_pass $backend_upstream;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_request_buffering on;
+    proxy_read_timeout 300s;
+    proxy_hide_header X-Content-Type-Options;
+    proxy_hide_header X-Frame-Options;
+    proxy_hide_header Referrer-Policy;
+    proxy_hide_header Strict-Transport-Security;
+  }
+
   # API requests go to the backend (same origin for the browser: no CORS needed).
   location /api/ {
     set $backend_upstream "${BACKEND_URL}";

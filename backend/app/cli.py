@@ -5,6 +5,8 @@
     python -m app.cli reset-mfa --email you@example.com   # lost authenticator (break-glass)
     python -m app.cli migrate        # apply schema migrations (Alembic on PostgreSQL)
     python -m app.cli rotate-notification-key   # after prepending a new NOTIFICATIONS_ENCRYPTION_KEY
+    python -m app.cli agent-release-import BUNDLE.tar.gz   # or - for stdin (cnapp-ctl agent-release import)
+    python -m app.cli agent-release-list
 
 Passwords are prompted for (never passed as arguments, so they stay out of shell
 history). For automation, pipe the password with --password-stdin.
@@ -108,6 +110,46 @@ def rotate_notification_key(args: argparse.Namespace) -> int:
     return 0
 
 
+def agent_release_import(args: argparse.Namespace) -> int:
+    """Import a signed agent release bundle (verified against the trusted release keys)."""
+    from .services import agent_updates
+
+    data = sys.stdin.buffer.read() if args.bundle == "-" else open(args.bundle, "rb").read()  # noqa: SIM115
+    with db.get_session() as s:
+        try:
+            rel = agent_updates.import_bundle(s, data, args.actor)
+        except agent_updates.ReleaseError as e:
+            s.rollback()
+            auth.audit(s, "agent_release_rejected", actor_email=args.actor, reason=str(e)[:500], size_bytes=len(data))
+            s.commit()
+            raise SystemExit(f"error: {e}") from None
+        auth.audit(s, "agent_release_imported", actor_email=args.actor, target=f"agent-release:{rel.id}",
+                   version=rel.version, key_id=rel.key_id, bundle_sha256=rel.bundle_sha256,
+                   artifacts=[f"{a.os}/{a.arch} {a.sha256}" for a in rel.artifacts])
+        s.commit()
+        plats = ", ".join(f"{a.os}/{a.arch}" for a in rel.artifacts)
+        print(f"Imported agent release {rel.version} (id {rel.id}), signed by {rel.key_id}, "
+              f"expires {rel.expires_at:%Y-%m-%d}; platforms: {plats}")
+        print("Assign it to a rollout ring in the console (Devices > Agent updates).")
+    return 0
+
+
+def agent_release_list(args: argparse.Namespace) -> int:
+    from .models import AgentRelease
+    from .services import agent_updates
+
+    with db.get_session() as s:
+        rels = sorted(s.scalars(select(AgentRelease)), key=lambda r: agent_updates.version_sort_key(r.version),
+                      reverse=True)
+        for r in rels:
+            state = "withdrawn" if r.withdrawn_at else ("expired" if r.expires_at <= utcnow() else "active")
+            print(f"{r.version:24} {r.id}  {state:9} key={r.key_id} expires={r.expires_at:%Y-%m-%d} "
+                  f"platforms={','.join(f'{a.os}/{a.arch}' for a in r.artifacts)}")
+        if not rels:
+            print("No agent releases imported.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="python -m app.cli", description="CloudSecurity CNAPP admin CLI")
     sub = p.add_subparsers(dest="command", required=True)
@@ -129,6 +171,12 @@ def main(argv: list[str] | None = None) -> int:
     k = sub.add_parser("rotate-notification-key",
                        help="re-encrypt notification channel secrets with the first NOTIFICATIONS_ENCRYPTION_KEY")
     k.set_defaults(func=rotate_notification_key)
+    ai = sub.add_parser("agent-release-import", help="import a signed agent release bundle (.tar.gz, or - for stdin)")
+    ai.add_argument("bundle")
+    ai.add_argument("--actor", default="cli", help="name recorded in the audit log")
+    ai.set_defaults(func=agent_release_import)
+    al = sub.add_parser("agent-release-list", help="list imported agent releases")
+    al.set_defaults(func=agent_release_list)
     args = p.parse_args(argv)
     if args.func is migrate:
         db.init_engine(config.settings.database_url, migrate=True)
