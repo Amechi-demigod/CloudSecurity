@@ -301,6 +301,29 @@ class Settings:
     # in Entra ID with Conditional Access instead).
     entra_enforce_local_mfa: bool = field(default_factory=lambda: _bool("ENTRA_ENFORCE_LOCAL_MFA", False))
 
+    # --- IT asset lifecycle (docs/ASSET_MANAGEMENT.md) ---------------------------
+    # Defaults for settings an admin can override in the UI (IT assets > Settings).
+    asset_default_currency: str = field(
+        default_factory=lambda: (os.getenv("ASSET_DEFAULT_CURRENCY") or "NGN").strip().upper())
+    # Agent devices not seen for this many days are flagged as idle candidates.
+    asset_idle_days: int = field(default_factory=lambda: int(os.getenv("ASSET_IDLE_DAYS", "30")))
+    # "Warranty expiring" window (dashboard + notifications).
+    asset_warranty_warning_days: int = field(
+        default_factory=lambda: int(os.getenv("ASSET_WARRANTY_WARNING_DAYS", "30")))
+    # Default retrieval due date = leave date + this many days.
+    asset_retrieval_due_days: int = field(default_factory=lambda: int(os.getenv("ASSET_RETRIEVAL_DUE_DAYS", "7")))
+    # Wipe / destruction certificates (PDF, PNG, JPEG; stored in the database).
+    asset_certificate_max_bytes: int = field(
+        default_factory=lambda: int(os.getenv("ASSET_CERTIFICATE_MAX_BYTES", str(5 * 1024 * 1024))))
+    # CSV import limits.
+    asset_import_max_bytes: int = field(
+        default_factory=lambda: int(os.getenv("ASSET_IMPORT_MAX_BYTES", str(2 * 1024 * 1024))))
+    asset_import_max_rows: int = field(default_factory=lambda: int(os.getenv("ASSET_IMPORT_MAX_ROWS", "5000")))
+    # How often the notification dispatcher checks for overdue retrievals,
+    # expiring warranties and unseen devices.
+    asset_notification_poll_seconds: float = field(
+        default_factory=lambda: float(os.getenv("ASSET_NOTIFICATION_POLL_SECONDS", "3600")))
+
     @property
     def entra_enabled(self) -> bool:
         return bool(self.entra_tenant_id and self.entra_client_id)

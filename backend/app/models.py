@@ -601,4 +601,6 @@ class OidcAuthRequest(Base):
 
 # Notification tables live in their own module; import them so they are part of
 # Base.metadata (create_all on SQLite, Alembic autogenerate / schema checks).
+# Same for the IT asset lifecycle tables (hardware assets, custody, offboarding, certificates).
+from .asset_lifecycle import models as _asset_lifecycle_models  # noqa: E402, F401
 from .notifications import models as _notification_models  # noqa: E402, F401
