@@ -284,7 +284,7 @@ def main() -> int:
         tf = tarfile.open(fileobj=io.BytesIO(raw))
         files = {m.name: tf.extractfile(m).read() for m in tf.getmembers()}
         name = next(n for n in files if n != "manifest.json")
-        files[name] = files[name][:-1] + b"\0"
+        files[name] = files[name][:-1] + bytes([files[name][-1] ^ 0xFF])  # flip the last byte
         out = io.BytesIO()
         with tarfile.open(fileobj=out, mode="w:gz") as t2:
             for n, d in files.items():
