@@ -40,6 +40,8 @@ func TestScheduleOfferUpdateNowBringsForward(t *testing.T) {
 	now := time.Now()
 	o := update.Offer{ReleaseID: "r1", Version: "1.1.0", JitterSeconds: 900}
 	a.scheduleOffer(&o, now)
+	// Pin the random first schedule for a deterministic test: 10 min from now.
+	a.nextUpdate = now.Add(10 * time.Minute)
 	first := a.nextUpdate
 	// The same offer at a later regular check-in keeps its time.
 	a.scheduleOffer(&o, now.Add(time.Minute))
@@ -52,6 +54,11 @@ func TestScheduleOfferUpdateNowBringsForward(t *testing.T) {
 	a.scheduleOffer(&im, now.Add(2*time.Minute))
 	if !a.nextUpdate.Equal(now.Add(2 * time.Minute)) {
 		t.Fatalf("immediate offer not brought forward: %s", a.nextUpdate.Sub(now))
+	}
+	// An immediate offer never postpones an earlier schedule.
+	a.scheduleOffer(&im, now.Add(3*time.Minute))
+	if !a.nextUpdate.Equal(now.Add(2 * time.Minute)) {
+		t.Fatal("immediate offer postponed the update")
 	}
 	// No offer clears the schedule.
 	a.scheduleOffer(nil, now)
