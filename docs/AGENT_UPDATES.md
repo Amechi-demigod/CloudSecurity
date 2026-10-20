@@ -346,7 +346,15 @@ Users (session; viewer reads, admin writes; `X-MFA-Code` header for step-up):
 `POST /api/updates/releases/{id}/withdraw`, `POST|PATCH|DELETE /api/updates/rings[/{id}]`,
 `PUT /api/updates/devices/{id}` (`ring_id` / `clear_ring` / `pinned_release_id` / `clear_pin`).
 Admin endpoints are deliberately **not** under `/api/agent/`, so they stay
-internal when only `/api/agent/` is exposed to the internet.
+internal when the agent endpoint is published to the internet
+(`cnapp-ctl public-agent enable`, [DEPLOY_ONPREM.md](DEPLOY_ONPREM.md)): the
+on-prem nginx access policy answers **404** to clients outside
+`CNAPP_INTERNAL_CIDRS` for everything but `/api/agent/`, the bundle-upload
+location checks `$cnapp_internal` again, and the dedicated agent hostname
+serves `/api/agent/` only. Agents outside the network update through
+`/api/agent/updates/*` (same per-IP rate limits and fail2ban as the rest of the
+agent API; binaries are downloads, so the 8 MB request-body limit does not
+apply). CI checks both from an "internet" network namespace.
 
 ## Troubleshooting
 

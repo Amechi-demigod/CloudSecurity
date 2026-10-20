@@ -796,6 +796,21 @@ jobs:
           test "$(ext "${M[@]}" --path-as-is "https://$HOST/api/agent/commands/..%2f..%2fauth/me")" = 404
           test "$(ext "${A[@]}" "https://$AG/")" = 404
           test "$(ext "${A[@]}" "https://$AG/api/auth/login")" = 404
+          # Agent auto-update: the device download/status API is public, the admin API is not (any name, any method).
+          rid=0123456789abcdef0123456789abcdef
+          sleep 4  # let the per-IP rate limit bucket (exercised above) refill
+          test "$(ext "${M[@]}" "https://$HOST/api/agent/updates/releases/$rid/manifest")" = 401
+          test "$(ext "${A[@]}" "https://$AG/api/agent/updates/releases/$rid/artifacts/windows/amd64")" = 401
+          test "$(ext "${A[@]}" -X POST -H 'Content-Type: application/json' -d '{"status":"installed"}' "https://$AG/api/agent/updates/status")" = 401
+          for path in /api/updates/releases /api/updates/rings /api/updates/summary /api/updates/keys "/api/updates/devices/$rid"; do
+            test "$(ext "${M[@]}" "https://$HOST$path")" = 404
+            test "$(ext "${A[@]}" "https://$AG$path")" = 404
+          done
+          test "$(ext "${M[@]}" -X POST -H 'Content-Type: application/gzip' --data-binary 'x' "https://$HOST/api/updates/releases")" = 404
+          test "$(ext "${A[@]}" -X POST -H 'Content-Type: application/gzip' --data-binary 'x' "https://$AG/api/updates/releases")" = 404
+          test "$(ext "${M[@]}" --path-as-is "https://$HOST/api/agent/../updates/releases")" = 404
+          test "$(ext "${M[@]}" --path-as-is "https://$HOST/api/agent/updates/%2e%2e/%2e%2e/updates/releases")" = 404
+          test "$(sudo ip netns exec badns curl -k -sS -o /dev/null -w '%{http_code}' -X POST --data-binary x https://203.0.113.1/api/updates/releases)" = 404
           # Without SNI (by IP address): same split.
           test "$(sudo ip netns exec badns curl -k -sS -o /dev/null -w '%{http_code}' https://203.0.113.1/api/agent/commands)" = 401
           test "$(sudo ip netns exec badns curl -k -sS -o /dev/null -w '%{http_code}' https://203.0.113.1/)" = 404
@@ -806,6 +821,12 @@ jobs:
           sudo ip netns exec okns curl -fsS --cacert "$CA" --resolve "$HOST:443:198.51.100.1" "https://$HOST/api/health"
           test "$(sudo ip netns exec okns curl -sS -o /dev/null -w '%{http_code}' --cacert "$CA" --resolve "$HOST:443:198.51.100.1" \
             -X POST -H 'Content-Type: application/json' -d '{"email":"x@y.z","password":"wrong-password-1"}' "https://$HOST/api/auth/login")" = 401
+          # Internal clients reach the admin update API (401 without a session); never on the agent name.
+          test "$(sudo ip netns exec okns curl -sS -o /dev/null -w '%{http_code}' --cacert "$CA" --resolve "$HOST:443:198.51.100.1" "https://$HOST/api/updates/releases")" = 401
+          test "$(sudo ip netns exec okns curl -sS -o /dev/null -w '%{http_code}' --cacert "$CA" --resolve "$HOST:443:198.51.100.1" \
+            -X POST -H 'Content-Type: application/gzip' --data-binary x "https://$HOST/api/updates/releases")" = 401
+          test "$(sudo ip netns exec okns curl -sS -o /dev/null -w '%{http_code}' --cacert "$RUNNER_TEMP/agent.crt" --resolve "$AG:443:198.51.100.1" \
+            -X POST -H 'Content-Type: application/gzip' --data-binary x "https://$AG/api/updates/releases")" = 404
           # ... but the dedicated agent name serves the agent API only, for everyone.
           test "$(sudo ip netns exec okns curl -sS -o /dev/null -w '%{http_code}' --cacert "$RUNNER_TEMP/agent.crt" --resolve "$AG:443:198.51.100.1" "https://$AG/")" = 404
           e2e expect external-agent present
