@@ -7,6 +7,8 @@
     python -m app.cli rotate-notification-key   # after prepending a new NOTIFICATIONS_ENCRYPTION_KEY
     python -m app.cli agent-release-import BUNDLE.tar.gz   # or - for stdin (cnapp-ctl agent-release import)
     python -m app.cli agent-release-list
+    python -m app.cli device-scripts-import BUNDLE.tar.gz  # or - (cnapp-ctl scripts import)
+    python -m app.cli device-scripts-list
 
 Passwords are prompted for (never passed as arguments, so they stay out of shell
 history). For automation, pipe the password with --password-stdin.
@@ -150,6 +152,44 @@ def agent_release_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def device_scripts_import(args: argparse.Namespace) -> int:
+    """Import a signed device-script bundle (verified against the script-signing keys)."""
+    from .services import device_scripts
+
+    data = sys.stdin.buffer.read() if args.bundle == "-" else open(args.bundle, "rb").read()  # noqa: SIM115
+    with db.get_session() as s:
+        try:
+            b = device_scripts.import_bundle(s, data, args.actor)
+        except device_scripts.ScriptBundleError as e:
+            s.rollback()
+            auth.audit(s, "device_script_bundle_rejected", actor_email=args.actor, reason=str(e)[:500],
+                       size_bytes=len(data))
+            s.commit()
+            raise SystemExit(f"error: {e}") from None
+        auth.audit(s, "device_script_bundle_imported", actor_email=args.actor, target=f"script-bundle:{b.id}",
+                   version=b.version, key_id=b.key_id, bundle_sha256=b.bundle_sha256,
+                   scripts=[f"{x.name} {x.risk} {x.sha256}" for x in b.scripts])
+        s.commit()
+        print(f"Imported device scripts {b.version} (id {b.id}), signed by {b.key_id}, "
+              f"expires {b.expires_at:%Y-%m-%d}: {', '.join(f'{x.name} ({x.risk})' for x in b.scripts)}")
+    return 0
+
+
+def device_scripts_list(args: argparse.Namespace) -> int:
+    from .services import device_scripts
+
+    with db.get_session() as s:
+        bundles = device_scripts.bundles(s)
+        latest = device_scripts.latest_bundle(s)
+        for b in bundles:
+            state = "expired" if b.expires_at <= utcnow() else ("active" if latest and b.id == latest.id else "older")
+            print(f"{b.version:16} {b.id}  {state:8} key={b.key_id} expires={b.expires_at:%Y-%m-%d} "
+                  f"scripts={','.join(x.name for x in b.scripts)}")
+        if not bundles:
+            print("No device-script bundles imported.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="python -m app.cli", description="CloudSecurity CNAPP admin CLI")
     sub = p.add_subparsers(dest="command", required=True)
@@ -177,6 +217,12 @@ def main(argv: list[str] | None = None) -> int:
     ai.set_defaults(func=agent_release_import)
     al = sub.add_parser("agent-release-list", help="list imported agent releases")
     al.set_defaults(func=agent_release_list)
+    di = sub.add_parser("device-scripts-import", help="import a signed device-script bundle (.tar.gz, or - for stdin)")
+    di.add_argument("bundle")
+    di.add_argument("--actor", default="cli", help="name recorded in the audit log")
+    di.set_defaults(func=device_scripts_import)
+    dl = sub.add_parser("device-scripts-list", help="list imported device-script bundles")
+    dl.set_defaults(func=device_scripts_list)
     args = p.parse_args(argv)
     if args.func is migrate:
         db.init_engine(config.settings.database_url, migrate=True)

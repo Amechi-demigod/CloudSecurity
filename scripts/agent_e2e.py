@@ -8,6 +8,13 @@ enrollment token through the admin API, enrolls the agent binary given with
 collect_logs, update_check_in_interval), verifies their results and the
 uploaded log bundle, then revokes the device and checks the agent is rejected.
 
+With --script-key-file PEM (the agent must be built with that key in
+scripts.ExtraTrustedKeys) it also signs a bundle of the repository's
+device-scripts/, imports it, runs the platform's read-only "list local admins"
+script on the real OS and checks the exit code and output. On Windows it also
+enables and clears lost mode (the legal notice is restored) and checks that a
+remote wipe is refused for a device that did not opt in (nothing is wiped).
+
 With --service (CI only: it installs a real Windows service / macOS
 LaunchDaemon, using sudo on macOS) it also installs the agent as a service,
 waits for the service's own check-in, sends restart_agent and checks that the
@@ -47,10 +54,11 @@ class Api:
         self.csrf = ""
         self.opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
 
-    def call(self, method: str, path: str, body=None, raw: bool = False):
-        data = json.dumps(body).encode() if body is not None else None
+    def call(self, method: str, path: str, body=None, raw: bool = False, gzip_body: bytes | None = None,
+             expect_error: int | None = None):
+        data = json.dumps(body).encode() if body is not None else gzip_body
         req = urllib.request.Request(self.base + path, data=data, method=method)
-        req.add_header("Content-Type", "application/json")
+        req.add_header("Content-Type", "application/gzip" if gzip_body is not None else "application/json")
         if self.csrf and method not in ("GET", "HEAD"):
             req.add_header("X-CSRF-Token", self.csrf)
         try:
@@ -60,6 +68,8 @@ class Api:
                     return payload
                 return json.loads(payload) if payload else None
         except urllib.error.HTTPError as e:
+            if expect_error is not None and e.code == expect_error:
+                return json.loads(e.read() or b"{}")
             raise SystemExit(f"{method} {path} -> {e.code}: {e.read()[:500]!r}") from None
 
 
@@ -132,11 +142,77 @@ def service_test(api: Api, agent: str, home: str, device_id: str) -> None:
     run_agent(agent, home, "uninstall")
 
 
+def reg_notice() -> str:
+    out = subprocess.run(["reg", "query", r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"],
+                         capture_output=True, text=True).stdout
+    return "\n".join(line.strip() for line in out.splitlines() if "LegalNotice" in line)
+
+
+def protect_test(api: Api, agent: str, home: str, dev: dict, key_file: str | None) -> None:
+    """Approved scripts (real interpreter), lost mode (Windows) and the wipe guard rails."""
+    did = dev["id"]
+    sys.path.insert(0, str(ROOT / "scripts"))
+    if key_file:
+        import agent_release
+        import device_scripts as tool
+
+        key = agent_release.load_private(Path(key_file).read_bytes())
+        sources = tool.load_sources(ROOT / "device-scripts")
+        out = Path(home).parent / "scripts.tar.gz"
+        tool.write_bundle(out, tool.sign_manifest(tool.build_manifest("1.0.0", sources, days=7, notes="e2e"), [key]),
+                          sources)
+        api.call("POST", "/api/scripts/bundles", gzip_body=out.read_bytes())
+        name = "windows-list-local-admins" if dev["os_family"] == "windows" else "macos-list-local-admins"
+        r = api.call("POST", "/api/scripts/run", {"device_id": did, "script": name, "parameters": {},
+                                                  "reason": "e2e approved script"})
+        assert r["mode"] == "command", r
+        run_agent(agent, home, "checkin")
+        cmd = next(c for c in api.call("GET", f"/api/devices/{did}/commands") if c["id"] == r["command_id"])
+        print(cmd["output"])
+        assert cmd["status"] == "succeeded" and cmd["exit_code"] == 0, cmd
+        assert "Administrator" in cmd["output"] or "admin" in cmd["output"].lower(), cmd["output"]
+        # A medium-risk script waits for a second admin: nothing is queued.
+        if dev["os_family"] == "windows":
+            r = api.call("POST", "/api/scripts/run", {"device_id": did, "script": "windows-clear-temp-files",
+                                                      "parameters": {"dry_run": True}, "reason": "e2e approval"})
+            assert r["mode"] == "approval" and r["approval"]["status"] == "pending", r
+            api.call("POST", f"/api/approvals/{r['approval']['id']}/cancel", {"reason": "e2e done"})
+        print("ok: signed script ran on the real OS")
+    # Remote wipe: refused for a device that did not opt in (never actually wipes in CI).
+    d = api.call("GET", f"/api/devices/{did}")
+    assert d["wipe"]["opted_in"] is False, d["wipe"]
+    print("wipe readiness reported:", json.dumps(d["wipe"]["readiness"]), d["wipe"]["readiness_detail"])
+    err = api.call("POST", f"/api/devices/{did}/wipe", {"reason": "e2e", "confirm_hostname": d["hostname"]},
+                   expect_error=409)
+    assert "opt in" in err["detail"] or "Windows" in err["detail"], err
+    if dev["os_family"] != "windows":
+        return
+    before = reg_notice()
+    cid = api.call("POST", f"/api/devices/{did}/commands", {
+        "type": "enable_lost_mode", "reason": "e2e lost mode", "confirm_hostname": d["hostname"],
+        "params": {"message": "E2E lost device test", "phone": "+1 555 0100"}})["id"]
+    run_agent(agent, home, "checkin")
+    cmd = next(c for c in api.call("GET", f"/api/devices/{did}/commands") if c["id"] == cid)
+    print(cmd["output"])
+    assert cmd["status"] == "succeeded", cmd
+    assert "E2E lost device test" in reg_notice(), reg_notice()
+    run_agent(agent, home, "checkin")  # reports lost_mode active
+    d = api.call("GET", f"/api/devices/{did}")
+    assert d["lost_mode"]["status"] == "active" and d["lost_mode"]["reported_active"] is True, d["lost_mode"]
+    api.call("POST", f"/api/devices/{did}/commands", {"type": "disable_lost_mode", "reason": "e2e found"})
+    run_agent(agent, home, "checkin")
+    assert reg_notice() == before, (reg_notice(), before)
+    assert api.call("GET", f"/api/devices/{did}")["lost_mode"]["status"] is None
+    print("ok: lost mode set the sign-in notice and restored it")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--agent", required=True, help="path to the cnapp-agent binary")
     ap.add_argument("--python", default=sys.executable, help="python with the backend requirements installed")
     ap.add_argument("--service", action="store_true", help="also test the real OS service (CI runners only)")
+    ap.add_argument("--script-key-file", help="script-signing private key (PEM) the agent build trusts: "
+                    "also run an approved script, lost mode and the wipe guard rails")
     args = ap.parse_args()
     if args.service and platform.system() == "Darwin":
         SUDO[:] = ["sudo", "-n"]  # the LaunchDaemon runs as root; keep all agent state root-owned
@@ -149,6 +225,12 @@ def main() -> int:
         env = {**os.environ, "DATABASE_URL": f"sqlite:///{Path(tmp, 'e2e.db').as_posix()}", "SIMULATION_MODE": "false",
                "ADMIN_EMAIL": ADMIN_EMAIL, "ADMIN_PASSWORD": ADMIN_PASSWORD, "COOKIE_SECURE": "false",
                "APP_ENV": "development", "INGEST_API_TOKEN": "e2e-unused-token-000000000000"}
+        if args.script_key_file:
+            sys.path.insert(0, str(ROOT / "scripts"))
+            import agent_release
+
+            key = agent_release.load_private(Path(args.script_key_file).read_bytes())
+            env["DEVICE_SCRIPT_TRUSTED_KEYS"] = agent_release.trusted_line(key)
         log = open(Path(tmp, "backend.log"), "w")  # noqa: SIM115
         backend = subprocess.Popen([args.python, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port",
                                     str(port)], cwd=ROOT / "backend", env=env, stdout=log, stderr=subprocess.STDOUT)
@@ -202,6 +284,8 @@ def main() -> int:
             assert "cnd_" not in state_json, "log bundle leaks the device secret"
             assert api.call("GET", f"/api/devices/{dev['id']}")["check_in_interval_seconds"] == 600
             assert len(api.call("GET", f"/api/devices/{dev['id']}/history")) >= 2
+
+            protect_test(api, agent, home, dev, args.script_key_file)
 
             if args.service:
                 service_test(api, agent, home, dev["id"])
