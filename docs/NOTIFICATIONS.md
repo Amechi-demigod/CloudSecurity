@@ -301,6 +301,24 @@ The first three are polled by the dispatcher leader every
 `ASSET_NOTIFICATION_POLL_SECONDS` (1 hour). Events link to the asset page and
 carry `asset_type` = `it_<type>` (e.g. `it_laptop`) for the asset type filter.
 
+## Device approval events
+
+The *Device approvals* source (`device_approvals`) covers the two-person approval
+of high-risk device actions ([DEVICE_MANAGEMENT.md](DEVICE_MANAGEMENT.md#two-person-approval)):
+
+| Event type | Severity | When |
+|---|---|---|
+| `approval_requested` | critical (wipe) / script risk | an admin requested a remote wipe or a medium/high-risk script: **a second admin must approve it** |
+| `approval_approved` | high (wipe) / script risk | approved (for a self-approval: the cooling-off delay started) |
+| `approval_rejected`, `approval_cancelled`, `approval_expired` | high (wipe) / script risk | decided, withdrawn, or no decision within `DEVICE_APPROVAL_TTL_HOURS` |
+| `action_executed` | critical (wipe) / script risk | the command was queued for the device |
+| `wipe_acknowledged` | critical | the agent confirmed it is about to wipe (the device may never report again) |
+
+The events link to the **Approvals** page and carry `action`, `risk`,
+`requested_by` and `decided_by`. Recommended rule: source *Device approvals*,
+event types `approval_requested` + `wipe_acknowledged`, to the admins' Teams /
+Slack channel or email, so a pending request is seen quickly.
+
 ## Adding a new event source
 
 ```python

@@ -6,7 +6,8 @@ It works in the spirit of Intune, with deliberate limits:
 
 - **Our own agent only.** There is no Microsoft Graph / Intune integration and no Apple or Windows MDM protocol, so no MDM enrollment profiles or Apple Push certificates are needed.
 - **Inventory, posture and safe remote actions.** Compliance policies and vulnerable-software (CVE) matching are not implemented yet. The data they need (posture history and the installed-software list with versions) is already stored.
-- **No arbitrary command execution.** The agent never runs scripts or shell commands sent by the server.
+- **No arbitrary command execution.** The agent never runs scripts or shell commands written on the server. The only scripts it runs are **approved scripts**: reviewed in this repository, signed with a dedicated script-signing key the server never holds, verified by the agent right before running, with typed, validated parameters ([DEVICE_SCRIPTS.md](DEVICE_SCRIPTS.md), [ADR-0001](ADR-0001-signed-device-scripts.md)).
+- **High-risk actions need two admins.** Remote wipe (Windows only) and medium/high-risk scripts run only after a second admin approves them ([Two-person approval](#two-person-approval)).
 
 Linux is not supported yet. The code is split so it can be added later: see [Adding Linux](#adding-linux).
 
@@ -18,6 +19,10 @@ Linux is not supported yet. The code is split so it can be added later: see [Add
 - [What data is collected](#what-data-is-collected) (privacy)
 - [Device health and issues](#device-health-and-issues)
 - [Remote actions](#remote-actions)
+- [Two-person approval](#two-person-approval)
+- [Lost mode](#lost-mode)
+- [Remote wipe (Windows)](#remote-wipe-windows)
+- [Approved scripts](#approved-scripts) (details: [DEVICE_SCRIPTS.md](DEVICE_SCRIPTS.md))
 - [Security model](#security-model)
 - [Service install, upgrade and uninstall](#service-install-upgrade-and-uninstall) (and **[automatic, signed agent updates](AGENT_UPDATES.md)**)
 - [Packaging and code signing](#packaging-and-code-signing)
@@ -76,6 +81,7 @@ When a request fails, the agent backs off exponentially with full jitter (30 s, 
 | Maximum devices | 500 | each new device uses one enrollment; re-installs and upgrades do not |
 | Device group | (none) | label applied to every device enrolled with it (filter `GET /api/devices?group=`) |
 | Include the server's CA certificate | on when the server has a private CA | see [TLS and the CA](#tls-and-the-ca) |
+| Allow remote wipe | **off** | Windows only: devices installed from this package opt in to [remote wipe](#remote-wipe-windows). Stored in the device's protected local policy; the server cannot turn it on later |
 
 The server mints a dedicated **package-bound enrollment token** (stored hashed like every token, listed under *Enrollment tokens* with an "installer" tag, revocable there, every download audit-logged as `agent_installer_created` with the file's SHA-256) and returns one file:
 
@@ -316,6 +322,9 @@ There is no generic "run command". Only the following actions exist, and each on
 | `lock_device` | admin | locks the interactive session (details below); the UI asks you to type the hostname to confirm |
 | `restart_agent` | admin | reports success, then exits so the service manager restarts it (Windows SCM recovery actions; launchd `KeepAlive`) |
 | `update_check_in_interval` | admin | sets the full check-in interval to 300-86,400 s and stores it in the agent state |
+| `enable_lost_mode` / `disable_lost_mode` | admin | shows a message + contact phone on the sign-in / lock screen and locks the sessions until cleared; exiting restores the previous settings ([Lost mode](#lost-mode)). Typed hostname to enable; no second approval (reversible) |
+| `wipe_device` | admin **+ a second admin** | Windows only, device opted in at install time: factory-resets the device through `MDM_RemoteWipe` ([Remote wipe](#remote-wipe-windows)). Never queued directly: `POST /api/devices/{id}/wipe` creates an approval request |
+| `run_script` | admin (**+ a second admin** unless the signed manifest says `risk: low`) | runs one approved, signed script with validated parameters ([Approved scripts](#approved-scripts)) |
 
 Every action requires a **reason**. Creating one is written to the audit log (`device_command_created`, with actor, device, type, parameters and reason), and so are cancellation, completion (reported by the device), log-bundle downloads, token creation and revocation, enrollment, re-enrollment, revocation and deletion.
 
@@ -328,9 +337,68 @@ Every action requires a **reason**. Creating one is written to the audit log (`d
 | Windows | The service (LocalSystem, session 0) enumerates active sessions (`WTSEnumerateSessions`). For each one it gets the user's token (`WTSQueryUserToken`) and starts `rundll32.exe user32.dll,LockWorkStation` on that session's `winsta0\default` desktop (`CreateProcessAsUser`). If that fails, it disconnects the session (`WTSDisconnectSession`), which also returns it to the sign-in screen without logging the user off. Run interactively, the agent calls `LockWorkStation` directly. | Works for console and RDP sessions. The result lists every session and how it was locked. With no one signed in it reports `failed: no active interactive session`. |
 | macOS | If `CGSession -suspend` exists (macOS 10.x only; removed in 11+) it runs in the console user's context. Otherwise it runs `pmset displaysleepnow`, which locks the session only when the user requires a password **immediately** (or within the delay) after sleep or screen saver. That is the macOS default, and our `screen_lock` posture check reports it. | The result output includes the user's actual `screenLock` setting. If no password is required, the action is reported as **failed** ("screen is NOT locked"). There is no supported API that lets a root daemon force-lock a macOS session without MDM. |
 
+## Two-person approval
+
+Remote wipe and running a **medium**- or **high**-risk approved script are "maker-checker" actions:
+
+1. An admin requests the action with a reason (`POST /api/devices/{id}/wipe`, or *Run script* for a non-low-risk script). Nothing is sent to the device yet; the request appears under **Approvals** (badge in the navigation) and raises an `approval_requested` notification (source *Device approvals*, route it to Teams / Slack / email with a rule, [NOTIFICATIONS.md](NOTIFICATIONS.md#device-approval-events)).
+2. A **different** active admin approves or rejects it (with an optional / required reason). For a wipe the approver must type the device name again. Approval queues the command at once; every step is in the audit log (`device_approval_requested`, `_approved`, `_rejected`, `_cancelled`, `_expired`, `device_command_created` with `approval_id` and `approved_by`).
+3. Requests **expire** after `DEVICE_APPROVAL_TTL_HOURS` (24 h). The requester or any admin can cancel a pending request. Decisions are race-safe (conditional update: two admins cannot both decide).
+
+**Lost mode is not an approval action**: it is reversible and audited like every remote action.
+
+**Single-admin installs: self-approval.** Off by default: the requester's own *Approve* is refused (`403`). On-prem, `sudo cnapp-ctl approvals self-approval enable` (or `DEVICE_APPROVAL_ALLOW_SELF=true`) lets the requester approve their own request, but then they must **type the device name** and the action only runs after a **cooling-off delay** (`DEVICE_APPROVAL_SELF_COOLDOWN_MINUTES`, default 15) during which any admin can cancel it (the request shows *self-approved: runs at ...*). The delayed action is released by the device's next command poll, so no background job is needed.
+
+> **Risk of self-approval.** It removes the second person: a single compromised admin account or session, or one mistaken click plus a typed name, is enough to factory-reset a laptop or run a risky script. The typed name and delay only protect against accidents and give you time to notice the `approval_approved` notification. Create a second admin account (ideally a different person, with MFA at sign-in) and disable self-approval as soon as you can.
+
+There is deliberately **no MFA step-up** in the approval flow (MFA is asked only at sign-in, see [AUTH.md](AUTH.md)); the second admin is the control.
+
+## Lost mode
+
+*Lost mode* (admin, **Devices > device > Lost mode**) puts a message and a contact phone number on the device's sign-in / lock screen and locks the interactive sessions; while it is active the agent locks any active session again every 5 minutes, until an admin clicks **Exit lost mode**. The device reports its state with every check-in (posture check `lost_mode`), and the device shows **Lost** (`device_state: "lost"`, issue `lost_mode`) in the console. Enabling needs the hostname typed; no second admin is needed (it is reversible). Exiting restores exactly the values that were there before (they are saved in `lostmode.json` in the protected state directory; uninstalling the agent also restores them).
+
+| | Windows | macOS |
+|---|---|---|
+| Message | `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System` `LegalNoticeCaption` ("This device has been reported lost") and `LegalNoticeText` (message + "If found, please call: <phone>") | `/Library/Preferences/com.apple.loginwindow` `LoginwindowText` (the "Show message when screen is locked" text), then `diskutil apfs updatePreboot /` so the FileVault unlock screen shows it too (best effort) |
+| Where it shows | Winlogon shows the notice **before the credential prompt at every sign-in** (after a restart, sign-out or *switch user*). Windows 10/11 do **not** show it when unlocking an already signed-in, locked session; the agent locks the sessions (same mechanism as `lock_device`), so the message appears as soon as anyone restarts the device or signs in again | on the **lock screen** and the login window (and the FileVault screen after the Preboot update) |
+| Lock | every active session locked (console and RDP); with nobody signed in the lock is skipped and the message still stays | `pmset displaysleepnow`: locks only if the user requires a password after sleep (the macOS default; see `lock_device`) |
+| Limits | a domain GPO that sets the same legal-notice values overwrites them at the next policy refresh | no supported way for a root daemon to force a lock without MDM; no Apple "Lost Mode" (that is an MDM command for supervised iOS devices) |
+
+Without an MDM this is a **deterrent and a contact channel, not a kill switch**: the device still boots and a user who knows a password can sign in. For a stolen Windows device, combine it with [remote wipe](#remote-wipe-windows) (and BitLocker); for a Mac, FileVault + a firmware password, and an MDM if you need remote lock/erase.
+
+## Remote wipe (Windows)
+
+**Windows only.** Erasing a Mac requires a real Apple MDM (`EraseDevice` over APNs), which this product deliberately does not have; the console does not offer wipe for macOS and explains why.
+
+**How it works.** The agent (LocalSystem) calls the **MDM Bridge WMI provider**: namespace `root\cimv2\mdm\dmmap`, class `MDM_RemoteWipe` (instance `ParentID='./Vendor/MSFT'`, `InstanceID='RemoteWipe'`), which exposes the RemoteWipe CSP to SYSTEM without MDM enrollment:
+
+| Mode | Method | Behaviour |
+|---|---|---|
+| `protected` (**default**) | `doWipeProtectedMethod` | "Reset this PC - remove everything", cleaning the drive. Unlike `doWipe` it **keeps trying after a power cycle**, so switching the device off does not stop it. Microsoft warns that some device configurations may be left unable to boot. |
+| `standard` | `doWipeMethod` | the same reset, but it can be stopped by power-cycling during the reset |
+| (not offered) | `doWipePersistUserDataMethod` | keeps user data: not a wipe of a lost device |
+
+**Prerequisites** (reported with every check-in as posture check `remote_wipe`, shown on the device page): the Windows Recovery Environment must be **enabled** (`reagentc /info`; `reagentc /enable` fixes it), the `MDM_RemoteWipe` class and the method must exist (the RemoteWipe CSP documents `doWipeProtected` from Windows 10 1703; Microsoft lists Pro, Enterprise and Education; the agent reports the edition and whether the class and methods are present, so check the device page rather than assume), and the device must have **opted in**. A reset can take an hour or more. Using the WMI bridge without MDM enrollment is a widely used, but not formally documented, way to trigger the CSP: **test it on a spare device of each model/edition** before relying on it. The agent, its credential and every user file are removed by the reset.
+
+**Safety controls**
+
+- **Install-time opt-in, off by default.** Only devices installed with `CNAPP_ALLOW_WIPE=1` (MSI property; or the *Allow remote wipe* option of a pre-configured installer, or `cnapp-agent configure --allow-wipe=1` as administrator) can be wiped. The opt-in lives in `policy.json` in the protected state directory (SYSTEM/Administrators only); **no server command can write it**, so a compromised server cannot wipe devices that did not opt in. `CNAPP_ALLOW_WIPE=0` opts out; an upgrade without the property keeps the setting.
+- **Two-person approval** (always), with the device name typed by the requester **and** the approver.
+- **Short validity window, single use.** The approved command expires after `DEVICE_WIPE_COMMAND_TTL_MINUTES` (60; the device must be online by then, or request again). The agent refuses wipe commands whose validity window exceeds 24 h, that name another hostname, or that it has already executed (command ids are recorded before execution; the server hands a command out once and accepts one acknowledgement and one result).
+- **Final acknowledgement.** Before calling the method the agent sends `POST /api/agent/commands/{id}/ack`; it only wipes when the server confirms. The console then shows **Wipe pending** (`wipe.status`: `queued` -> `acknowledged` -> `started`; `device_state: "wipe_pending"`), even if the device never reports again.
+- Nothing from the server reaches the PowerShell that calls WMI: the method name is one of two constants.
+
+**After a wipe** the device record stays (state *Wipe pending / started*) for your asset records; revoke and delete it when the hardware is disposed of or re-imaged (a reset device enrolls as a new machine).
+
+**Testing.** CI never calls the method. Unit tests drive the whole command path with a fake WMI executor (opt-in, hostname, validity window, WinRE, ack-before-wipe, replay), and on `windows-latest` CI runs `cnapp-agent wipe-readiness` **as SYSTEM** (scheduled task) and checks that `MDM_RemoteWipe` exposes `doWipeMethod` and `doWipeProtectedMethod`. Try a real wipe on a spare device before relying on it.
+
+## Approved scripts
+
+Admins can run **approved scripts** from a signed library on a device (**Devices > device > Run script**, or **Devices > Scripts** for the library and run history): Windows PowerShell or macOS zsh/bash, run as SYSTEM / root with a timeout, the exit code and truncated stdout/stderr returned. Scripts live in [`device-scripts/`](../device-scripts) and only change by reviewed pull request; a tag `scripts-vX.Y.Z` signs them with the **script-signing key** (separate from the agent release key) and the server imports the bundle. Read-only scripts marked `risk: low` run with one admin; `medium` / `high` need a second admin. Full guide, threat model and setup: **[DEVICE_SCRIPTS.md](DEVICE_SCRIPTS.md)**; why this keeps the agent bounded: **[ADR-0001](ADR-0001-signed-device-scripts.md)**.
+
 ## Security model
 
-- **Outbound-only pull model.** No inbound ports on endpoints. A compromised server cannot push code: it can only queue the five actions above, and the agent validates them itself.
+- **Outbound-only pull model.** No inbound ports on endpoints. A compromised server cannot push code: it can only queue the allow-listed actions above, which the agent validates itself; it cannot forge an approved script (the agent verifies the script-signing key compiled into it and the script hash) nor wipe a device that did not opt in locally.
 - **Enrollment tokens** are 256-bit random values (`cne_...`). Only their SHA-256 is stored. They are single- or multi-use with a maximum count, expire, can be revoked, and are used up atomically, so concurrent enrollments cannot exceed the limit. Enrollment is rate-limited per client IP.
 - **Per-device credentials** are 256-bit random secrets (`cnd_...`) issued at enrollment. The server stores only their SHA-256, unique-indexed for lookup. A random 256-bit secret cannot be brute-forced, so a slow hash adds nothing, and unlike the session HMAC this does not depend on `SESSION_SECRET` (rotating that secret does not cut off devices). Credentials are rotated on re-enrollment and revoked server-side.
 - **Credential storage on the device:**
@@ -422,8 +490,12 @@ Agent API (device credential):
 | `GET /api/agent/commands` | → `{server_time, commands:[{id, device_id, type, params, nonce, issued_at, expires_at}]}` |
 | `POST /api/agent/commands/{id}/result` | `{nonce, status: succeeded / failed / rejected, output}` → 204 |
 | `POST /api/agent/commands/{id}/logs` | gzip body, header `X-Command-Nonce` → `{id, size_bytes, sha256}` |
+| `POST /api/agent/commands/{id}/ack` | `wipe_device` only: `{nonce}` → `{proceed: true}` (once; the agent wipes only after it) |
+| `GET /api/agent/scripts/bundles/{id}/manifest`, `GET .../scripts/{name}` | signed script manifest envelope; script bytes (only while a `run_script` is delivered to the device) |
 
-User API (session; viewer unless noted): `GET /api/devices` (filters `q`, `os`, `health`, `issue`, `connectivity`, `status`), `GET /api/devices/summary`, `GET /api/devices/issue-types`, `GET /api/devices/{id}`, `.../software?q=`, `.../history`, `.../commands`, `POST .../commands` (role per action, `{type, reason, params}`), `POST .../commands/{cid}/cancel` (same role as the action), `GET .../log-bundles/{bid}` (analyst), `POST .../revoke` and `DELETE /api/devices/{id}?reason=` (admin), and `GET/POST /api/devices/enrollment-tokens`, `POST .../enrollment-tokens/{id}/revoke` and `GET /api/devices/enrollment/info` (admin).
+User API (session; viewer unless noted): `GET /api/devices` (filters `q`, `os`, `health`, `issue`, `connectivity`, `status`), `GET /api/devices/summary`, `GET /api/devices/issue-types`, `GET /api/devices/{id}`, `.../software?q=`, `.../history`, `.../commands`, `POST .../commands` (role per action, `{type, reason, params}`), `POST .../commands/{cid}/cancel` (same role as the action), `GET .../log-bundles/{bid}` (analyst), `POST .../revoke` and `DELETE /api/devices/{id}?reason=` (admin), and `GET/POST /api/devices/enrollment-tokens`, `POST .../enrollment-tokens/{id}/revoke` and `GET /api/devices/enrollment/info` (admin). Device detail also returns `lost_mode` and `wipe` (status, opt-in, readiness), and every device `device_state` (`active` / `lost` / `wipe_pending` / `revoked`). `POST /api/devices/{id}/wipe` (admin, `{reason, confirm_hostname, mode: protected|standard}`) creates an approval request.
+
+Approvals (admin): `GET /api/approvals?status=open|pending|approved|final|all&device_id=`, `GET /api/approvals/summary` (badge counts + settings), `GET /api/approvals/{id}`, `POST .../{id}/approve` (`{reason?, confirm_hostname?}`), `POST .../{id}/reject` and `.../cancel` (`{reason}`). Scripts: see [DEVICE_SCRIPTS.md](DEVICE_SCRIPTS.md#api).
 
 Installers (admin; CSRF on POST; `AGENT_INSTALLER_RATE_LIMIT` downloads per admin per `AGENT_INSTALLER_RATE_WINDOW_SECONDS`):
 
@@ -434,7 +506,7 @@ Installers (admin; CSRF on POST; `AGENT_INSTALLER_RATE_LIMIT` downloads per admi
 
 ## Configuration
 
-Backend environment variables (defaults in brackets): `AGENT_MAX_REQUEST_BYTES` [6 MiB], `DEVICE_LOG_BUNDLE_MAX_BYTES` [5 MiB], `DEVICE_RATE_LIMIT` [120] per `DEVICE_RATE_WINDOW_SECONDS` [600], `ENROLL_RATE_LIMIT` [20] per `ENROLL_RATE_WINDOW_SECONDS` [600], `DEVICE_STALE_HOURS` [24], `DEVICE_INACTIVE_DAYS` [7], `DEVICE_UPDATES_GRACE_DAYS` [14], `DEVICE_AV_SIGNATURE_MAX_AGE_DAYS` [7], `DEVICE_HISTORY_LIMIT` [200], `DEVICE_COMMAND_TTL_HOURS` [24] and `AGENT_DOWNLOAD_URL` [unset].
+Backend environment variables (defaults in brackets): `AGENT_MAX_REQUEST_BYTES` [6 MiB], `DEVICE_LOG_BUNDLE_MAX_BYTES` [5 MiB], `DEVICE_RATE_LIMIT` [120] per `DEVICE_RATE_WINDOW_SECONDS` [600], `ENROLL_RATE_LIMIT` [20] per `ENROLL_RATE_WINDOW_SECONDS` [600], `DEVICE_STALE_HOURS` [24], `DEVICE_INACTIVE_DAYS` [7], `DEVICE_UPDATES_GRACE_DAYS` [14], `DEVICE_AV_SIGNATURE_MAX_AGE_DAYS` [7], `DEVICE_HISTORY_LIMIT` [200], `DEVICE_COMMAND_TTL_HOURS` [24] and `AGENT_DOWNLOAD_URL` [unset]. Approvals and wipe: `DEVICE_APPROVAL_TTL_HOURS` [24], `DEVICE_APPROVAL_ALLOW_SELF` [false], `DEVICE_APPROVAL_SELF_COOLDOWN_MINUTES` [15], `DEVICE_WIPE_COMMAND_TTL_MINUTES` [60]. Scripts: `DEVICE_SCRIPT_TRUSTED_KEYS`, `DEVICE_SCRIPT_MAX_BUNDLE_BYTES` [512 KiB]. Migration `0007_device_approvals_scripts` adds the approval and script tables and the lost-mode / wipe columns.
 
 Installers: `PUBLIC_BASE_URL` (required, https; embedded in installers), `AGENT_CA_CERT_B64` (base64 PEM of a private CA to embed; set by `cnapp-ctl` on-prem) or `AGENT_CA_CERT_FILE`, `AGENT_INSTALLERS_DIR` [`/app/installers`], `AGENT_INSTALLER_RATE_LIMIT` [10] per `AGENT_INSTALLER_RATE_WINDOW_SECONDS` [600], `AGENT_INSTALLER_MAX_PARALLEL` [2]. Migration `0005_agent_installers` adds the package/group columns.
 
@@ -453,12 +525,14 @@ Installers: `PUBLIC_BASE_URL` (required, https; embedded in installers), `AGENT_
 - **Installers** (`backend/tests/test_installers.py`): pkg injection read back (enroll.json, untouched Payload/Bom), MSI injection read back with msitools' `msiinfo` (preset decodes to the config, same size, new package code, generic MSI unchanged), token limits / expiry / revocation, RBAC and CSRF, rate limit, configuration errors, tampered or missing base artifacts, audit detail, and that the plaintext token is in no database table. Agent: `internal/agent/autoenroll_test.go` (auto-enroll over TLS with the embedded CA, token deleted, idempotent on an enrolled device, rejected-token retry, waiting for a config) and `internal/state/enroll_test.go`.
 - **Installer end-to-end** (`scripts/installer_e2e.py`): the CI `images` job builds the backend image with the bundled installers, runs it, and downloads a pre-configured MSI and pkg through the API (generated on Linux by the image's Python code; read back with msitools' `msiinfo` as an independent check). Then on real `windows-latest` and `macos-latest` runners the backend runs over HTTPS with a private CA on the same database, and the job installs the package silently (`msiexec /qn` / `installer -pkg`), checks the service is running, the device auto-enrolled (group label, CA trusted from the installer), the token file is gone and absent from the MSI log; re-installs/repairs without re-enrolling; uninstalls and checks service, files, state (and the pkg receipt) are gone; then repeats with the generic MSI + `CNAPP_*` properties and the generic pkg + `cnapp-agent configure`.
 
+- **Approvals, lost mode, wipe, scripts** (`backend/tests/test_approvals_lost_wipe.py`, `test_device_scripts.py`): different-admin rule, self-approval off by default / typed name / cooling-off / cancel, expiry, RBAC, race-safe decisions, single-use wipe command + acknowledgement + replay, device state, notifications; bundle signature / tampering / expiry / anti-rollback / wrong signing context, typed parameter validation, low-risk direct runs vs approval. Agent: `internal/wipe` (fake WMI executor), `internal/lostmode` (fake notice backend, restore), `internal/scripts` (signature, hash, parameters, timeout and process-tree kill, output cap), `internal/agent/protect_test.go` (end to end against a fake server). The real e2e (`agent_e2e.py --script-key-file`) runs a signed script on the Windows and macOS runners, sets and restores the Windows legal notice, and checks a non-opted-in device cannot be wiped.
+
 `lock_device` is **not** exercised in CI, because CI runners have no interactive user session to lock. Its logic is unit-tested with a stub, but the Windows session-token path and the macOS `pmset` path have to be checked on real hardware before you rely on them.
 
 ## Limitations
 
 - Windows 10/11 and macOS only. Windows Server works for inventory, but Security Center and BitLocker checks may report `unknown` there. Linux reports only basic inventory.
-- No compliance policies, no CVE matching for installed software, no software deployment, no remote wipe, no MDM features (configuration profiles, Apple Business Manager / Autopilot).
+- No compliance policies, no CVE matching for installed software, no software deployment, no MDM features (configuration profiles, Apple Business Manager / Autopilot). Remote wipe is Windows only (no macOS erase without MDM); lost mode on macOS cannot force a lock.
 - `lock_device` on macOS depends on the user's "require password after sleep" setting (see above). On Windows it needs a signed-in session.
 - Commands run within about a minute only while the device is online and polling. Offline devices pick them up within the 24 h expiry.
 - Windows screen-lock detection reads the machine inactivity policy and the screen-saver settings of signed-in users. When neither is configured it reports `unknown`, although Windows may still require sign-in on wake.
