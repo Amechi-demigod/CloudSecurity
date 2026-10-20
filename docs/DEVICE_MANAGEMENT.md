@@ -19,7 +19,7 @@ Linux is not supported yet. The code is split so it can be added later: see [Add
 - [Device health and issues](#device-health-and-issues)
 - [Remote actions](#remote-actions)
 - [Security model](#security-model)
-- [Service install, upgrade and uninstall](#service-install-upgrade-and-uninstall)
+- [Service install, upgrade and uninstall](#service-install-upgrade-and-uninstall) (and **[automatic, signed agent updates](AGENT_UPDATES.md)**)
 - [Packaging and code signing](#packaging-and-code-signing)
 - [API reference](#api-reference)
 - [Configuration](#configuration)
@@ -353,10 +353,18 @@ Every action requires a **reason**. Creating one is written to the audit log (`d
 | State | `C:\ProgramData\CNAPP Agent\state.json` | `/Library/Application Support/CNAPP Agent/state.json` |
 | Logs | `C:\ProgramData\CNAPP Agent\logs\agent.log` | `/Library/Logs/CNAPP Agent/agent.log` (+ `launchd.log`) |
 | Pending enrollment | `C:\ProgramData\CNAPP Agent\enroll.json` (deleted after enrolling) | `/Library/Application Support/CNAPP Agent/enroll.json` (same) |
-| Upgrade | newer MSI (keeps identity), or the new binary's `install` | install the new `.pkg`, or the new binary's `install` |
+| Upgrade | **automatic**: signed releases in rollout rings with automatic rollback ([AGENT_UPDATES.md](AGENT_UPDATES.md)); or a newer MSI (keeps identity), or the new binary's `install` | **automatic** (same); or install the new `.pkg`, or the new binary's `install` |
 | Uninstall | `msiexec /x` / Apps & features (MSI), or `packaging\windows\uninstall.ps1 [-Purge]` / `cnapp-agent uninstall [--purge]` | `sudo /usr/local/cnapp-agent/bin/cnapp-uninstall.sh`, or `sudo cnapp-agent uninstall [--purge]` |
 
 `--purge` also deletes the credential and logs. Revoke or delete the device in the console as well.
+
+**Auto-update.** The service installs agent releases that an admin imported and
+assigned to its rollout ring (Devices > Agent updates), but only if the release
+manifest is signed by a release key compiled into the agent; the CNAPP server
+cannot sign anything itself. A new version that does not check in successfully
+is rolled back automatically. Setup (signing key, GitHub secret), release
+process, rings and the interaction with MSI/GPO deployments:
+**[docs/AGENT_UPDATES.md](AGENT_UPDATES.md)**.
 
 Other commands: `configure` (store a pending enrollment for the service: `--server URL --token-stdin [--ca-file PEM | --ca-b64 B64]` or `--from-file enroll.json`; a no-op on an enrolled device), `purge` (delete credential, pending enrollment and logs), `install --wait-for-enrollment` (install the service before any enrollment), `status`, `inventory --print [--no-software]`, `checkin` (one check-in and command poll now), `run` (foreground loop, which is what the service runs) and `version`.
 
