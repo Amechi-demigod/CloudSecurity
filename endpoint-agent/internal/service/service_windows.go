@@ -218,9 +218,9 @@ func Uninstall() error {
 	}
 	exe, _ := os.Executable()
 	dst := BinaryPath()
+	removeUpdateLeftovers(dst) // self-update side files are never the running binary here
 	if !same(exe, dst) {
 		_ = os.Remove(dst)
-		removeUpdateLeftovers(dst)
 		_ = os.Remove(filepath.Dir(dst))
 	}
 	return nil
