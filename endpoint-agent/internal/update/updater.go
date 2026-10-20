@@ -360,11 +360,11 @@ func swap(bin, newPath, backup string) error {
 	if err := os.Remove(backup); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("removing the previous backup: %w", err)
 	}
-	if err := os.Rename(bin, backup); err != nil {
+	if err := rename(bin, backup); err != nil {
 		return fmt.Errorf("backing up the current binary: %w", err)
 	}
-	if err := os.Rename(newPath, bin); err != nil {
-		if rerr := os.Rename(backup, bin); rerr != nil {
+	if err := rename(newPath, bin); err != nil {
+		if rerr := rename(backup, bin); rerr != nil {
 			return fmt.Errorf("installing the new binary: %v; restoring the backup also failed: %w", err, rerr)
 		}
 		return fmt.Errorf("installing the new binary: %w", err)
@@ -384,14 +384,27 @@ func restore(bin, backup, failed string) error {
 		return err
 	}
 	_ = os.Remove(failed)
-	if err := os.Rename(bin, failed); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := rename(bin, failed); err != nil && !errors.Is(err, os.ErrNotExist) {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("moving the failed binary aside: %w", err)
 	}
-	if err := os.Rename(tmp, bin); err != nil {
+	if err := rename(tmp, bin); err != nil {
 		return fmt.Errorf("restoring the previous binary: %w", err)
 	}
 	return nil
+}
+
+// rename retries briefly: on Windows an antivirus scan of a just-written
+// executable can hold it open for a moment (sharing violation).
+func rename(from, to string) error {
+	var err error
+	for i := 0; i < 10; i++ {
+		if err = os.Rename(from, to); err == nil || errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return err
 }
 
 func copyFile(src, dst string) error {

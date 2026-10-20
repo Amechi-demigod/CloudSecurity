@@ -40,7 +40,7 @@ jobs:
           if [ -z "$base" ]; then echo "agent=true" >> "$GITHUB_OUTPUT"; exit 0; fi
           changed="$(git diff --name-only "$base" HEAD)"
           echo "$changed"
-          if echo "$changed" | grep -Eq '^(endpoint-agent/|scripts/(agent|installer)_e2e\.py|backend/(Dockerfile|requirements|installers/|app/(api/(agent|devices)\.py|services/(devices|installers|pkgtools)\.py|schemas_devices\.py|models\.py|config\.py))|\.github/workflows/)'; then
+          if echo "$changed" | grep -Eq '^(endpoint-agent/|scripts/((agent|installer|update)_e2e|agent_release)\.py|backend/(Dockerfile|requirements|installers/|app/(api/(agent|agent_updates|devices)\.py|services/(devices|installers|pkgtools|agent_updates)\.py|schemas_devices\.py|models\.py|config\.py|cli\.py))|\.github/workflows/)'; then
             echo "agent=true" >> "$GITHUB_OUTPUT"
           else
             echo "agent=false" >> "$GITHUB_OUTPUT"
@@ -140,7 +140,7 @@ jobs:
     needs: [changes]
     if: needs.changes.outputs.agent == 'true'
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -211,6 +211,21 @@ jobs:
         run: |
           python -m pip install -r backend/requirements.txt
           python scripts/agent_e2e.py --agent "endpoint-agent/cnapp-agent$(cd endpoint-agent && go env GOEXE)" --service
+      - name: Self-update e2e - signed update A->B as the OS service, broken C rolled back, untrusted key and tampered binary rejected
+        if: runner.os != 'Linux'
+        working-directory: .
+        run: python scripts/update_e2e.py
+      - name: Self-update diagnostics
+        if: failure() && runner.os != 'Linux'
+        working-directory: .
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            sc.exe query CNAPPAgent || true
+            ls -la "/c/Program Files/CNAPP Agent" || true
+          else
+            sudo launchctl print system/com.cloudsecurity.cnapp-agent 2>/dev/null | head -n 40 || true
+            ls -la /usr/local/cnapp-agent/bin || true
+          fi
       - name: Windows installer (generic MSI, WiX v5) from a versioned x64 binary
         if: runner.os == 'Windows'
         shell: pwsh
@@ -279,6 +294,22 @@ jobs:
           cp packaging/windows/*.ps1 packaging/macos/install.sh dist/
           (cd dist && sha256sum cnapp-agent-* > SHA256SUMS && cat SHA256SUMS)
           file dist/cnapp-agent-*
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Signed update bundle (EPHEMERAL CI key - for testing the pipeline only; real releases use agent-release.yml)
+        working-directory: .
+        run: |
+          python -m pip install -q "cryptography>=43"
+          key="$RUNNER_TEMP/ci-key.pem"
+          python scripts/agent_release.py keygen --out "$key" --public-out "$RUNNER_TEMP/ci-key.pub" --comment "ephemeral CI key"
+          AGENT_UPDATE_SIGNING_KEY="$(cat "$key")" python scripts/agent_release.py bundle \
+            --version "0.1.${GITHUB_RUN_NUMBER}+${GITHUB_SHA::7}" --out endpoint-agent/dist/cnapp-agent-update-CI-TEST-KEY.tar.gz \
+            --notes "CI test bundle (ephemeral key, not trusted by any real agent)" \
+            endpoint-agent/dist/cnapp-agent-windows-amd64.exe endpoint-agent/dist/cnapp-agent-windows-arm64.exe \
+            endpoint-agent/dist/cnapp-agent-darwin-amd64 endpoint-agent/dist/cnapp-agent-darwin-arm64
+          python scripts/agent_release.py verify endpoint-agent/dist/cnapp-agent-update-CI-TEST-KEY.tar.gz --keys "$RUNNER_TEMP/ci-key.pub"
+          rm -f "$key"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: cnapp-agent-binaries
@@ -318,7 +349,7 @@ jobs:
           CNAPP_MFA_ENCRYPTION_KEY: ci-placeholder-mfa-encryption-key-0000000
         run: bicep build-params infra/main.bicepparam --outfile "$RUNNER_TEMP/main.parameters.json"
       - name: shellcheck
-        run: shellcheck infra/setup.sh infra/deploy.sh infra/tests/*.sh endpoint-agent/packaging/macos/*.sh endpoint-agent/packaging/macos/scripts/*
+        run: shellcheck infra/setup.sh infra/deploy.sh infra/tests/*.sh endpoint-agent/packaging/macos/*.sh endpoint-agent/packaging/macos/scripts/* scripts/agent-release-keygen
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -657,6 +688,32 @@ jobs:
           python3 deploy/onprem/tests/onprem_e2e.py --base "https://$HOST" --ca "$CA" --email "$ADMIN" \
             --password-file "$RUNNER_TEMP/admin.pw" verify --agent "$RUNNER_TEMP/cnapp-agent" \
             --sensor-dir sensor --ingest-token-file "$RUNNER_TEMP/ingest.token"
+      - name: cnapp-ctl agent-release import (signed bundle accepted; tampered, untrusted and duplicate refused)
+        run: |
+          python3 -m pip install -q --break-system-packages "cryptography>=43" 2>/dev/null || python3 -m pip install -q "cryptography>=43"
+          k="$RUNNER_TEMP/rel"; mkdir -p "$k"
+          python3 scripts/agent_release.py keygen --out "$k/key.pem" --public-out "$k/key.pub"
+          python3 scripts/agent_release.py keygen --out "$k/other.pem"
+          echo "AGENT_UPDATE_TRUSTED_KEYS=$(cut -d'#' -f1 "$k/key.pub" | xargs)" | sudo tee -a /opt/cnapp/cnapp.env
+          sudo cnapp-ctl restart
+          head -c 300000 /dev/urandom > "$k/cnapp-agent-windows-amd64.exe"
+          head -c 300000 /dev/urandom > "$k/cnapp-agent-darwin-arm64"
+          bins=("$k/cnapp-agent-windows-amd64.exe" "$k/cnapp-agent-darwin-arm64")
+          python3 scripts/agent_release.py bundle --key-file "$k/key.pem" --version 9.0.0 --out "$k/good.tar.gz" "${bins[@]}"
+          python3 scripts/agent_release.py bundle --key-file "$k/other.pem" --version 9.0.1 --out "$k/untrusted.tar.gz" "${bins[@]}"
+          sudo cnapp-ctl agent-release import "$k/good.tar.gz" | tee "$k/out.txt"
+          grep -q "Imported agent release 9.0.0" "$k/out.txt"
+          if sudo cnapp-ctl agent-release import "$k/good.tar.gz"; then echo "::error::duplicate accepted"; exit 1; fi
+          if sudo cnapp-ctl agent-release import "$k/untrusted.tar.gz" 2>"$k/err.txt"; then echo "::error::untrusted key accepted"; exit 1; fi
+          cat "$k/err.txt"; grep -q "not signed by a trusted release key" "$k/err.txt"
+          # Tamper with one binary after signing.
+          mkdir "$k/t" && tar -xzf "$k/good.tar.gz" -C "$k/t" && printf 'x' >> "$k/t/cnapp-agent-darwin-arm64"
+          tar -czf "$k/tampered.tar.gz" -C "$k/t" .
+          if sudo cnapp-ctl agent-release import "$k/tampered.tar.gz" 2>"$k/err.txt"; then echo "::error::tampered bundle accepted"; exit 1; fi
+          cat "$k/err.txt"; grep -q "SHA-256 does not match" "$k/err.txt"
+          sudo cnapp-ctl agent-release list | tee "$k/list.txt"
+          grep -q "^9.0.0 " "$k/list.txt" && ! grep -q "9.0.1" "$k/list.txt"
+          rm -rf "$k"
       - name: Firewall - published 443 reachable from an allowed network, dropped from another (network namespaces)
         run: |
           set -x
@@ -804,7 +861,7 @@ jobs:
           from alembic import op
 
           revision = "0099_ci_probe"
-          down_revision = "0005_agent_installers"
+          down_revision = "0006_agent_updates"
           branch_labels = None
           depends_on = None
 
@@ -827,7 +884,7 @@ jobs:
           if sudo cnapp-ctl update --tag ci-bad --health-timeout 90; then echo "::error::broken update reported success"; exit 1; fi
           test "$(sudo grep '^IMAGE_TAG=' /opt/cnapp/cnapp.env)" = IMAGE_TAG=ci-2
           rev="$(docker exec cnapp-postgres-1 psql -U cnapp -d cnapp -tAc 'select version_num from alembic_version' | tr -d '[:space:]')"
-          test "$rev" = 0005_agent_installers
+          test "$rev" = 0006_agent_updates
           test -z "$(docker exec cnapp-postgres-1 psql -U cnapp -d cnapp -tAc "select to_regclass('ci_rollback_probe')" | tr -d '[:space:]')"
           sudo cat /opt/cnapp/state/history.log
           python3 deploy/onprem/tests/onprem_e2e.py --base "https://$HOST" --ca "$CA" --email "$ADMIN" --password-file "$RUNNER_TEMP/admin.pw" expect before-backup present
