@@ -5,8 +5,6 @@ import { Button, Card, Empty, ErrorNote, Field, Modal, PageHeader, Table, Tag } 
 import { fmtAgo, fmtTime } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
 
-const PLACEHOLDER = "<ENROLLMENT_TOKEN>";
-
 function errMsg(e: unknown) {
   return e instanceof ApiError ? e.message : String(e);
 }
@@ -31,52 +29,6 @@ function CopyBlock({ label, text }: { label: string; text: string }) {
         </button>
       </div>
       <pre className="overflow-x-auto whitespace-pre rounded border border-line bg-surface-0 p-3 font-mono text-xs text-ink">{text}</pre>
-    </div>
-  );
-}
-
-function trimSlash(s: string) {
-  return s.replace(/\/+$/, "");
-}
-
-function InstallCommands({ token, downloadUrl, serverUrl }: { token: string; downloadUrl: string | null; serverUrl?: string | null }) {
-  // PUBLIC_AGENT_URL / PUBLIC_BASE_URL from the server (e.g. the internet-facing agent name), else this page's origin.
-  const server = serverUrl || window.location.origin;
-  const base = downloadUrl ? trimSlash(downloadUrl) : null;
-  const winDownload = base
-    ? `.\\install.ps1 -Server ${server} -Token ${token} \`\n  -DownloadUrl ${base}/cnapp-agent-windows-amd64.exe -Sha256 <SHA-256 from SHA256SUMS>`
-    : `.\\install.ps1 -Server ${server} -Token ${token} -BinaryPath .\\cnapp-agent-windows-amd64.exe`;
-  const winManual = `$env:CNAPP_ENROLL_TOKEN = '${token}'
-.\\cnapp-agent-windows-amd64.exe enroll --server ${server}
-.\\cnapp-agent-windows-amd64.exe install
-Remove-Item Env:CNAPP_ENROLL_TOKEN`;
-  const macDownload = base ? `curl -fLO ${base}/cnapp-agent-darwin-arm64   # Intel Macs: cnapp-agent-darwin-amd64\n` : "";
-  const mac = `${macDownload}chmod +x cnapp-agent-darwin-arm64
-xattr -d com.apple.quarantine cnapp-agent-darwin-arm64 2>/dev/null
-echo '${token}' | sudo ./cnapp-agent-darwin-arm64 enroll --server ${server} --token-stdin
-sudo ./cnapp-agent-darwin-arm64 install`;
-  const macPkg = `sudo installer -pkg cnapp-agent-macos-universal.pkg -target /
-echo '${token}' | sudo /usr/local/cnapp-agent/bin/cnapp-agent enroll --server ${server} --token-stdin
-sudo /usr/local/cnapp-agent/bin/cnapp-agent install`;
-  return (
-    <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-      <div className="space-y-3">
-        <h3 className="text-sm font-semibold">Windows 10 / 11</h3>
-        <p className="text-xs text-ink-3">
-          Run in an elevated PowerShell (Run as administrator) in the folder containing the agent and <code>install.ps1</code>. Use the
-          <code> windows-arm64</code> build on ARM devices.
-        </p>
-        <CopyBlock label="Installer script (recommended)" text={winDownload} />
-        <CopyBlock label="Or directly with the agent binary" text={winManual} />
-      </div>
-      <div className="space-y-3">
-        <h3 className="text-sm font-semibold">macOS</h3>
-        <p className="text-xs text-ink-3">
-          Run in Terminal with an administrator account. Use <code>darwin-amd64</code> on Intel Macs.
-        </p>
-        <CopyBlock label="Agent binary" text={mac} />
-        <CopyBlock label="Or the installer package" text={macPkg} />
-      </div>
     </div>
   );
 }
@@ -278,7 +230,6 @@ const STATE_TONE: Record<EnrollmentToken["state"], "good" | "default" | "warn"> 
 
 export default function Enrollment() {
   const { data: tokens, error, reload } = useApi(api.enrollmentTokens, []);
-  const { data: info } = useApi(api.enrollmentInfo, []);
   const [createOpen, setCreateOpen] = useState(false);
   const [newToken, setNewToken] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -303,7 +254,7 @@ export default function Enrollment() {
       </div>
       <PageHeader
         title="Enroll devices"
-        subtitle="Download one pre-configured installer for all devices, or create a token for manual installs."
+        subtitle="Download one pre-configured installer for all your devices. Tokens for manual (command-line) installs are managed below."
         actions={<Button onClick={() => setCreateOpen(true)}>Create token</Button>}
       />
       <ErrorNote error={error ?? actionError} />
@@ -314,9 +265,10 @@ export default function Enrollment() {
             Copy it now: it is shown only once. Treat it like a password until it expires or is used up.
           </p>
           <CopyBlock label="Token" text={newToken} />
-          <div className="mt-4">
-            <InstallCommands token={newToken} downloadUrl={info?.agent_download_url ?? null} serverUrl={info?.server_url} />
-          </div>
+          <p className="mt-2 text-xs text-ink-3">
+            For a manual command-line install, pass it to the agent&apos;s <code>enroll</code> command (see <code>docs/DEVICE_MANAGEMENT.md</code>).
+            For most rollouts the pre-configured installer below is simpler.
+          </p>
         </Card>
       )}
 
@@ -361,32 +313,6 @@ export default function Enrollment() {
               </tr>
             ))}
           </Table>
-        )}
-      </Card>
-
-      <Card title="Install commands" className="mb-4">
-        <p className="mb-3 text-sm text-ink-2">
-          Templates with a placeholder token. Create a token above to get commands with the token filled in.
-        </p>
-        <InstallCommands token={PLACEHOLDER} downloadUrl={info?.agent_download_url ?? null} serverUrl={info?.server_url} />
-      </Card>
-
-      <Card title="Agent downloads">
-        {info?.agent_download_url ? (
-          <p className="text-sm text-ink-2">
-            Agent builds:{" "}
-            <a className="text-accent" href={info.agent_download_url} target="_blank" rel="noreferrer">
-              {info.agent_download_url}
-            </a>{" "}
-            (verify against <code>SHA256SUMS</code>).
-          </p>
-        ) : (
-          <p className="text-sm text-ink-2">
-            Build artifacts are produced by CI (<code>cnapp-agent-binaries</code>: Windows amd64/arm64, macOS amd64/arm64, the
-            installer scripts and <code>SHA256SUMS</code>; <code>cnapp-agent-macos-pkg</code>: a universal macOS package). Sign them and
-            publish them on an internal share or release page, then set <code>AGENT_DOWNLOAD_URL</code> on the backend to show the
-            link here. See <code>docs/DEVICE_MANAGEMENT.md</code>.
-          </p>
         )}
       </Card>
 

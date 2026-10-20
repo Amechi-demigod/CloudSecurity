@@ -447,7 +447,6 @@ function UpdatesTab({ id, admin }: { id: string; admin: boolean }) {
   const releases = useApi(api.agentReleases, []);
   const [ring, setRing] = useState("");
   const [pin, setPin] = useState("");
-  const [code, setCode] = useState("");
   const [reason, setReason] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -457,8 +456,7 @@ function UpdatesTab({ id, admin }: { id: string; admin: boolean }) {
     setBusy(true);
     setError(null);
     try {
-      await api.setDeviceUpdate(id, { ...body, reason: reason.trim() || "changed from the device page" }, code);
-      setCode("");
+      await api.setDeviceUpdate(id, { ...body, reason: reason.trim() || "changed from the device page" });
       st.reload();
     } catch (e) {
       setError(e instanceof ApiError ? e.message : String(e));
@@ -507,7 +505,6 @@ function UpdatesTab({ id, admin }: { id: string; admin: boolean }) {
               </select>
             </label>
             <Field label="Reason" id="upd-reason" value={reason} onChange={(e) => setReason(e.target.value)} />
-            <Field label="Authenticator code (if you use MFA)" id="upd-mfa" inputMode="numeric" autoComplete="one-time-code" value={code} onChange={(e) => setCode(e.target.value)} />
           </div>
           <ErrorNote error={error} />
           <div className="mt-3 flex flex-wrap gap-2">
