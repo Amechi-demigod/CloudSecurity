@@ -698,8 +698,8 @@ jobs:
           test "$(docker exec cnapp-backend-1 printenv PUBLIC_AGENT_URL)" = "https://$AG"
           test "$(docker exec cnapp-backend-1 printenv PUBLIC_BASE_URL)" = "https://$HOST"
           # Installers and enrollment instructions now point agents at the public name.
-          e2e get /api/devices/installers | python3 -c "import json,sys; assert json.load(sys.stdin)['server_url'] == 'https://$AG'"
-          e2e get /api/devices/enrollment/info | python3 -c "import json,sys; assert json.load(sys.stdin)['server_url'] == 'https://$AG'"
+          e2e get /api/devices/installers | tail -n1 | python3 -c "import json,sys; assert json.load(sys.stdin)['server_url'] == 'https://$AG'"
+          e2e get /api/devices/enrollment/info | tail -n1 | python3 -c "import json,sys; assert json.load(sys.stdin)['server_url'] == 'https://$AG'"
           sudo iptables -S CNAPP-INGRESS; sudo ufw status | grep -E '^443/tcp +ALLOW +Anywhere'
 
           ext() { sudo ip netns exec badns curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "$@" || true; }
@@ -713,7 +713,7 @@ jobs:
           echo | sudo ip netns exec badns openssl s_client -connect 203.0.113.1:443 -servername "$AG" 2>/dev/null \
             | openssl x509 -noout -subject | grep -q "CN *= *$AG"
           # 2. A real agent enrolls and checks in from the external network through the public name.
-          token="$(e2e token external-agent)"; echo "::add-mask::$token"
+          token="$(e2e token external-agent | tail -n1)"; echo "::add-mask::$token"
           home="$(mktemp -d)"; cp "$RUNNER_TEMP/agent.crt" "$home/ca.crt"
           sudo ip netns exec badns env CNAPP_AGENT_HOME="$home" "$RUNNER_TEMP/cnapp-agent" enroll --server "https://$AG" --token "$token" --ca-file "$home/ca.crt"
           sudo ip netns exec badns env CNAPP_AGENT_HOME="$home" "$RUNNER_TEMP/cnapp-agent" checkin
@@ -771,7 +771,7 @@ jobs:
             echo "::error::443 still reachable externally after disable"; exit 1
           fi
           sudo ip netns exec okns curl -fsS --cacert "$CA" --resolve "$HOST:443:198.51.100.1" "https://$HOST/api/health"
-          e2e get /api/devices/installers | python3 -c "import json,sys; assert json.load(sys.stdin)['server_url'] == 'https://$HOST'"
+          e2e get /api/devices/installers | tail -n1 | python3 -c "import json,sys; assert json.load(sys.stdin)['server_url'] == 'https://$HOST'"
       - name: Backup, then restore (data written after the backup disappears)
         run: |
           e2e() { python3 deploy/onprem/tests/onprem_e2e.py --base "https://$HOST" --ca "$CA" --email "$ADMIN" --password-file "$RUNNER_TEMP/admin.pw" "$@"; }
@@ -895,7 +895,7 @@ jobs:
           sudo cnapp-ctl uninstall --purge --yes
           test ! -e /opt/cnapp && ! docker volume inspect cnapp_pgdata >/dev/null 2>&1
           test ! -e /etc/systemd/system/cnapp.service
-          ! sudo iptables -S CNAPP-INGRESS 2>/dev/null
+          if sudo iptables -S CNAPP-INGRESS 2>/dev/null; then echo "::error::CNAPP-INGRESS left behind"; exit 1; fi
           test ! -e /etc/fail2ban/jail.d/cnapp.local && test ! -e /etc/logrotate.d/cnapp
       - name: Diagnostics
         if: failure()

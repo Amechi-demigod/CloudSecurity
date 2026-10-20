@@ -49,6 +49,7 @@ fi
   echo "  ::1 1;"
   for c in $(echo "${CNAPP_INTERNAL_CIDRS:-}" | tr ',; ' '   '); do
     echo "$c" | grep -Eq '^[0-9A-Fa-f:.]+(/[0-9]{1,3})?$' || fail "invalid CIDR in CNAPP_INTERNAL_CIDRS: $c"
+    case $c in 127.0.0.0/8|::1) continue ;; esac  # always present
     echo "  $c 1;"
   done
   cat <<'EOF'

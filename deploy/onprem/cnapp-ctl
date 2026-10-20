@@ -861,12 +861,11 @@ EOF
   # Docker-published ports are filtered in DOCKER-USER (after DNAT: container ports 8080/8443).
   cat >"$F2B_DIR/jail.d/cnapp.local" <<EOF
 # Written by cnapp-ctl public-agent; regenerate with: cnapp-ctl public-agent enable
-[DEFAULT]
-bantime.increment = true
-bantime.maxtime = 7d
-
+# Repeat offenders get longer bans (bantime.increment, up to 7 days).
 [cnapp-agent-auth]
 enabled  = true
+bantime.increment = true
+bantime.maxtime = 604800
 filter   = cnapp-agent-auth
 logpath  = $LOG_DIR/edge-access.log
 backend  = polling
@@ -880,6 +879,8 @@ action   = iptables-multiport[name=cnapp-agent, port="8080,8443", protocol=tcp, 
 
 [cnapp-probe]
 enabled  = true
+bantime.increment = true
+bantime.maxtime = 604800
 filter   = cnapp-probe
 logpath  = $LOG_DIR/edge-access.log
 backend  = polling
