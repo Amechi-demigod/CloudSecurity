@@ -189,11 +189,12 @@ def bundle_script(bundle_id: Id32, name: Annotated[str, Path(pattern=r"^[a-z0-9]
                   .where(DeviceScript.bundle_id == bundle_id, DeviceScript.name == name))
     if s is None:
         raise HTTPException(404, "script not found")
-    # Only a device with a delivered run of this script may download it.
-    pending = db.scalar(select(DeviceCommand.id).where(
+    # Only a device with a delivered run of exactly this script may download it.
+    delivered = db.scalars(select(DeviceCommand).where(
         DeviceCommand.device_id == device.id, DeviceCommand.type == "run_script",
-        DeviceCommand.status == "delivered").limit(1))
-    if pending is None:
+        DeviceCommand.status == "delivered").limit(50))
+    if not any((c.params or {}).get("bundle_id") == bundle_id and (c.params or {}).get("script") == name
+               for c in delivered):
         raise HTTPException(403, "no delivered run_script command for this device")
     return Response(content=s.content, media_type="application/octet-stream",
                     headers={"X-Content-SHA256": s.sha256, "Cache-Control": "no-store"})

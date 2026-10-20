@@ -222,3 +222,19 @@ func Run(ctx context.Context, c model.Command, d Deps) Outcome {
 	return Outcome{"succeeded", fmt.Sprintf("%s accepted (%s); Windows restarts into the recovery environment and "+
 		"resets the device. The agent and its credential are removed by the reset.", method, strings.TrimSpace(out))}
 }
+
+// stripCLIXML drops the "#< CLIXML" serialization PowerShell uses on stderr.
+func stripCLIXML(s string) string {
+	return strings.TrimSpace(strings.Replace(s, "#< CLIXML", "", 1))
+}
+
+// jsonLine returns the last line of out that looks like a JSON object.
+func jsonLine(out string) string {
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if l := strings.TrimSpace(lines[i]); strings.HasPrefix(l, "{") {
+			return l
+		}
+	}
+	return ""
+}

@@ -223,6 +223,8 @@ def test_low_risk_runs_directly_and_agent_downloads(admin, key, tmp_path):
     assert env.status_code == 200
     m, _ = device_scripts.verify_envelope(env.content, device_scripts.trusted_keys())
     entry = next(e for e in m["scripts"] if e["name"] == p["script"])
+    # Only the delivered script, not another one of the bundle.
+    assert agent.get(f"/api/agent/scripts/bundles/{bid}/scripts/windows-clear-temp-files").status_code == 403
     body = agent.get(f"/api/agent/scripts/bundles/{bid}/scripts/{p['script']}")
     assert body.status_code == 200 and hashlib.sha256(body.content).hexdigest() == entry["sha256"] == p["script_sha256"]
     assert admin.get(f"/api/agent/scripts/bundles/{bid}/manifest").status_code == 401  # user session is not a device

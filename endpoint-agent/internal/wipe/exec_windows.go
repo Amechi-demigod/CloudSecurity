@@ -18,6 +18,7 @@ import (
 
 // probeScript only reads: the WMI class definition, `reagentc /info` and the edition.
 const probeScript = `$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 $r = [ordered]@{}
 try {
   $c = Get-CimClass -Namespace 'root\cimv2\mdm\dmmap' -ClassName 'MDM_RemoteWipe'
@@ -30,6 +31,7 @@ $r | ConvertTo-Json -Compress`
 
 // invokeScript calls one method; METHOD is replaced by a constant from Methods.
 const invokeScript = `$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 $ns = 'root\cimv2\mdm\dmmap'
 $session = New-CimSession
 try {
@@ -57,7 +59,13 @@ func powershell(ctx context.Context, script string, timeout time.Duration) (stri
 	cmd := exec.CommandContext(ctx, ps, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
 		"-EncodedCommand", base64.StdEncoding.EncodeToString(b))
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	out, err := cmd.CombinedOutput()
+	// stdout only: PowerShell writes progress records to stderr as CLIXML.
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil && stderr.Len() > 0 {
+		err = fmt.Errorf("%w: %s", err, truncate(stripCLIXML(stderr.String()), 500))
+	}
 	return string(out), err
 }
 
@@ -73,7 +81,7 @@ func Probe(ctx context.Context, optIn bool) Readiness {
 		ReagentcError string   `json:"reagentc_error"`
 		Edition       string   `json:"edition"`
 	}
-	if err != nil || json.Unmarshal([]byte(lastLine(out)), &raw) != nil {
+	if err != nil || json.Unmarshal([]byte(jsonLine(out)), &raw) != nil {
 		r.Error = fmt.Sprintf("probe failed: %v %s", err, truncate(out, 300))
 		r.Finish()
 		return r

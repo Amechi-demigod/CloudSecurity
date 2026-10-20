@@ -154,3 +154,13 @@ func TestReadinessFinish(t *testing.T) {
 		t.Fatalf("%v", d)
 	}
 }
+
+func TestJSONLineIgnoresCLIXML(t *testing.T) {
+	out := "#< CLIXML\r\n{\"mdm_bridge\":true,\"methods\":[\"doWipeMethod\"]}\r\n<Objs Version=\"1.1.0.1\"><Obj S=\"progress\"/></Objs>\r\n"
+	if got := jsonLine(out); got != `{"mdm_bridge":true,"methods":["doWipeMethod"]}` {
+		t.Fatalf("%q", got)
+	}
+	if jsonLine("no json") != "" || stripCLIXML("#< CLIXML\nx") != "x" {
+		t.Fatal("helpers")
+	}
+}
