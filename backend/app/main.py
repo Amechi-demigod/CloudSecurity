@@ -19,6 +19,7 @@ from .api import agent_updates as agent_updates_api
 from .api import auth as auth_api
 from .api import devices, inventory, platform, runtime, vulns
 from .api import mfa_sso as mfa_sso_api
+from .asset_lifecycle import api as it_assets_api
 from .notifications import api as notifications_api
 from .notifications import settings as notification_settings
 from .notifications.worker import NotificationWorker, set_worker
@@ -101,7 +102,12 @@ def create_app() -> FastAPI:
     )
     app.add_middleware(BodySizeLimitMiddleware, max_bytes=s.max_request_bytes,
                        path_limits={"/api/agent/": max(s.agent_max_request_bytes, s.max_request_bytes),
-                                    "/api/updates/releases": max(s.agent_update_max_bundle_bytes, s.max_request_bytes)})
+                                    "/api/updates/releases": max(s.agent_update_max_bundle_bytes, s.max_request_bytes),
+                                    # IT assets: CSV import and wipe / destruction certificate uploads
+                                    it_assets_api.UPLOAD_PREFIXES[0]: max(s.asset_import_max_bytes,
+                                                                          s.max_request_bytes),
+                                    it_assets_api.UPLOAD_PREFIXES[1]: max(s.asset_certificate_max_bytes,
+                                                                          s.max_request_bytes)})
     app.add_middleware(SecurityHeadersMiddleware, hsts_max_age=s.hsts_max_age if s.is_production else 0)
 
     # Public: health probe, login, sensor ingest (own bearer-token auth) and the
@@ -120,6 +126,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_api.admin_router)
     app.include_router(notifications_api.router)  # analyst read-only, admin writes
     app.include_router(mfa_sso_api.admin_router)
+    app.include_router(it_assets_api.router)  # /api/it-assets/*: viewer reads, analyst/admin writes
     app.include_router(agent_updates_api.router)  # /api/updates/*: viewer reads, admin writes (all audited)
     if s.api_docs_enabled:
         _add_docs(app)

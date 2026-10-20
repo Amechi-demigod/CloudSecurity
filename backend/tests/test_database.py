@@ -60,7 +60,7 @@ def test_migrations_match_models(tmp_path):
 
 
 MIGRATION_CHAIN = ["0001_baseline", "0002_device_management", "0003_notifications", "0004_mfa_sso",
-                   "0005_agent_installers", "0006_agent_updates"]
+                   "0005_agent_installers", "0006_agent_updates", "0007_it_asset_lifecycle"]
 
 
 def test_migration_history_is_linear():
@@ -125,7 +125,7 @@ def test_pre_alembic_postgres_database_is_stamped():
     try:
         # How Phase 1/2 created schemas: only the baseline tables existed then (the
         # MFA tables are created too, to exercise 0004_mfa_sso's has_table guards).
-        later = ("notification_", "device", "enrollment_tokens", "agent_")
+        later = ("notification_", "device", "enrollment_tokens", "agent_", "it_asset")
         baseline = [t for t in db.Base.metadata.sorted_tables if not t.name.startswith(later)]
         db.Base.metadata.create_all(eng, tables=baseline)
         db.run_migrations(eng)  # stamped at the baseline, then upgraded
