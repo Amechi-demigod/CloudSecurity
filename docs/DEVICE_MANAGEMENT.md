@@ -177,7 +177,7 @@ You need the URL of your CNAPP deployment (for example `https://cnapp-web.<env>.
    - **single device** or **multiple devices** (an optional maximum; empty means unlimited until expiry);
    - an **expiry** (default 24 h, maximum 90 days).
 
-   The token (`cne_...`) is shown **once**, together with ready-to-paste install commands. Anyone who holds a valid token can enroll a device, so keep tokens short-lived and revoke them when you are done.
+   The token (`cne_...`) is shown **once**. Anyone who holds a valid token can enroll a device, so keep tokens short-lived and revoke them when you are done.
 2. Get the agent build for the platform from the CI artifacts (see [Packaging](#packaging-and-code-signing)) or your internal download location.
 3. Run the commands below on the device. The device appears in **Devices** within about a minute.
 
@@ -409,7 +409,7 @@ xcrun stapler staple cnapp-agent-0.1.0.pkg
 
 `build-pkg.sh` signs the binary with the hardened runtime and a timestamp, and signs the package, when those variables are set. Unsigned builds work. Downloaded files carry the quarantine attribute, which the instructions remove, and Gatekeeper blocks double-clicking an unsigned `.pkg`; `sudo installer -pkg` from Terminal still works.
 
-Publish signed builds somewhere your devices can reach and set `AGENT_DOWNLOAD_URL` on the backend so the enrollment page links to them.
+Publish signed builds somewhere your devices can reach (an internal share or release page) for manual installs. `AGENT_DOWNLOAD_URL` is still accepted and returned by `GET /api/devices/enrollment/info`, but the console no longer shows it: the **Download installer** button is the primary path.
 
 ## API reference
 

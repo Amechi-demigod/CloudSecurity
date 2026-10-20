@@ -2,7 +2,7 @@ import { useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { ApiError, api, uploadAgentRelease, type AgentRelease, type UpdateRing } from "../../api";
 import { useAuth } from "../../auth/context";
-import { Button, Card, Empty, ErrorNote, Field, PageHeader, Stat, Table, Tag } from "../../components/ui";
+import { Button, Card, Empty, ErrorNote, PageHeader, Stat, Table, Tag } from "../../components/ui";
 import { fmtAgo, fmtTime } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
 
@@ -26,14 +26,12 @@ function RingRow({
   releases,
   progress,
   admin,
-  mfaCode,
   onSaved,
 }: {
   ring: UpdateRing;
   releases: AgentRelease[];
   progress?: { devices: number; on_target: number; updating: number; failed: number };
   admin: boolean;
-  mfaCode: string;
   onSaved: () => void;
 }) {
   const [target, setTarget] = useState(ring.target_release_id ?? "");
@@ -58,7 +56,6 @@ function RingRow({
           device_groups: ring.is_default ? undefined : groups.split(",").map((g) => g.trim()).filter(Boolean),
           ...extra,
         },
-        mfaCode,
       );
       onSaved();
     } catch (e) {
@@ -162,7 +159,6 @@ export default function AgentUpdates() {
   const rings = useApi(api.updateRings, [], 30000);
   const releases = useApi(api.agentReleases, [], 60000);
   const keys = useApi(api.updateKeys, []);
-  const [mfaCode, setMfaCode] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [uploadMsg, setUploadMsg] = useState<string | null>(null);
   const [uploadErr, setUploadErr] = useState<string | null>(null);
@@ -181,7 +177,7 @@ export default function AgentUpdates() {
     setUploadErr(null);
     setUploadMsg(null);
     try {
-      const r = await uploadAgentRelease(file, mfaCode);
+      const r = await uploadAgentRelease(file);
       setUploadMsg(`Imported ${r.version}, signed by ${shortKey(r.key_id)} (${r.artifacts.length} platform binaries).`);
       setFile(null);
       reload();
@@ -232,22 +228,6 @@ export default function AgentUpdates() {
         </div>
       )}
 
-      {admin && (
-        <Card title="Step-up verification" className="mb-4">
-          <div className="max-w-xs">
-            <Field
-              label="Authenticator code"
-              id="mfa-step-up"
-              inputMode="numeric"
-              autoComplete="one-time-code"
-              value={mfaCode}
-              onChange={(e) => setMfaCode(e.target.value)}
-              hint="Required (if you use MFA) for changes that make devices install something: importing a release, a ring target, raising a percentage, resuming, assigning or pinning. Each code works once."
-            />
-          </div>
-        </Card>
-      )}
-
       <Card title="Rollout rings" className="mb-4">
         <ErrorNote error={rings.error} />
         <p className="mb-2 text-xs text-ink-3">
@@ -257,7 +237,7 @@ export default function AgentUpdates() {
         {rings.data && releases.data && (
           <Table head={["Ring", "Device groups", "Target release", "Rollout %", "Progress", ""]}>
             {rings.data.map((r) => (
-              <RingRow key={`${r.id}-${r.updated_at}`} ring={r} releases={releases.data ?? []} progress={progress.get(r.id)} admin={admin} mfaCode={mfaCode} onSaved={reload} />
+              <RingRow key={`${r.id}-${r.updated_at}`} ring={r} releases={releases.data ?? []} progress={progress.get(r.id)} admin={admin} onSaved={reload} />
             ))}
           </Table>
         )}

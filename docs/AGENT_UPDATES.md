@@ -32,7 +32,7 @@ flowchart LR
         wf --> rel["GitHub Release<br/>cnapp-agent-update.tar.gz"]
     end
     subgraph SRV["CNAPP server (holds only PUBLIC keys)"]
-        imp["cnapp-ctl agent-release import / fetch<br/>or console upload (admin + MFA step-up)"]
+        imp["cnapp-ctl agent-release import / fetch<br/>or console upload (admin)"]
         db[("agent_releases<br/>artifacts, rings,<br/>update history")]
         api["/api/agent/updates/*<br/>(device credential)"]
         imp -- "verify signature,<br/>hashes, expiry" --> db
@@ -120,9 +120,9 @@ Other protections:
 - The server verifies bundles with the same rules on import (keys from
   `backend/app/agent_update_keys.txt` + `AGENT_UPDATE_TRUSTED_KEYS`), so a bad
   bundle is refused up front. Import, withdraw, ring and pin changes are
-  admin-only, audited, and the changes that cause installs (import, ring
-  target, raising a percentage, resuming, assigning, pinning) require a fresh
-  **MFA step-up code** when the admin has MFA enabled.
+  admin-only and audited (actor, IP, before/after values and reason). MFA is
+  enforced when the admin signs in; these actions do not ask for a second code
+  again (see [AUTH.md](AUTH.md#mfa-totp)).
 - Update state (`update.json`) lives in the protected state directory
   (SYSTEM/Administrators or root only); the binaries live in Program Files /
   `/usr/local/cnapp-agent/bin` (admin/root only). Enrollment identity and the
@@ -184,7 +184,7 @@ in the *Endpoint agent release binaries* artifacts), which no real agent trusts.
 4. Import it into the CNAPP server, one of:
    - on-prem, fetch from GitHub and import: `sudo cnapp-ctl agent-release fetch --tag agent-v1.4.0`
    - on-prem, from a file you copied: `sudo cnapp-ctl agent-release import cnapp-agent-update.tar.gz`
-   - any deployment: **Devices > Agent updates > Import release** (admin, MFA code).
+   - any deployment: **Devices > Agent updates > Import release** (admin).
    The server verifies the signature, hashes and expiry and records the import
    in the audit log. `sudo cnapp-ctl agent-release list` shows what is imported.
 5. Roll it out with rings (next section).
@@ -340,7 +340,7 @@ Device (per-device credential, under the public `/api/agent/` prefix):
 
 The offer itself is the `update` field of the `POST /api/agent/checkin` response.
 
-Users (session; viewer reads, admin writes; `X-MFA-Code` header for step-up):
+Users (session + CSRF; viewer reads, admin writes):
 `GET /api/updates/summary|releases|rings|keys`, `GET /api/updates/devices/{id}`,
 `POST /api/updates/releases` (raw `application/gzip` body),
 `POST /api/updates/releases/{id}/withdraw`, `POST|PATCH|DELETE /api/updates/rings[/{id}]`,
@@ -381,7 +381,7 @@ apply). CI checks both from an "internet" network namespace.
   self-rollback, outcome reporting, offer path restrictions; client download
   size cap and redirect refusal.
 - Backend tests (`backend/tests/test_agent_updates.py`): import validation and
-  tampering, RBAC, MFA step-up, device-credential-only update endpoints,
+  tampering, RBAC (and no per-action MFA step-up), device-credential-only update endpoints,
   rings/groups/explicit assignment, percentage buckets, pause, pins, signed
   rollback, status history, audit, notifications, download limit, CLI.
 - **Real end-to-end on `windows-latest` and `macos-latest`**
