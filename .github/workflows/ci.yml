@@ -707,7 +707,8 @@ jobs:
           if sudo cnapp-ctl agent-release import "$k/untrusted.tar.gz" 2>"$k/err.txt"; then echo "::error::untrusted key accepted"; exit 1; fi
           cat "$k/err.txt"; grep -q "not signed by a trusted release key" "$k/err.txt"
           # Tamper with one binary after signing.
-          mkdir "$k/t" && tar -xzf "$k/good.tar.gz" -C "$k/t" && printf 'x' >> "$k/t/cnapp-agent-darwin-arm64"
+          mkdir "$k/t" && tar -xzf "$k/good.tar.gz" -C "$k/t"
+          python3 -c 'import sys; p=sys.argv[1]; b=bytearray(open(p,"rb").read()); b[100]^=0xFF; open(p,"wb").write(b)' "$k/t/cnapp-agent-darwin-arm64"
           tar -czf "$k/tampered.tar.gz" -C "$k/t" .
           if sudo cnapp-ctl agent-release import "$k/tampered.tar.gz" 2>"$k/err.txt"; then echo "::error::tampered bundle accepted"; exit 1; fi
           cat "$k/err.txt"; grep -q "SHA-256 does not match" "$k/err.txt"
