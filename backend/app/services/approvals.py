@@ -71,7 +71,7 @@ def request(db: Session, user: User, device: Device, action: str, params: dict[s
     db.add(a)
     db.flush()
     audit(db, "device_approval_requested", actor=user, target=f"device:{device.id}", ip=ip, approval_id=a.id,
-          action=action, params=params, risk=risk, reason=reason, hostname=device.hostname,
+          requested_action=action, params=params, risk=risk, reason=reason, hostname=device.hostname,
           expires_at=a.expires_at.isoformat() + "Z")
     approval_source.notify(db, a, device, "approval_requested")
     return a
@@ -84,7 +84,7 @@ def expire(db: Session) -> None:
                                                      DeviceApproval.expires_at <= now)):
         a.status = "expired"
         audit(db, "device_approval_expired", actor_email="system", target=f"device:{a.device_id}",
-              approval_id=a.id, action=a.action)
+              approval_id=a.id, requested_action=a.action)
         dev = db.get(Device, a.device_id)
         if dev is not None:
             approval_source.notify(db, a, dev, "approval_expired")
@@ -126,7 +126,7 @@ def approve(db: Session, a: DeviceApproval, user: User, *, reason: str | None, c
     if not _transition(db, a, ("pending",), **values):
         raise ApprovalError(409, "this request was decided by someone else in the meantime")
     audit(db, "device_approval_approved", actor=user, target=f"device:{device.id}", ip=ip, approval_id=a.id,
-          action=a.action, self_approved=self_approval, reason=values["decision_reason"],
+          requested_action=a.action, self_approved=self_approval, reason=values["decision_reason"],
           requested_by=a.requested_by_email,
           execute_after=a.execute_after.isoformat() + "Z" if a.execute_after else None)
     approval_source.notify(db, a, device, "approval_approved")
@@ -143,7 +143,7 @@ def reject(db: Session, a: DeviceApproval, user: User, *, reason: str, ip: str |
                        decided_at=utcnow(), decision_reason=reason):
         raise ApprovalError(409, "this request was decided by someone else in the meantime")
     audit(db, "device_approval_rejected", actor=user, target=f"device:{a.device_id}", ip=ip, approval_id=a.id,
-          action=a.action, reason=reason, requested_by=a.requested_by_email)
+          requested_action=a.action, reason=reason, requested_by=a.requested_by_email)
     dev = db.get(Device, a.device_id)
     if dev is not None:
         approval_source.notify(db, a, dev, "approval_rejected")
@@ -160,7 +160,7 @@ def cancel(db: Session, a: DeviceApproval, user: User, *, reason: str, ip: str |
                        decided_at=a.decided_at or utcnow()):
         raise ApprovalError(409, "this request changed in the meantime")
     audit(db, "device_approval_cancelled", actor=user, target=f"device:{a.device_id}", ip=ip, approval_id=a.id,
-          action=a.action, reason=reason)
+          requested_action=a.action, reason=reason)
     dev = db.get(Device, a.device_id)
     if dev is not None:
         approval_source.notify(db, a, dev, "approval_cancelled", actor=user.email)
@@ -201,7 +201,7 @@ def execute(db: Session, a: DeviceApproval) -> None:
         a.status = "failed"
         a.decision_reason = ((a.decision_reason or "") + f" [not executed: {problem}]").strip()
         audit(db, "device_approval_failed", actor_email="system", target=f"device:{a.device_id}",
-              approval_id=a.id, action=a.action, problem=problem)
+              approval_id=a.id, requested_action=a.action, problem=problem)
         return
     cmd = dsvc.new_command(db, device, a.action, params, a.reason, requested_by_id=a.requested_by_id,
                            requested_by_email=a.requested_by_email, ttl=ttl, approval_id=a.id,

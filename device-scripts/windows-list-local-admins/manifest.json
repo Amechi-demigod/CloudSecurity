@@ -1,0 +1,10 @@
+{
+  "name": "windows-list-local-admins",
+  "description": "Lists the members of the local Administrators group (read-only).",
+  "platform": "windows",
+  "interpreter": "powershell",
+  "file": "script.ps1",
+  "timeout_seconds": 60,
+  "risk": "low",
+  "parameters": []
+}

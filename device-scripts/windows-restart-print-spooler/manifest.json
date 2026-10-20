@@ -1,0 +1,10 @@
+{
+  "name": "windows-restart-print-spooler",
+  "description": "Restarts the Print Spooler service (Spooler) and shows its status. Clears stuck print jobs' service state; queued jobs are kept.",
+  "platform": "windows",
+  "interpreter": "powershell",
+  "file": "script.ps1",
+  "timeout_seconds": 120,
+  "risk": "medium",
+  "parameters": []
+}

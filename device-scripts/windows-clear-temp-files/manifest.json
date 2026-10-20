@@ -1,0 +1,17 @@
+{
+  "name": "windows-clear-temp-files",
+  "description": "Deletes temporary files older than N days from the Windows temp folder and/or every user's %TEMP%. Files in use are skipped. Use dry_run to only list what would be removed.",
+  "platform": "windows",
+  "interpreter": "powershell",
+  "file": "script.ps1",
+  "timeout_seconds": 600,
+  "risk": "medium",
+  "parameters": [
+    {"name": "older_than_days", "type": "int", "min": 1, "max": 365, "default": 7,
+     "description": "Only delete files last modified more than this many days ago."},
+    {"name": "scope", "type": "enum", "values": ["system", "users", "all"], "default": "all",
+     "description": "system = C:\\Windows\\Temp, users = each profile's AppData\\Local\\Temp, all = both."},
+    {"name": "dry_run", "type": "bool", "default": false,
+     "description": "Only report what would be deleted."}
+  ]
+}

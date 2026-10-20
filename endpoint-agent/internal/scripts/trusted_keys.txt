@@ -1,0 +1,11 @@
+# Trusted script-signing PUBLIC keys for approved device scripts (Ed25519).
+#
+# One key per line: <key id> <base64 public key> [# comment]
+# Generate the key pair with scripts/device-scripts-keygen (it prints the line to
+# add here and to backend/app/script_signing_keys.txt; the two files must match).
+# This is NOT the agent release key (internal/update/trusted_keys.txt): a script
+# key cannot sign agent binaries and an agent release key cannot sign scripts.
+# The PRIVATE key is stored only as the GitHub environment secret
+# SCRIPT_SIGNING_KEY (environment "script-release") or offline; never commit it.
+#
+# With no key listed, agents built from this file refuse to run any script.
