@@ -143,9 +143,21 @@ def service_test(api: Api, agent: str, home: str, device_id: str) -> None:
 
 
 def reg_notice() -> str:
-    out = subprocess.run(["reg", "query", r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"],
-                         capture_output=True, text=True).stdout
-    return "\n".join(line.strip() for line in out.splitlines() if "LegalNotice" in line)
+    """LegalNoticeCaption / LegalNoticeText as the agent sees them (64-bit registry view)."""
+    import winreg  # Windows only
+
+    vals = []
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System", 0,
+                            winreg.KEY_READ | winreg.KEY_WOW64_64KEY) as k:
+            for name in ("LegalNoticeCaption", "LegalNoticeText"):
+                try:
+                    vals.append(f"{name}={winreg.QueryValueEx(k, name)[0]!r}")
+                except FileNotFoundError:
+                    vals.append(f"{name}=<unset>")
+    except FileNotFoundError:
+        return "<no key>"
+    return "; ".join(vals)
 
 
 def protect_test(api: Api, agent: str, home: str, dev: dict, key_file: str | None) -> None:
@@ -195,7 +207,9 @@ def protect_test(api: Api, agent: str, home: str, dev: dict, key_file: str | Non
     cmd = next(c for c in api.call("GET", f"/api/devices/{did}/commands") if c["id"] == cid)
     print(cmd["output"])
     assert cmd["status"] == "succeeded", cmd
-    assert "E2E lost device test" in reg_notice(), reg_notice()
+    notice = reg_notice()
+    print("legal notice while lost:", notice)
+    assert "E2E lost device test" in notice and "+1 555 0100" in notice, notice
     run_agent(agent, home, "checkin")  # reports lost_mode active
     d = api.call("GET", f"/api/devices/{did}")
     assert d["lost_mode"]["status"] == "active" and d["lost_mode"]["reported_active"] is True, d["lost_mode"]
