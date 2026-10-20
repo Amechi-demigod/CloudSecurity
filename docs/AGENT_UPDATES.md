@@ -155,6 +155,12 @@ another **validly signed, non-expired, newer** release (e.g. a pilot build you
 signed). Keep the release key offline/in GitHub and only sign builds you would
 run everywhere.
 
+Automatic mode, auto-import and *Update now* do not change this: they only
+decide *when* an already-signed release is offered (the auto-import refuses
+anything the trusted keys did not sign, and agents verify it again). In
+automatic mode every release you sign reaches every device after the soak
+period, so sign only what you would ship to everyone.
+
 Other protections:
 
 - Downloads use the agent's existing TLS channel and device credential
