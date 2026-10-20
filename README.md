@@ -11,6 +11,7 @@ A cloud security platform MVP inspired by runtime-first CNAPPs such as Upwind. I
 - **Simulated data mode (on by default)**: a seeded "Contoso" environment across three Azure-style subscriptions, plus a background simulator that emits live runtime events.
 - **Real Azure posture connector (opt-in, read-only)**: uses the azure-identity and azure-mgmt-* SDKs. A "Run scan" button merges the results into the same model with `source="azure"`.
 - **Login, sessions and role-based access control**: every API endpoint and page requires sign-in (viewer, analyst or admin roles), with an admin Users page and an audit log. See [Authentication & access control](#authentication--access-control).
+- **IT asset lifecycle**: hardware records for every agent-enrolled device plus monitors, phones, docks and laptops without an agent; assignment and chain-of-custody history, offboarding with retrieval tracking and overdue reminders, warranties, disposal with wipe/destruction certificates, idle-device detection, CSV import/export. See **[docs/ASSET_MANAGEMENT.md](docs/ASSET_MANAGEMENT.md)**.
 - **Pluggable connectors** and a documented **runtime sensor ingest API** so a real eBPF sensor, AWS or GCP can be added later.
 
 ## Architecture
@@ -80,6 +81,7 @@ docs/DEPLOY_AZURE.md     Azure deployment guide
 docs/DEVICE_MANAGEMENT.md  device management: agent architecture, enrollment, data collected, security model
 docs/AGENT_UPDATES.md    signed agent auto-update: release key, rollout rings, automatic rollback
 docs/NOTIFICATIONS.md    alert notifications: Teams, Slack, email, signed webhooks, rules
+docs/ASSET_MANAGEMENT.md IT asset lifecycle: asset records, custody, offboarding, disposal, CSV, notifications
 docs/AUTH.md             MFA (TOTP) and Microsoft Entra ID sign-in, break-glass accounts
 scripts/smoke_test.py    end-to-end smoke test (CI and the deploy workflow)
 scripts/agent_e2e.py     endpoint agent <-> backend end-to-end test (CI on Windows and macOS runners)
@@ -89,6 +91,10 @@ docker-compose.yml       local stack (SQLite); docker-compose.postgres.yml adds 
 ## Device management (endpoints)
 
 Enroll company **Windows 10/11 and macOS** laptops and desktops with our own lightweight agent (`endpoint-agent/`, a single Go binary): hardware/OS inventory, security posture (disk encryption, firewall, antivirus, screen lock, OS updates, SIP/Gatekeeper, Secure Boot/TPM, local admins), installed software, derived device issues, and a small allow-list of audited remote actions (re-check posture, collect agent logs, lock device, restart agent, change check-in interval). The agent only makes outbound HTTPS requests, authenticates with a per-device credential, and never runs arbitrary commands. Admins create enrollment tokens and copy install commands from **Devices → Enroll devices**. See **[docs/DEVICE_MANAGEMENT.md](docs/DEVICE_MANAGEMENT.md)** for the walkthrough, the data collected, the security model and the packaging/signing steps. Agents **update themselves** to releases you import and roll out in rings (Pilot → Broad → All, percentages, pins), with automatic rollback; releases must be signed with an Ed25519 release key that never lives on the CNAPP server: **[docs/AGENT_UPDATES.md](docs/AGENT_UPDATES.md)**.
+
+## IT asset lifecycle
+
+**IT assets** keeps one record per physical asset: every enrolled agent device gets one automatically (serial, make and model come from the agent inventory), and IT adds the rest (monitors, phones, docks, laptops not yet enrolled) by hand or by CSV. Assign assets to people, track every assignment, return and status change on a custody timeline, mark leavers so their assets go to *retrieval pending* with a due date, record disposal with a wipe/destruction certificate, and get notified about overdue retrievals, expiring warranties and devices that stopped checking in. Viewers read, analysts and admins edit, admins manage settings; everything is audited. See **[docs/ASSET_MANAGEMENT.md](docs/ASSET_MANAGEMENT.md)**.
 
 ## Deploy to Azure
 
@@ -207,6 +213,7 @@ On first start, simulated mode seeds the database (`backend/cnapp.db`) and backf
 | `API_DOCS_ENABLED` | `true` (`false` in production) | Serve the interactive API docs at all |
 | `API_DOCS_PUBLIC` | `false` | Serve `/api/docs` and `/api/openapi.json` without login |
 | `HSTS_MAX_AGE` | `31536000` | `Strict-Transport-Security` max-age sent in production (0 disables) |
+| `ASSET_DEFAULT_CURRENCY` / `ASSET_IDLE_DAYS` / `ASSET_WARRANTY_WARNING_DAYS` / `ASSET_RETRIEVAL_DUE_DAYS` | `NGN` / `30` / `30` / `7` | IT asset defaults (admins can override them in the UI); other `ASSET_*` settings in [docs/ASSET_MANAGEMENT.md](docs/ASSET_MANAGEMENT.md#configuration) |
 | `AZURE_TENANT_ID` | | Entra ID tenant |
 | `AZURE_CLIENT_ID` | | Service principal app ID |
 | `AZURE_CLIENT_SECRET` | | Service principal secret |
@@ -307,8 +314,8 @@ Then open the UI, sign in, and add other users under **Administration → Users*
 
 | Role | Can |
 |---|---|
-| `viewer` | Read everything: dashboard, inventory, findings, vulnerabilities, threats, attack paths, connectors, scan history |
-| `analyst` | Viewer, plus suppress / resolve / reopen findings, acknowledge / resolve alerts, run connector scans, and view notification channels (masked), rules and the delivery log |
+| `viewer` | Read everything: dashboard, inventory, findings, vulnerabilities, threats, attack paths, connectors, scan history, IT assets (incl. CSV export) |
+| `analyst` | Viewer, plus suppress / resolve / reopen findings, acknowledge / resolve alerts, run connector scans, edit IT assets (assign, return, offboard, dispose, certificates, CSV import), and view notification channels (masked), rules and the delivery log |
 | `admin` | Everything, including user management (create, change role, deactivate, reset password), the audit log, connector settings, and notification channels / rules (test sends, retries) |
 
 The UI hides or disables actions the signed-in role cannot perform; the API enforces the same rules (403). The last active admin cannot be demoted or deactivated.

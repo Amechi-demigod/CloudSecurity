@@ -4,6 +4,10 @@ import { api, type Role } from "./api";
 import { useAuth } from "./auth/context";
 import UserMenu from "./components/UserMenu";
 import { useApi } from "./lib/useApi";
+import AssetDetail from "./pages/assets/AssetDetail";
+import Assets from "./pages/assets/Assets";
+import AssetSettings from "./pages/assets/AssetSettings";
+import Offboarding from "./pages/assets/Offboarding";
 import AttackPaths from "./pages/AttackPaths";
 import Connectors from "./pages/Connectors";
 import AgentUpdates from "./pages/devices/AgentUpdates";
@@ -25,6 +29,7 @@ const NAV: { to: string; label: string; role?: Role }[] = [
   { to: "/", label: "Dashboard" },
   { to: "/inventory", label: "Inventory" },
   { to: "/devices", label: "Devices" },
+  { to: "/it-assets", label: "IT assets" },
   { to: "/findings", label: "Posture findings" },
   { to: "/vulnerabilities", label: "Vulnerabilities" },
   { to: "/threats", label: "Runtime threats" },
@@ -153,6 +158,10 @@ function Shell() {
             <Route path="/devices/enrollment" element={<RequireRole role="admin"><Enrollment /></RequireRole>} />
             <Route path="/devices/updates" element={<AgentUpdates />} />
             <Route path="/devices/:id" element={<DeviceDetail />} />
+            <Route path="/it-assets" element={<Assets />} />
+            <Route path="/it-assets/offboarding" element={<Offboarding />} />
+            <Route path="/it-assets/settings" element={<RequireRole role="admin"><AssetSettings /></RequireRole>} />
+            <Route path="/it-assets/:id" element={<AssetDetail />} />
             <Route path="/notifications" element={<RequireRole role="analyst"><Notifications /></RequireRole>} />
             <Route path="/account/security" element={<Security />} />
             <Route path="/admin/users" element={<RequireRole role="admin"><Users /></RequireRole>} />

@@ -7,6 +7,7 @@ import { Button, Card, Empty, ErrorNote, Field, Modal, PageHeader, Table, Tag } 
 import { CHECK_LABEL, OS_LABEL, fmtBytes, fmtDuration } from "../../lib/devices";
 import { fmtAgo, fmtTime } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
+import { AssetRecordLink } from "../assets/AssetRecordLink";
 
 const TABS = ["Overview", "Posture", "Software", "History", "Commands", "Updates"] as const;
 type TabName = (typeof TABS)[number];
@@ -569,6 +570,7 @@ export default function DeviceDetail() {
           <div className="flex flex-wrap items-center gap-2">
             {active ? <HealthBadge health={device.health} /> : <Tag tone="warn">Revoked</Tag>}
             <ConnectivityTag value={device.connectivity} />
+            <AssetRecordLink deviceId={device.id} />
           </div>
         }
       />

@@ -286,6 +286,21 @@ as its rule id, so the *rule ids* filter works too (e.g. `firewall_*`,
 `lock_device`), and is grouped per device and issue for throttling. Revoked
 devices are not reported. Producing an event never fails a check-in.
 
+## IT asset lifecycle events
+
+The *IT asset lifecycle* source (`asset_lifecycle`, see [IT asset management](ASSET_MANAGEMENT.md)) raises:
+
+| Event type | Severity | When |
+|---|---|---|
+| `retrieval_overdue` | medium | a leaver's asset is still *retrieval pending* after its due date (once per asset and due date) |
+| `warranty_expiring` | low | the warranty ends within the warning window (default 30 days; once per asset and end date) |
+| `device_unseen` | low | the asset's agent device has not checked in for the idle window (default 30 days); again if it returns and goes quiet again |
+| `lost_or_stolen` | high | an asset is marked lost or stolen |
+
+The first three are polled by the dispatcher leader every
+`ASSET_NOTIFICATION_POLL_SECONDS` (1 hour). Events link to the asset page and
+carry `asset_type` = `it_<type>` (e.g. `it_laptop`) for the asset type filter.
+
 ## Adding a new event source
 
 ```python
