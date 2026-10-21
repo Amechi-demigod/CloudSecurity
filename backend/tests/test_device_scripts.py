@@ -190,7 +190,8 @@ def test_import_refuses_bad_bundles(admin, key, tmp_path):
     assert admin.get("/api/scripts/bundles").json() == []
 
 
-def test_no_keys_configured(empty_client, tmp_path):
+def test_no_keys_configured(empty_client, tmp_path, monkeypatch):
+    monkeypatch.setattr(device_scripts, "KEYS_FILE", tmp_path / "no_script_signing_keys.txt")  # ignore the committed keys
     r = upload(empty_client, bundle(tmp_path, "1.0.0", [Ed25519PrivateKey.generate()]))
     assert r.status_code == 422 and "no trusted script-signing keys" in r.json()["detail"]
 
