@@ -7,13 +7,66 @@ code run on every endpoint, so it is built so that **the CNAPP server cannot
 push code of its own**: it can only choose among releases that were signed by a
 release key the server never holds.
 
+## Quick start: automatic updates (the default)
+
+Once the release key is set up ([one-time setup](#one-time-setup-the-release-signing-key)),
+shipping a new agent version is:
+
+1. **Tag**: `git tag agent-v1.4.0 && git push origin agent-v1.4.0`.
+2. **Approve** the *Agent release* workflow run in GitHub (environment `agent-release`).
+   It builds, signs and publishes `cnapp-agent-update.tar.gz` as a GitHub Release.
+3. **Done.** Within an hour the server imports it by itself (*auto-import*, on
+   by default on-prem; signature, sizes and SHA-256 are verified exactly as for
+   a manual upload) and the **Automatic** update mode rolls it out:
+   - right away to the **Pilot** ring (assign one or two devices to it on their
+     device page, *Updates* tab),
+   - after the **soak period** (default 24 h) to **every other device**, including
+     devices nobody assigned to a ring (*All devices*),
+   - unless a Pilot device reports the release **rolled back** or **rejected**
+     (or is still **failed** at the end of the soak): then the rollout
+     **pauses**, the other rings keep their current version, and a notification
+     is sent (*Agent auto-update* source, `rollout_paused`). Publish a fixed
+     version, or press **Promote anyway**.
+4. Watch it on **Devices > Agent updates** (*Update mode* card: stage, when
+   everyone gets it, last auto-import check) and on each device's *Updates*
+   tab (*Next step*: "waiting for the next check-in (≤ 15 min)", "offered …,
+   starts within 2 min", "updating", "up to date", or why not).
+5. In a hurry? **Update now** (device page, a ring, or *Update all now*) makes
+   devices check in at their next command poll (about a minute) and start
+   without the random delay.
+
+Without internet access on the server, the auto-import only logs ("offline"
+in the console): copy the bundle over and run
+`sudo cnapp-ctl agent-release import cnapp-agent-update.tar.gz`, or press
+**Import release** in the console. Everything after the import is the same.
+
+Prefer to decide every step yourself? Switch the *Update mode* to **Manual**
+and use the ring controls ([Advanced: manual ring control](#advanced-manual-ring-control-rings-percentages-and-pins)).
+
+### How fast is "automatic"?
+
+An offer reaches a device with its next **full check-in** (every 15 min by
+default), and the agent then waits a **random delay** of up to
+`AGENT_UPDATE_JITTER_SECONDS` (default **120 s**; raised automatically for big
+fleets to `ceil(active devices / AGENT_UPDATE_MAX_PARALLEL_DOWNLOADS) x 15 s`,
+e.g. ~1 h for 1,000 devices) so a fleet does not download at once. So a Pilot
+device normally starts within ~17 min of the import; **Update now** cuts that
+to about a minute. (Before this change the default jitter was 15 min, so an
+update could take ~30 min to start with nothing visible in the console; that
+was the "not working" report: a CI-built 0.1.x agent in the Pilot ring *does*
+accept 1.0.0, it was just waiting. `TestProductionReleaseAcceptedByCIBuilds`
+and `test_ci_built_agent_in_explicit_pilot_ring_gets_the_offer` cover it.)
+
 ## Contents
 
+- [Quick start: automatic updates (the default)](#quick-start-automatic-updates-the-default)
 - [Architecture](#architecture)
 - [Security model](#security-model)
 - [One-time setup: the release signing key](#one-time-setup-the-release-signing-key)
 - [Release process](#release-process)
-- [Rollout rings, percentages and pins](#rollout-rings-percentages-and-pins)
+- [Advanced: manual ring control (rings, percentages and pins)](#advanced-manual-ring-control-rings-percentages-and-pins)
+- [Update now](#update-now)
+- [Auto-import from GitHub Releases](#auto-import-from-github-releases)
 - [How an update is applied (and rolled back)](#how-an-update-is-applied-and-rolled-back)
 - [Relation to MSI / PKG / GPO / Intune deployments](#relation-to-msi--pkg--gpo--intune-deployments)
 - [Key rotation and compromise](#key-rotation-and-compromise)
@@ -103,6 +156,12 @@ another **validly signed, non-expired, newer** release (e.g. a pilot build you
 signed). Keep the release key offline/in GitHub and only sign builds you would
 run everywhere.
 
+Automatic mode, auto-import and *Update now* do not change this: they only
+decide *when* an already-signed release is offered (the auto-import refuses
+anything the trusted keys did not sign, and agents verify it again). In
+automatic mode every release you sign reaches every device after the soak
+period, so sign only what you would ship to everyone.
+
 Other protections:
 
 - Downloads use the agent's existing TLS channel and device credential
@@ -188,7 +247,9 @@ in the *Endpoint agent release binaries* artifacts), which no real agent trusts.
    - any deployment: **Devices > Agent updates > Import release** (admin).
    The server verifies the signature, hashes and expiry and records the import
    in the audit log. `sudo cnapp-ctl agent-release list` shows what is imported.
-5. Roll it out with rings (next section).
+5. Automatic mode rolls it out by itself ([quick start](#quick-start-automatic-updates-the-default));
+   in manual mode use the rings (next section). With auto-import on, steps 4
+   and 5 need nothing from you.
 
 Signing manually instead of in GitHub Actions (offline key):
 
@@ -208,7 +269,11 @@ internet egress from every endpoint); `cnapp-ctl agent-release fetch` brings
 the same signed bundle to the server instead, and every check still happens on
 the agent.
 
-## Rollout rings, percentages and pins
+## Advanced: manual ring control (rings, percentages and pins)
+
+In **Automatic** mode the server sets the ring targets for you (Pilot first,
+then every ring at 100%); you can still assign devices, pin versions and pause
+rings. In **Manual** mode nothing changes unless you change it here.
 
 **Devices > Agent updates** (viewers can look, admins change):
 
@@ -234,12 +299,63 @@ the agent.
   **Agent auto-update**: `update_rolled_back`, `update_failed`,
   `update_rejected`; add a rule under Notifications).
 
-Agents start an offered update after a random delay of up to
-`AGENT_UPDATE_JITTER_SECONDS` (default 15 min) and the server serves at most
+Agents start an offered update after a random delay of up to the effective
+jitter (`AGENT_UPDATE_JITTER_SECONDS`, default 120 s, raised for big fleets,
+see [How fast](#how-fast-is-automatic)) and the server serves at most
 `AGENT_UPDATE_MAX_PARALLEL_DOWNLOADS` binaries at a time per process (others
 get `503 Retry-After` and retry at a later check-in), so a fleet does not
 download at once. The offer arrives with the regular check-in (every 15 min by
-default; *Re-check posture* triggers one immediately).
+default); **Update now** skips both waits.
+
+## Update now
+
+*Update now* (device page *Updates* tab: analysts and admins; a ring row or
+*Update all now*: admins) does not choose what is installed. It only:
+
+1. marks the devices so that their next offer carries `"immediate": true` and
+   a start delay of 0 s (fleet-wide requests are staggered by 20 s per
+   `AGENT_UPDATE_MAX_PARALLEL_DOWNLOADS` devices), valid for 30 minutes, and
+2. queues the allow-listed remote command **`check_for_update`** (no
+   parameters; agents that predate it get `recheck_posture` instead, the
+   server knows from the `X-CNAPP-Agent-Features` header of their check-ins).
+
+The agent picks the command up at its next command poll (about every 60 s),
+checks in, and starts the offered update without jitter. The update itself is
+unchanged: signed manifest against the compiled-in keys, SHA-256, size,
+version policy, pre-flight, watchdog. Devices with nothing to install (up to
+date, no target, release rolled back on them, no binary for their platform)
+are skipped and listed. Requests are audited (`agent_update_now_requested`),
+the command result shows what the agent did ("update to 1.4.0 offered;
+starting now").
+
+## Auto-import from GitHub Releases
+
+A leader-elected background job in the backend polls
+`https://api.github.com/repos/<repo>/releases` (unauthenticated, public repo)
+every `AGENT_UPDATE_AUTO_IMPORT_INTERVAL_MINUTES` (default 60). It takes the
+highest `agent-vX.Y.Z` release (not draft / pre-release) that is newer than
+everything imported and has a `cnapp-agent-update.tar.gz` asset, downloads it
+(size-capped, HTTPS only) and imports it through the **same verification** as
+an upload (`import_bundle`: signature against the trusted keys, every binary's
+size and SHA-256, expiry). In Automatic mode the release then goes to Pilot.
+
+- **Only signed bundles** are accepted. A refused bundle (e.g. signed by
+  another key, tampered) is audited (`agent_release_rejected`), shown in the
+  console, notified (`release_import_failed`, high) and not retried until a
+  newer release appears.
+- **Offline / proxy / rate-limit problems** are logged and shown as
+  "offline"; nothing is notified, nothing else is affected.
+- Settings (console, *Update mode* card, admins): on/off, repository
+  (`OWNER/NAME`), interval; **Check now** runs a check immediately (also
+  `sudo cnapp-ctl agent-release check`). Defaults come from the environment
+  (`AGENT_UPDATE_AUTO_IMPORT`: `true` in the on-prem compose file, `false`
+  elsewhere; `AGENT_UPDATE_RELEASES_REPO`).
+- Proxies: the backend honours `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY`
+  (on-prem: set them in `cnapp.env`; the compose file passes them through and
+  always exempts `localhost` and the stack's service names). `cnapp-ctl
+  agent-release fetch` uses the same values for `curl`.
+- Egress needed: `api.github.com`, `github.com`, `release-assets.githubusercontent.com`
+  / `objects.githubusercontent.com` (where GitHub redirects downloads).
 
 ## How an update is applied (and rolled back)
 
@@ -322,7 +438,15 @@ Backend (environment, `.env` / `cnapp.env`):
 |----------|---------|---------|
 | `AGENT_UPDATE_TRUSTED_KEYS` | (empty) | extra trusted public keys for the server-side check, `"<key id> <base64>"`, `;`-separated (in addition to `backend/app/agent_update_keys.txt`) |
 | `AGENT_UPDATE_MAX_BUNDLE_BYTES` | 268435456 | largest accepted bundle (nginx allows 256 MB on `/api/updates/releases`) |
-| `AGENT_UPDATE_JITTER_SECONDS` | 900 | random start delay agents apply to an offer |
+| `AGENT_UPDATE_JITTER_SECONDS` | 120 | random start delay agents apply to an offer (raised for big fleets: at least `ceil(devices / parallel downloads) x 15 s`, max 6 h) |
+| `AGENT_UPDATE_DEFAULT_MODE` | automatic | update mode of a new installation (`automatic` / `manual`; then changed in the console) |
+| `AGENT_UPDATE_SOAK_HOURS` | 24 | initial soak period before automatic mode gives a release to everyone (console setting) |
+| `AGENT_UPDATE_AUTO_IMPORT` | false (on-prem compose: true) | default for the GitHub Releases auto-import (console setting overrides it) |
+| `AGENT_UPDATE_RELEASES_REPO` | Amechi-demigod/CloudSecurity | repository polled for `agent-v*` releases |
+| `AGENT_UPDATE_RELEASES_API` | https://api.github.com | GitHub API base (HTTPS only; e.g. a GitHub Enterprise API URL) |
+| `AGENT_UPDATE_AUTO_IMPORT_INTERVAL_MINUTES` | 60 | how often to check (15 min - 7 days) |
+| `AGENT_UPDATE_WORKER_ENABLED` | true | background job for automatic rollout and auto-import |
+| `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` | (empty) | outbound proxy for the auto-import |
 | `AGENT_UPDATE_HEALTH_TIMEOUT_SECONDS` | 600 | health-check window after a swap (60-3600) |
 | `AGENT_UPDATE_MAX_PARALLEL_DOWNLOADS` | 4 | concurrent binary downloads per backend process |
 
@@ -339,7 +463,16 @@ Device (per-device credential, under the public `/api/agent/` prefix):
 | GET | `/api/agent/updates/releases/{id}/artifacts/{windows\|darwin}/{amd64\|arm64}` | binary (`X-Content-SHA256`) |
 | POST | `/api/agent/updates/status` | `{release_id, from_version, to_version, status, detail}` |
 
-The offer itself is the `update` field of the `POST /api/agent/checkin` response.
+The offer itself is the `update` field of the `POST /api/agent/checkin` response
+(`immediate: true` and `jitter_seconds` = the stagger for *Update now*).
+Agents send `X-CNAPP-Agent-Features: check_for_update` on every request.
+
+Automation (session; viewer reads, admin writes; device-level *Update now*: analyst):
+`GET|PUT /api/updates/automation` (`mode`, `soak_hours`, `auto_import_enabled`,
+`auto_import_repo`, `auto_import_interval_minutes`), `POST /api/updates/automation/promote`,
+`POST /api/updates/automation/check-github`, `POST /api/updates/update-now`
+(`{device_id}` | `{ring_id}` | `{all: true}`). `GET /api/updates/devices/{id}`
+includes `pending` (next step for that device).
 
 Users (session + CSRF; viewer reads, admin writes):
 `GET /api/updates/summary|releases|rings|keys`, `GET /api/updates/devices/{id}`,
@@ -365,6 +498,10 @@ apply). CI checks both from an "internet" network namespace.
 | Import: *not signed by a trusted release key* | bundle signed with another key (e.g. a CI test bundle) |
 | Import: *SHA-256 does not match the signed manifest* | the bundle was modified or corrupted after signing |
 | Import: *manifest expired* | re-sign (new version) — manifests are valid 180 days by default |
+| Target set, *Last update status* "—" | the offer comes with the next check-in, then the random delay: see *Next step* on the device's Updates tab ("waiting for the next check-in (≤ 15 min)", "offered …, starts within …"), or press **Update now** |
+| Automatic rollout *paused* | a Pilot device rolled back / rejected the release (see its history); publish a fixed version or **Promote anyway** |
+| Auto-import "offline" | the server cannot reach GitHub: set `HTTPS_PROXY` in `cnapp.env` (`sudo cnapp-ctl restart`), allow the egress hosts, or import bundles manually |
+| Auto-import "error: … was refused" | the GitHub bundle failed verification (wrong key, tampered, expired); it is not retried until a newer release is published |
 | No offer for a device | Updates tab shows the target and why (`ring … is paused`, `outside the 10% rollout`, no target); the device must already run a lower version, report a platform the release covers, and not have rejected / rolled back that release |
 | Device status `rejected: … not signed by a trusted key` | the agent build trusts no/other keys: reinstall once with an MSI/PKG built after the key was added |
 | `rejected: downgrade refused` | target is older than what runs; publish a higher version or sign a rollback |
@@ -374,6 +511,19 @@ apply). CI checks both from an "internet" network namespace.
 
 ## Testing
 
+- Regression for the production report: the real, published `agent-v1.0.0`
+  manifest (`internal/update/testdata`) is verified with the committed key
+  and accepted by CI version strings (`0.1.132+1c918b1`) on windows/darwin x
+  amd64/arm64 (`TestProductionReleaseAcceptedByCIBuilds`); the server offers it
+  to such an agent in an explicitly assigned Pilot ring
+  (`backend/tests/test_agent_update_auto.py`).
+- Automation (`backend/tests/test_agent_update_auto.py`): pending state,
+  fleet-size jitter, update now (device / ring / fleet, RBAC, stagger,
+  `recheck_posture` fallback), automatic mode (Pilot, promotion after the soak,
+  pause on rollback / rejection / failed-at-end, promote override, manual mode),
+  auto-import (filters, signed import, refused bundle, offline). Go:
+  `check_for_update` allow-list (no parameters) and the jitter skip
+  (`internal/agent/update_now_test.go`, `internal/commands`).
 - Go unit tests (`endpoint-agent/internal/update`): signature (valid, bad,
   tampered payload, untrusted key, a trusted key ID with another key's
   signature, missing domain separation), expiry, not-yet-valid, malformed
@@ -388,8 +538,10 @@ apply). CI checks both from an "internet" network namespace.
 - **Real end-to-end on `windows-latest` and `macos-latest`**
   (`scripts/update_e2e.py`, CI job *Endpoint agent*): the agent 1.0.0 is
   installed as the real service and enrolled against a CI backend; 1.1.0
-  (signed with an ephemeral key compiled into the test builds) is imported and
-  targeted → the service updates itself, keeps its device ID and credential;
+  (signed with an ephemeral key compiled into the test builds) is imported;
+  automatic mode targets the Pilot ring (the device is assigned to it) and
+  **Update now** (`check_for_update`) makes the service update itself at once
+  despite a 1 h start jitter; it keeps its device ID and credential;
   a deliberately broken 1.2.0 (built with `-tags e2e_broken`) is rolled back
   automatically by the watchdog; a release signed by a key only the *server*
   trusts and a release whose binary was altered in the server's database are

@@ -66,7 +66,13 @@ type Agent struct {
 	probe      *wipe.Readiness
 	probedAt   time.Time
 	nextRelock time.Time
+	// forceUpdate is set while check_for_update runs its check-in: an offer
+	// it returns starts without the random jitter.
+	forceUpdate bool
 }
+
+// maxImmediateDelay bounds the server's stagger for "Update now" offers.
+const maxImmediateDelay = 10 * time.Minute
 
 // UpdateTransport exposes the API client to the updater.
 func (a *Agent) UpdateTransport() update.Transport { return a.client }
@@ -196,14 +202,15 @@ func (a *Agent) handle(ctx context.Context, c model.Command) {
 	}
 	log.Info("executing command")
 	out := commands.Execute(ctx, c, commands.Deps{
-		CheckIn:     a.CheckIn,
-		BuildLogs:   a.BuildLogs,
-		UploadLogs:  a.client.UploadLogs,
-		SetInterval: a.setInterval,
-		Lock:        a.Lock,
-		LostMode:    a.lostMode,
-		Wipe:        a.wipe,
-		RunScript:   a.runScript,
+		CheckIn:        a.CheckIn,
+		BuildLogs:      a.BuildLogs,
+		UploadLogs:     a.client.UploadLogs,
+		SetInterval:    a.setInterval,
+		Lock:           a.Lock,
+		LostMode:       a.lostMode,
+		Wipe:           a.wipe,
+		RunScript:      a.runScript,
+		CheckForUpdate: a.CheckForUpdate,
 	}, a.Restart)
 	log.Info("command finished", "status", out.Status, "output", out.Output)
 	if err := a.client.ResultWithExit(ctx, c, out.Status, out.Output, out.ExitCode); err != nil {
@@ -212,6 +219,48 @@ func (a *Agent) handle(ctx context.Context, c model.Command) {
 	if out.After != nil {
 		out.After()
 	}
+}
+
+// CheckForUpdate (remote command check_for_update) checks in now and, when
+// the server offers a release, schedules it without the random jitter. The
+// update itself goes through Updater.Apply like any other: signed manifest,
+// SHA-256, size, version policy and pre-flight checks all still apply.
+func (a *Agent) CheckForUpdate(ctx context.Context) (string, error) {
+	if a.Updater == nil {
+		return "", errors.New("self-update is disabled on this agent (not running as the OS service, or this build trusts no release-signing key)")
+	}
+	a.mu.Lock()
+	a.forceUpdate = true
+	a.mu.Unlock()
+	err := a.CheckIn(ctx)
+	a.mu.Lock()
+	a.forceUpdate = false
+	o, at := a.offer, a.nextUpdate
+	a.mu.Unlock()
+	if err != nil {
+		return "", fmt.Errorf("check-in failed: %w", err)
+	}
+	if o == nil {
+		return "checked in; no update offered (up to date, no target release, or not eligible)", nil
+	}
+	if d := time.Until(at).Round(time.Second); d > 0 {
+		return fmt.Sprintf("update to %s offered; starting in %s (signature and hashes are verified before installing)", o.Version, d), nil
+	}
+	return fmt.Sprintf("update to %s offered; starting now (signature and hashes are verified before installing)", o.Version), nil
+}
+
+// offerDelay is how long to wait before applying an offer: a random jitter
+// up to the server's jitter_seconds (so a fleet does not download at once),
+// or, for "Update now" (forced locally or marked immediate by the server),
+// exactly the server's small stagger (0 when forced without one).
+func offerDelay(o update.Offer, forced bool) time.Duration {
+	if o.Immediate {
+		return min(time.Duration(max(o.JitterSeconds, 0))*time.Second, maxImmediateDelay)
+	}
+	if forced || o.JitterSeconds <= 0 {
+		return 0
+	}
+	return time.Duration(rand.Int64N(int64(min(o.JitterSeconds, 6*3600))+1)) * time.Second
 }
 
 // afterCheckIn completes a pending update's health check and schedules an
@@ -227,21 +276,27 @@ func (a *Agent) afterCheckIn(ctx context.Context, offer *update.Offer) {
 	a.Updater.ReportOutcome(ctx)
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.scheduleOffer(offer, time.Now())
+}
+
+// scheduleOffer records the offer from a check-in (caller holds a.mu).
+func (a *Agent) scheduleOffer(offer *update.Offer, now time.Time) {
 	if offer == nil {
 		a.offer = nil
 		return
 	}
-	if a.offer != nil && a.offer.ReleaseID == offer.ReleaseID {
-		return // already scheduled
-	}
+	immediate := a.forceUpdate || offer.Immediate
 	o := *offer
-	a.offer = &o
-	delay := time.Duration(0)
-	if o.JitterSeconds > 0 {
-		delay = time.Duration(rand.Int64N(int64(min(o.JitterSeconds, 6*3600))+1)) * time.Second
+	delay := offerDelay(o, a.forceUpdate)
+	if a.offer != nil && a.offer.ReleaseID == offer.ReleaseID {
+		// Already scheduled: keep the time unless "Update now" brings it forward.
+		if !immediate || !now.Add(delay).Before(a.nextUpdate) {
+			return
+		}
 	}
-	a.nextUpdate = time.Now().Add(delay)
-	slog.Info("update offered", "version", o.Version, "release_id", o.ReleaseID, "starts_in", delay)
+	a.offer = &o
+	a.nextUpdate = now.Add(delay)
+	slog.Info("update offered", "version", o.Version, "release_id", o.ReleaseID, "starts_in", delay, "immediate", immediate)
 }
 
 // maybeUpdate applies a scheduled offer when due. It returns true when the

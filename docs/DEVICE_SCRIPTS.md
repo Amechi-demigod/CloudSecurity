@@ -166,9 +166,10 @@ Manual signing with an offline key:
 `python scripts/device_scripts.py bundle --version 1.2.0 --key-file /media/usb/script-signing-key.pem --out device-scripts-bundle.tar.gz`
 and `python scripts/device_scripts.py verify device-scripts-bundle.tar.gz --keys endpoint-agent/internal/scripts/trusted_keys.txt`.
 
-*TODO:* the concurrent *simpler agent updates* work adds automatic import of
-agent releases from GitHub Releases; once merged, script bundles can reuse the
-same job (today: `cnapp-ctl scripts fetch` or the console upload).
+*TODO:* the server already imports signed **agent** releases from GitHub
+Releases automatically ([AGENT_UPDATES.md](AGENT_UPDATES.md#auto-import-from-github-releases));
+device-script bundles are not covered by that job yet and could reuse it. Until
+then, import them with `cnapp-ctl scripts fetch` or the console upload.
 
 ## Running a script
 

@@ -20,13 +20,15 @@ COMMAND_ROLES: dict[str, str] = {
     "update_check_in_interval": "admin",
     "enable_lost_mode": "admin",
     "disable_lost_mode": "admin",
+    # Check in now and start an offered (signed) update without the random delay.
+    "check_for_update": "analyst",
     # Never queued through POST /commands: wipe needs a two-person approval,
     # scripts go through /api/scripts/run (approval unless the signed risk is low).
     "wipe_device": "admin",
     "run_script": "admin",
 }
 CommandType = Literal["recheck_posture", "collect_logs", "lock_device", "restart_agent", "update_check_in_interval",
-                      "enable_lost_mode", "disable_lost_mode"]
+                      "enable_lost_mode", "disable_lost_mode", "check_for_update"]
 CommandStatus = Literal["pending", "delivered", "succeeded", "failed", "rejected", "expired", "cancelled"]
 OsFamily = Literal["windows", "macos", "linux"]
 MIN_INTERVAL_SECONDS = 300

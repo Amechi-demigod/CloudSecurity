@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 
 from . import auth, config, db, locks, logging_setup
 from .api import agent as agent_api
+from .api import agent_update_auto as agent_update_auto_api
 from .api import agent_updates as agent_updates_api
 from .api import approvals as approvals_api
 from .api import auth as auth_api
@@ -26,6 +27,7 @@ from .notifications import api as notifications_api
 from .notifications import settings as notification_settings
 from .notifications.worker import NotificationWorker, set_worker
 from .security import BodySizeLimitMiddleware, SecurityHeadersMiddleware
+from .services.agent_update_auto import AgentUpdateWorker
 from .services.simulation import RuntimeSimulator, seed_if_empty
 
 log = logging.getLogger("cnapp")
@@ -59,12 +61,19 @@ async def lifespan(app: FastAPI):
         app.state.notifier = NotificationWorker(interval=ns.poll_seconds)
         set_worker(app.state.notifier)
         app.state.notifier.start()
+    # Automatic agent rollout + GitHub Releases auto-import (leader-elected).
+    app.state.agent_updates = None
+    if s.agent_update_worker_enabled:
+        app.state.agent_updates = AgentUpdateWorker()
+        app.state.agent_updates.start()
     yield
     if app.state.simulator:
         app.state.simulator.stop()
     if app.state.notifier:
         app.state.notifier.stop()
         set_worker(None)
+    if app.state.agent_updates:
+        app.state.agent_updates.stop()
 
 
 def create_app() -> FastAPI:
@@ -128,6 +137,7 @@ def create_app() -> FastAPI:
     for r in (platform.router, inventory.router, vulns.router, runtime.router, devices.router):
         app.include_router(r, dependencies=session_required)
     app.include_router(auth_api.admin_router)
+    app.include_router(agent_update_auto_api.router)  # /api/updates/automation, /api/updates/update-now
     app.include_router(notifications_api.router)  # analyst read-only, admin writes
     app.include_router(mfa_sso_api.admin_router)
     app.include_router(it_assets_api.router)  # /api/it-assets/*: viewer reads, analyst/admin writes

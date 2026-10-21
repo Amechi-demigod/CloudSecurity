@@ -759,6 +759,11 @@ jobs:
           sudo cnapp-ctl agent-release list | tee "$k/list.txt"
           grep -q "^9.0.0 " "$k/list.txt" && ! grep -q "9.0.1" "$k/list.txt"
           rm -rf "$k"
+      - name: cnapp-ctl agent-release check (GitHub Releases auto-import runs; "offline" is fine without GitHub access)
+        run: |
+          out="$(sudo cnapp-ctl agent-release check 2>&1)" || { echo "$out"; exit 1; }
+          echo "$out"
+          grep -Eq "^(ok|offline): " <<<"$out"
       - name: Firewall - published 443 reachable from an allowed network, dropped from another (network namespaces)
         run: |
           set -x

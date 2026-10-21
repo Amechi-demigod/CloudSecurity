@@ -356,6 +356,18 @@ class Device(Base):
     wipe_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
     wipe_status_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     wipe_command_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # When the server last offered which release (and the jitter it allowed),
+    # so the console can say "offered at ..., starts within ...".
+    update_offered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    update_offered_release_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    update_offer_jitter_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # "Update now": offers within a short window after this start without jitter
+    # (after update_now_delay_seconds, a small stagger for fleet-wide requests).
+    update_now_requested_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    update_now_delay_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Optional capabilities the agent advertises (X-CNAPP-Agent-Features), e.g.
+    # "check_for_update"; older agents send nothing.
+    agent_features: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
 
 class DeviceCredential(Base):
@@ -592,6 +604,34 @@ class AgentUpdateRing(Base):
     rollout_percent: Mapped[int] = mapped_column(Integer, default=100)
     paused: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_by: Mapped[str] = mapped_column(String(320), default="system")
+
+
+class AgentUpdateSettings(Base):
+    """Update automation (single row, id 1): the update mode, the automatic
+    rollout state of the newest release, and the GitHub Releases auto-import.
+    Nullable auto-import fields fall back to the environment defaults."""
+
+    __tablename__ = "agent_update_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    mode: Mapped[str] = mapped_column(String(16), default="automatic")  # automatic | manual
+    soak_hours: Mapped[int] = mapped_column(Integer, default=24)
+    auto_import_enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    auto_import_repo: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    auto_import_interval_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Automatic rollout: release being rolled out, stage (pilot | all | paused) and since when.
+    auto_release_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    auto_stage: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    auto_stage_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    auto_paused_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # Last auto-import check: ok | offline | error, message, and the last version
+    # that failed verification (not retried / re-notified until a newer one appears).
+    import_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    import_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    import_message: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    import_failed_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_by: Mapped[str] = mapped_column(String(320), default="system")
 

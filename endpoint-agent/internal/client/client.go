@@ -99,6 +99,7 @@ func (c *Client) do(ctx context.Context, method, path, contentType string, body 
 		return err
 	}
 	req.Header.Set("User-Agent", version.UserAgent())
+	req.Header.Set("X-CNAPP-Agent-Features", version.Features)
 	req.Header.Set("Accept", "application/json")
 	if body != nil {
 		req.Header.Set("Content-Type", contentType)

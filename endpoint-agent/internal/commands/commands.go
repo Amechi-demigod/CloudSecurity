@@ -35,6 +35,11 @@ const (
 	DisableLostMode       = "disable_lost_mode"
 	WipeDevice            = "wipe_device"
 	RunScript             = "run_script"
+	// CheckForUpdate makes the agent check in now and start an offered update
+	// without the random delay. It cannot name a release or a binary: the
+	// offer still comes from the check-in and the agent verifies the signed
+	// manifest, hashes and version policy exactly as for a scheduled update.
+	CheckForUpdate = "check_for_update"
 )
 
 // Lost-mode message limits (also enforced server-side).
@@ -59,6 +64,7 @@ var allowedParams = map[string][]string{
 	DisableLostMode:       {},
 	WipeDevice:            {"mode", "hostname"},
 	RunScript:             {"bundle_id", "bundle_version", "script", "script_sha256", "parameters"},
+	CheckForUpdate:        {},
 }
 
 // Allowed reports whether a command type is in the allowlist.
@@ -153,6 +159,9 @@ type Deps struct {
 	LostMode    func(ctx context.Context, enable bool, message, phone string) (string, error)
 	Wipe        func(ctx context.Context, c model.Command) Outcome
 	RunScript   func(ctx context.Context, c model.Command) Outcome
+	// CheckForUpdate checks in immediately and schedules an offered update
+	// without jitter; it returns a human-readable outcome.
+	CheckForUpdate func(ctx context.Context) (string, error)
 }
 
 // Outcome of an executed command. After (if set) runs once the result has been
@@ -187,6 +196,15 @@ func Execute(ctx context.Context, c model.Command, d Deps, restart func()) Outco
 			return Outcome{Status: "failed", Output: err.Error()}
 		}
 		return Outcome{Status: "succeeded", Output: fmt.Sprintf("check-in interval set to %d seconds", n)}
+	case CheckForUpdate:
+		if d.CheckForUpdate == nil {
+			return Outcome{Status: "failed", Output: "self-update is not available in this agent mode"}
+		}
+		out, err := d.CheckForUpdate(ctx)
+		if err != nil {
+			return Outcome{Status: "failed", Output: err.Error()}
+		}
+		return Outcome{Status: "succeeded", Output: out}
 	case RestartAgent:
 		return Outcome{Status: "succeeded", Output: "agent restarting", After: restart}
 	case LockDevice:

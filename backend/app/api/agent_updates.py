@@ -28,6 +28,7 @@ from ..auth import audit, client_ip, require_admin, require_viewer
 from ..db import get_db
 from ..models import AgentRelease, AgentUpdateEvent, AgentUpdateRing, Device, User, utcnow
 from ..notifications import agent_update_source
+from ..services import agent_update_auto as auto
 from ..services import agent_updates as svc
 from .agent import current_device
 
@@ -186,6 +187,7 @@ def device_update_state(device_id: str = Id32(), limit: int = Query(50, ge=1, le
     events = db.scalars(select(AgentUpdateEvent).where(AgentUpdateEvent.device_id == d.id)
                         .order_by(AgentUpdateEvent.id.desc()).limit(limit))
     return {"device_id": d.id, "agent_version": d.agent_version,
+            "pending": auto.pending_state(db, d, t),
             "ring": {"id": t.ring.id, "name": t.ring.name} if t.ring else None,
             "ring_assignment": "explicit" if d.update_ring_id else ("group" if t.ring and not t.ring.is_default
                                                                      else "default"),

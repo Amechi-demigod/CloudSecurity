@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
+import re
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Path, Request
 from sqlalchemy import select
@@ -34,6 +35,7 @@ from ..services import agent_updates, approvals
 from ..services import devices as svc
 
 log = logging.getLogger(__name__)
+_FEATURE_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
 device_limiter = RateLimiter()
@@ -136,11 +138,15 @@ def checkin(body: CheckinRequest, request: Request, device: Device = Depends(cur
     if body.device.os_family != device.os_family:
         raise HTTPException(409, f"device is enrolled as {device.os_family}, not {body.device.os_family}")
     issues = svc.apply_checkin(db, device, body, client_ip(request))
+    features = request.headers.get("x-cnapp-agent-features", "")
+    device.agent_features = ",".join(f for f in features.split(",") if _FEATURE_RE.match(f.strip()))[:128] or None
     pending = svc.pending_count(db, device.id)
     db.commit()
     try:
         offer = agent_updates.offer_for(db, device, request.headers.get("user-agent"))
+        db.commit()  # the offer is recorded on the device (console: "offered at ...")
     except Exception:  # an update problem must never break check-ins
+        db.rollback()
         log.exception("computing the update offer for device %s failed", device.id)
         offer = None
     return CheckinResponse(device_id=device.id, server_time=utcnow(), pending_commands=pending, issues=issues,

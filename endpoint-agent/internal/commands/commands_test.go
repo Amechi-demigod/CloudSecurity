@@ -163,3 +163,29 @@ func TestExecuteNewCommands(t *testing.T) {
 		t.Errorf("%+v", o)
 	}
 }
+
+func TestCheckForUpdate(t *testing.T) {
+	if err := Validate(cmd(CheckForUpdate, nil), "dev", now); err != nil {
+		t.Fatalf("check_for_update rejected: %v", err)
+	}
+	// It takes no parameters: a server cannot smuggle a release, URL or binary in.
+	for _, p := range []map[string]any{{"release_id": "x"}, {"url": "https://evil"}, {"version": "9.9.9"}} {
+		if err := Validate(cmd(CheckForUpdate, p), "dev", now); !errors.Is(err, ErrRejected) {
+			t.Errorf("params %v accepted", p)
+		}
+	}
+	called := 0
+	d := Deps{CheckForUpdate: func(context.Context) (string, error) { called++; return "update to 1.1.0 starts now", nil }}
+	if out := Execute(context.Background(), cmd(CheckForUpdate, nil), d, nil); out.Status != "succeeded" || called != 1 ||
+		out.Output != "update to 1.1.0 starts now" {
+		t.Errorf("got %+v (called %d)", out, called)
+	}
+	d.CheckForUpdate = func(context.Context) (string, error) { return "", errors.New("self-update disabled") }
+	if out := Execute(context.Background(), cmd(CheckForUpdate, nil), d, nil); out.Status != "failed" ||
+		!strings.Contains(out.Output, "disabled") {
+		t.Errorf("got %+v", out)
+	}
+	if out := Execute(context.Background(), cmd(CheckForUpdate, nil), Deps{}, nil); out.Status != "failed" {
+		t.Errorf("nil dep: %+v", out)
+	}
+}

@@ -39,6 +39,8 @@ type fakeServer struct {
 	files    map[string][]byte // /api/agent/scripts/... downloads
 	exitCode map[string]any
 	checkin  *model.Report
+	offer    string // JSON of the "update" field of check-in responses ("" = none)
+	features string // X-CNAPP-Agent-Features of the last check-in
 }
 
 func (f *fakeServer) handler(t *testing.T) http.Handler {
@@ -67,7 +69,12 @@ func (f *fakeServer) handler(t *testing.T) http.Handler {
 			}
 			f.checkins++
 			f.checkin = &rep
-			_, _ = io.WriteString(w, `{"device_id":"dev1","server_time":"`+now+`","pending_commands":0,"issues":[]}`)
+			f.features = r.Header.Get("X-CNAPP-Agent-Features")
+			upd := ""
+			if f.offer != "" {
+				upd = `,"update":` + f.offer
+			}
+			_, _ = io.WriteString(w, `{"device_id":"dev1","server_time":"`+now+`","pending_commands":0,"issues":[]`+upd+`}`)
 		case r.URL.Path == "/api/agent/commands":
 			b, _ := json.Marshal(model.CommandList{ServerTime: time.Now().UTC(), Commands: f.commands})
 			f.commands = nil

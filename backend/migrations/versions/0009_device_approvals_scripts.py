@@ -1,8 +1,8 @@
 """Two-person approvals for high-risk device actions, lost mode / remote wipe
 state on devices, and the signed device-script library.
 
-Revision ID: 0008_device_approvals_scripts
-Revises: 0007_it_asset_lifecycle
+Revision ID: 0009_device_approvals_scripts
+Revises: 0008_agent_update_automation
 Create Date: 2026-10-20
 """
 from __future__ import annotations
@@ -12,8 +12,8 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '0008_device_approvals_scripts'
-down_revision: str | None = '0007_it_asset_lifecycle'
+revision: str = '0009_device_approvals_scripts'
+down_revision: str | None = '0008_agent_update_automation'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

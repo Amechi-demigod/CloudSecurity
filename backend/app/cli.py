@@ -9,6 +9,7 @@
     python -m app.cli agent-release-list
     python -m app.cli device-scripts-import BUNDLE.tar.gz  # or - (cnapp-ctl scripts import)
     python -m app.cli device-scripts-list
+    python -m app.cli agent-release-check                  # GitHub Releases auto-import check now (cnapp-ctl agent-release check)
 
 Passwords are prompted for (never passed as arguments, so they stay out of shell
 history). For automation, pipe the password with --password-stdin.
@@ -132,7 +133,14 @@ def agent_release_import(args: argparse.Namespace) -> int:
         plats = ", ".join(f"{a.os}/{a.arch}" for a in rel.artifacts)
         print(f"Imported agent release {rel.version} (id {rel.id}), signed by {rel.key_id}, "
               f"expires {rel.expires_at:%Y-%m-%d}; platforms: {plats}")
-        print("Assign it to a rollout ring in the console (Devices > Agent updates).")
+        from .services import agent_update_auto
+
+        if agent_update_auto.get_settings(s).mode == "automatic":
+            print("Automatic update mode: it goes to the Pilot ring now and to all devices after the soak period "
+                  "(Devices > Agent updates).")
+        else:
+            print("Manual update mode: assign it to a rollout ring in the console (Devices > Agent updates).")
+        s.commit()
     return 0
 
 
@@ -190,6 +198,19 @@ def device_scripts_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def agent_release_check(args: argparse.Namespace) -> int:
+    """Check GitHub Releases for a new signed agent release and import it (same checks as an upload)."""
+    from .services import agent_update_auto
+
+    with db.get_session() as s:
+        res = agent_update_auto.check_github(s, actor=args.actor)
+        auth.audit(s, "agent_release_check_requested", actor_email=args.actor, status=res["status"],
+                   message=res["message"][:500])
+        s.commit()
+    print(f"{res['status']}: {res['message']}")
+    return 0 if res["status"] != "error" else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="python -m app.cli", description="CloudSecurity CNAPP admin CLI")
     sub = p.add_subparsers(dest="command", required=True)
@@ -223,6 +244,10 @@ def main(argv: list[str] | None = None) -> int:
     di.set_defaults(func=device_scripts_import)
     dl = sub.add_parser("device-scripts-list", help="list imported device-script bundles")
     dl.set_defaults(func=device_scripts_list)
+    ac = sub.add_parser("agent-release-check",
+                        help="check GitHub Releases for a new signed agent release and import it")
+    ac.add_argument("--actor", default="cli", help="name recorded in the audit log")
+    ac.set_defaults(func=agent_release_check)
     args = p.parse_args(argv)
     if args.func is migrate:
         db.init_engine(config.settings.database_url, migrate=True)
