@@ -1596,9 +1596,9 @@ ghcr_api_token() { # anonymous-or-PAT bearer token for the registry API
   user=$(conf_get GHCR_USER); token=$(cat "$SECRETS_DIR/ghcr-token" 2>/dev/null || true)
   local args=(-fsS --max-time 20)
   [[ -n $user && -n $token ]] && args+=(-u "$user:$token")
-  local t; t=$(curl "${args[@]}" "$(registry_api)/token?scope=repository:${repo}:pull&service=ghcr.io" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p' || true)
+  local t; t=$(curl "${args[@]}" "$(registry_api)/token?scope=repository:${repo}:pull&service=ghcr.io" | sed -n 's/.*"token": *"\([^"]*\)".*/\1/p' || true)
   # A stale PAT must not block public images: retry anonymously.
-  [[ -n $t || ${#args[@]} -eq 3 ]] || t=$(curl -fsS --max-time 20 "$(registry_api)/token?scope=repository:${repo}:pull&service=ghcr.io" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p' || true)
+  [[ -n $t || ${#args[@]} -eq 3 ]] || t=$(curl -fsS --max-time 20 "$(registry_api)/token?scope=repository:${repo}:pull&service=ghcr.io" | sed -n 's/.*"token": *"\([^"]*\)".*/\1/p' || true)
   printf '%s' "$t"
 }
 
