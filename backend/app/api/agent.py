@@ -20,17 +20,18 @@ from .. import config
 from ..auth import RateLimiter, audit, client_ip
 from ..db import get_db
 from ..models import Device, DeviceCommand, DeviceCredential, DeviceLogBundle, utcnow
-from ..notifications import agent_security, device_source
+from ..notifications import agent_security, approval_source, device_source
 from ..schemas_devices import (
     AgentCommand,
     AgentCommandList,
     CheckinRequest,
     CheckinResponse,
+    CommandAckIn,
     CommandResultIn,
     EnrollRequest,
     EnrollResponse,
 )
-from ..services import agent_updates
+from ..services import agent_updates, approvals
 from ..services import devices as svc
 
 log = logging.getLogger(__name__)
@@ -155,6 +156,7 @@ def checkin(body: CheckinRequest, request: Request, device: Device = Depends(cur
 @router.get("/commands", response_model=AgentCommandList)
 def fetch_commands(device: Device = Depends(current_device), db: Session = Depends(get_db)):
     """Pending commands for this device. Each is handed out once (then 'delivered')."""
+    approvals.release_due(db, device.id)  # self-approved actions whose cooling-off delay is over
     cmds = svc.deliver_pending(db, device)
     db.commit()
     return AgentCommandList(server_time=utcnow(), commands=[
@@ -180,12 +182,47 @@ def command_result(body: CommandResultIn, command_id: str = CommandId, device: D
     cmd.status = body.status
     cmd.output = body.output
     cmd.completed_at = utcnow()
+    if cmd.type == "run_script":
+        cmd.exit_code = body.exit_code
     if cmd.type == "update_check_in_interval" and body.status == "succeeded":
         device.check_in_interval_seconds = svc.clamp_interval(int(cmd.params.get("interval_seconds", 900)))
+    svc.command_finished(device, cmd)
     audit(db, "device_command_completed", actor_email=f"device:{device.hostname}"[:320],
-          target=f"device:{device.id}", command_id=cmd.id, type=cmd.type, status=body.status)
+          target=f"device:{device.id}", command_id=cmd.id, type=cmd.type, status=body.status,
+          exit_code=cmd.exit_code)
     device_source.command_completed(db, device, cmd)
     db.commit()
+
+
+@router.post("/commands/{command_id}/ack")
+def command_ack(body: CommandAckIn, command_id: str = CommandId, device: Device = Depends(current_device),
+                db: Session = Depends(get_db)):
+    """wipe_device: the agent's final acknowledgement, sent right before it
+    starts the wipe. The agent only wipes after this returns {"proceed": true},
+    so the console always learns that a wipe began (the device may never report
+    again). Acknowledging twice is refused (single use)."""
+    cmd = _delivered_command(db, device, command_id, body.nonce)
+    if cmd.type != "wipe_device":
+        raise HTTPException(409, "only wipe_device is acknowledged")
+    if cmd.acknowledged_at is not None:
+        raise HTTPException(409, "this wipe was already acknowledged")
+    now = utcnow()
+    if cmd.expires_at <= now:
+        raise HTTPException(409, "the wipe command expired")
+    cmd.acknowledged_at = now
+    if device.wipe_command_id == cmd.id:
+        device.wipe_status, device.wipe_status_at = "acknowledged", now
+    audit(db, "device_wipe_acknowledged", actor_email=f"device:{device.hostname}"[:320],
+          target=f"device:{device.id}", command_id=cmd.id, approval_id=cmd.approval_id,
+          mode=(cmd.params or {}).get("mode"))
+    if cmd.approval_id:
+        from ..models import DeviceApproval
+
+        a = db.get(DeviceApproval, cmd.approval_id)
+        if a is not None:
+            approval_source.notify(db, a, device, "wipe_acknowledged")
+    db.commit()
+    return {"proceed": True, "server_time": now.isoformat() + "Z"}
 
 
 @router.post("/commands/{command_id}/logs", status_code=201)

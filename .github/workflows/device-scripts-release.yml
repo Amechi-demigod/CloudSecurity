@@ -1,0 +1,81 @@
+name: Device scripts release (signed script bundle)
+
+# Push a tag like `scripts-v1.2.0` to sign the reviewed scripts in device-scripts/
+# with the SCRIPT-signing key (secret SCRIPT_SIGNING_KEY on the protected
+# environment `script-release`; never on the CNAPP server, and separate from the
+# agent release key) and publish a GitHub Release with the bundle. Import it with
+#   sudo cnapp-ctl scripts fetch --tag scripts-v1.2.0
+# or upload device-scripts-bundle.tar.gz in Devices > Scripts.
+# See docs/DEVICE_SCRIPTS.md.
+
+on:
+  push:
+    tags: ["scripts-v*.*.*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: device-scripts-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Validate, sign and publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # Put SCRIPT_SIGNING_KEY on this environment and require a reviewer
+    # (Settings > Environments) so a tag alone cannot sign scripts.
+    environment: script-release
+    permissions:
+      contents: write # create the GitHub Release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Version from the tag
+        id: v
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          v="${TAG#scripts-v}"
+          [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "::error::tag $TAG is not scripts-vMAJOR.MINOR.PATCH"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - name: The committed script-signing keys are consistent, non-empty and not the agent release key
+        run: |
+          keys() { grep -v '^#' "$1" | cut -d'#' -f1 | awk 'NF' | awk '{print $1, $2}'; }
+          diff <(keys endpoint-agent/internal/scripts/trusted_keys.txt) <(keys backend/app/script_signing_keys.txt)
+          if [ -z "$(keys endpoint-agent/internal/scripts/trusted_keys.txt)" ]; then
+            echo "::error::endpoint-agent/internal/scripts/trusted_keys.txt lists no key: agents refuse every script"; exit 1
+          fi
+          if comm -12 <(keys endpoint-agent/internal/scripts/trusted_keys.txt | sort) <(keys endpoint-agent/internal/update/trusted_keys.txt | sort) | grep -q .; then
+            echo "::error::the script-signing key must not be the agent release key"; exit 1
+          fi
+      - name: Validate the script manifests
+        run: python scripts/device_scripts.py lint
+      - name: Sign the bundle
+        env:
+          SCRIPT_SIGNING_KEY: ${{ secrets.SCRIPT_SIGNING_KEY }}
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          if [ -z "$SCRIPT_SIGNING_KEY" ]; then
+            echo "::error::secret SCRIPT_SIGNING_KEY is not set (scripts/device-scripts-keygen, docs/DEVICE_SCRIPTS.md)"; exit 1
+          fi
+          python -m pip install -q "cryptography>=43"
+          mkdir -p dist
+          python scripts/device_scripts.py bundle --version "$VERSION" --out dist/device-scripts-bundle.tar.gz \
+            --notes "Device scripts $VERSION (${GITHUB_SHA::7})"
+          # Agents only accept keys compiled into them: refuse to publish a bundle they would reject.
+          python scripts/device_scripts.py verify dist/device-scripts-bundle.tar.gz --keys endpoint-agent/internal/scripts/trusted_keys.txt
+          (cd dist && sha256sum device-scripts-bundle.tar.gz > SHA256SUMS && cat SHA256SUMS)
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "Device scripts ${TAG#scripts-v}" --verify-tag \
+            --notes "Signed device-script bundle: device-scripts-bundle.tar.gz. Import on-prem with \`sudo cnapp-ctl scripts fetch --tag $TAG\` or upload it in Devices > Scripts." \
+            dist/device-scripts-bundle.tar.gz dist/SHA256SUMS

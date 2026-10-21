@@ -580,6 +580,30 @@ stack's Docker network (only nginx can reach the API), `COOKIE_SECURE=true`, `CO
 the network. To let them report from anywhere, publish only the agent API:
 [Publishing the agent endpoint to the internet](#publishing-the-agent-endpoint-to-the-internet).
 
+**Two-person approval / self-approval** ([DEVICE_MANAGEMENT.md](DEVICE_MANAGEMENT.md#two-person-approval)). Remote wipe
+and medium/high-risk device scripts need a **second admin** to approve them in **Approvals**. A server with only one
+admin can allow self-approval:
+
+```bash
+sudo cnapp-ctl approvals self-approval enable [--cooldown-minutes 15]   # asks for confirmation, restarts the API
+sudo cnapp-ctl approvals self-approval status
+sudo cnapp-ctl approvals self-approval disable
+```
+
+It sets `DEVICE_APPROVAL_ALLOW_SELF=true` and `DEVICE_APPROVAL_SELF_COOLDOWN_MINUTES` in `cnapp.env`. The requester then
+types the device name again and the action waits the cooling-off delay (cancellable by any admin). **Risk:** one
+stolen admin session (or one careless admin) is then enough to wipe a laptop; add a second admin and turn it off as
+soon as you can. `DEVICE_APPROVAL_TTL_HOURS` (24) and `DEVICE_WIPE_COMMAND_TTL_MINUTES` (60) are set the same way.
+
+**Approved device scripts** ([DEVICE_SCRIPTS.md](DEVICE_SCRIPTS.md)): import the signed bundle published by the
+*Device scripts release* workflow:
+
+```bash
+sudo cnapp-ctl scripts fetch --tag scripts-v1.0.0     # from GitHub Releases (server needs outbound HTTPS to github.com)
+sudo cnapp-ctl scripts import device-scripts-bundle.tar.gz   # or a file you copied
+sudo cnapp-ctl scripts list
+```
+
 ## 9. Hardening checklist
 
 - [ ] SSH: keys only (`PasswordAuthentication no`, `KbdInteractiveAuthentication no` in `/etc/ssh/sshd_config.d/99-hardening.conf`),

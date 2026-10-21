@@ -1,0 +1,11 @@
+# Trusted script-signing PUBLIC keys for approved device scripts (Ed25519),
+# used by the server to refuse bundles agents would reject anyway.
+#
+# One key per line: <key id> <base64 public key> [# comment]
+# Must list the same keys as endpoint-agent/internal/scripts/trusted_keys.txt
+# (a test checks it). Generate the key pair with scripts/device-scripts-keygen;
+# the PRIVATE key lives only in the GitHub environment `script-release` as the
+# secret SCRIPT_SIGNING_KEY (or offline). It is NOT the agent release key.
+# See docs/DEVICE_SCRIPTS.md.
+#
+# With no key listed, script bundles cannot be imported and agents refuse to run scripts.

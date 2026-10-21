@@ -280,6 +280,8 @@ export interface DeviceIssue {
   detail: string;
 }
 
+export type DeviceState = "active" | "lost" | "wipe_pending" | "revoked";
+
 export interface DeviceSummary {
   id: string;
   hostname: string;
@@ -292,6 +294,8 @@ export interface DeviceSummary {
   model: string;
   agent_version: string;
   status: "active" | "revoked";
+  /** lifecycle state including lost mode / pending wipe */
+  device_state: DeviceState;
   enrolled_at: string;
   last_seen_at: string | null;
   last_checkin_at: string | null;
@@ -322,6 +326,32 @@ export interface DeviceInventory {
   timezone?: string;
 }
 
+export interface LostModeState {
+  status: null | "enabling" | "active" | "disabling";
+  message: string | null;
+  phone: string | null;
+  since: string | null;
+  requested_by: string | null;
+  /** what the agent last reported (null = no report yet) */
+  reported_active: boolean | null;
+}
+
+export type WipeStatus = "queued" | "acknowledged" | "started" | "failed" | "expired";
+
+export interface WipeState {
+  supported: boolean;
+  unsupported_reason: string | null;
+  /** chosen at install time (MSI property CNAPP_ALLOW_WIPE=1) */
+  opted_in: boolean;
+  ready: boolean;
+  /** raw readiness keys reported by the agent (opt_in, winre_enabled, mdm_bridge, methods, ...) */
+  readiness: Record<string, unknown>;
+  readiness_detail: string;
+  status: WipeStatus | null;
+  status_at: string | null;
+  command_id: string | null;
+}
+
 export interface DeviceDetail extends DeviceSummary {
   os_build: string;
   last_ip: string | null;
@@ -332,6 +362,8 @@ export interface DeviceDetail extends DeviceSummary {
   inventory: DeviceInventory;
   posture: Record<string, PostureCheck>;
   collection_errors: Record<string, string>;
+  lost_mode: LostModeState;
+  wipe: WipeState;
 }
 
 export interface DeviceSoftware {
@@ -354,7 +386,17 @@ export interface PostureSnapshot {
   software_count: number | null;
 }
 
-export type CommandType = "recheck_posture" | "collect_logs" | "lock_device" | "restart_agent" | "update_check_in_interval" | "check_for_update";
+export type CommandType =
+  | "recheck_posture"
+  | "collect_logs"
+  | "lock_device"
+  | "restart_agent"
+  | "update_check_in_interval"
+  | "check_for_update"
+  | "enable_lost_mode"
+  | "disable_lost_mode"
+  | "wipe_device"
+  | "run_script";
 
 export interface DeviceCommand {
   id: string;
@@ -370,6 +412,10 @@ export interface DeviceCommand {
   completed_at: string | null;
   output: string;
   log_bundle_id: string | null;
+  exit_code: number | null;
+  approval_id: string | null;
+  approved_by_email: string | null;
+  acknowledged_at: string | null;
 }
 
 export interface DeviceFleetSummary {
@@ -420,6 +466,128 @@ export interface InstallerRequest {
   max_devices: number;
   device_group?: string | null;
   include_ca: boolean;
+  /** windows-msi only: let admins remote-wipe devices installed with this package */
+  allow_wipe?: boolean;
+}
+
+// --- two-person approvals ---
+export type ApprovalStatus = "pending" | "approved" | "executed" | "rejected" | "cancelled" | "expired" | "failed";
+export type RiskLevel = "low" | "medium" | "high";
+
+export interface Approval {
+  id: string;
+  device_id: string;
+  hostname: string;
+  os_family: string;
+  action: "wipe_device" | "run_script";
+  params: Record<string, unknown>;
+  summary: string;
+  risk: RiskLevel;
+  reason: string;
+  status: ApprovalStatus;
+  requested_by_email: string | null;
+  requested_at: string;
+  expires_at: string;
+  decided_by_email: string | null;
+  decided_at: string | null;
+  decision_reason: string | null;
+  self_approved: boolean;
+  /** self-approved requests run only after this time (cooling-off) */
+  execute_after: string | null;
+  executed_at: string | null;
+  command_id: string | null;
+  is_own_request: boolean;
+  can_decide: boolean;
+}
+
+export interface ApprovalSettings {
+  ttl_hours: number;
+  allow_self_approval: boolean;
+  self_approval_cooldown_minutes: number;
+  wipe_command_ttl_minutes: number;
+}
+
+export interface ApprovalSummary {
+  pending: number;
+  actionable: number;
+  cooling_off: number;
+  settings: ApprovalSettings;
+}
+
+export type WipeMode = "protected" | "standard";
+
+// --- signed script library ---
+export interface ScriptParam {
+  name: string;
+  type: "string" | "enum" | "int" | "bool";
+  description?: string;
+  required?: boolean;
+  default?: string | number | boolean | null;
+  pattern?: string;
+  max_length?: number;
+  values?: string[];
+  min?: number;
+  max?: number;
+}
+
+export interface LibraryScript {
+  name: string;
+  description: string;
+  platform: "windows" | "macos";
+  interpreter: string;
+  risk: RiskLevel;
+  timeout_seconds: number;
+  parameters: ScriptParam[];
+  sha256: string;
+  size_bytes: number;
+  requires_approval: boolean;
+}
+
+export interface ScriptBundle {
+  id: string;
+  version: string;
+  key_id: string;
+  released_at: string;
+  expires_at: string;
+  notes: string;
+  bundle_sha256: string;
+  imported_by: string;
+  imported_at: string;
+  expired: boolean;
+  scripts: string[];
+}
+
+export interface ScriptLibrary {
+  bundle: ScriptBundle | null;
+  scripts: LibraryScript[];
+  trusted_keys: string[];
+}
+
+export type ScriptParamValue = string | number | boolean;
+
+export interface ScriptRun {
+  id: string;
+  device_id: string;
+  hostname: string;
+  script: string;
+  bundle_version: string;
+  parameters: Record<string, unknown>;
+  status: DeviceCommand["status"];
+  exit_code: number | null;
+  output: string;
+  reason: string;
+  requested_by_email: string | null;
+  approved_by_email: string | null;
+  approval_id: string | null;
+  created_at: string;
+  completed_at: string | null;
+  expires_at: string;
+}
+
+export interface ScriptRunResult {
+  mode: "command" | "approval";
+  command_id: string | null;
+  approval: Approval | null;
 }
 
 // --- agent auto-update ---
@@ -583,9 +751,18 @@ export async function requestFile(path: string, body: unknown): Promise<{ blob: 
 
 /** Upload a signed agent release bundle (raw .tar.gz body). */
 export async function uploadAgentRelease(file: File): Promise<AgentRelease> {
+  return uploadGzip<AgentRelease>("/api/updates/releases", file);
+}
+
+/** Upload a signed script-library bundle (raw .tar.gz body). */
+export async function uploadScriptBundle(file: File): Promise<ScriptBundle> {
+  return uploadGzip<ScriptBundle>("/api/scripts/bundles", file);
+}
+
+async function uploadGzip<T>(path: string, file: File): Promise<T> {
   const headers: Record<string, string> = { "Content-Type": "application/gzip" };
   if (csrfToken) headers["X-CSRF-Token"] = csrfToken;
-  const res = await fetch(`${BASE}/api/updates/releases`, { method: "POST", credentials: "same-origin", headers, body: file });
+  const res = await fetch(`${BASE}${path}`, { method: "POST", credentials: "same-origin", headers, body: file });
   if (!res.ok) {
     let detail = res.statusText;
     try {
@@ -673,7 +850,7 @@ export const api = {
   deviceSoftware: (id: string, q?: string) => request<DeviceSoftware[]>(`/api/devices/${id}/software${qs({ q })}`),
   deviceHistory: (id: string, limit = 50) => request<PostureSnapshot[]>(`/api/devices/${id}/history${qs({ limit })}`),
   deviceCommands: (id: string) => request<DeviceCommand[]>(`/api/devices/${id}/commands`),
-  queueCommand: (id: string, body: { type: CommandType; reason: string; params?: Record<string, unknown> }) =>
+  queueCommand: (id: string, body: { type: CommandType; reason: string; params?: Record<string, unknown>; confirm_hostname?: string }) =>
     request<DeviceCommand>(`/api/devices/${id}/commands`, { method: "POST", body: JSON.stringify(body) }),
   cancelCommand: (id: string, commandId: string, reason: string) =>
     request<DeviceCommand>(`/api/devices/${id}/commands/${commandId}/cancel`, {
@@ -684,6 +861,8 @@ export const api = {
     request<DeviceDetail>(`/api/devices/${id}/revoke`, { method: "POST", body: JSON.stringify({ reason }) }),
   deleteDevice: (id: string, reason: string) =>
     request<void>(`/api/devices/${id}${qs({ reason })}`, { method: "DELETE" }),
+  requestWipe: (id: string, body: { reason: string; confirm_hostname: string; mode: WipeMode }) =>
+    request<Approval>(`/api/devices/${id}/wipe`, { method: "POST", body: JSON.stringify(body) }),
   logBundleUrl: (id: string, bundleId: string) => `${BASE}/api/devices/${id}/log-bundles/${bundleId}`,
   enrollmentTokens: () => request<EnrollmentToken[]>("/api/devices/enrollment-tokens"),
   createEnrollmentToken: (body: { name: string; max_uses: number | null; expires_in_hours: number }) =>
@@ -712,6 +891,24 @@ export const api = {
     id: string,
     body: { ring_id?: string; clear_ring?: boolean; pinned_release_id?: string; clear_pin?: boolean; reason: string },
   ) => request<DeviceUpdateState>(`/api/updates/devices/${id}`, { method: "PUT", body: JSON.stringify(body) }),
+  // --- approvals (admin) ---
+  approvals: (f: { status?: "open" | "pending" | "approved" | "final" | "all"; device_id?: string; limit?: number } = {}) =>
+    request<Approval[]>(`/api/approvals${qs(f)}`),
+  approvalSummary: () => request<ApprovalSummary>("/api/approvals/summary"),
+  approval: (id: string) => request<Approval>(`/api/approvals/${id}`),
+  approveApproval: (id: string, body: { reason?: string; confirm_hostname?: string }) =>
+    request<Approval>(`/api/approvals/${id}/approve`, { method: "POST", body: JSON.stringify(body) }),
+  rejectApproval: (id: string, reason: string) =>
+    request<Approval>(`/api/approvals/${id}/reject`, { method: "POST", body: JSON.stringify({ reason }) }),
+  cancelApproval: (id: string, reason: string) =>
+    request<Approval>(`/api/approvals/${id}/cancel`, { method: "POST", body: JSON.stringify({ reason }) }),
+  // --- script library ---
+  scripts: () => request<ScriptLibrary>("/api/scripts"),
+  scriptBundles: () => request<ScriptBundle[]>("/api/scripts/bundles"),
+  runScript: (body: { device_id: string; script: string; parameters: Record<string, ScriptParamValue>; reason: string }) =>
+    request<ScriptRunResult>("/api/scripts/run", { method: "POST", body: JSON.stringify(body) }),
+  scriptRuns: (f: { device_id?: string; script?: string; limit?: number } = {}) => request<ScriptRun[]>(`/api/scripts/runs${qs(f)}`),
+  scriptPendingApprovals: () => request<Approval[]>("/api/scripts/pending-approvals"),
   // --- platform ---
   health: () => request<Health>("/api/health"),
   dashboard: () => request<Dashboard>("/api/dashboard"),

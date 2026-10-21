@@ -40,7 +40,7 @@ jobs:
           if [ -z "$base" ]; then echo "agent=true" >> "$GITHUB_OUTPUT"; exit 0; fi
           changed="$(git diff --name-only "$base" HEAD)"
           echo "$changed"
-          if echo "$changed" | grep -Eq '^(endpoint-agent/|scripts/((agent|installer|update)_e2e|agent_release)\.py|backend/(Dockerfile|requirements|installers/|app/(api/(agent|agent_updates|devices)\.py|services/(devices|installers|pkgtools|agent_updates)\.py|schemas_devices\.py|models\.py|config\.py|cli\.py))|\.github/workflows/)'; then
+          if echo "$changed" | grep -Eq '^(endpoint-agent/|device-scripts/|scripts/((agent|installer|update)_e2e|agent_release|device_scripts)\.py|backend/(Dockerfile|requirements|installers/|app/(api/(agent|agent_updates|devices|approvals|device_scripts)\.py|services/(devices|installers|pkgtools|agent_updates|approvals|device_scripts)\.py|schemas_devices\.py|script_manifest\.py|models\.py|config\.py|cli\.py))|\.github/workflows/)'; then
             echo "agent=true" >> "$GITHUB_OUTPUT"
           else
             echo "agent=false" >> "$GITHUB_OUTPUT"
@@ -205,12 +205,46 @@ jobs:
             if ($errs) { $errs | Format-List; throw "parse errors in $($f.Name)" }
             Write-Host "parsed $($f.Name)"
           }
-      - name: End-to-end - enroll against the real backend, check in, remote actions, OS service install/restart, revoke
+      - name: Remote wipe readiness as SYSTEM - MDM_RemoteWipe class and methods exist (never invoked)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # The agent service runs as LocalSystem; the MDM Bridge WMI namespace is meant for SYSTEM,
+          # so run `cnapp-agent wipe-readiness` (read-only: Get-CimClass, reagentc /info) as SYSTEM.
+          $exe = (Resolve-Path ./cnapp-agent.exe).Path
+          $out = Join-Path $env:RUNNER_TEMP 'wipe-readiness.json'
+          Remove-Item $out -ErrorAction SilentlyContinue
+          $action = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument "/c `"`"$exe`" wipe-readiness > `"$out`" 2>&1`""
+          $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+          Register-ScheduledTask -TaskName CnappWipeReadiness -Action $action -Principal $principal -Force | Out-Null
+          Start-ScheduledTask -TaskName CnappWipeReadiness
+          for ($i = 0; $i -lt 90; $i++) {
+            Start-Sleep -Seconds 2
+            if ((Get-ScheduledTask -TaskName CnappWipeReadiness).State -eq 'Ready' -and (Test-Path $out)) { break }
+          }
+          Unregister-ScheduledTask -TaskName CnappWipeReadiness -Confirm:$false
+          Get-Content $out
+          $r = Get-Content $out -Raw | ConvertFrom-Json
+          if (-not $r.mdm_bridge) { throw "MDM_RemoteWipe WMI class not available as SYSTEM: $($r.error)" }
+          foreach ($m in 'doWipeMethod', 'doWipeProtectedMethod') {
+            if ($r.methods -notcontains $m) { throw "MDM_RemoteWipe.$m is missing (methods: $($r.methods -join ', '))" }
+          }
+          if ($r.opt_in) { throw 'a fresh runner must not be opted in to remote wipe' }
+          Write-Host "OK: MDM_RemoteWipe exposes $($r.methods -join ', '); WinRE enabled: $($r.winre_enabled); edition $($r.edition)"
+      - name: End-to-end - enroll against the real backend, check in, remote actions, signed scripts, lost mode, OS service install/restart, revoke
         if: runner.os != 'Linux'
         working-directory: .
         run: |
           python -m pip install -r backend/requirements.txt
-          python scripts/agent_e2e.py --agent "endpoint-agent/cnapp-agent$(cd endpoint-agent && go env GOEXE)" --service
+          # Ephemeral script-signing key, compiled into this test build only (release builds trust only
+          # endpoint-agent/internal/scripts/trusted_keys.txt).
+          k="$RUNNER_TEMP/script-key"; mkdir -p "$k"
+          python scripts/device_scripts.py keygen --out "$k/key.pem" --public-out "$k/key.pub" --comment "ephemeral CI script key"
+          line="$(cut -d'#' -f1 "$k/key.pub" | xargs)"
+          exe="cnapp-agent-e2e$(cd endpoint-agent && go env GOEXE)"
+          (cd endpoint-agent && go build -trimpath -ldflags "-X 'github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/scripts.ExtraTrustedKeys=$line'" -o "$exe" ./cmd/cnapp-agent)
+          python scripts/agent_e2e.py --agent "endpoint-agent/$exe" --service --script-key-file "$k/key.pem"
+          rm -rf "$k"
       - name: Self-update e2e - signed update A->B as the OS service, broken C rolled back, untrusted key and tampered binary rejected
         if: runner.os != 'Linux'
         working-directory: .
@@ -310,6 +344,16 @@ jobs:
             endpoint-agent/dist/cnapp-agent-darwin-amd64 endpoint-agent/dist/cnapp-agent-darwin-arm64
           python scripts/agent_release.py verify endpoint-agent/dist/cnapp-agent-update-CI-TEST-KEY.tar.gz --keys "$RUNNER_TEMP/ci-key.pub"
           rm -f "$key"
+      - name: Signed device-script bundle (EPHEMERAL CI key; real bundles use device-scripts-release.yml)
+        working-directory: .
+        run: |
+          python scripts/device_scripts.py lint
+          key="$RUNNER_TEMP/ci-script-key.pem"
+          python scripts/device_scripts.py keygen --out "$key" --public-out "$RUNNER_TEMP/ci-script-key.pub" --comment "ephemeral CI script key"
+          SCRIPT_SIGNING_KEY="$(cat "$key")" python scripts/device_scripts.py bundle --version "0.1.${GITHUB_RUN_NUMBER}" \
+            --out endpoint-agent/dist/device-scripts-CI-TEST-KEY.tar.gz --notes "CI test bundle (ephemeral key)"
+          python scripts/device_scripts.py verify endpoint-agent/dist/device-scripts-CI-TEST-KEY.tar.gz --keys "$RUNNER_TEMP/ci-script-key.pub"
+          rm -f "$key"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: cnapp-agent-binaries
@@ -349,7 +393,7 @@ jobs:
           CNAPP_MFA_ENCRYPTION_KEY: ci-placeholder-mfa-encryption-key-0000000
         run: bicep build-params infra/main.bicepparam --outfile "$RUNNER_TEMP/main.parameters.json"
       - name: shellcheck
-        run: shellcheck infra/setup.sh infra/deploy.sh infra/tests/*.sh endpoint-agent/packaging/macos/*.sh endpoint-agent/packaging/macos/scripts/* scripts/agent-release-keygen
+        run: shellcheck infra/setup.sh infra/deploy.sh infra/tests/*.sh endpoint-agent/packaging/macos/*.sh endpoint-agent/packaging/macos/scripts/* scripts/agent-release-keygen scripts/device-scripts-keygen
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"

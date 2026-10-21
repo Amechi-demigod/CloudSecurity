@@ -3,11 +3,14 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { ApiError, api, type CommandType, type DeviceCommand, type DeviceDetail as Device, type Role } from "../../api";
 import { useAuth } from "../../auth/context";
 import { CheckBadge, ConnectivityTag, HealthBadge, IssueList } from "../../components/devices";
+import { ApprovalList } from "../../components/approvals";
 import { Button, Card, Empty, ErrorNote, Field, Modal, PageHeader, Table, Tag } from "../../components/ui";
 import { CHECK_LABEL, OS_LABEL, fmtBytes, fmtDuration } from "../../lib/devices";
 import { fmtAgo, fmtTime } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
 import { AssetRecordLink } from "../assets/AssetRecordLink";
+import { LostModeDialog, LostWipeCard, WipeDialog } from "./LostWipe";
+import { RunScriptDialog } from "./RunScriptDialog";
 import { PendingUpdateView, UpdateNowButton } from "./UpdateAutomation";
 
 const TABS = ["Overview", "Posture", "Software", "History", "Commands", "Updates"] as const;
@@ -20,6 +23,19 @@ const ACTIONS: { type: CommandType; label: string; role: Role; help: string; dan
   { type: "restart_agent", label: "Restart agent", role: "admin", help: "The agent exits and the OS service manager starts it again." },
   { type: "update_check_in_interval", label: "Change check-in interval", role: "admin", help: "How often the agent sends a full inventory/posture report (5 min - 24 h)." },
 ];
+
+/** Labels for command types queued outside the generic action toolbar. */
+const EXTRA_LABEL: Partial<Record<CommandType, string>> = {
+  enable_lost_mode: "Enable lost mode",
+  disable_lost_mode: "Exit lost mode",
+  wipe_device: "Remote wipe",
+  run_script: "Run script",
+};
+
+function commandLabel(c: DeviceCommand): string {
+  if (c.type === "run_script") return `Run script ${String(c.params.script ?? "")}`.trim();
+  return ACTIONS.find((a) => a.type === c.type)?.label ?? EXTRA_LABEL[c.type] ?? c.type;
+}
 
 const STATUS_TONE: Record<DeviceCommand["status"], "default" | "warn" | "good" | "accent"> = {
   pending: "accent",
@@ -229,6 +245,7 @@ function Overview({ device }: { device: Device }) {
       <Card title="Issues">
         <IssueList issues={device.issues} />
       </Card>
+      <LostWipeCard device={device} />
       <Card title="Device">
         <dl>
           <Row label="Hostname">{device.hostname}</Row>
@@ -398,7 +415,14 @@ function CommandsTab({ device, commands, error, reload }: { device: Device; comm
                 <div className="text-ink-3">{c.requested_by_email}</div>
               </td>
               <td className="px-3 py-2 text-sm">
-                {ACTIONS.find((a) => a.type === c.type)?.label ?? c.type}
+                {commandLabel(c)}
+                {c.type === "wipe_device" && !!c.params.mode && <div className="text-xs text-ink-3">mode: {String(c.params.mode)}</div>}
+                {c.type === "run_script" && c.params.parameters !== undefined && (
+                  <div className="max-w-[14rem] break-words font-mono text-[11px] text-ink-3">
+                    {Object.entries((c.params.parameters ?? {}) as Record<string, unknown>).map(([k, v]) => `${k}=${String(v)}`).join(" ")}
+                  </div>
+                )}
+                {c.approved_by_email && <div className="text-xs text-ink-3">approved by {c.approved_by_email}</div>}
                 {c.type === "update_check_in_interval" && (
                   <div className="text-xs text-ink-3">{Math.round(Number(c.params.interval_seconds) / 60)} min</div>
                 )}
@@ -411,6 +435,9 @@ function CommandsTab({ device, commands, error, reload }: { device: Device; comm
               </td>
               <td className="max-w-[16rem] px-3 py-2 text-xs text-ink-2">{c.reason}</td>
               <td className="max-w-[24rem] px-3 py-2">
+                {c.exit_code !== null && c.exit_code !== undefined && (
+                  <div className={`text-xs ${c.exit_code === 0 ? "text-ink-3" : "text-sev-high"}`}>exit code {c.exit_code}</div>
+                )}
                 {c.output && <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-words text-[11px] text-ink-2">{c.output}</pre>}
                 {c.log_bundle_id && can("analyst") && (
                   <a className="text-xs text-accent" href={api.logBundleUrl(device.id, c.log_bundle_id)}>
@@ -429,6 +456,24 @@ function CommandsTab({ device, commands, error, reload }: { device: Device; comm
           ))}
         </Table>
       )}
+    </Card>
+  );
+}
+
+function DeviceApprovals({ id, onChanged }: { id: string; onChanged: () => void }) {
+  const { data, error, reload } = useApi(() => api.approvals({ status: "all", device_id: id, limit: 20 }), [id], 30000);
+  return (
+    <Card title="Approval requests" className="mt-4">
+      <ErrorNote error={error} />
+      <ApprovalList
+        items={data}
+        showDevice={false}
+        empty="No approval requests for this device."
+        onChanged={() => {
+          reload();
+          onChanged();
+        }}
+      />
     </Card>
   );
 }
@@ -556,10 +601,18 @@ export default function DeviceDetail() {
   const [action, setAction] = useState<(typeof ACTIONS)[number] | null>(null);
   const [revokeOpen, setRevokeOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [lostOpen, setLostOpen] = useState(false);
+  const [wipeOpen, setWipeOpen] = useState(false);
+  const [scriptOpen, setScriptOpen] = useState(false);
   const { data: device, error, reload } = useApi(() => api.device(id), [id], 30000);
   const cmds = useApi(() => api.deviceCommands(id), [id], 10000);
 
   if (!device) return <ErrorNote error={error} />;
+  function afterAction() {
+    cmds.reload();
+    reload();
+    setTab("Commands");
+  }
   const active = device.status === "active";
 
   return (
@@ -576,6 +629,8 @@ export default function DeviceDetail() {
         actions={
           <div className="flex flex-wrap items-center gap-2">
             {active ? <HealthBadge health={device.health} /> : <Tag tone="warn">Revoked</Tag>}
+            {device.device_state === "lost" && <Tag tone="warn">Lost</Tag>}
+            {device.device_state === "wipe_pending" && <Tag tone="critical">Wipe pending</Tag>}
             <ConnectivityTag value={device.connectivity} />
             <AssetRecordLink deviceId={device.id} />
           </div>
@@ -590,11 +645,42 @@ export default function DeviceDetail() {
             </Button>
           ))}
           {can("admin") && (
+            <>
+              <Button
+                variant={device.lost_mode.status ? "default" : "danger"}
+                onClick={() => setLostOpen(true)}
+                disabled={device.lost_mode.status === "disabling"}
+                title={device.lost_mode.status === "disabling" ? "Exiting lost mode: waiting for the agent" : "Show a contact message on the lock screen and lock the device"}
+              >
+                {device.lost_mode.status ? "Exit lost mode" : "Lost mode"}
+              </Button>
+              {device.os_family === "windows" ? (
+                <Button variant="danger" onClick={() => setWipeOpen(true)} title="Erase the device (needs a second admin's approval)">
+                  Remote wipe
+                </Button>
+              ) : (
+                <span title={device.wipe.unsupported_reason ?? "Remote wipe is only available for Windows devices"}>
+                  <Button variant="danger" disabled>
+                    Remote wipe
+                  </Button>
+                </span>
+              )}
+              <Button onClick={() => setScriptOpen(true)} title="Run a script from the signed library">
+                Run script
+              </Button>
+            </>
+          )}
+          {can("admin") && (
             <Button variant="danger" onClick={() => setRevokeOpen(true)} title="Invalidate the device credential">
               Revoke
             </Button>
           )}
         </div>
+      )}
+      {active && can("admin") && device.os_family !== "windows" && (
+        <p className="-mt-2 mb-4 text-xs text-ink-3">
+          Remote wipe is not offered for this device{device.wipe.unsupported_reason ? `: ${device.wipe.unsupported_reason}` : " (Windows only)"}.
+        </p>
       )}
       {!active && can("admin") && (
         <div className="mb-4 flex items-center gap-3 rounded border border-line bg-surface-1 px-3 py-2 text-sm text-ink-2">
@@ -627,11 +713,22 @@ export default function DeviceDetail() {
       {tab === "History" && <HistoryTab id={device.id} />}
       {tab === "Updates" && <UpdatesTab id={device.id} admin={can("admin") && active} analyst={can("analyst") && active} />}
       {tab === "Commands" && <CommandsTab device={device} commands={cmds.data} error={cmds.error} reload={cmds.reload} />}
+      {tab === "Commands" && can("admin") && <DeviceApprovals id={device.id} onChanged={() => { cmds.reload(); reload(); }} />}
 
       <ActionDialog device={device} action={action} onClose={() => setAction(null)} onDone={() => {
         cmds.reload();
         setTab("Commands");
       }} />
+      {can("admin") && (
+        <>
+          <LostModeDialog key={`lost-${device.lost_mode.status ?? "off"}`} device={device} open={lostOpen} onClose={() => setLostOpen(false)}
+            onDone={afterAction} />
+          {device.os_family === "windows" && (
+            <WipeDialog device={device} open={wipeOpen} onClose={() => setWipeOpen(false)} onDone={reload} />
+          )}
+          <RunScriptDialog device={device} open={scriptOpen} onClose={() => setScriptOpen(false)} onDone={() => { cmds.reload(); reload(); }} />
+        </>
+      )}
       <ReasonDialog open={revokeOpen} title={`Revoke ${device.hostname}`} cta="Revoke device"
         help="The device credential stops working immediately and pending actions are cancelled. The agent keeps running but is rejected until someone re-enrolls it with a new enrollment token."
         onClose={() => setRevokeOpen(false)}

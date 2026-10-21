@@ -1,0 +1,10 @@
+{
+  "name": "macos-list-local-admins",
+  "description": "Lists the members of the local admin group (read-only).",
+  "platform": "macos",
+  "interpreter": "zsh",
+  "file": "script.zsh",
+  "timeout_seconds": 60,
+  "risk": "low",
+  "parameters": []
+}

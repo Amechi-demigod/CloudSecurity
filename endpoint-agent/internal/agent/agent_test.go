@@ -34,6 +34,11 @@ type fakeServer struct {
 	checkins int
 	bundle   []byte
 	revoked  bool
+	acks     int
+	ackFail  bool
+	files    map[string][]byte // /api/agent/scripts/... downloads
+	exitCode map[string]any
+	checkin  *model.Report
 	offer    string // JSON of the "update" field of check-in responses ("" = none)
 	features string // X-CNAPP-Agent-Features of the last check-in
 }
@@ -63,6 +68,7 @@ func (f *fakeServer) handler(t *testing.T) http.Handler {
 				t.Errorf("bad check-in: %v", err)
 			}
 			f.checkins++
+			f.checkin = &rep
 			f.features = r.Header.Get("X-CNAPP-Agent-Features")
 			upd := ""
 			if f.offer != "" {
@@ -74,12 +80,31 @@ func (f *fakeServer) handler(t *testing.T) http.Handler {
 			f.commands = nil
 			_, _ = w.Write(b)
 		case strings.HasSuffix(r.URL.Path, "/result"):
-			var body map[string]string
+			var body map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			id := strings.Split(r.URL.Path, "/")[4]
-			f.results[id] = body["status"]
-			f.outputs[id] = body["output"]
+			f.results[id], _ = body["status"].(string)
+			f.outputs[id], _ = body["output"].(string)
+			if f.exitCode == nil {
+				f.exitCode = map[string]any{}
+			}
+			f.exitCode[id] = body["exit_code"]
 			w.WriteHeader(204)
+		case strings.HasSuffix(r.URL.Path, "/ack"):
+			f.acks++
+			if f.ackFail {
+				w.WriteHeader(409)
+				_, _ = io.WriteString(w, `{"detail":"already acknowledged"}`)
+				return
+			}
+			_, _ = io.WriteString(w, `{"proceed":true}`)
+		case strings.HasPrefix(r.URL.Path, "/api/agent/scripts/"):
+			b, ok := f.files[r.URL.Path]
+			if !ok {
+				w.WriteHeader(404)
+				return
+			}
+			_, _ = w.Write(b)
 		case strings.HasSuffix(r.URL.Path, "/logs"):
 			f.bundle, _ = io.ReadAll(r.Body)
 			w.WriteHeader(201)
@@ -111,6 +136,7 @@ func setup(t *testing.T) (*Agent, *fakeServer) {
 	}
 	a.Collect = fakeCollect
 	a.Lock = func(context.Context) (string, error) { return "locked (test)", nil }
+	a.WipeProbe = readyProbe // never run the real PowerShell probe in unit tests
 	return a, f
 }
 
@@ -129,7 +155,8 @@ func TestCommandsEndToEnd(t *testing.T) {
 	other.DeviceID = "someone-else"
 	f.commands = []model.Command{
 		command("c-recheck", "recheck_posture", nil),
-		command("c-shell", "run_script", map[string]any{"script": "rm -rf /"}),
+		command("c-shell", "run_shell", map[string]any{"script": "rm -rf /"}),
+		command("c-script", "run_script", map[string]any{"script": "rm -rf /"}),
 		command("c-interval", "update_check_in_interval", map[string]any{"interval_seconds": 1800.0}),
 		command("c-logs", "collect_logs", nil),
 		command("c-lock", "lock_device", nil),
@@ -139,7 +166,7 @@ func TestCommandsEndToEnd(t *testing.T) {
 	if err := a.PollCommands(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]string{"c-recheck": "succeeded", "c-shell": "rejected", "c-interval": "succeeded",
+	want := map[string]string{"c-recheck": "succeeded", "c-shell": "rejected", "c-script": "rejected", "c-interval": "succeeded",
 		"c-logs": "succeeded", "c-lock": "succeeded", "c-restart": "succeeded", "c-expired": "rejected", "c-other": "rejected"}
 	for id, st := range want {
 		if f.results[id] != st {

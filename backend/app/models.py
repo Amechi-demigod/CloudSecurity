@@ -342,6 +342,20 @@ class Device(Base):
     update_status_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     update_status_detail: Mapped[str | None] = mapped_column(String(500), nullable=True)
     update_status_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Lost mode (docs/DEVICE_MANAGEMENT.md#lost-mode): enabling | active |
+    # disabling | None. Set when an admin queues enable/disable_lost_mode and
+    # confirmed by the command result and by the state the agent reports.
+    lost_mode_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    lost_mode_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    lost_mode_phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    lost_mode_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    lost_mode_by: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    # Remote wipe (Windows only): queued (approved command waiting for the
+    # device) | acknowledged (the agent confirmed it is about to wipe) | started
+    # (the OS accepted the wipe) | failed | expired | None.
+    wipe_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    wipe_status_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    wipe_command_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # When the server last offered which release (and the jitter it allowed),
     # so the console can say "offered at ..., starts within ...".
     update_offered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -424,6 +438,91 @@ class DeviceCommand(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     output: Mapped[str] = mapped_column(Text, default="")
     log_bundle_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # run_script: the script's exit code. Commands created from a two-person
+    # approval reference it (and record who approved).
+    exit_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    approval_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    approved_by_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class DeviceApproval(Base):
+    """Two-person ("maker-checker") approval of a high-risk device action
+    (remote wipe, medium/high-risk script). The action only becomes a
+    DeviceCommand once a different admin approves (or, when self-approval is
+    enabled on a single-admin install, after a cooling-off delay)."""
+
+    __tablename__ = "device_approvals"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    device_id: Mapped[str] = mapped_column(String(32), ForeignKey("devices.id", ondelete="CASCADE"), index=True)
+    action: Mapped[str] = mapped_column(String(32))  # wipe_device | run_script
+    params: Mapped[dict] = mapped_column(JSON, default=dict)
+    summary: Mapped[str] = mapped_column(String(500), default="")
+    risk: Mapped[str] = mapped_column(String(16), default="high")
+    reason: Mapped[str] = mapped_column(Text, default="")
+    # pending -> approved (cooling-off, self-approval only) -> executed ;
+    # or rejected | cancelled | expired | failed
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    requested_by_id: Mapped[str] = mapped_column(String(32))
+    requested_by_email: Mapped[str] = mapped_column(String(320))
+    requested_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    decided_by_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    decided_by_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    decision_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    self_approved: Mapped[bool] = mapped_column(Boolean, default=False)
+    execute_after: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    executed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    command_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+
+class DeviceScriptBundle(Base):
+    """A signed bundle of reviewed device scripts (docs/DEVICE_SCRIPTS.md). The
+    manifest envelope is stored verbatim; agents verify its Ed25519 signature
+    with the script-signing keys compiled into them, right before running."""
+
+    __tablename__ = "device_script_bundles"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    version: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    manifest_envelope: Mapped[str] = mapped_column(Text)
+    manifest: Mapped[dict] = mapped_column(JSON, default=dict)
+    key_id: Mapped[str] = mapped_column(String(64))
+    released_at: Mapped[datetime] = mapped_column(DateTime)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    notes: Mapped[str] = mapped_column(Text, default="")
+    bundle_sha256: Mapped[str] = mapped_column(String(64))
+    imported_by: Mapped[str] = mapped_column(String(320))
+    imported_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    scripts: Mapped[list[DeviceScript]] = relationship(
+        back_populates="bundle", cascade="all, delete-orphan", passive_deletes=True, order_by="DeviceScript.name")
+
+
+class DeviceScript(Base):
+    """One script of a signed bundle (content kept for agents to download)."""
+
+    __tablename__ = "device_scripts"
+    __table_args__ = (UniqueConstraint("bundle_id", "name", name="uq_device_script_bundle_name"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    bundle_id: Mapped[str] = mapped_column(String(32), ForeignKey("device_script_bundles.id", ondelete="CASCADE"),
+                                           index=True)
+    name: Mapped[str] = mapped_column(String(64))
+    description: Mapped[str] = mapped_column(String(1000), default="")
+    platform: Mapped[str] = mapped_column(String(16))  # windows | macos
+    interpreter: Mapped[str] = mapped_column(String(16))  # powershell | zsh | bash
+    risk: Mapped[str] = mapped_column(String(16))  # low | medium | high
+    timeout_seconds: Mapped[int] = mapped_column(Integer)
+    parameters: Mapped[list] = mapped_column(JSON, default=list)
+    file: Mapped[str] = mapped_column(String(128))
+    sha256: Mapped[str] = mapped_column(String(64))
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    content: Mapped[bytes] = mapped_column(LargeBinary, deferred=True)
+
+    bundle: Mapped[DeviceScriptBundle] = relationship(back_populates="scripts")
 
 
 class DeviceLogBundle(Base):

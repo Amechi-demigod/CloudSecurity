@@ -2,8 +2,10 @@
 
 viewer  : read everything except log bundles
 analyst : + recheck_posture, collect_logs, download log bundles
-admin   : + lock_device, restart_agent, update_check_in_interval, enrollment
-          tokens, revoke / delete devices
+admin   : + lock_device, restart_agent, update_check_in_interval, lost mode
+          (enable_lost_mode / disable_lost_mode), enrollment tokens, revoke /
+          delete devices, and *request* a remote wipe (Windows only; executed
+          only after a second admin approves, see app/services/approvals.py)
 
 Every remote action needs a reason and is written to the audit log.
 """
@@ -11,10 +13,11 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import secrets
 from datetime import timedelta
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response
+from pydantic import BaseModel, ConfigDict, StringConstraints
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
@@ -45,8 +48,8 @@ from ..schemas_devices import (
     SnapshotOut,
     SoftwareOut,
 )
+from ..services import approvals, installers
 from ..services import devices as svc
-from ..services import installers
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/devices", tags=["devices"])
@@ -176,6 +179,8 @@ def create_installer(body: InstallerCreate, request: Request, admin: User = Depe
                                  s.agent_installer_rate_window_seconds):
         raise HTTPException(429, "too many installer downloads; try again later", headers={"Retry-After": "60"})
     include_ca = body.include_ca
+    if body.allow_wipe and body.platform != "windows-msi":
+        raise HTTPException(422, "remote wipe is only available for Windows devices (MSI)")
     try:
         if include_ca is None:
             include_ca = installers.server_ca_pem() is not None
@@ -194,7 +199,7 @@ def create_installer(body: InstallerCreate, request: Request, admin: User = Depe
                         expires_at=now + timedelta(days=body.expires_in_days), package_platform=body.platform,
                         device_group=body.device_group or None)
     try:
-        data, art, ca_included = installers.build(body.platform, raw, include_ca)
+        data, art, ca_included = installers.build(body.platform, raw, include_ca, body.allow_wipe)
     except installers.InstallerConfigError as e:
         raise HTTPException(409, str(e)) from None
     except installers.InstallerUnavailable as e:
@@ -210,12 +215,14 @@ def create_installer(body: InstallerCreate, request: Request, admin: User = Depe
     audit(db, "agent_installer_created", actor=admin, target=f"enrollment-token:{t.id}", ip=client_ip(request),
           name=t.name, platform=body.platform, agent_version=art.version, base_sha256=art.sha256,
           sha256=digest, size_bytes=len(data), max_uses=t.max_uses, expires_at=t.expires_at.isoformat() + "Z",
-          device_group=t.device_group, ca_included=ca_included, server_url=installers.server_url())
+          device_group=t.device_group, ca_included=ca_included, server_url=installers.server_url(),
+          allow_wipe=body.allow_wipe)
     db.commit()
     return Response(content=data, media_type=spec["media_type"], headers={
         "Content-Disposition": f'attachment; filename="{spec["download"]}"',
         "Cache-Control": "no-store", "X-Content-SHA256": digest, "X-Enrollment-Token-Id": t.id,
-        "X-Agent-Version": art.version, "X-CA-Included": "true" if ca_included else "false"})
+        "X-Agent-Version": art.version, "X-CA-Included": "true" if ca_included else "false",
+        "X-Allow-Wipe": "true" if body.allow_wipe else "false"})
 
 
 @router.post("/enrollment-tokens/{token_id}/revoke", response_model=EnrollmentTokenOut)
@@ -239,7 +246,8 @@ def device_detail(device_id: str = DeviceId, db: Session = Depends(get_db)):
     return {**svc.summarize(d), "os_build": d.os_build, "last_ip": d.last_ip,
             "check_in_interval_seconds": d.check_in_interval_seconds, "software_count": d.software_count,
             "updates_pending_since": d.updates_pending_since, "revoked_at": d.revoked_at,
-            "inventory": d.inventory or {}, "posture": d.posture or {}, "collection_errors": d.collection_errors or {}}
+            "inventory": d.inventory or {}, "posture": d.posture or {}, "collection_errors": d.collection_errors or {},
+            "lost_mode": svc.lost_mode_info(d), "wipe": svc.wipe_info(d)}
 
 
 @router.get("/{device_id}/software", response_model=list[SoftwareOut])
@@ -264,6 +272,7 @@ def device_history(device_id: str = DeviceId, limit: int = Query(50, ge=1, le=50
 def device_commands(device_id: str = DeviceId, limit: int = Query(100, ge=1, le=1000),
                     db: Session = Depends(get_db)):
     _get_device(db, device_id)
+    approvals.release_due(db, device_id)
     svc.expire_commands(db, device_id)
     db.commit()
     return list(db.scalars(select(DeviceCommand).where(DeviceCommand.device_id == device_id)
@@ -283,13 +292,19 @@ def create_command(body: CommandCreate, request: Request, device_id: str = Devic
         params = svc.validate_params(body.type, body.params)
     except ValueError as e:
         raise HTTPException(422, str(e)) from None
-    now = utcnow()
+    if body.type == "enable_lost_mode":
+        if (body.confirm_hostname or "").strip().lower() != device.hostname.lower():
+            raise HTTPException(422, f"type the device name ({device.hostname}) to confirm")
+        if device.wipe_status in svc.WIPE_PENDING_STATES:
+            raise HTTPException(409, "a remote wipe of this device is in progress")
+    if body.type in ("enable_lost_mode", "disable_lost_mode") and device.lost_mode_status in ("enabling", "disabling"):
+        raise HTTPException(409, f"lost mode is already {device.lost_mode_status}; wait for the device or cancel "
+                                 "the pending command")
+    if body.type == "disable_lost_mode" and device.lost_mode_status is None:
+        raise HTTPException(409, "the device is not in lost mode")
     ttl = body.expires_in_hours or config.settings.device_command_ttl_hours
-    cmd = DeviceCommand(device_id=device.id, type=body.type, params=params, nonce=secrets.token_hex(16),
-                        reason=body.reason, requested_by_id=user.id, requested_by_email=user.email, created_at=now,
-                        expires_at=now + timedelta(hours=ttl))
-    db.add(cmd)
-    db.flush()
+    cmd = svc.new_command(db, device, body.type, params, body.reason, requested_by_id=user.id,
+                          requested_by_email=user.email, ttl=timedelta(hours=ttl))
     audit(db, "device_command_created", actor=user, target=f"device:{device.id}", ip=client_ip(request),
           hostname=device.hostname, command_id=cmd.id, type=cmd.type, params=params, reason=body.reason)
     db.commit()
@@ -308,10 +323,48 @@ def cancel_command(body: DeviceAction, request: Request, device_id: str = Device
     if cmd.status != "pending":
         raise HTTPException(409, f"only pending commands can be cancelled (this one is {cmd.status})")
     cmd.status, cmd.completed_at, cmd.output = "cancelled", utcnow(), f"cancelled by {user.email}"
+    svc.command_finished(_get_device(db, device_id), cmd)
     audit(db, "device_command_cancelled", actor=user, target=f"device:{device_id}", ip=client_ip(request),
           command_id=cmd.id, type=cmd.type, reason=body.reason)
     db.commit()
     return cmd
+
+
+class WipeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: Annotated[str, StringConstraints(strip_whitespace=True, min_length=3, max_length=500)]
+    confirm_hostname: Annotated[str, StringConstraints(max_length=255)]
+    # protected: MDM_RemoteWipe.doWipeProtectedMethod (default; keeps trying after a
+    # power cycle). standard: doWipeMethod (a power cycle during reset can stop it).
+    mode: Literal["protected", "standard"] = "protected"
+
+
+@router.post("/{device_id}/wipe", status_code=201)
+def request_wipe(body: WipeRequest, request: Request, device_id: str = DeviceId,
+                 admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    """Request a remote wipe (Windows only). Creates a two-person approval
+    request; nothing is sent to the device until a different admin approves."""
+    device = _get_device(db, device_id)
+    if device.os_family != "windows":
+        raise HTTPException(409, "remote wipe is only supported on Windows: erasing a Mac needs a real Apple MDM "
+                                 "(EraseDevice), which this product does not have")
+    if body.confirm_hostname.strip().lower() != device.hostname.lower():
+        raise HTTPException(422, f"type the device name ({device.hostname}) to confirm")
+    info = svc.wipe_info(device)
+    if not info["opted_in"]:
+        raise HTTPException(409, "this device did not opt in to remote wipe at install time (MSI property "
+                                 "CNAPP_ALLOW_WIPE=1 or the 'Allow remote wipe' installer option); the agent "
+                                 "would refuse the command")
+    if device.wipe_status in svc.WIPE_PENDING_STATES:
+        raise HTTPException(409, f"a wipe of this device is already {device.wipe_status}")
+    try:
+        a = approvals.request(db, admin, device, "wipe_device", {"mode": body.mode}, reason=body.reason,
+                              summary=f"Remote wipe ({body.mode})", risk="high", ip=client_ip(request))
+    except approvals.ApprovalError as e:
+        raise HTTPException(e.status, e.detail) from None
+    db.commit()
+    return approvals.out(a, device, admin)
 
 
 @router.get("/{device_id}/log-bundles/{bundle_id}")

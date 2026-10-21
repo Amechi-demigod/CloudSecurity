@@ -18,11 +18,17 @@ COMMAND_ROLES: dict[str, str] = {
     "lock_device": "admin",
     "restart_agent": "admin",
     "update_check_in_interval": "admin",
+    "enable_lost_mode": "admin",
+    "disable_lost_mode": "admin",
     # Check in now and start an offered (signed) update without the random delay.
     "check_for_update": "analyst",
+    # Never queued through POST /commands: wipe needs a two-person approval,
+    # scripts go through /api/scripts/run (approval unless the signed risk is low).
+    "wipe_device": "admin",
+    "run_script": "admin",
 }
 CommandType = Literal["recheck_posture", "collect_logs", "lock_device", "restart_agent", "update_check_in_interval",
-                      "check_for_update"]
+                      "enable_lost_mode", "disable_lost_mode", "check_for_update"]
 CommandStatus = Literal["pending", "delivered", "succeeded", "failed", "rejected", "expired", "cancelled"]
 OsFamily = Literal["windows", "macos", "linux"]
 MIN_INTERVAL_SECONDS = 300
@@ -165,6 +171,13 @@ class CommandResultIn(Strict):
     nonce: Annotated[str, StringConstraints(min_length=16, max_length=64)]
     status: Literal["succeeded", "failed", "rejected"]
     output: Annotated[str, StringConstraints(max_length=16384)] = ""
+    # run_script only: the script's exit code.
+    exit_code: int | None = Field(None, ge=-(2**31), le=2**32)
+
+
+class CommandAckIn(Strict):
+    """wipe_device: the agent's final acknowledgement before it starts the wipe."""
+    nonce: Annotated[str, StringConstraints(min_length=16, max_length=64)]
 
 
 # ----------------------------------------------------------------------------- user API
@@ -195,6 +208,8 @@ class DeviceSummaryOut(ORM):
     health: Literal["healthy", "warning", "critical", "unknown"]
     connectivity: Literal["active", "stale", "inactive", "never"]
     issues: list[DeviceIssue]
+    # active | lost | wipe_pending | revoked (for asset / lifecycle views)
+    device_state: str = "active"
 
 
 class DeviceDetailOut(DeviceSummaryOut):
@@ -207,6 +222,8 @@ class DeviceDetailOut(DeviceSummaryOut):
     inventory: dict[str, Any]
     posture: dict[str, Any]
     collection_errors: dict[str, Any]
+    lost_mode: dict[str, Any] = {}
+    wipe: dict[str, Any] = {}
 
 
 class SoftwareOut(ORM):
@@ -243,6 +260,10 @@ class CommandOut(ORM):
     completed_at: UTCDateTime | None
     output: str
     log_bundle_id: str | None
+    exit_code: int | None = None
+    approval_id: str | None = None
+    approved_by_email: str | None = None
+    acknowledged_at: UTCDateTime | None = None
 
 
 class CommandCreate(BaseModel):
@@ -252,6 +273,8 @@ class CommandCreate(BaseModel):
     reason: Annotated[str, StringConstraints(strip_whitespace=True, min_length=3, max_length=500)]
     params: dict[str, Any] = Field(default_factory=dict)
     expires_in_hours: float | None = Field(None, gt=0, le=168)
+    # enable_lost_mode: the device name typed again by the admin.
+    confirm_hostname: Annotated[str, StringConstraints(max_length=255)] | None = None
 
 
 class DeviceAction(BaseModel):
@@ -279,6 +302,9 @@ class InstallerCreate(BaseModel):
                                                    pattern=r"^[A-Za-z0-9][A-Za-z0-9 ._\-]*$")] | None = None
     # None: include the private CA when the server has one configured.
     include_ca: bool | None = None
+    # Windows only: devices installed from this package opt in to remote wipe
+    # (stored in the agent's protected local state; default off).
+    allow_wipe: bool = False
 
 
 class EnrollmentTokenOut(ORM):

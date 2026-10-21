@@ -4,6 +4,7 @@ import { api, type Role } from "./api";
 import { useAuth } from "./auth/context";
 import UserMenu from "./components/UserMenu";
 import { useApi } from "./lib/useApi";
+import Approvals from "./pages/Approvals";
 import AssetDetail from "./pages/assets/AssetDetail";
 import Assets from "./pages/assets/Assets";
 import AssetSettings from "./pages/assets/AssetSettings";
@@ -14,6 +15,7 @@ import AgentUpdates from "./pages/devices/AgentUpdates";
 import DeviceDetail from "./pages/devices/DeviceDetail";
 import Devices from "./pages/devices/Devices";
 import Enrollment from "./pages/devices/Enrollment";
+import Scripts from "./pages/devices/Scripts";
 import DashboardPage from "./pages/Dashboard";
 import Findings from "./pages/Findings";
 import Inventory from "./pages/Inventory";
@@ -38,7 +40,8 @@ const NAV: { to: string; label: string; role?: Role }[] = [
   { to: "/notifications", label: "Notifications", role: "analyst" },
 ];
 
-const ADMIN_NAV = [
+const ADMIN_NAV: { to: string; label: string; badge?: "approvals" }[] = [
+  { to: "/approvals", label: "Approvals", badge: "approvals" },
   { to: "/admin/users", label: "Users" },
   { to: "/admin/audit-log", label: "Audit log" },
 ];
@@ -84,6 +87,8 @@ function RequireRole({ role, children }: { role: Role; children: ReactNode }) {
 function Shell() {
   const { can, forbidden, dismissForbidden } = useAuth();
   const { data: health, error } = useApi(api.health, [], 15000);
+  const admin = can("admin");
+  const { data: approvals } = useApi(() => (admin ? api.approvalSummary() : Promise.resolve(null)), [admin], admin ? 30000 : undefined);
   return (
     <div className="flex h-full">
       <nav aria-label="Main" className="flex w-56 shrink-0 flex-col border-r border-line bg-surface-1">
@@ -108,7 +113,17 @@ function Shell() {
               {ADMIN_NAV.map((n) => (
                 <li key={n.to}>
                   <NavLink to={n.to} className={navClass}>
-                    {n.label}
+                    <span className="flex items-center justify-between gap-2">
+                      {n.label}
+                      {n.badge === "approvals" && !!approvals?.actionable && (
+                        <span
+                          className="rounded-full bg-sev-high px-1.5 text-[11px] font-semibold leading-5 text-black"
+                          aria-label={`${approvals.actionable} waiting for your approval`}
+                        >
+                          {approvals.actionable}
+                        </span>
+                      )}
+                    </span>
                   </NavLink>
                 </li>
               ))}
@@ -157,6 +172,7 @@ function Shell() {
             <Route path="/devices" element={<Devices />} />
             <Route path="/devices/enrollment" element={<RequireRole role="admin"><Enrollment /></RequireRole>} />
             <Route path="/devices/updates" element={<AgentUpdates />} />
+            <Route path="/devices/scripts" element={<Scripts />} />
             <Route path="/devices/:id" element={<DeviceDetail />} />
             <Route path="/it-assets" element={<Assets />} />
             <Route path="/it-assets/offboarding" element={<Offboarding />} />
@@ -164,6 +180,7 @@ function Shell() {
             <Route path="/it-assets/:id" element={<AssetDetail />} />
             <Route path="/notifications" element={<RequireRole role="analyst"><Notifications /></RequireRole>} />
             <Route path="/account/security" element={<Security />} />
+            <Route path="/approvals" element={<RequireRole role="admin"><Approvals /></RequireRole>} />
             <Route path="/admin/users" element={<RequireRole role="admin"><Users /></RequireRole>} />
             <Route path="/admin/audit-log" element={<RequireRole role="admin"><AuditLog /></RequireRole>} />
             <Route path="*" element={<Navigate to="/" replace />} />

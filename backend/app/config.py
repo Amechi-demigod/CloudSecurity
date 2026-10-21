@@ -263,6 +263,27 @@ class Settings:
     # Concurrent binary downloads per backend process (more get 503 + Retry-After).
     agent_update_max_parallel_downloads: int = field(
         default_factory=lambda: int(os.getenv("AGENT_UPDATE_MAX_PARALLEL_DOWNLOADS", "4")))
+    # --- Two-person approval for high-risk device actions (docs/DEVICE_MANAGEMENT.md) ---
+    # A requested remote wipe / medium- or high-risk script run waits this long for
+    # a second admin, then expires.
+    device_approval_ttl_hours: float = field(
+        default_factory=lambda: float(os.getenv("DEVICE_APPROVAL_TTL_HOURS", "24")))
+    # Single-admin installs only: let the requester approve their own request.
+    # Off by default. When on, self-approval needs the device name typed again and
+    # the action only runs after a cancellable cooling-off delay.
+    device_approval_allow_self: bool = field(default_factory=lambda: _bool("DEVICE_APPROVAL_ALLOW_SELF", False))
+    device_approval_self_cooldown_minutes: float = field(
+        default_factory=lambda: float(os.getenv("DEVICE_APPROVAL_SELF_COOLDOWN_MINUTES", "15")))
+    # Validity window of an approved remote-wipe command: the device must pick it
+    # up (be online) within this time, or the wipe has to be requested again.
+    device_wipe_command_ttl_minutes: float = field(
+        default_factory=lambda: float(os.getenv("DEVICE_WIPE_COMMAND_TTL_MINUTES", "60")))
+    # --- Approved (signed) device scripts (docs/DEVICE_SCRIPTS.md) ----------------
+    # Extra trusted script-signing PUBLIC keys ("<key id> <base64 key>", ";"-separated)
+    # in addition to app/script_signing_keys.txt (server-side import check only).
+    device_script_trusted_keys: str = field(default_factory=lambda: os.getenv("DEVICE_SCRIPT_TRUSTED_KEYS", ""))
+    device_script_max_bundle_bytes: int = field(
+        default_factory=lambda: int(os.getenv("DEVICE_SCRIPT_MAX_BUNDLE_BYTES", str(512 * 1024))))
     # --- Multi-factor authentication (TOTP) -------------------------------------
     # Key(s) encrypting TOTP secrets at rest. Any string of 32+ characters (e.g.
     # `openssl rand -hex 32`); comma-separate several to rotate: the first one
@@ -400,6 +421,12 @@ class Settings:
         for k, r in self.entra_role_map.items():
             if r not in ROLES:
                 problems.append(f"ENTRA_ROLE_MAP: unknown role {r!r} for {k!r}")
+        if not 0 < self.device_approval_ttl_hours <= 168:
+            problems.append("DEVICE_APPROVAL_TTL_HOURS must be between 0 and 168")
+        if not 1 <= self.device_approval_self_cooldown_minutes <= 1440:
+            problems.append("DEVICE_APPROVAL_SELF_COOLDOWN_MINUTES must be between 1 and 1440")
+        if not 5 <= self.device_wipe_command_ttl_minutes <= 1440:
+            problems.append("DEVICE_WIPE_COMMAND_TTL_MINUTES must be between 5 and 1440")
         if self.entra_client_auth not in {"auto", "certificate", "secret", "managed_identity"}:
             problems.append("ENTRA_CLIENT_AUTH must be auto, certificate, secret or managed_identity")
         if self.entra_enabled:

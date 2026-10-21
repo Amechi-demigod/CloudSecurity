@@ -6,7 +6,7 @@
     wix build cnapp-agent.wxs -arch x64 -d Version=0.1.42 -d AgentExe=..\..\..\dist\cnapp-agent-windows-amd64.exe -o cnapp-agent-windows-x64.msi
 
   Install silently (GPO / Intune / SCCM):
-    msiexec /i cnapp-agent-windows-x64.msi /qn CNAPP_SERVER=https://cnapp.example.com CNAPP_TOKEN=cne_... [CNAPP_CA_B64=<base64 PEM>]
+    msiexec /i cnapp-agent-windows-x64.msi /qn CNAPP_SERVER=https://cnapp.example.com CNAPP_TOKEN=cne_... [CNAPP_CA_B64=<base64 PEM>] [CNAPP_ALLOW_WIPE=1]
   A pre-configured download from the CNAPP console carries the same settings in
   CNAPP_PRESET, so `msiexec /i cnapp-agent-setup.msi /qn` is enough.
 
@@ -19,6 +19,10 @@
       which writes %ProgramData%\CNAPP Agent\enroll.json (SYSTEM/Administrators
       only); the service enrolls with it and deletes the token. Nothing happens
       on an already enrolled device (upgrade/repair keep the identity).
+    * CNAPP_ALLOW_WIPE=1 opts the device in to remote wipe (=0 opts out; unset
+      keeps the current setting, so upgrades do not change it). It is stored in
+      the protected local policy.json, which the CNAPP server cannot change; a
+      pre-configured download with "Allow remote wipe" sets it via CNAPP_PRESET.
     * uninstall (not upgrade) runs `cnapp-agent purge`: credentials, pending
       enrollment and logs are deleted. Set CNAPP_KEEP_STATE=1 to keep them.
 -->
@@ -42,6 +46,8 @@
     <Property Id="CNAPP_TOKEN" Secure="yes" Hidden="yes" />
     <Property Id="CNAPP_CA_B64" Secure="yes" Hidden="yes" />
     <Property Id="CNAPP_KEEP_STATE" Secure="yes" />
+    <!-- Remote-wipe opt-in (1 / 0; unset = keep). docs/DEVICE_MANAGEMENT.md#remote-wipe-windows -->
+    <Property Id="CNAPP_ALLOW_WIPE" Secure="yes" />
     <!-- Fixed-length placeholder that the CNAPP server overwrites in place for a
          pre-configured download (backend/app/services/msipatch.py); ignored by
          `cnapp-agent configure` until then. Length and prefix must not change. -->
@@ -85,7 +91,7 @@
     <!-- Runs the installed binary as SYSTEM; HideTarget keeps the token out of verbose logs. -->
     <CustomAction Id="CnappConfigure"
                   FileRef="AgentExe"
-                  ExeCommand="configure --server=&quot;[CNAPP_SERVER]&quot; --token=&quot;[CNAPP_TOKEN]&quot; --ca-b64=&quot;[CNAPP_CA_B64]&quot; --preset=&quot;[CNAPP_PRESET]&quot;"
+                  ExeCommand="configure --server=&quot;[CNAPP_SERVER]&quot; --token=&quot;[CNAPP_TOKEN]&quot; --ca-b64=&quot;[CNAPP_CA_B64]&quot; --preset=&quot;[CNAPP_PRESET]&quot; --allow-wipe=&quot;[CNAPP_ALLOW_WIPE]&quot;"
                   Execute="deferred"
                   Impersonate="no"
                   Return="check"

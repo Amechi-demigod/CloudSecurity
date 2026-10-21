@@ -1888,6 +1888,89 @@ cmd_agent_release() {
   esac
 }
 
+# Approved device scripts (docs/DEVICE_SCRIPTS.md). The backend verifies the
+# bundle's Ed25519 signature against the script-signing keys (NOT the agent
+# release key); agents verify it again right before running a script.
+cmd_scripts() {
+  local sub=${1:-}; shift || true
+  case $sub in
+    import)
+      need_root scripts; require_installed
+      local f=${1:-}
+      [[ -n $f && -f $f ]] || die "usage: cnapp-ctl scripts import BUNDLE.tar.gz"
+      log "Importing device-script bundle $f ($(sha256sum "$f" | cut -d' ' -f1))"
+      compose exec -T backend python -m app.cli device-scripts-import - --actor "cnapp-ctl:${SUDO_USER:-root}" < "$f"
+      ;;
+    fetch)
+      need_root scripts; require_installed
+      local tag="" repo="Amechi-demigod/CloudSecurity"
+      while [[ $# -gt 0 ]]; do
+        case $1 in
+          --tag) tag=${2:-}; shift 2 ;;
+          --repo) repo=${2:-}; shift 2 ;;
+          *) die "scripts fetch: unknown option $1" ;;
+        esac
+      done
+      [[ $tag =~ ^scripts-v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || die "usage: cnapp-ctl scripts fetch --tag scripts-vX.Y.Z [--repo OWNER/REPO]"
+      [[ $repo =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "invalid --repo"
+      local tmp rc=0; tmp=$(mktemp -d)
+      log "Downloading the signed script bundle of $tag from github.com/$repo (verified by the server before import)"
+      curl -fsSL --proto '=https' --max-filesize 1048576 -o "$tmp/bundle.tar.gz" \
+        "https://github.com/$repo/releases/download/$tag/device-scripts-bundle.tar.gz" || { rm -rf "$tmp"; die "download failed"; }
+      (cmd_scripts import "$tmp/bundle.tar.gz") || rc=$?
+      rm -rf "$tmp"
+      return "$rc"
+      ;;
+    list)
+      need_root scripts; require_installed
+      compose exec -T backend python -m app.cli device-scripts-list
+      ;;
+    *) die "usage: cnapp-ctl scripts import BUNDLE.tar.gz | fetch --tag scripts-vX.Y.Z | list" ;;
+  esac
+}
+
+# Two-person approval of high-risk device actions (remote wipe, medium/high-risk
+# scripts). Self-approval is OFF by default; enable it only on single-admin
+# installs: the requester must then type the device name again and the action
+# waits a cancellable cooling-off delay (docs/DEVICE_MANAGEMENT.md#two-person-approval).
+cmd_approvals() {
+  local sub=${1:-} what=${2:-}
+  [[ $sub == self-approval ]] || die "usage: cnapp-ctl approvals self-approval enable [--cooldown-minutes N] | disable | status"
+  shift 2 || true
+  case $what in
+    enable)
+      need_root approvals; require_installed
+      local mins=15
+      while [[ $# -gt 0 ]]; do
+        case $1 in
+          --cooldown-minutes) mins=${2:-}; shift 2 ;;
+          *) die "approvals self-approval enable: unknown option $1" ;;
+        esac
+      done
+      if ! [[ $mins =~ ^[0-9]+$ ]] || (( mins < 1 || mins > 1440 )); then die "--cooldown-minutes must be 1-1440"; fi
+      warn "Self-approval lets ONE admin wipe a device or run a medium/high-risk script alone (after typing the"
+      warn "device name and a ${mins}-minute cancellable delay). A single stolen admin session is then enough."
+      confirm "Enable self-approval?" || die "aborted"
+      conf_set DEVICE_APPROVAL_ALLOW_SELF true
+      conf_set DEVICE_APPROVAL_SELF_COOLDOWN_MINUTES "$mins"
+      cmd_restart
+      ok "Self-approval enabled (cooling-off ${mins} min). Disable: sudo cnapp-ctl approvals self-approval disable"
+      ;;
+    disable)
+      need_root approvals; require_installed
+      conf_set DEVICE_APPROVAL_ALLOW_SELF false
+      cmd_restart
+      ok "Self-approval disabled: a second admin must approve high-risk device actions."
+      ;;
+    status)
+      need_root approvals; require_installed
+      local v; v=$(conf_get DEVICE_APPROVAL_ALLOW_SELF)
+      echo "self-approval: ${v:-false} (cooling-off $(conf_get DEVICE_APPROVAL_SELF_COOLDOWN_MINUTES || true) min; default 15)"
+      ;;
+    *) die "usage: cnapp-ctl approvals self-approval enable [--cooldown-minutes N] | disable | status" ;;
+  esac
+}
+
 cmd_show_secret() {
   need_root show-secret; require_installed
   local k=${1:-}
@@ -1987,6 +2070,14 @@ Endpoint agent auto-update (docs/AGENT_UPDATES.md)
   agent-release check                     check GitHub Releases now and import a new signed release
                                           (also done hourly when auto-import is on: AGENT_UPDATE_AUTO_IMPORT)
 
+Approved device scripts and approvals (docs/DEVICE_SCRIPTS.md, docs/DEVICE_MANAGEMENT.md)
+  scripts import BUNDLE.tar.gz            import a signed device-script bundle (signature checked, audited)
+  scripts fetch --tag scripts-vX.Y.Z [--repo OWNER/REPO]   download it from GitHub Releases, then import
+  scripts list                            imported script bundles
+  approvals self-approval enable [--cooldown-minutes N] | disable | status
+                                          single-admin installs only: let an admin approve their own
+                                          wipe / risky-script request (typed device name + cooling-off)
+
 Files: $CONF (settings), $SECRETS_DIR (secrets), $TLS_DIR, $CA_DIR, $BACKUP_DIR
 Docs:  docs/DEPLOY_ONPREM.md
 EOF
@@ -2013,6 +2104,8 @@ main() {
     reset-mfa) cmd_reset_mfa "$@" ;;
     show-secret) cmd_show_secret "$@" ;;
     agent-release) cmd_agent_release "$@" ;;
+    scripts) cmd_scripts "$@" ;;
+    approvals) cmd_approvals "$@" ;;
     set-hostname) cmd_set_hostname "$@" ;;
     public-agent) cmd_public_agent "$@" ;;
     version|--version) echo "$VERSION" ;;

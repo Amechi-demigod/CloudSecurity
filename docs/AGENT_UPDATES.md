@@ -147,8 +147,9 @@ with full control of the server, an attacker can only:
   `rollback_allowed_from` (a deliberate, signed rollback),
 - **not** replay old signed releases forever: manifests expire,
 - **not** execute anything else: the update path only replaces the agent's own
-  binary. The agent never runs scripts or commands from the server; the remote
-  actions allow-list is unchanged.
+  binary. The agent never runs scripts or commands written on the server (the
+  only scripts it runs are reviewed scripts signed with a *separate*
+  script-signing key, [DEVICE_SCRIPTS.md](DEVICE_SCRIPTS.md)).
 
 The worst a compromised server can do is withhold updates, or move devices to
 another **validly signed, non-expired, newer** release (e.g. a pilot build you

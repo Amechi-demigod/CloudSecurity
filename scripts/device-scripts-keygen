@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Create the Ed25519 key that signs approved device-script bundles.
+#
+#   scripts/device-scripts-keygen [--comment "device-script key 2026"]
+#
+# This is a DIFFERENT key from the agent release key (scripts/agent-release-keygen):
+# a leaked script key cannot ship agent binaries and vice versa. Prints the PUBLIC
+# key line to commit and writes the PRIVATE key to a 0600 file in a fresh
+# temporary directory. Run it on a trusted workstation; never commit the private
+# key, never copy it to the CNAPP server. Needs python3 with `cryptography`.
+set -euo pipefail
+here="$(cd "$(dirname "$0")" && pwd)"
+comment="device-script key $(date -u +%Y-%m-%d)"
+if [[ "${1:-}" == "--comment" && -n "${2:-}" ]]; then comment="$2"; fi
+
+umask 077
+dir="$(mktemp -d "${TMPDIR:-/tmp}/cnapp-script-key.XXXXXX")"
+key="$dir/script-signing-key.pem"
+line="$(python3 "$here/device_scripts.py" keygen --out "$key" --comment "$comment")"
+
+cat <<MSG
+
+Device-script signing key created.
+
+1) PUBLIC key - add this line to BOTH files and commit (reviewable, not secret):
+     endpoint-agent/internal/scripts/trusted_keys.txt
+     backend/app/script_signing_keys.txt
+
+   $line
+
+2) PRIVATE key - written to:
+     $key
+   Create the GitHub environment "script-release" (Settings > Environments,
+   required reviewer = you), store the key there, then delete the file (or keep
+   it only offline):
+
+     gh secret set SCRIPT_SIGNING_KEY --env script-release < "$key"
+     shred -u "$key" 2>/dev/null || rm -P "$key" 2>/dev/null || rm -f "$key"; rmdir "$dir"
+
+3) Agents only trust keys compiled into them: release an agent version built
+   after step 1 (tag agent-vX.Y.Z) and roll it out before publishing scripts
+   (tag scripts-vX.Y.Z). See docs/DEVICE_SCRIPTS.md.
+MSG

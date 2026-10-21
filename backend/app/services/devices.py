@@ -9,6 +9,7 @@ pending for too long) are always current.
 from __future__ import annotations
 
 import hashlib
+import re
 import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -131,6 +132,7 @@ def apply_checkin(db: Session, device: Device, body: CheckinRequest, ip: str | N
     device.collection_errors = dict(body.errors)
     device.last_seen_at = device.last_checkin_at = now
     device.last_ip = ip
+    _reconcile_lost_mode(device, posture, now)
     pending = _pending_updates(posture)
     if pending:
         device.updates_pending_since = device.updates_pending_since or now
@@ -168,6 +170,19 @@ def apply_checkin(db: Session, device: Device, body: CheckinRequest, ip: str | N
     db.flush()
     _prune_history(db, device.id, s.device_history_limit)
     return issues
+
+
+def _reconcile_lost_mode(device: Device, posture: dict[str, Any], now: datetime) -> None:
+    """The agent reports whether lost mode is active (posture check `lost_mode`).
+    While an enable/disable command is in flight the server state wins."""
+    data = (posture.get("lost_mode") or {}).get("data") or {}
+    active = data.get("active")
+    if not isinstance(active, bool) or device.lost_mode_status in ("enabling", "disabling"):
+        return
+    if active and device.lost_mode_status is None:
+        device.lost_mode_status, device.lost_mode_since = "active", device.lost_mode_since or now
+    elif not active and device.lost_mode_status == "active":
+        device.lost_mode_status = None
 
 
 def _prune_history(db: Session, device_id: str, keep: int) -> None:
@@ -213,7 +228,15 @@ ISSUE_DEFS: dict[str, tuple[str, str]] = {
     "stale": ("medium", "No check-in for over a day"),
     "inactive": ("high", "No check-in for over a week"),
     "revoked": ("low", "Device credential revoked"),
+    "lost_mode": ("high", "Device is in lost mode"),
+    "wipe_pending": ("critical", "Remote wipe requested / in progress"),
 }
+
+LOST_STATES = ("enabling", "active", "disabling")
+WIPE_PENDING_STATES = ("queued", "acknowledged", "started")
+# Remote actions that are never queued directly: they need a two-person approval
+# (app/services/approvals.py), or for low-risk scripts go through /api/scripts/run.
+APPROVAL_COMMANDS = ("wipe_device", "run_script")
 
 
 def device_issues(device: Device, now: datetime | None = None) -> list[dict[str, str]]:
@@ -228,6 +251,10 @@ def device_issues(device: Device, now: datetime | None = None) -> list[dict[str,
 
     if device.status == "revoked":
         add("revoked")
+    if device.wipe_status in WIPE_PENDING_STATES:
+        add("wipe_pending", f"wipe {device.wipe_status}")
+    elif device.lost_mode_status in LOST_STATES:
+        add("lost_mode", f"lost mode {device.lost_mode_status}")
     simple = [("disk_encryption", "disk_encryption_off"), ("firewall", "firewall_off"),
               ("antivirus", "antivirus_off"), ("screen_lock", "screen_lock_off"), ("sip", "sip_disabled"),
               ("gatekeeper", "gatekeeper_off"), ("secure_boot", "secure_boot_off")]
@@ -277,7 +304,38 @@ def summarize(device: Device, now: datetime | None = None) -> dict[str, Any]:
         "logged_in_users": list(inv.get("logged_in_users") or [])[:10],
         "device_group": device.device_group,
         "health": health_from_issues(device, issues), "connectivity": connectivity(device, now), "issues": issues,
+        "device_state": device_state(device),
     }
+
+
+def device_state(device: Device) -> str:
+    """Lifecycle-ish state for the UI / asset views: wipe_pending > lost > revoked > active."""
+    if device.wipe_status in WIPE_PENDING_STATES:
+        return "wipe_pending"
+    if device.lost_mode_status in LOST_STATES:
+        return "lost"
+    return "revoked" if device.status == "revoked" else "active"
+
+
+def lost_mode_info(device: Device) -> dict[str, Any]:
+    rep = ((device.posture or {}).get("lost_mode") or {}).get("data") or {}
+    return {"status": device.lost_mode_status, "message": device.lost_mode_message, "phone": device.lost_mode_phone,
+            "since": device.lost_mode_since, "requested_by": device.lost_mode_by,
+            "reported_active": rep.get("active") if isinstance(rep.get("active"), bool) else None}
+
+
+def wipe_info(device: Device) -> dict[str, Any]:
+    """Wipe state plus what the agent last reported about wipe readiness (Windows only)."""
+    rep = ((device.posture or {}).get("remote_wipe") or {})
+    data = rep.get("data") or {}
+    supported = device.os_family == "windows"
+    return {"supported": supported,
+            "unsupported_reason": None if supported else (
+                "Remote wipe is Windows only: a full erase of a Mac needs a real Apple MDM "
+                "(EraseDevice), which this product does not have."),
+            "opted_in": data.get("opt_in") is True, "ready": data.get("ready") is True,
+            "readiness": data, "readiness_detail": rep.get("detail") or "",
+            "status": device.wipe_status, "status_at": device.wipe_status_at, "command_id": device.wipe_command_id}
 
 
 def fleet_summary(db: Session) -> dict[str, Any]:
@@ -315,8 +373,24 @@ def fleet_summary(db: Session) -> dict[str, Any]:
 
 
 # ----------------------------------------------------------------------------- commands
+_CTRL = re.compile(r"[\x00-\x09\x0b-\x1f\x7f]")
+PHONE_RE = re.compile(r"^[0-9+][0-9 ()./+-]{2,31}$")
+LOST_MESSAGE_MAX = 300
+
+
 def validate_params(cmd_type: str, params: dict[str, Any]) -> dict[str, Any]:
     """Server-side allowlist of parameters per command type."""
+    if cmd_type == "enable_lost_mode":
+        msg, phone = params.get("message"), params.get("phone")
+        if set(params) != {"message", "phone"} or not isinstance(msg, str) or not isinstance(phone, str):
+            raise ValueError("params must be {'message': text, 'phone': text}")
+        msg, phone = msg.strip().replace("\r\n", "\n"), phone.strip()
+        if not 1 <= len(msg) <= LOST_MESSAGE_MAX or _CTRL.search(msg) or msg.count("\n") > 5:
+            raise ValueError(f"message must be 1-{LOST_MESSAGE_MAX} characters, at most 6 lines, "
+                             "no control characters")
+        if not PHONE_RE.match(phone):
+            raise ValueError("phone must be 3-32 characters: digits, spaces and + ( ) . / -")
+        return {"message": msg, "phone": phone}
     if cmd_type == "update_check_in_interval":
         v = params.get("interval_seconds")
         if set(params) != {"interval_seconds"} or not isinstance(v, int) or isinstance(v, bool) or not (
@@ -328,13 +402,72 @@ def validate_params(cmd_type: str, params: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+# Command types whose outcome changes device state (lost mode, wipe).
+STATEFUL_COMMANDS = ("enable_lost_mode", "disable_lost_mode", "wipe_device")
+
+
 def expire_commands(db: Session, device_id: str | None = None) -> None:
     now = utcnow()
     stmt = update(DeviceCommand).where(DeviceCommand.status.in_(("pending", "delivered")),
                                        DeviceCommand.expires_at <= now)
     if device_id:
         stmt = stmt.where(DeviceCommand.device_id == device_id)
+    # Stateful commands first, one by one, so the device state follows.
+    sq = select(DeviceCommand).where(DeviceCommand.status.in_(("pending", "delivered")),
+                                     DeviceCommand.expires_at <= now, DeviceCommand.type.in_(STATEFUL_COMMANDS))
+    if device_id:
+        sq = sq.where(DeviceCommand.device_id == device_id)
+    for c in db.scalars(sq):
+        c.status, c.completed_at = "expired", now
+        dev = db.get(Device, c.device_id)
+        if dev is not None:
+            command_finished(dev, c)
+    db.flush()
     db.execute(stmt.values(status="expired", completed_at=now).execution_options(synchronize_session=False))
+
+
+def new_command(db: Session, device: Device, cmd_type: str, params: dict[str, Any], reason: str, *,
+                requested_by_id: str | None, requested_by_email: str | None, ttl: timedelta | None = None,
+                approval_id: str | None = None, approved_by_email: str | None = None) -> DeviceCommand:
+    """Queue a validated command (callers audit and commit) and apply its device-state side effects."""
+    now = utcnow()
+    ttl = ttl or timedelta(hours=config.settings.device_command_ttl_hours)
+    cmd = DeviceCommand(device_id=device.id, type=cmd_type, params=params, nonce=secrets.token_hex(16),
+                        reason=reason, requested_by_id=requested_by_id, requested_by_email=requested_by_email,
+                        created_at=now, expires_at=now + ttl, approval_id=approval_id,
+                        approved_by_email=approved_by_email)
+    db.add(cmd)
+    db.flush()
+    if cmd_type == "enable_lost_mode":
+        device.lost_mode_status = "enabling"
+        device.lost_mode_message, device.lost_mode_phone = params["message"], params["phone"]
+        device.lost_mode_since, device.lost_mode_by = now, requested_by_email
+    elif cmd_type == "disable_lost_mode":
+        device.lost_mode_status = "disabling"
+    elif cmd_type == "wipe_device":
+        device.wipe_status, device.wipe_status_at, device.wipe_command_id = "queued", now, cmd.id
+    return cmd
+
+
+def command_finished(device: Device, cmd: DeviceCommand) -> None:
+    """Update lost-mode / wipe state from a final command status."""
+    now = utcnow()
+    ok = cmd.status == "succeeded"
+    if cmd.type == "enable_lost_mode" and device.lost_mode_status == "enabling":
+        device.lost_mode_status = "active" if ok else None
+    elif cmd.type == "disable_lost_mode" and device.lost_mode_status == "disabling":
+        if ok:
+            device.lost_mode_status = device.lost_mode_message = device.lost_mode_phone = None
+            device.lost_mode_since = device.lost_mode_by = None
+        else:
+            device.lost_mode_status = "active"
+    elif cmd.type == "wipe_device" and device.wipe_command_id == cmd.id:
+        device.wipe_status = {"succeeded": "started", "cancelled": None}.get(
+            cmd.status, "expired" if cmd.status == "expired" else "failed")
+        if cmd.status == "expired" and cmd.acknowledged_at is not None:
+            # Acknowledged but never reported back: the device is most likely wiping.
+            device.wipe_status = "acknowledged"
+        device.wipe_status_at = now
 
 
 def deliver_pending(db: Session, device: Device) -> list[DeviceCommand]:

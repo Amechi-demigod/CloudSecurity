@@ -17,7 +17,9 @@ from . import auth, config, db, locks, logging_setup
 from .api import agent as agent_api
 from .api import agent_update_auto as agent_update_auto_api
 from .api import agent_updates as agent_updates_api
+from .api import approvals as approvals_api
 from .api import auth as auth_api
+from .api import device_scripts as device_scripts_api
 from .api import devices, inventory, platform, runtime, vulns
 from .api import mfa_sso as mfa_sso_api
 from .asset_lifecycle import api as it_assets_api
@@ -116,7 +118,8 @@ def create_app() -> FastAPI:
                                     it_assets_api.UPLOAD_PREFIXES[0]: max(s.asset_import_max_bytes,
                                                                           s.max_request_bytes),
                                     it_assets_api.UPLOAD_PREFIXES[1]: max(s.asset_certificate_max_bytes,
-                                                                          s.max_request_bytes)})
+                                                                          s.max_request_bytes),
+                                    "/api/scripts/bundles": max(s.device_script_max_bundle_bytes, s.max_request_bytes)})
     app.add_middleware(SecurityHeadersMiddleware, hsts_max_age=s.hsts_max_age if s.is_production else 0)
 
     # Public: health probe, login, sensor ingest (own bearer-token auth) and the
@@ -125,6 +128,7 @@ def create_app() -> FastAPI:
     app.include_router(runtime.ingest_router)
     app.include_router(agent_api.router)
     app.include_router(agent_updates_api.device_router)  # /api/agent/updates/*: device credentials
+    app.include_router(device_scripts_api.device_router)  # /api/agent/scripts/*: device credentials
     app.include_router(auth_api.router)  # /login is public; the others depend on the session
     app.include_router(mfa_sso_api.router)  # /login/mfa*, /providers and /sso/* are public
     # Everything else requires a logged-in user (viewer or higher). Write
@@ -138,6 +142,8 @@ def create_app() -> FastAPI:
     app.include_router(mfa_sso_api.admin_router)
     app.include_router(it_assets_api.router)  # /api/it-assets/*: viewer reads, analyst/admin writes
     app.include_router(agent_updates_api.router)  # /api/updates/*: viewer reads, admin writes (all audited)
+    app.include_router(approvals_api.router)  # /api/approvals/*: admin only (two-person rule)
+    app.include_router(device_scripts_api.router)  # /api/scripts/*: viewer reads, admin imports / runs
     if s.api_docs_enabled:
         _add_docs(app)
     return app
