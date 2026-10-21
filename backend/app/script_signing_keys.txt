@@ -9,3 +9,4 @@
 # See docs/DEVICE_SCRIPTS.md.
 #
 # With no key listed, script bundles cannot be imported and agents refuse to run scripts.
+ed25519:7baed2a463207a65 LLXSWhywer/Tfwu9IZjep2TpdkYwQpKl+0rVS1CKAik=  # CNAPP device script signing key 2026

@@ -9,3 +9,4 @@
 # SCRIPT_SIGNING_KEY (environment "script-release") or offline; never commit it.
 #
 # With no key listed, agents built from this file refuse to run any script.
+ed25519:7baed2a463207a65 LLXSWhywer/Tfwu9IZjep2TpdkYwQpKl+0rVS1CKAik=  # CNAPP device script signing key 2026
