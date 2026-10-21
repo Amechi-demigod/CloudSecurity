@@ -61,6 +61,10 @@ type Offer struct {
 	ArtifactPath         string `json:"artifact_path"`
 	HealthTimeoutSeconds int    `json:"health_timeout_seconds"`
 	JitterSeconds        int    `json:"jitter_seconds"`
+	// Immediate is set when an admin asked for "Update now": the agent starts
+	// after exactly JitterSeconds (a small server-side stagger, usually 0)
+	// instead of a random delay. The release is verified exactly as always.
+	Immediate bool `json:"immediate,omitempty"`
 }
 
 // Report is one status update for the server.

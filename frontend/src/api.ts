@@ -1,4 +1,5 @@
 // Typed API client for the FastAPI backend.
+import type { PendingUpdate } from "./updatesApi";
 
 export type Severity = "critical" | "high" | "medium" | "low" | "info";
 
@@ -353,7 +354,7 @@ export interface PostureSnapshot {
   software_count: number | null;
 }
 
-export type CommandType = "recheck_posture" | "collect_logs" | "lock_device" | "restart_agent" | "update_check_in_interval";
+export type CommandType = "recheck_posture" | "collect_logs" | "lock_device" | "restart_agent" | "update_check_in_interval" | "check_for_update";
 
 export interface DeviceCommand {
   id: string;
@@ -496,6 +497,8 @@ export interface DeviceUpdateState {
   status_version: string | null;
   status_detail: string | null;
   status_at: string | null;
+  /** What happens next (offered / waiting for check-in / blocked ...). */
+  pending?: PendingUpdate;
   history: { id: number; release_id: string | null; from_version: string; to_version: string; status: string; detail: string; created_at: string }[];
 }
 

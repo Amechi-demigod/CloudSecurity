@@ -8,6 +8,7 @@ import { CHECK_LABEL, OS_LABEL, fmtBytes, fmtDuration } from "../../lib/devices"
 import { fmtAgo, fmtTime } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
 import { AssetRecordLink } from "../assets/AssetRecordLink";
+import { PendingUpdateView, UpdateNowButton } from "./UpdateAutomation";
 
 const TABS = ["Overview", "Posture", "Software", "History", "Commands", "Updates"] as const;
 type TabName = (typeof TABS)[number];
@@ -442,7 +443,7 @@ const UPDATE_TONE: Record<string, "default" | "warn" | "good" | "accent"> = {
   installing: "accent",
 };
 
-function UpdatesTab({ id, admin }: { id: string; admin: boolean }) {
+function UpdatesTab({ id, admin, analyst }: { id: string; admin: boolean; analyst: boolean }) {
   const st = useApi(() => api.deviceUpdate(id), [id], 15000);
   const rings = useApi(api.updateRings, []);
   const releases = useApi(api.agentReleases, []);
@@ -485,6 +486,15 @@ function UpdatesTab({ id, admin }: { id: string; admin: boolean }) {
                 {s.status_detail && <div className="mt-1 text-xs text-ink-3">{s.status_detail}</div>}
               </dd>
             </div>
+            {s.pending && (
+              <div className="md:col-span-2">
+                <dt className="text-ink-3">Next step</dt>
+                <dd>
+                  <PendingUpdateView p={s.pending} />
+                  {analyst && <UpdateNowButton deviceId={id} pending={s.pending} onDone={st.reload} />}
+                </dd>
+              </div>
+            )}
           </dl>
         )}
       </Card>
@@ -615,7 +625,7 @@ export default function DeviceDetail() {
       {tab === "Posture" && <PostureCards device={device} />}
       {tab === "Software" && <SoftwareTab id={device.id} />}
       {tab === "History" && <HistoryTab id={device.id} />}
-      {tab === "Updates" && <UpdatesTab id={device.id} admin={can("admin") && active} />}
+      {tab === "Updates" && <UpdatesTab id={device.id} admin={can("admin") && active} analyst={can("analyst") && active} />}
       {tab === "Commands" && <CommandsTab device={device} commands={cmds.data} error={cmds.error} reload={cmds.reload} />}
 
       <ActionDialog device={device} action={action} onClose={() => setAction(null)} onDone={() => {

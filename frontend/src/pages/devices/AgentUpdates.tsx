@@ -5,6 +5,8 @@ import { useAuth } from "../../auth/context";
 import { Button, Card, Empty, ErrorNote, PageHeader, Stat, Table, Tag } from "../../components/ui";
 import { fmtAgo, fmtTime } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
+import { summarizeUpdateNow, updatesApi } from "../../updatesApi";
+import UpdateAutomationCard from "./UpdateAutomation";
 
 function errMsg(e: unknown) {
   return e instanceof ApiError ? e.message : String(e);
@@ -58,6 +60,20 @@ function RingRow({
         },
       );
       onSaved();
+    } catch (e) {
+      setError(errMsg(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const [notice, setNotice] = useState<string | null>(null);
+  async function updateNow() {
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      setNotice(summarizeUpdateNow(await updatesApi.updateNow({ ring_id: ring.id })));
     } catch (e) {
       setError(errMsg(e));
     } finally {
@@ -144,9 +160,15 @@ function RingRow({
               <Button disabled={busy} onClick={() => save({ paused: !ring.paused })}>
                 {ring.paused ? "Resume" : "Pause"}
               </Button>
+              {ring.target_release_id && !ring.paused && (
+                <Button disabled={busy} onClick={updateNow} title="Devices in this ring check in now and start the target release without the random delay">
+                  Update now
+                </Button>
+              )}
             </>
           )}
         </div>
+        {notice && <div className="mt-1 text-xs text-ink-2" role="status">{notice}</div>}
       </td>
     </tr>
   );
@@ -211,6 +233,7 @@ export default function AgentUpdates() {
           </Link>
         }
       />
+      <UpdateAutomationCard admin={admin} onChanged={reload} />
       {summary.data && (
         <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-4">
           <Stat label="Devices" value={summary.data.devices} sub={`${summary.data.versions.length} agent version(s)`} />

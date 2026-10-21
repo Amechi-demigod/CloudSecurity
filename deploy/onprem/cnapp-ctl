@@ -1236,6 +1236,14 @@ SESSION_MAX_AGE_HOURS=8
 SESSION_IDLE_MINUTES=30
 # Deprecated (no longer shown in the console): location of agent builds for manual installs
 AGENT_DOWNLOAD_URL=
+# Endpoint agent auto-update (docs/AGENT_UPDATES.md): import new signed releases
+# from GitHub Releases (agent-v* tags) automatically; changeable in the console
+AGENT_UPDATE_AUTO_IMPORT=true
+AGENT_UPDATE_RELEASES_REPO=Amechi-demigod/CloudSecurity
+# Outbound HTTP(S) proxy, if this server needs one (backend and cnapp-ctl fetch)
+HTTPS_PROXY=
+HTTP_PROXY=
+NO_PROXY=
 
 # --- Microsoft Entra ID single sign-on (optional, docs/AUTH.md) -----------------
 # Browser-based flow: the server needs outbound HTTPS to login.microsoftonline.com.
@@ -1824,6 +1832,16 @@ cmd_reset_mfa() {
   compose exec -T backend python -m app.cli reset-mfa --email "$2"
 }
 
+# Outbound proxy settings from cnapp.env for host-side downloads (curl). The
+# backend container gets the same values through docker-compose.prod.yml.
+export_proxy_env() {
+  local k v
+  for k in HTTPS_PROXY HTTP_PROXY NO_PROXY; do
+    v=$(conf_get "$k")
+    if [[ -n $v ]]; then export "$k=$v" "${k,,}=$v"; fi
+  done
+}
+
 # Agent auto-update releases (docs/AGENT_UPDATES.md). The backend verifies the
 # bundle's Ed25519 signature against the trusted release keys and refuses
 # anything else; agents verify it again themselves.
@@ -1850,6 +1868,7 @@ cmd_agent_release() {
       [[ $tag =~ ^agent-v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.+-]+)?$ ]] || die "usage: cnapp-ctl agent-release fetch --tag agent-vX.Y.Z [--repo OWNER/REPO]"
       [[ $repo =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "invalid --repo"
       local tmp rc=0; tmp=$(mktemp -d)
+      export_proxy_env
       log "Downloading the signed bundle of $tag from github.com/$repo (verified by the server before import)"
       curl -fsSL --proto '=https' --max-filesize 268435456 -o "$tmp/bundle.tar.gz" \
         "https://github.com/$repo/releases/download/$tag/cnapp-agent-update.tar.gz" || { rm -rf "$tmp"; die "download failed"; }
@@ -1861,7 +1880,11 @@ cmd_agent_release() {
       need_root agent-release; require_installed
       compose exec -T backend python -m app.cli agent-release-list
       ;;
-    *) die "usage: cnapp-ctl agent-release import BUNDLE.tar.gz | fetch --tag agent-vX.Y.Z | list" ;;
+    check)
+      need_root agent-release; require_installed
+      compose exec -T backend python -m app.cli agent-release-check --actor "cnapp-ctl:${SUDO_USER:-root}"
+      ;;
+    *) die "usage: cnapp-ctl agent-release import BUNDLE.tar.gz | fetch --tag agent-vX.Y.Z | list | check" ;;
   esac
 }
 
@@ -1961,6 +1984,8 @@ Endpoint agent auto-update (docs/AGENT_UPDATES.md)
   agent-release import BUNDLE.tar.gz      import a signed agent release (signature checked, audited)
   agent-release fetch --tag agent-vX.Y.Z [--repo OWNER/REPO]   download it from GitHub Releases, then import
   agent-release list                      imported releases (assign them to rings in the console)
+  agent-release check                     check GitHub Releases now and import a new signed release
+                                          (also done hourly when auto-import is on: AGENT_UPDATE_AUTO_IMPORT)
 
 Files: $CONF (settings), $SECRETS_DIR (secrets), $TLS_DIR, $CA_DIR, $BACKUP_DIR
 Docs:  docs/DEPLOY_ONPREM.md

@@ -18,8 +18,11 @@ COMMAND_ROLES: dict[str, str] = {
     "lock_device": "admin",
     "restart_agent": "admin",
     "update_check_in_interval": "admin",
+    # Check in now and start an offered (signed) update without the random delay.
+    "check_for_update": "analyst",
 }
-CommandType = Literal["recheck_posture", "collect_logs", "lock_device", "restart_agent", "update_check_in_interval"]
+CommandType = Literal["recheck_posture", "collect_logs", "lock_device", "restart_agent", "update_check_in_interval",
+                      "check_for_update"]
 CommandStatus = Literal["pending", "delivered", "succeeded", "failed", "rejected", "expired", "cancelled"]
 OsFamily = Literal["windows", "macos", "linux"]
 MIN_INTERVAL_SECONDS = 300

@@ -22,6 +22,11 @@ const (
 	CollectLogs           = "collect_logs"
 	RestartAgent          = "restart_agent"
 	UpdateCheckInInterval = "update_check_in_interval"
+	// CheckForUpdate makes the agent check in now and start an offered update
+	// without the random delay. It cannot name a release or a binary: the
+	// offer still comes from the check-in and the agent verifies the signed
+	// manifest, hashes and version policy exactly as for a scheduled update.
+	CheckForUpdate = "check_for_update"
 )
 
 // Interval bounds (also enforced server-side).
@@ -37,6 +42,7 @@ var allowedParams = map[string][]string{
 	CollectLogs:           {},
 	RestartAgent:          {},
 	UpdateCheckInInterval: {"interval_seconds"},
+	CheckForUpdate:        {},
 }
 
 // Allowed reports whether a command type is in the allowlist.
@@ -97,6 +103,9 @@ type Deps struct {
 	UploadLogs  func(ctx context.Context, c model.Command, gz []byte) error
 	SetInterval func(seconds int) error
 	Lock        func(ctx context.Context) (string, error)
+	// CheckForUpdate checks in immediately and schedules an offered update
+	// without jitter; it returns a human-readable outcome.
+	CheckForUpdate func(ctx context.Context) (string, error)
 }
 
 // Outcome of an executed command. After (if set) runs once the result has been
@@ -130,6 +139,15 @@ func Execute(ctx context.Context, c model.Command, d Deps, restart func()) Outco
 			return Outcome{Status: "failed", Output: err.Error()}
 		}
 		return Outcome{Status: "succeeded", Output: fmt.Sprintf("check-in interval set to %d seconds", n)}
+	case CheckForUpdate:
+		if d.CheckForUpdate == nil {
+			return Outcome{Status: "failed", Output: "self-update is not available in this agent mode"}
+		}
+		out, err := d.CheckForUpdate(ctx)
+		if err != nil {
+			return Outcome{Status: "failed", Output: err.Error()}
+		}
+		return Outcome{Status: "succeeded", Output: out}
 	case RestartAgent:
 		return Outcome{Status: "succeeded", Output: "agent restarting", After: restart}
 	case LockDevice:
