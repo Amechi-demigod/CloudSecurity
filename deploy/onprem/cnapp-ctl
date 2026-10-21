@@ -1710,7 +1710,7 @@ images_published() { # images_published SHA -> 0 when backend AND frontend :SHA 
   done
 }
 
-ci_run_info() { # ci_run_info SHA -> "status<TAB>conclusion<TAB>url" of the newest CI push run for SHA (empty if none)
+ci_run_info() { # ci_run_info SHA -> "status|conclusion|url" of the newest CI push run for SHA (empty if none)
   local f; f=$(mktemp)
   if gh_api "/repos/$(upd_conf CNAPP_GITHUB_REPO Amechi-demigod/CloudSecurity)/actions/runs?head_sha=$1&event=push&per_page=20" "$f"; then
     WF="$(upd_conf CNAPP_CI_WORKFLOW CI)" python3 -c '
@@ -1718,7 +1718,7 @@ import json, os, sys
 runs = [r for r in json.load(open(sys.argv[1])).get("workflow_runs", []) if r.get("name") == os.environ["WF"]]
 if runs:
     r = runs[0]
-    print("\t".join([r.get("status") or "", r.get("conclusion") or "", r.get("html_url") or ""]))
+    print("|".join([r.get("status") or "-", r.get("conclusion") or "-", r.get("html_url") or "-"]))
 ' "$f" || true
   fi
   rm -f "$f"
@@ -1750,7 +1750,7 @@ resolve_latest() { # resolve_latest WAIT TIMEOUT_S -> sets RESOLVED_SHA (and RES
   done
 
   local info status concl url
-  info=$(ci_run_info "$newest"); IFS=$'\t' read -r status concl url <<<"$info" || true
+  info=$(ci_run_info "$newest"); IFS='|' read -r status concl url <<<"$info" || true
   if [[ -z $status ]]; then
     warn "newest $branch commit ${newest:0:12} has no published images and no CI run was found for it"
   elif [[ $status == completed ]]; then
@@ -1770,7 +1770,7 @@ resolve_latest() { # resolve_latest WAIT TIMEOUT_S -> sets RESOLVED_SHA (and RES
       fi
       # The run status (GitHub API, rate-limited) only every ~2 minutes.
       if (( ++n * poll >= 120 )); then
-        n=0; info=$(ci_run_info "$newest"); IFS=$'\t' read -r status concl url <<<"$info" || true
+        n=0; info=$(ci_run_info "$newest"); IFS='|' read -r status concl url <<<"$info" || true
         if [[ $status == completed ]] && ! images_published "$newest"; then
           warn "CI for ${newest:0:12} finished ($concl) without publishing images: $url"; break
         fi

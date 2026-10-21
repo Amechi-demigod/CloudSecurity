@@ -1047,7 +1047,8 @@ jobs:
           # 3. Newest commit still building: --no-wait keeps the newest published one.
           state "{\"commits\": [\"$S4\", \"$S3\"], \"published\": [\"$S3\"], \"runs\": {\"$S4\": {\"status\": \"in_progress\"}}}"
           upd --no-wait
-          grep -q "still being built" "$RUNNER_TEMP/upd.txt" && grep -q "already up to date" "$RUNNER_TEMP/upd.txt"
+          grep -q "still being built (CI in_progress: https://github.invalid/actions/runs/" "$RUNNER_TEMP/upd.txt"
+          grep -q "already up to date" "$RUNNER_TEMP/upd.txt"
           test "$(tag)" = "$S3"
           # 4. Default: wait for the running build, then update to it.
           (sleep 8; mk "$S4"; state "{\"commits\": [\"$S4\", \"$S3\"], \"published\": [\"$S4\", \"$S3\"], \"runs\": {\"$S4\": {\"status\": \"completed\", \"conclusion\": \"success\"}}}") &
