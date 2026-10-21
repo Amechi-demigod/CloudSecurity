@@ -10,6 +10,7 @@
     python -m app.cli device-scripts-import BUNDLE.tar.gz  # or - (cnapp-ctl scripts import)
     python -m app.cli device-scripts-list
     python -m app.cli agent-release-check                  # GitHub Releases auto-import check now (cnapp-ctl agent-release check)
+    python -m app.cli notify-server-update --status rolled_back --from-tag A --to-tag B  # (cnapp-ctl update)
 
 Passwords are prompted for (never passed as arguments, so they stay out of shell
 history). For automation, pipe the password with --password-stdin.
@@ -211,6 +212,22 @@ def agent_release_check(args: argparse.Namespace) -> int:
     return 0 if res["status"] != "error" else 1
 
 
+def notify_server_update(args: argparse.Namespace) -> int:
+    """Raise a server-update notification (cnapp-ctl update: failure or automatic rollback)."""
+    from .notifications import server_update_source
+
+    with db.get_session() as s:
+        if not server_update_source.server_update_event(s, args.status, args.from_tag, args.to_tag,
+                                                        args.detail, automatic=args.automatic):
+            print("could not queue the notification", file=sys.stderr)
+            return 1
+        auth.audit(s, f"server_update_{args.status}", actor_email=args.actor, from_tag=args.from_tag[:64],
+                   to_tag=args.to_tag[:64], automatic=args.automatic)
+        s.commit()
+    print(f"queued server update notification: {args.status} {args.from_tag[:12]} -> {args.to_tag[:12]}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="python -m app.cli", description="CloudSecurity CNAPP admin CLI")
     sub = p.add_subparsers(dest="command", required=True)
@@ -248,6 +265,15 @@ def main(argv: list[str] | None = None) -> int:
                         help="check GitHub Releases for a new signed agent release and import it")
     ac.add_argument("--actor", default="cli", help="name recorded in the audit log")
     ac.set_defaults(func=agent_release_check)
+    nu = sub.add_parser("notify-server-update",
+                        help="raise a server-update notification (used by cnapp-ctl update on failure/rollback)")
+    nu.add_argument("--status", required=True, choices=("rolled_back", "failed", "updated"))
+    nu.add_argument("--from-tag", default="")
+    nu.add_argument("--to-tag", default="")
+    nu.add_argument("--detail", default="")
+    nu.add_argument("--automatic", action="store_true", help="the update was started by the auto-update timer")
+    nu.add_argument("--actor", default="cnapp-ctl", help="name recorded in the audit log")
+    nu.set_defaults(func=notify_server_update)
     args = p.parse_args(argv)
     if args.func is migrate:
         db.init_engine(config.settings.database_url, migrate=True)

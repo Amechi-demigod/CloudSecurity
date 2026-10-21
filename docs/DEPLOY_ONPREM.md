@@ -38,6 +38,7 @@ To size up, edit `/opt/cnapp/cnapp.env` and run `sudo cnapp-ctl restart`:
 | Purpose | Destination |
 |---|---|
 | Images (install and `update`) | `ghcr.io`, `pkg-containers.githubusercontent.com` |
+| `cnapp-ctl update` without `--tag` (newest published commit, self-refresh via `git pull`) | `api.github.com`, `github.com` |
 | PostgreSQL image | `registry-1.docker.io`, `auth.docker.io`, `production.cloudflare.docker.com` |
 | Docker Engine packages | `download.docker.com` |
 | OS security updates | `archive.ubuntu.com`, `security.ubuntu.com` (or your mirror) |
@@ -71,7 +72,7 @@ flowchart LR
     P[("postgres:16<br/>volume cnapp_pgdata<br/>not published")]
     N -->|"http :8000, internal network"| A
     A --> P
-    T["systemd: cnapp.service,<br/>cnapp-backup.timer (02:30),<br/>cnapp-update.timer (off)"]
+    T["systemd: cnapp.service,<br/>cnapp-backup.timer (02:30),<br/>cnapp-update.timer (off, 03:00)"]
   end
   B -->|HTTPS 443| N
   L -->|HTTPS 443| N
@@ -148,7 +149,8 @@ What it does (it is idempotent: re-running it keeps secrets, certificates and da
    `--allowed-cidrs`, then denies everything else; and restricts Docker's published ports the same way (section 5).
 8. Enables unattended **security** upgrades.
 9. Installs systemd units: `cnapp.service` (stack at boot), `cnapp-firewall.service`, `cnapp-backup.timer` (enabled,
-   nightly), `cnapp-update.timer` (installed, **disabled**).
+   nightly), `cnapp-update.timer` (installed, **disabled**; `cnapp-ctl auto-update enable`). Run from a git checkout, the
+   installer also records the checkout path so `cnapp-ctl update` can refresh itself from it.
 10. Pulls the images, starts the stack, waits until it is healthy over HTTPS, then creates the first admin and prints
     the **password once**.
 
@@ -487,15 +489,45 @@ generated at container start by `deploy/onprem/nginx/cnapp-access.sh`; the edge 
 ## 6. Updates (pull-based)
 
 The server pulls images from ghcr.io; nothing connects to it from outside. CI pushes `:<commit-sha>` and `:latest` for
-every green build of `main`.
+every build of `main` whose backend/frontend checks and installer packages succeed - about **10 minutes** after the
+merge (the images no longer wait for the slower Windows/macOS agent test runs, which still run and still gate the
+installer end-to-end tests).
+
+**One command** (the normal way to update):
 
 ```bash
-sudo cnapp-ctl update --check          # current tag/digest vs. 'latest', and which commit 'latest' is
-sudo cnapp-ctl update --tag <sha>      # move to a pinned commit (recommended)
-sudo cnapp-ctl update                  # re-pull the current tag (useful when tracking 'latest')
+sudo cnapp-ctl update
 ```
 
-`update` does, in order: tag the running images locally as `cnapp-rollback`; pull the target (aborts with nothing
+1. **Self-refresh.** If cnapp-ctl was installed from a git checkout (the installer records the path in
+   `/opt/cnapp/state/source_checkout`; otherwise `~/CloudSecurity` of the user running `sudo`), it runs
+   `git pull --ff-only` there **as the checkout's owner** (never as root), refreshes the installed `cnapp-ctl`,
+   `docker-compose.prod.yml`, nginx and systemd files exactly like `install --force` does for those files, and re-runs
+   the new `cnapp-ctl`. It does **not** touch `cnapp.env`, generated secrets, TLS certificates/CA, the admin user or the
+   firewall. Without a checkout it says so and continues with the installed files (`--no-refresh` skips this step).
+2. **Target.** It asks the GitHub API (anonymously; the repository and packages are public) for the newest commits of
+   `main` and picks the newest one whose backend **and** frontend images are published in ghcr.io. If the newest commit's
+   images are still being built, it shows the CI run and **waits** for it (polls every 30 s, `--wait-timeout SECONDS`,
+   default 2400 = 40 min; on timeout nothing is changed). `--no-wait` takes the newest already-published commit instead.
+   If CI failed for the newest commit, it says so and uses the newest published one.
+3. Prints the current and target commit and stops if the server is **already up to date**; otherwise runs the update
+   below (backup, health check, automatic rollback).
+
+`HTTPS_PROXY` / `NO_PROXY` from `cnapp.env` are used for these lookups and for `git pull`. Outbound access needed:
+`api.github.com`, `github.com` (git), `ghcr.io`, `pkg-containers.githubusercontent.com`. **Offline / no internet:** the
+lookup fails with a clear error; update to a known commit instead:
+
+```bash
+sudo cnapp-ctl update --tag <full commit sha>   # a specific commit (exactly as before; no self-refresh, no lookup)
+sudo cnapp-ctl update --check                    # current tag/digest vs. 'latest', and which commit 'latest' is
+sudo cnapp-ctl update --dry-run                  # show what would happen (no changes)
+```
+
+Upgrading from a cnapp-ctl without these options: run it once from the checkout, it refreshes the installed copy:
+`cd ~/CloudSecurity && git pull && sudo ./deploy/onprem/cnapp-ctl update`. (`update` without `--tag` used to re-pull the
+current tag; use `update --tag latest` for that.)
+
+`update` (with or without `--tag`) does, in order: tag the running images locally as `cnapp-rollback`; pull the target (aborts with nothing
 changed if the pull fails); exit early if nothing changed; **`pg_dump` backup** (`cnapp-pre-update-*`); recreate the
 containers; wait for health (containers healthy **and** `https://<host>/api/health` through nginx + TLS; default 300 s,
 `--health-timeout`). On success it prints image ids, commit labels and schema revision before/after and records the
@@ -516,9 +548,23 @@ Rollback limits, honestly:
   for future releases.
 * `--no-backup` disables the safety net (no restore possible).
 
-**Automatic updates** (off by default): `sudo cnapp-ctl auto-update enable` runs `update` daily ~04:00 tracking
-`latest` (every green build of `main`), with the same backup and rollback. `enable <tag>` tracks another tag;
-`disable` turns it off. For change control, keep it off and pin SHAs.
+**Automatic updates** (off by default):
+
+```bash
+sudo cnapp-ctl auto-update enable                # nightly at 03:00 server time (+ up to 20 min random delay)
+sudo cnapp-ctl auto-update enable --time 01:30   # another time (HH:MM, 24 h, server time)
+sudo cnapp-ctl auto-update status                # enabled?, schedule, next run, last log lines
+sudo cnapp-ctl auto-update disable
+```
+
+The `cnapp-update.timer` runs `cnapp-ctl update --auto`, i.e. the same one-command update as above, non-interactively
+(self-refresh, newest published `main` commit, waits for a running build, pre-update backup, health check, automatic
+rollback). Output goes to the journal (`journalctl -u cnapp-update`) and `/var/log/cnapp/auto-update.log`. A rollback
+or failure raises a **"Server updates"** notification (and a successful automatic update an info one) through your
+notification rules (Settings > Notifications: add a rule for the source "Server updates" to get it in Teams, Slack or
+email); if the backend itself is down, the failure is only logged. To track a fixed tag instead of `main`, set
+`AUTO_UPDATE_TAG=<tag>` in `cnapp.env` (or `auto-update enable --tag <tag>`). `uninstall` removes the timer. For strict
+change control, keep it off and update manually with `--tag`.
 
 The PostgreSQL image (`postgres:16-alpine`, major version 16) is pulled at install; refresh minor versions with
 `sudo docker pull postgres:16-alpine && sudo cnapp-ctl restart` after a backup. A major upgrade (17+) needs
