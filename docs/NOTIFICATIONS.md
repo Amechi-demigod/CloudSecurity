@@ -319,6 +319,23 @@ The events link to the **Approvals** page and carry `action`, `risk`,
 event types `approval_requested` + `wipe_acknowledged`, to the admins' Teams /
 Slack channel or email, so a pending request is seen quickly.
 
+## Server update events (on-prem)
+
+The *Server updates* source (`server_update`) is raised by `cnapp-ctl update` on an
+on-prem server ([DEPLOY_ONPREM.md](DEPLOY_ONPREM.md#6-updates-pull-based)), through
+`python -m app.cli notify-server-update`:
+
+| Event type | Severity | When |
+|---|---|---|
+| `update_rolled_back` | high | an update (manual or automatic) failed its health check and was rolled back automatically |
+| `update_failed` | high | an automatic update failed (lookup, pull, timeout), or the rollback itself is not healthy |
+| `updated` | info | an automatic update succeeded |
+
+The events carry `from_tag`, `to_tag` and `automatic`. Recommended rule: source
+*Server updates*, event types `update_rolled_back` + `update_failed`, to the admins'
+channel. If the backend is down the event cannot be raised; the failure is then
+only in `journalctl -u cnapp-update` and `/var/log/cnapp/auto-update.log`.
+
 ## Adding a new event source
 
 ```python

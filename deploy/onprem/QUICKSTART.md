@@ -116,8 +116,11 @@ gives 401 and `https://agents.wakanow.com/` gives 404. Full guide:
 ```bash
 sudo cnapp-ctl status                 # health, version, certificate, backups
 sudo cnapp-ctl logs backend -f
+sudo cnapp-ctl update                 # one command: git pull + refresh cnapp-ctl, newest published main commit
+                                      # (waits if CI is still building it), backup, health check, automatic rollback
+sudo cnapp-ctl update --tag <sha>     # a specific commit instead (e.g. no internet access)
 sudo cnapp-ctl update --check         # is a newer image available?
-sudo cnapp-ctl update --tag <sha>     # backup, pull, recreate, health check, automatic rollback
+sudo cnapp-ctl auto-update enable     # optional nightly update at 03:00 (off by default; --time HH:MM)
 sudo cnapp-ctl backup                 # also runs nightly at 02:30 (14 days kept)
 sudo cnapp-ctl restore /opt/cnapp/backups/cnapp-db-<ts>.dump.gz
 sudo cnapp-ctl tls renew              # built-in certificate (397 days; auto-renewed 30 days before expiry)

@@ -260,16 +260,70 @@ jobs:
             sudo launchctl print system/com.cloudsecurity.cnapp-agent 2>/dev/null | head -n 40 || true
             ls -la /usr/local/cnapp-agent/bin || true
           fi
-      - name: Windows installer (generic MSI, WiX v5) from a versioned x64 binary
+      # The generic MSI and pkg are built by agent-installers (from binaries cross-compiled on
+      # Linux), so the images do not wait for these tests.
+
+  agent-installer-binaries:
+    name: Endpoint agent installer binaries (cross-compiled on Linux for the images)
+    # Fast path to the images: they bundle the generic MSI/pkg, which only need the
+    # binaries, not the full Windows/macOS test runs above (those still run and gate
+    # the installer e2e). Linux cross-compiles in about a minute.
+    needs: [changes]
+    if: needs.changes.outputs.agent == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: endpoint-agent
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: endpoint-agent/go.mod
+          cache-dependency-path: endpoint-agent/go.sum
+      - name: Cross-compile the installer binaries (windows/amd64, darwin/amd64, darwin/arm64)
+        run: |
+          ldflags="-s -w -X github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/version.Version=0.1.${GITHUB_RUN_NUMBER}+${GITHUB_SHA::7}"
+          mkdir -p dist
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "$ldflags" -o dist/cnapp-agent-windows-amd64.exe ./cmd/cnapp-agent
+          CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags "$ldflags" -o dist/cnapp-agent-darwin-amd64 ./cmd/cnapp-agent
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "$ldflags" -o dist/cnapp-agent-darwin-arm64 ./cmd/cnapp-agent
+          file dist/*
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: agent-installer-binaries
+          path: endpoint-agent/dist/
+          retention-days: 1
+
+  agent-installers:
+    name: Endpoint agent installer package (${{ matrix.os }})
+    needs: [agent-installer-binaries]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    defaults:
+      run:
+        working-directory: endpoint-agent
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: endpoint-agent/packaging
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: agent-installer-binaries
+          path: endpoint-agent/dist
+      - name: Windows installer (generic MSI, WiX v5) from the versioned x64 binary
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $sha = $env:GITHUB_SHA.Substring(0, 7)
           $ver = "0.1.$env:GITHUB_RUN_NUMBER"
-          New-Item -ItemType Directory -Force dist | Out-Null
-          $env:CGO_ENABLED = '0'; $env:GOARCH = 'amd64'
-          go build -trimpath -ldflags "-s -w -X github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/version.Version=$ver+$sha" -o dist/cnapp-agent-windows-amd64.exe ./cmd/cnapp-agent
-          if ($LASTEXITCODE -ne 0) { throw 'go build failed' }
           $errs = $null
           [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path packaging/windows/msi/build-msi.ps1), [ref]$null, [ref]$errs) | Out-Null
           if ($errs) { $errs | Format-List; throw 'parse errors in build-msi.ps1' }
@@ -283,11 +337,7 @@ jobs:
       - name: macOS installer package (unsigned) from a universal binary
         if: runner.os == 'macOS'
         run: |
-          mkdir -p dist
-          ldflags="-s -w -X github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/version.Version=0.1.${GITHUB_RUN_NUMBER}+${GITHUB_SHA::7}"
-          GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o dist/amd64 ./cmd/cnapp-agent
-          GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o dist/arm64 ./cmd/cnapp-agent
-          lipo -create -output dist/cnapp-agent dist/amd64 dist/arm64
+          lipo -create -output dist/cnapp-agent dist/cnapp-agent-darwin-amd64 dist/cnapp-agent-darwin-arm64
           lipo -info dist/cnapp-agent
           packaging/macos/build-pkg.sh "0.1.${GITHUB_RUN_NUMBER}" dist/cnapp-agent dist/cnapp-agent-macos-universal.pkg
           pkgutil --payload-files dist/cnapp-agent-macos-universal.pkg
@@ -409,12 +459,16 @@ jobs:
 
   images:
     name: Images (build with bundled installers, smoke test, installer generation, push to GHCR on main)
-    needs: [backend, frontend, agent]
+    # Needs only what it bundles and checks: backend/frontend tests and the generic
+    # installers (built from Linux cross-compiled binaries), NOT the Windows/macOS
+    # agent test runs, so main's images reach GHCR in ~10 minutes instead of ~20.
     # Runs when the agent jobs were skipped (no agent/installer changes); the
     # image then has no bundled installers (the download feature reports that).
+    needs: [changes, backend, frontend, agent-installers]
     if: >-
       always() && needs.backend.result == 'success' && needs.frontend.result == 'success' &&
-      (needs.agent.result == 'success' || needs.agent.result == 'skipped')
+      (needs.agent-installers.result == 'success' ||
+       (needs.agent-installers.result == 'skipped' && needs.changes.outputs.agent == 'false'))
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -425,14 +479,14 @@ jobs:
         with:
           persist-credentials: false
       - name: Download the generic installers (MSI, pkg)
-        if: needs.agent.result == 'success'
+        if: needs.agent-installers.result == 'success'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: cnapp-agent-*-{msi,pkg}
           path: ${{ runner.temp }}/generic
           merge-multiple: true
       - name: Bundle them into the backend build context (+ manifest.json with SHA-256)
-        if: needs.agent.result == 'success'
+        if: needs.agent-installers.result == 'success'
         run: |
           src="$RUNNER_TEMP/generic"
           ls -l "$src"
@@ -518,7 +572,7 @@ jobs:
         if: always()
         run: docker compose -f docker-compose.yml -f docker-compose.postgres.yml logs --no-color --tail 200 || true
       - name: Generate pre-configured installers in the real image (msitools, pkg injection) for the Windows/macOS e2e
-        if: needs.agent.result == 'success'
+        if: needs.agent-installers.result == 'success'
         run: |
           b="$RUNNER_TEMP/bundle" d="$RUNNER_TEMP/idata"
           mkdir -p "$b" "$d" && chmod 0777 "$d"
@@ -555,7 +609,7 @@ jobs:
           msiinfo export "$b/cnapp-agent-windows-x64.msi" Property | grep -q $'^CNAPP_PRESET\tCNAPPPRESET:UNSET:'
           ls -l "$b"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: needs.agent.result == 'success'
+        if: needs.agent-installers.result == 'success'
         with:
           name: installer-e2e-bundle
           path: ${{ runner.temp }}/bundle/
@@ -960,6 +1014,130 @@ jobs:
           test "$rev" = "$head"
           test -z "$(docker exec cnapp-postgres-1 psql -U cnapp -d cnapp -tAc "select to_regclass('ci_rollback_probe')" | tr -d '[:space:]')"
           sudo cat /opt/cnapp/state/history.log
+          # The rollback raised a "Server updates" notification (routed by the notification rules).
+          ev="$(docker exec cnapp-postgres-1 psql -U cnapp -d cnapp -tAc "select event_type from notification_events where source='server_update'")"
+          echo "$ev"; grep -qx update_rolled_back <<<"$ev"
+          python3 deploy/onprem/tests/onprem_e2e.py --base "https://$HOST" --ca "$CA" --email "$ADMIN" --password-file "$RUNNER_TEMP/admin.pw" expect before-backup present
+      - name: update without --tag - newest published main commit (fake GitHub API + registry), wait for a running CI build, --no-wait, timeout, offline
+        run: |
+          st="$RUNNER_TEMP/fake-gh.json"
+          s() { printf "$1%.0s" {1..40}; }  # fake 40-hex commit SHAs
+          S2="$(s 2)" S3="$(s 3)" S4="$(s 4)" S5="$(s 5)"
+          mk() { # local images for a fake commit (as if pulled from GHCR)
+            for svc in backend frontend; do
+              printf 'FROM %s/cloudsecurity-%s:ci-2\nLABEL org.opencontainers.image.revision=%s\n' "$REG" "$svc" "$1" \
+                | docker build -q -t "$REG/cloudsecurity-$svc:$1" - >/dev/null
+            done
+          }
+          state() { echo "$1" > "$st.tmp" && mv "$st.tmp" "$st"; }
+          state "{\"commits\": [\"$S3\", \"$S2\"], \"published\": [\"$S3\"], \"runs\": {}}"
+          nohup python3 deploy/onprem/tests/fake_github.py --port 18081 --state "$st" > "$RUNNER_TEMP/fake-gh.log" 2>&1 &
+          for _ in $(seq 1 20); do curl -fsS http://127.0.0.1:18081/token >/dev/null 2>&1 && break; sleep 0.5; done
+          upd() { sudo env CNAPP_GITHUB_API=http://127.0.0.1:18081/api CNAPP_REGISTRY_API=http://127.0.0.1:18081 \
+            CNAPP_UPDATE_POLL_SECONDS=2 cnapp-ctl update --no-refresh "$@" 2>&1 | tee "$RUNNER_TEMP/upd.txt"; return "${PIPESTATUS[0]}"; }
+          tag() { sudo grep '^IMAGE_TAG=' /opt/cnapp/cnapp.env | cut -d= -f2; }
+          mk "$S3"
+          # 1. Newest main commit with published images; current vs target printed.
+          upd
+          grep -q "current: ci-2" "$RUNNER_TEMP/upd.txt" && grep -q "target:  $S3" "$RUNNER_TEMP/upd.txt"
+          test "$(tag)" = "$S3"
+          test "$(docker inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' cnapp-backend-1)" = "$S3"
+          # 2. Nothing newer: skipped.
+          upd; grep -q "already up to date" "$RUNNER_TEMP/upd.txt"
+          # 3. Newest commit still building: --no-wait keeps the newest published one.
+          state "{\"commits\": [\"$S4\", \"$S3\"], \"published\": [\"$S3\"], \"runs\": {\"$S4\": {\"status\": \"in_progress\"}}}"
+          upd --no-wait
+          grep -q "still being built (CI in_progress: https://github.invalid/actions/runs/" "$RUNNER_TEMP/upd.txt"
+          grep -q "already up to date" "$RUNNER_TEMP/upd.txt"
+          test "$(tag)" = "$S3"
+          # 4. Default: wait for the running build, then update to it.
+          (sleep 8; mk "$S4"; state "{\"commits\": [\"$S4\", \"$S3\"], \"published\": [\"$S4\", \"$S3\"], \"runs\": {\"$S4\": {\"status\": \"completed\", \"conclusion\": \"success\"}}}") &
+          bg=$!
+          upd --wait-timeout 180
+          wait "$bg"
+          grep -q "waiting up to" "$RUNNER_TEMP/upd.txt" && grep -q "images for ${S4:0:12} are published" "$RUNNER_TEMP/upd.txt"
+          test "$(tag)" = "$S4"
+          # 5. Waiting times out: nothing changes.
+          state "{\"commits\": [\"$S5\", \"$S4\"], \"published\": [\"$S4\"], \"runs\": {\"$S5\": {\"status\": \"queued\"}}}"
+          if upd --wait-timeout 5; then echo "::error::wait timeout not reported"; exit 1; fi
+          grep -q "timed out" "$RUNNER_TEMP/upd.txt"; test "$(tag)" = "$S4"
+          # 6. CI failed for the newest commit: newest published one (already running).
+          state "{\"commits\": [\"$S5\", \"$S4\"], \"published\": [\"$S4\"], \"runs\": {\"$S5\": {\"status\": \"completed\", \"conclusion\": \"failure\"}}}"
+          upd; grep -q "finished (failure) without publishing" "$RUNNER_TEMP/upd.txt" && grep -q "already up to date" "$RUNNER_TEMP/upd.txt"
+          # 7. Offline: clear error that points at --tag.
+          if sudo env CNAPP_GITHUB_API=http://127.0.0.1:9 cnapp-ctl update --no-refresh 2>"$RUNNER_TEMP/err.txt"; then exit 1; fi
+          cat "$RUNNER_TEMP/err.txt"; grep -q -- "--tag" "$RUNNER_TEMP/err.txt"
+          # 8. --tag keeps working exactly as before.
+          sudo cnapp-ctl update --tag "$S4" | tee "$RUNNER_TEMP/upd.txt"; grep -q "already up to date" "$RUNNER_TEMP/upd.txt"
+          # Real GitHub + GHCR, informational only (rate limits / no egress must not fail CI).
+          sudo cnapp-ctl update --dry-run --no-wait --no-refresh || echo "(real GitHub lookup unavailable)"
+          python3 deploy/onprem/tests/onprem_e2e.py --base "https://$HOST" --ca "$CA" --email "$ADMIN" --password-file "$RUNNER_TEMP/admin.pw" expect before-backup present
+          echo "S4=$S4" >> "$GITHUB_ENV"
+      - name: update self-refresh - git pull --ff-only of the recorded checkout as its owner, package files refreshed, new cnapp-ctl re-run; config, secrets and TLS untouched
+        run: |
+          # install recorded the checkout it ran from.
+          test "$(sudo cat /opt/cnapp/state/source_checkout)" = "$GITHUB_WORKSPACE"
+          upd() { sudo env CNAPP_GITHUB_API=http://127.0.0.1:18081/api CNAPP_REGISTRY_API=http://127.0.0.1:18081 \
+            cnapp-ctl update 2>&1 | tee "$RUNNER_TEMP/upd.txt"; return "${PIPESTATUS[0]}"; }
+          # A throwaway "GitHub" remote and a user-owned checkout of it (like ~/CloudSecurity).
+          o="$RUNNER_TEMP/origin.git" seed="$RUNNER_TEMP/seed" co="$RUNNER_TEMP/CloudSecurity"
+          git config --global user.name ci && git config --global user.email ci@example.invalid
+          mkdir -p "$seed/deploy" && cp -r deploy/onprem "$seed/deploy/" && git -C "$seed" init -q -b main
+          git -C "$seed" add -A && git -C "$seed" commit -qm base && git clone -q --bare "$seed" "$o"
+          git -C "$seed" remote add origin "$o" && git clone -q "$o" "$co"
+          echo "$co" | sudo tee /opt/cnapp/state/source_checkout
+          sums() { sudo sha256sum /opt/cnapp/cnapp.env /opt/cnapp/secrets/generated.env /opt/cnapp/tls/server.key /opt/cnapp/tls/server.crt /opt/cnapp/ca/ca.key; }
+          before="$(sums)"
+          # Up to date checkout: nothing to refresh.
+          upd; grep -q "cnapp-ctl and package files are current" "$RUNNER_TEMP/upd.txt"
+          # A new commit on main changes cnapp-ctl and the compose file.
+          sed -i 's/^readonly VERSION="\(.*\)"/readonly VERSION="\1-refresh-test"/' "$seed/deploy/onprem/cnapp-ctl"
+          echo "# refresh-test" >> "$seed/deploy/onprem/docker-compose.prod.yml"
+          git -C "$seed" commit -qam "new release" && git -C "$seed" push -q origin main
+          upd
+          grep -q "refreshed cnapp-ctl" "$RUNNER_TEMP/upd.txt" && grep -q "running the refreshed cnapp-ctl .*-refresh-test" "$RUNNER_TEMP/upd.txt"
+          grep -q "already up to date" "$RUNNER_TEMP/upd.txt"
+          test "$(git -C "$co" rev-parse HEAD)" = "$(git -C "$seed" rev-parse HEAD)"
+          cnapp-ctl version | grep -q -- -refresh-test
+          sudo tail -n1 /opt/cnapp/app/docker-compose.prod.yml | grep -q refresh-test
+          # git ran as the checkout's owner, not root.
+          test -z "$(find "$co" ! -user "$USER" | head -n1)"
+          test "$before" = "$(sums)"
+          curl -fsS --cacert "$CA" "https://$HOST/api/health"
+          # Without a checkout: a clear message, the update itself still runs.
+          sudo rm -f /opt/cnapp/state/source_checkout
+          upd; grep -q "Self-refresh skipped" "$RUNNER_TEMP/upd.txt"
+          # Back to this PR's cnapp-ctl and package files for the remaining steps.
+          sudo deploy/onprem/cnapp-ctl install --skip-ghcr-login --no-admin --yes >/dev/null
+          cnapp-ctl version | grep -vq -- -refresh-test
+      - name: auto-update enable / status / disable (timer installed, schedule, service runs the no-tag update)
+        run: |
+          at="$(date -u -d '+12 hours' +%H):17"  # far from now: the timer must not fire during the test
+          if sudo cnapp-ctl auto-update enable --time 25:00; then echo "::error::bad --time accepted"; exit 1; fi
+          sudo cnapp-ctl auto-update enable --time "$at"
+          test "$(systemctl is-enabled cnapp-update.timer)" = enabled
+          systemctl show cnapp-update.timer -p TimersCalendar | tee /dev/stderr | grep -q "$at:00"
+          sudo cnapp-ctl auto-update status | tee "$RUNNER_TEMP/au.txt"; grep -q "auto-update: enabled" "$RUNNER_TEMP/au.txt"; grep -q "time: $at" "$RUNNER_TEMP/au.txt"
+          systemctl cat cnapp-update.service | grep -q '/usr/local/bin/cnapp-ctl update --auto'
+          # What the timer runs, started by hand (fake GitHub/registry from cnapp.env): newest commit S6.
+          S6="$(printf '6%.0s' {1..40})"
+          for svc in backend frontend; do
+            printf 'FROM %s/cloudsecurity-%s:ci-2\nLABEL org.opencontainers.image.revision=%s\n' "$REG" "$svc" "$S6" | docker build -q -t "$REG/cloudsecurity-$svc:$S6" - >/dev/null
+          done
+          echo "{\"commits\": [\"$S6\", \"$S4\"], \"published\": [\"$S6\", \"$S4\"], \"runs\": {}}" > "$RUNNER_TEMP/fake-gh.json"
+          printf 'CNAPP_GITHUB_API=http://127.0.0.1:18081/api\nCNAPP_REGISTRY_API=http://127.0.0.1:18081\n' | sudo tee -a /opt/cnapp/cnapp.env
+          sudo systemctl start cnapp-update.service || { sudo journalctl -u cnapp-update --no-pager | tail -n 60; exit 1; }
+          sudo journalctl -u cnapp-update --no-pager | tail -n 30
+          test "$(sudo grep '^IMAGE_TAG=' /opt/cnapp/cnapp.env | cut -d= -f2)" = "$S6"
+          sudo grep -q "automatic update" /var/log/cnapp/auto-update.log && sudo grep -q "updated .* -> $S6" /var/log/cnapp/auto-update.log
+          ev="$(docker exec cnapp-postgres-1 psql -U cnapp -d cnapp -tAc "select event_type from notification_events where source='server_update' order by id")"
+          echo "$ev"; grep -qx updated <<<"$ev"
+          sudo sed -i '/^CNAPP_GITHUB_API=/d; /^CNAPP_REGISTRY_API=/d' /opt/cnapp/cnapp.env
+          sudo cnapp-ctl auto-update disable
+          test "$(systemctl is-enabled cnapp-update.timer)" = disabled
+          sudo cnapp-ctl auto-update status | grep -q "auto-update: disabled"
+          # Left enabled for the uninstall step, which must remove it.
+          sudo cnapp-ctl auto-update enable --time "$at"
           python3 deploy/onprem/tests/onprem_e2e.py --base "https://$HOST" --ca "$CA" --email "$ADMIN" --password-file "$RUNNER_TEMP/admin.pw" expect before-backup present
       - name: TLS renew, restart via systemd, admin password reset
         run: |
@@ -1017,6 +1195,9 @@ jobs:
       - name: Uninstall keeps data; reinstall picks it up; purge removes everything
         run: |
           sudo cnapp-ctl uninstall --yes
+          # The auto-update timer (and its schedule override) is gone.
+          test ! -e /etc/systemd/system/cnapp-update.timer && test ! -e /etc/systemd/system/cnapp-update.timer.d
+          if systemctl is-enabled cnapp-update.timer 2>/dev/null; then echo "::error::cnapp-update.timer left behind"; exit 1; fi
           test -z "$(docker ps -q --filter name=cnapp-)"
           docker volume inspect cnapp_pgdata >/dev/null
           test -f /opt/cnapp/cnapp.env && test ! -e /usr/local/bin/cnapp-ctl

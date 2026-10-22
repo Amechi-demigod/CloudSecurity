@@ -391,3 +391,19 @@ def test_semver_matches_agent_rules():
             svc.parse_semver(bad)
     assert svc.parse_user_agent("cnapp-agent/1.2.3+abc (darwin; arm64)") == ("1.2.3+abc", "darwin", "arm64")
     assert svc.parse_user_agent("Mozilla/5.0") is None
+
+
+def test_cli_notify_server_update(admin, capsys):
+    """cnapp-ctl update raises failed/rolled-back server updates through the notification rules."""
+    from app import cli
+
+    args = type("A", (), {"status": "rolled_back", "from_tag": "a" * 40, "to_tag": "b" * 40,
+                          "detail": "health check failed", "automatic": True, "actor": "cnapp-ctl"})()
+    assert cli.notify_server_update(args) == 0
+    assert "rolled_back" in capsys.readouterr().out
+    with db.get_session() as s:
+        ev = s.scalars(select(NotificationEvent).where(NotificationEvent.source == "server_update")).all()
+        assert [(e.event_type, e.severity) for e in ev] == [("update_rolled_back", "high")]
+        assert ev[0].attributes["automatic"] is True and ev[0].attributes["to_tag"] == "b" * 40
+        assert "(automatic)" in ev[0].title
+    assert any(s["name"] == "server_update" for s in admin.get("/api/notifications/meta").json()["sources"])

@@ -1,3 +1,7 @@
+# Run by cnapp-update.timer (cnapp-ctl auto-update enable). Same as `sudo cnapp-ctl update`:
+# refresh cnapp-ctl from the git checkout, newest published main commit, pre-update
+# backup, health check, automatic rollback; failures raise a notification.
+# Logs: journalctl -u cnapp-update and /var/log/cnapp/auto-update.log
 [Unit]
 Description=CloudSecurity CNAPP automatic update (pull, health check, roll back on failure)
 Requires=docker.service
@@ -7,5 +11,5 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 Environment=CNAPP_HOME=/opt/cnapp
-ExecStart=/usr/local/bin/cnapp-ctl update --auto
-TimeoutStartSec=1h
+ExecStart=/bin/bash -c 'set -o pipefail; mkdir -p /var/log/cnapp; /usr/local/bin/cnapp-ctl update --auto --yes 2>&1 | tee -a /var/log/cnapp/auto-update.log'
+TimeoutStartSec=2h

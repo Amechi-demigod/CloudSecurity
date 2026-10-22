@@ -45,6 +45,7 @@ export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin${PATH:
 
 DRY_RUN=0
 ASSUME_YES=0
+UPD_AUTO=0 UPD_NOTIFIED=0 UPD_PREV="" UPD_TARGET=""
 
 # ----------------------------------------------------------------------------- output
 if [[ -t 1 ]]; then C_B=$'\e[1m' C_R=$'\e[31m' C_G=$'\e[32m' C_Y=$'\e[33m' C_0=$'\e[0m'
@@ -1424,6 +1425,7 @@ cmd_install() {
   getent group cnapp-tls >/dev/null || run groupadd --system cnapp-tls
   (( DRY_RUN )) && ! getent group cnapp-tls >/dev/null && { echo "[dry-run] (stopping: the remaining steps need the cnapp-tls group)"; return 0; }
   install_files "$src"
+  record_source_checkout "$src"
 
   # SSH access to keep: explicit ranges + the address of the current SSH session.
   if [[ -z $ssh && ! -f $CONF ]]; then
@@ -1594,13 +1596,215 @@ ghcr_api_token() { # anonymous-or-PAT bearer token for the registry API
   user=$(conf_get GHCR_USER); token=$(cat "$SECRETS_DIR/ghcr-token" 2>/dev/null || true)
   local args=(-fsS --max-time 20)
   [[ -n $user && -n $token ]] && args+=(-u "$user:$token")
-  curl "${args[@]}" "https://ghcr.io/token?scope=repository:${repo}:pull&service=ghcr.io" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p'
+  local t; t=$(curl "${args[@]}" "$(registry_api)/token?scope=repository:${repo}:pull&service=ghcr.io" | sed -n 's/.*"token": *"\([^"]*\)".*/\1/p' || true)
+  # A stale PAT must not block public images: retry anonymously.
+  [[ -n $t || ${#args[@]} -eq 3 ]] || t=$(curl -fsS --max-time 20 "$(registry_api)/token?scope=repository:${repo}:pull&service=ghcr.io" | sed -n 's/.*"token": *"\([^"]*\)".*/\1/p' || true)
+  printf '%s' "$t"
 }
 
 remote_digest() { # remote_digest repo tag bearer
   curl -fsSI --max-time 20 -H "Authorization: Bearer $3" \
     -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' \
-    "https://ghcr.io/v2/$1/manifests/$2" | tr -d '\r' | awk -F': ' 'tolower($1)=="docker-content-digest"{print $2}'
+    "$(registry_api)/v2/$1/manifests/$2" | tr -d '\r' | awk -F': ' 'tolower($1)=="docker-content-digest"{print $2}'
+}
+
+# ----------------------------------------------------------------------------- update without --tag
+# `cnapp-ctl update` (no --tag) first refreshes cnapp-ctl and its package files from
+# the git checkout it was installed from, then moves to the newest commit of main
+# whose backend AND frontend images are published (waiting for a CI run that is
+# still building them). Public repository and packages: anonymous API access.
+# The endpoints can be overridden (tests, mirrors) in cnapp.env or the environment:
+#   CNAPP_GITHUB_REPO (Amechi-demigod/CloudSecurity)  CNAPP_UPDATE_BRANCH (main)
+#   CNAPP_GITHUB_API (https://api.github.com)         CNAPP_REGISTRY_API (https://ghcr.io)
+#   CNAPP_CI_WORKFLOW (CI)                            CNAPP_UPDATE_POLL_SECONDS (30)
+upd_conf() { # upd_conf KEY default -> environment, then cnapp.env, then default
+  local v=${!1:-}
+  [[ -n $v ]] || v=$(conf_get "$1")
+  printf '%s' "${v:-$2}"
+}
+registry_api() { upd_conf CNAPP_REGISTRY_API https://ghcr.io; }
+
+source_checkout() { # -> git checkout cnapp-ctl was installed from (recorded at install, else ~SUDO_USER/CloudSecurity)
+  local d=""
+  [[ -f "$STATE_DIR/source_checkout" ]] && d=$(head -n1 "$STATE_DIR/source_checkout")
+  if [[ -z $d && -n ${SUDO_USER:-} && $SUDO_USER != root ]]; then
+    d=$(getent passwd "$SUDO_USER" | cut -d: -f6); [[ -n $d ]] && d="$d/CloudSecurity"
+  fi
+  if [[ -n $d && -e "$d/.git" && -f "$d/deploy/onprem/cnapp-ctl" ]]; then printf '%s' "$d"; fi
+}
+
+record_source_checkout() { # record_source_checkout PACKAGE_DIR (deploy/onprem of a git checkout)
+  local top
+  [[ $1 == */deploy/onprem && -e "$1/../../.git" ]] || return 0
+  top=$(cd "$1/../.." && pwd)
+  if (( DRY_RUN )); then echo "[dry-run] record $top as the source checkout for cnapp-ctl update"; return 0; fi
+  printf '%s\n' "$top" >"$STATE_DIR/source_checkout"
+}
+
+as_owner() { # as_owner DIR CMD... -> run CMD as the owner of DIR (never git as root in a user's checkout)
+  local dir=$1 owner home; shift
+  owner=$(stat -c %U "$dir")
+  if [[ $owner == root ]]; then "$@"; return; fi
+  home=$(getent passwd "$owner" | cut -d: -f6)
+  runuser -u "$owner" -- env HOME="${home:-/}" GIT_TERMINAL_PROMPT=0 "$@"
+}
+
+package_differs() { # package_differs SRC -> 0 when an installed package file differs from SRC
+  local src=$1 u
+  local pairs=("$src/cnapp-ctl:$BIN_PATH" "$src/docker-compose.prod.yml:$APP_DIR/docker-compose.prod.yml"
+    "$src/nginx/onprem.conf.template:$APP_DIR/nginx/onprem.conf.template"
+    "$src/nginx/cnapp-access.sh:$APP_DIR/nginx/cnapp-access.sh")
+  for u in "$src"/systemd/*.service "$src"/systemd/*.timer; do pairs+=("$u:$SYSTEMD_DIR/$(basename "$u")"); done
+  for u in "${pairs[@]}"; do cmp -s "${u%%:*}" "${u#*:}" || return 0; done
+  return 1
+}
+
+self_refresh() { # self_refresh UPDATE_ARGS... -> git pull the checkout, refresh package files, re-exec; or return
+  if [[ ${CNAPP_CTL_REFRESHED:-} == 1 ]]; then return 0; fi
+  local repo before after
+  repo=$(source_checkout)
+  if [[ -z $repo ]]; then
+    log "Self-refresh skipped: no git checkout of the repository found (cnapp-ctl and the compose files stay as installed)"
+    echo "  To enable it, run the installer once from your checkout: sudo ./deploy/onprem/cnapp-ctl install --force --yes"
+    return 0
+  fi
+  if (( DRY_RUN )); then echo "[dry-run] git pull --ff-only in $repo (as $(stat -c %U "$repo")), refresh cnapp-ctl/compose/nginx/systemd files, re-run"; return 0; fi
+  log "Self-refresh: git pull --ff-only in $repo (as $(stat -c %U "$repo"))"
+  before=$(as_owner "$repo" git -C "$repo" rev-parse HEAD 2>/dev/null || true)
+  if ! as_owner "$repo" timeout 180 git -C "$repo" pull --ff-only -q; then
+    warn "git pull --ff-only failed in $repo (local changes, another branch, or no network?); continuing with the installed cnapp-ctl"
+    return 0
+  fi
+  after=$(as_owner "$repo" git -C "$repo" rev-parse HEAD 2>/dev/null || true)
+  if [[ $before == "$after" ]]; then ok "checkout already at ${after:0:12}"; else ok "checkout ${before:0:12} -> ${after:0:12}"; fi
+  if ! package_differs "$repo/deploy/onprem"; then ok "cnapp-ctl and package files are current"; return 0; fi
+  # Exactly what `install --force` does for these files (install_files); cnapp.env, secrets,
+  # TLS, the admin user and the firewall are left alone.
+  install_files "$repo/deploy/onprem"
+  ok "refreshed cnapp-ctl, docker-compose.prod.yml, nginx and systemd files from $repo; re-running the new cnapp-ctl"
+  exec env CNAPP_CTL_REFRESHED=1 CNAPP_PACKAGE_CHANGED=1 "$BIN_PATH" update "$@"
+}
+
+gh_api() { # gh_api PATH OUTFILE -> 0 with the JSON in OUTFILE; else 1 with GH_ERR set
+  local url; url="$(upd_conf CNAPP_GITHUB_API https://api.github.com)$1"
+  local code err; err=$(mktemp)
+  code=$(curl -sS --max-time 20 -o "$2" -w '%{http_code}' -H 'Accept: application/vnd.github+json' \
+    -H 'X-GitHub-Api-Version: 2022-11-28' "$url" 2>"$err") || code=000
+  GH_ERR=""
+  case $code in
+    200) rm -f "$err"; return 0 ;;
+    000) GH_ERR="cannot reach $url ($(tr '\n' ' ' <"$err" | cut -c1-200))" ;;
+    403|429) GH_ERR="GitHub API refused the request (HTTP $code; anonymous rate limit is 60 requests/hour per IP)" ;;
+    *) GH_ERR="GitHub API returned HTTP $code for $url" ;;
+  esac
+  rm -f "$err"; return 1
+}
+
+images_published() { # images_published SHA -> 0 when backend AND frontend :SHA exist in the registry
+  local reg prefix svc bearer
+  reg=$(registry); prefix=${reg#*/}
+  for svc in backend frontend; do
+    bearer=$(ghcr_api_token "$prefix/cloudsecurity-$svc" || true)
+    [[ -n $bearer ]] || return 2
+    [[ -n "$(remote_digest "$prefix/cloudsecurity-$svc" "$1" "$bearer" || true)" ]] || return 1
+  done
+}
+
+ci_run_info() { # ci_run_info SHA -> "status|conclusion|url" of the newest CI push run for SHA (empty if none)
+  local f; f=$(mktemp)
+  if gh_api "/repos/$(upd_conf CNAPP_GITHUB_REPO Amechi-demigod/CloudSecurity)/actions/runs?head_sha=$1&event=push&per_page=20" "$f"; then
+    WF="$(upd_conf CNAPP_CI_WORKFLOW CI)" python3 -c '
+import json, os, sys
+runs = [r for r in json.load(open(sys.argv[1])).get("workflow_runs", []) if r.get("name") == os.environ["WF"]]
+if runs:
+    r = runs[0]
+    print("|".join([r.get("status") or "-", r.get("conclusion") or "-", r.get("html_url") or "-"]))
+' "$f" || true
+  fi
+  rm -f "$f"
+}
+
+resolve_latest() { # resolve_latest WAIT TIMEOUT_S -> sets RESOLVED_SHA (and RESOLVED_NOTE)
+  local wait=$1 timeout=$2 repo branch f shas=() newest fallback="" s rc
+  repo=$(upd_conf CNAPP_GITHUB_REPO Amechi-demigod/CloudSecurity); branch=$(upd_conf CNAPP_UPDATE_BRANCH main)
+  RESOLVED_SHA="" RESOLVED_NOTE=""
+  have python3 || die "python3 is needed to find the newest published version; pass --tag <commit-sha> instead"
+  [[ "$(registry)" == ghcr.io/* || -n "$(upd_conf CNAPP_REGISTRY_API "")" ]] \
+    || die "IMAGE_REGISTRY $(registry) is not ghcr.io: cannot look up published images; pass --tag TAG"
+  f=$(mktemp)
+  if ! gh_api "/repos/$repo/commits?sha=$branch&per_page=30" "$f"; then
+    rm -f "$f"
+    die "cannot look up the newest $branch commit: $GH_ERR.
+  No internet access from this server? Update to a known commit instead: sudo cnapp-ctl update --tag <full commit sha>
+  (proxy: set HTTPS_PROXY / NO_PROXY in $CONF)"
+  fi
+  mapfile -t shas < <(python3 -c 'import json, sys; [print(c["sha"]) for c in json.load(open(sys.argv[1]))]' "$f" | grep -E '^[0-9a-f]{40}$' || true)
+  rm -f "$f"
+  (( ${#shas[@]} )) || die "GitHub returned no commits for $repo@$branch; pass --tag <commit sha>"
+  newest=${shas[0]}
+  rc=0; images_published "$newest" || rc=$?
+  (( rc == 2 )) && die "cannot get a registry token from $(registry_api) (no internet? pass --tag <commit sha>)"
+  if (( rc == 0 )); then RESOLVED_SHA=$newest; RESOLVED_NOTE="newest $branch commit"; return 0; fi
+  for s in "${shas[@]:1}"; do
+    if images_published "$s"; then fallback=$s; break; fi
+  done
+
+  local info status concl url
+  info=$(ci_run_info "$newest"); IFS='|' read -r status concl url <<<"$info" || true
+  if [[ -z $status ]]; then
+    warn "newest $branch commit ${newest:0:12} has no published images and no CI run was found for it"
+  elif [[ $status == completed ]]; then
+    warn "CI for the newest $branch commit ${newest:0:12} finished ($concl) without publishing images: $url"
+  elif (( ! wait )); then
+    log "Images for the newest $branch commit ${newest:0:12} are still being built (CI $status: $url)"
+    echo "  --no-wait: using the newest commit whose images are already published"
+  else
+    log "Images for the newest $branch commit ${newest:0:12} are still being built (CI $status): $url"
+    local poll start=$SECONDS n=0; poll=$(upd_conf CNAPP_UPDATE_POLL_SECONDS 30)
+    echo "  waiting up to $(( timeout / 60 )) min (--wait-timeout SECONDS; --no-wait uses ${fallback:0:12} now)"
+    while (( SECONDS - start < timeout )); do
+      sleep "$poll"
+      if images_published "$newest"; then
+        ok "images for ${newest:0:12} are published (after $(( (SECONDS - start) / 60 )) min)"
+        RESOLVED_SHA=$newest; RESOLVED_NOTE="newest $branch commit (waited for CI)"; return 0
+      fi
+      # The run status (GitHub API, rate-limited) only every ~2 minutes.
+      if (( ++n * poll >= 120 )); then
+        n=0; info=$(ci_run_info "$newest"); IFS='|' read -r status concl url <<<"$info" || true
+        if [[ $status == completed ]] && ! images_published "$newest"; then
+          warn "CI for ${newest:0:12} finished ($concl) without publishing images: $url"; break
+        fi
+        echo "  ... still building ($(( (SECONDS - start) / 60 )) min, CI ${status:-unknown})"
+      fi
+    done
+    if [[ $status != completed ]]; then
+      die "timed out after $(( timeout / 60 )) min waiting for the images of ${newest:0:12} (CI: $url). Nothing was changed.
+  Run again later, or use the newest published version now: sudo cnapp-ctl update --no-wait"
+    fi
+  fi
+  [[ -n $fallback ]] || die "none of the last ${#shas[@]} $branch commits has published images; pass --tag <commit sha>"
+  RESOLVED_SHA=$fallback; RESOLVED_NOTE="newest $branch commit with published images"
+}
+
+notify_update() { # notify_update rolled_back|failed|updated FROM TO DETAIL -> in-app notification via the rules
+  local extra=()
+  (( UPD_AUTO )) && extra+=(--automatic)
+  if [[ "$(container_health backend)" != healthy ]]; then
+    warn "the backend is not running: no in-app notification raised for this $1 update ($2 -> $3)"; return 0
+  fi
+  if compose exec -T backend python -m app.cli notify-server-update --status "$1" --from-tag "$2" --to-tag "$3" \
+      --detail "${4:0:900}" --actor "cnapp-ctl:${SUDO_USER:-root}" "${extra[@]}" >/dev/null 2>&1; then
+    ok "raised a server-update notification ($1; delivered by your notification rules)"
+  else
+    warn "could not raise an in-app notification ($1; this backend version may not support it)"
+  fi
+  UPD_NOTIFIED=1
+}
+
+auto_update_exit() { # EXIT trap of `update --auto`: any failure becomes a notification
+  local rc=$1
+  (( rc == 0 || UPD_NOTIFIED )) && return 0
+  notify_update failed "${UPD_PREV:-?}" "${UPD_TARGET:-?}" "automatic update failed (exit $rc); log: $LOG_DIR/auto-update.log, journalctl -u cnapp-update" || true
 }
 
 cmd_update_check() {
@@ -1631,13 +1835,16 @@ cmd_update_check() {
 }
 
 cmd_update() {
-  local target="" check=0 auto=0 timeout=300 backup=1
+  local target="" check=0 auto=0 timeout=300 backup=1 wait=1 wait_timeout=2400 refresh=1 args=("$@")
   while [[ $# -gt 0 ]]; do
     case $1 in
       --tag) target=$2; shift 2 ;;
       --check) check=1; shift ;;
       --auto) auto=1; shift ;;
       --health-timeout) timeout=$2; shift 2 ;;
+      --no-wait) wait=0; shift ;;
+      --wait-timeout) wait_timeout=$2; shift 2 ;;
+      --no-refresh) refresh=0; shift ;;
       --no-backup) backup=0; shift ;;
       --yes|-y) ASSUME_YES=1; shift ;;
       --dry-run) DRY_RUN=1; shift ;;
@@ -1646,10 +1853,39 @@ cmd_update() {
   done
   (( check )) && { cmd_update_check; return; }
   need_root update; require_installed
+  [[ $wait_timeout =~ ^[0-9]+$ ]] || die "--wait-timeout takes seconds"
   [[ -z "$(conf_get BACKEND_IMAGE)$(conf_get FRONTEND_IMAGE)" ]] || die "BACKEND_IMAGE/FRONTEND_IMAGE are pinned in $CONF; edit them and run cnapp-ctl restart"
   local prev; prev=$(conf_get IMAGE_TAG)
-  if (( auto )); then target=$(conf_get AUTO_UPDATE_TAG); target=${target:-latest}; fi
-  target=${target:-$prev}
+  UPD_PREV=$prev
+  if (( auto )); then
+    UPD_AUTO=1
+    # cnapp-update.service sends the output to the journal and $LOG_DIR/auto-update.log;
+    # any failure raises a notification.
+    [[ ${CNAPP_CTL_REFRESHED:-} == 1 ]] || echo "=== $(date -u +%FT%TZ) cnapp-ctl $VERSION: automatic update"
+    (( DRY_RUN )) || trap 'auto_update_exit $?' EXIT
+    target=$(conf_get AUTO_UPDATE_TAG)
+  fi
+
+  if [[ -z $target ]]; then
+    # No --tag: refresh cnapp-ctl from the checkout, then the newest published main commit.
+    export_proxy_env
+    (( refresh )) && self_refresh "${args[@]}"
+    [[ ${CNAPP_CTL_REFRESHED:-} == 1 ]] && ok "running the refreshed cnapp-ctl $VERSION"
+    resolve_latest "$wait" "$wait_timeout"
+    target=$RESOLVED_SHA
+    local cur_rev; cur_rev=$(image_label "$(image_ref backend "$prev")" org.opencontainers.image.revision)
+    echo "  current: $prev${cur_rev:+ (commit $cur_rev)}"
+    echo "  target:  $target ($RESOLVED_NOTE)"
+    if [[ $target == "$prev" ]]; then
+      if [[ ${CNAPP_PACKAGE_CHANGED:-} == 1 ]] && (( ! DRY_RUN )); then
+        log "Applying the refreshed compose/nginx files"
+        compose up -d --remove-orphans && wait_healthy "$timeout" || die "the stack is not healthy after refreshing the package files (cnapp-ctl logs)"
+      fi
+      ok "already up to date ($target)"
+      return 0
+    fi
+  fi
+  UPD_TARGET=$target
   [[ $target =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || die "invalid tag '$target'"
   if (( DRY_RUN )); then
     echo "[dry-run] update $prev -> $target: tag running images for rollback, pull, pg_dump backup, recreate, health check (${timeout}s), roll back on failure"
@@ -1689,6 +1925,7 @@ cmd_update() {
     printf '  frontend  %s -> %s\n' "${old_f:7:12}" "${new_f:7:12}"
     printf '  commit    %s -> %s\n' "${old_label:-?}" "$(image_label "$(image_ref backend "$target")" org.opencontainers.image.revision)"
     printf '  schema    %s -> %s\n' "${old_rev:-?}" "$(alembic_revision)"
+    (( UPD_AUTO )) && notify_update updated "$prev" "$target" "automatic update succeeded"
     return 0
   fi
 
@@ -1715,23 +1952,67 @@ cmd_update() {
   compose up -d --remove-orphans >/dev/null
   if wait_healthy "$timeout"; then
     record_state "$prev" "rollback-from-$target"
+    notify_update rolled_back "$prev" "$target" "update to $target failed its health check and was rolled back to $prev (healthy). Failure logs on the server: $logf"
     die "update to $target failed and was rolled back to $prev (healthy). Failure logs: $logf"
   fi
+  notify_update failed "$prev" "$target" "update failed AND the rollback is not healthy"
   die "update to $target failed AND the rollback to $prev is not healthy. Investigate: cnapp-ctl logs backend; restore manually: cnapp-ctl restore ${pre:-<backup>}"
 }
 
+AUTO_UPDATE_DROPIN="$SYSTEMD_DIR/cnapp-update.timer.d"
+
+auto_update_time() { # -> HH:MM the timer fires at (drop-in override, else the unit's default)
+  local t=""
+  [[ -f "$AUTO_UPDATE_DROPIN/schedule.conf" ]] && t=$(sed -n 's/^OnCalendar=\*-\*-\* \([0-9:]*\):00$/\1/p' "$AUTO_UPDATE_DROPIN/schedule.conf" | tail -n1)
+  printf '%s' "${t:-03:00}"
+}
+
 cmd_auto_update() {
-  local sub=${1:-status}
+  local sub=${1:-status} time="" tag=""
+  shift || true
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --time) time=${2:-}; shift 2 ;;
+      --tag) tag=${2:-}; shift 2 ;;
+      -*) die "auto-update: unknown option $1" ;;
+      *) tag=$1; shift ;;  # legacy: auto-update enable TAG
+    esac
+  done
   case $sub in
-    enable) need_root auto-update; require_installed
-      [[ -n ${2:-} ]] && conf_set AUTO_UPDATE_TAG "$2"
-      run systemctl enable --now cnapp-update.timer
-      ok "automatic updates enabled: daily ~04:00, tracking tag '$(conf_get AUTO_UPDATE_TAG || true)'"
-      [[ -z "$(conf_get AUTO_UPDATE_TAG)" ]] && echo "  (tracking 'latest' = every successful build of main; pin tags manually for change control)" ;;
-    disable) need_root auto-update; run systemctl disable --now cnapp-update.timer; ok "automatic updates disabled" ;;
-    status) systemctl list-timers cnapp-update.timer --all --no-pager 2>/dev/null || true
-      systemctl is-enabled cnapp-update.timer 2>/dev/null || true ;;
-    *) die "usage: cnapp-ctl auto-update enable [TAG]|disable|status" ;;
+    enable)
+      need_root auto-update; require_installed
+      if [[ -n $time ]]; then
+        [[ $time =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]] || die "--time takes HH:MM (24h, server time), e.g. --time 03:00"
+        run install -d -m 0755 "$AUTO_UPDATE_DROPIN"
+        if (( DRY_RUN )); then echo "[dry-run] write $AUTO_UPDATE_DROPIN/schedule.conf (OnCalendar $time)"
+        else printf '# Written by cnapp-ctl auto-update enable --time\n[Timer]\nOnCalendar=\nOnCalendar=*-*-* %s:00\n' "$time" >"$AUTO_UPDATE_DROPIN/schedule.conf"
+          chmod 0644 "$AUTO_UPDATE_DROPIN/schedule.conf"; fi
+      fi
+      if [[ -n $tag ]]; then
+        [[ $tag =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || die "invalid tag '$tag'"
+        conf_set AUTO_UPDATE_TAG "$tag"
+      fi
+      run systemctl daemon-reload
+      run systemctl enable --now cnapp-update.timer >/dev/null 2>&1
+      local tracking; tracking=$(conf_get AUTO_UPDATE_TAG)
+      ok "automatic updates enabled: nightly at ~$(auto_update_time) server time (+ up to 20 min random delay)"
+      if [[ -n $tracking ]]; then echo "  tracking the fixed tag '$tracking' (clear AUTO_UPDATE_TAG in $CONF to follow main)"
+      else echo "  each run: refresh cnapp-ctl from the git checkout, then the newest main commit with published images"; fi
+      echo "  same pre-update backup and automatic rollback as 'cnapp-ctl update'; failures and rollbacks raise a"
+      echo "  'Server updates' notification. Logs: journalctl -u cnapp-update, $LOG_DIR/auto-update.log"
+      ;;
+    disable)
+      need_root auto-update
+      run systemctl disable --now cnapp-update.timer >/dev/null 2>&1 || true
+      ok "automatic updates disabled (update manually: sudo cnapp-ctl update)" ;;
+    status)
+      local en; en=$(systemctl is-enabled cnapp-update.timer 2>/dev/null || true)
+      echo "auto-update: ${en:-not installed}   time: $(auto_update_time) (server time, randomized delay up to 20 min)   tracking: $(conf_get AUTO_UPDATE_TAG 2>/dev/null || true)"
+      [[ -z "$(conf_get AUTO_UPDATE_TAG 2>/dev/null || true)" ]] && echo "  (tracking: newest main commit with published images)"
+      systemctl list-timers cnapp-update.timer --all --no-pager 2>/dev/null || true
+      if [[ -f "$LOG_DIR/auto-update.log" ]]; then echo "Last log lines ($LOG_DIR/auto-update.log):"; tail -n 5 "$LOG_DIR/auto-update.log" | sed 's/^/  /'; fi
+      ;;
+    *) die "usage: cnapp-ctl auto-update enable [--time HH:MM] | disable | status" ;;
   esac
 }
 
@@ -2008,6 +2289,7 @@ cmd_uninstall() {
   for u in cnapp.service cnapp-firewall.service cnapp-backup.service cnapp-backup.timer cnapp-update.service cnapp-update.timer; do
     run rm -f "$SYSTEMD_DIR/$u"
   done
+  run rm -rf "$SYSTEMD_DIR/cnapp-update.timer.d"
   run systemctl daemon-reload
   if (( purge )); then
     run docker --config "$DOCKER_CONFIG" logout ghcr.io >/dev/null 2>&1 || true
@@ -2043,9 +2325,13 @@ Setup
 
 Operations
   status | logs [service] [-f] [--tail N] | start | stop | restart
-  update [--tag TAG] [--health-timeout S] [--no-backup]   backup, pull, recreate, health check, roll back on failure
+  update                        one command: git pull the checkout cnapp-ctl came from and refresh cnapp-ctl/compose/
+                                nginx files (not config, secrets, TLS, firewall), then move to the newest main commit
+                                with published images (waits while CI is still building it); backup, health check,
+                                automatic rollback. [--no-wait] [--wait-timeout S (2400)] [--no-refresh]
+  update --tag TAG [--health-timeout S] [--no-backup]     move to a specific tag (e.g. a commit SHA)
   update --check                list registry tags / is a newer 'latest' available
-  auto-update enable [TAG] | disable | status             daily timer (off by default)
+  auto-update enable [--time HH:MM] | disable | status    nightly no-tag update (off by default; default 03:00)
   backup                        pg_dump -> $BACKUP_DIR (nightly timer, ${C_B}BACKUP_RETENTION_DAYS${C_0})
   restore FILE [--yes]          safety backup, then replace the database with FILE
   tls init [--hostname H] [--ip A] [--dns N] [--new-ca] | renew | show | import --cert C --key K [--chain I] [--ca R] | export-ca [PATH]
