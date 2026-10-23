@@ -1,5 +1,5 @@
 -r requirements.txt
-pytest>=8.0
+pytest>=9.1.1
 httpx>=0.27
 ruff==0.17.0
 # In-memory AWS for the AWS connector tests (no real AWS calls)
