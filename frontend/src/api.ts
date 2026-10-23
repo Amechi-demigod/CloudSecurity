@@ -173,13 +173,42 @@ export interface Connector {
 export interface ScanRun {
   id: string;
   connector: string;
-  status: "running" | "succeeded" | "failed";
+  status: "running" | "succeeded" | "failed" | "skipped";
   started_at: string;
   finished_at: string | null;
   assets_found: number;
   findings_open: number;
   errors: string[];
   message: string;
+  /** manual | scheduled (null: recorded before scheduled scans existed) */
+  trigger: "manual" | "scheduled" | null;
+}
+
+export interface ConnectorSchedule {
+  name: string;
+  provider: string;
+  configured: boolean;
+  scheduled: boolean;
+  not_scheduled_reason: string | null;
+  last_run: ScanRun | null;
+  last_scheduled_run: ScanRun | null;
+  /** null while scheduled: due now (overdue, or never scanned on schedule) */
+  next_run_at: string | null;
+  running: boolean;
+}
+
+export interface ScanSchedule {
+  enabled: boolean;
+  interval_hours: number;
+  enabled_overridden: boolean;
+  interval_overridden: boolean;
+  default_enabled: boolean;
+  default_interval_hours: number;
+  min_interval_hours: number;
+  max_interval_hours: number;
+  updated_at: string | null;
+  updated_by: string | null;
+  connectors: ConnectorSchedule[];
 }
 
 export interface Health {
@@ -954,6 +983,10 @@ export const api = {
     }>(`/api/attack-paths/graph${qs({ limit })}`),
   connectors: () => request<Connector[]>("/api/connectors"),
   scans: () => request<ScanRun[]>("/api/scans"),
+  scanSchedule: () => request<ScanSchedule>("/api/scan-schedule"),
+  /** Admin. Only the fields sent change; null resets a field to the environment default. */
+  updateScanSchedule: (body: { enabled?: boolean | null; interval_hours?: number | null }) =>
+    request<ScanSchedule>("/api/scan-schedule", { method: "PUT", body: JSON.stringify(body) }),
   startScan: (connector: string) =>
     request<ScanRun>("/api/scans", { method: "POST", body: JSON.stringify({ connector }) }),
   postureRules: () =>

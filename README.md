@@ -223,6 +223,9 @@ On first start, simulated mode seeds the database (`backend/cnapp.db`) and backf
 | `AZURE_USE_DEFAULT_CREDENTIAL` | `false` | Use `DefaultAzureCredential` (az login, managed identity) when no secret is set |
 | `AZURE_AUTH_MODE` | `auto` | `auto`, `client_secret`, `managed_identity` or `default`. `auto` uses the client secret if set, else the managed identity if `AZURE_MANAGED_IDENTITY_CLIENT_ID` is set, else `DefaultAzureCredential` if enabled |
 | `AZURE_MANAGED_IDENTITY_CLIENT_ID` | | Client ID of the user-assigned managed identity to scan with (set by the Azure deployment) |
+| `SCAN_SCHEDULE_ENABLED` | `true` | Scan every configured cloud connector automatically ([Scheduled scans](#scheduled-scans)). Default for the console setting |
+| `SCAN_INTERVAL_HOURS` | `6` | Hours between scheduled scans of a connector, fractions allowed (`0.25` to `168`; outside that range the API refuses to start). Default for the console setting |
+| `SCAN_STARTUP_DELAY_SECONDS` | `120` | Wait after a (re)start before the first scheduled scan (`0` to `3600`) |
 
 ## Connecting a real Azure environment (read-only)
 
@@ -264,6 +267,32 @@ AZURE_SUBSCRIPTION_IDS=<sub-id-1>,<sub-id-2>
 ```
 
 5. Open **Connectors & scans** and click **Run scan**, or call `POST /api/scans` with `{"connector":"azure"}`. Results appear in the inventory and findings with `source=azure`. A re-scan resolves findings that now pass.
+
+### Scheduled scans
+
+Besides **Run scan**, the backend scans every configured cloud connector on a schedule: every
+`SCAN_INTERVAL_HOURS` (default **6 h**), one scan run per connector. Unconfigured connectors are skipped, and so is
+the simulated connector unless `SIMULATION_MODE` is on. Connectors added later (e.g. AWS, GCP) are picked up
+automatically once configured.
+
+- **One scheduler per deployment.** It runs inside the backend and uses the same advisory-lock leader election as the
+  simulator and the notification dispatcher, so several gunicorn workers / replicas never scan twice.
+- **Timing comes from the database**: a connector is due when its last *scheduled* scan started at least one interval
+  ago. A restart neither re-scans everything nor loses the schedule; if scans are overdue at startup they run once,
+  after `SCAN_STARTUP_DELAY_SECONDS` (120 s).
+- **Manual scans** keep working and do not move the schedule (they are recorded with trigger `manual`; only
+  scheduled runs anchor the next one).
+- **No overlap**: if a scan of that connector (manual or scheduled) is still running when the next scheduled one is
+  due, that slot is skipped, logged and shown as a `skipped` run; the next attempt is one interval later. A run left
+  `running` by a backend that died is marked failed after 10 minutes.
+- **Failures** are recorded on the scan run (message + errors) and raise a **Cloud scans** notification (source
+  `scan`, event `failed`, attribute `trigger=scheduled`). Add a notification rule for that source to get them in
+  Teams / Slack / email.
+- **Console**: **Connectors & scans** shows "Scheduled every 6 h · last scan … · next scan …" per connector. Admins can
+  turn the schedule off/on and change the interval there; the change is stored in the database (overriding the env
+  defaults until **Reset to defaults**), applies within a minute without a restart, and is audited
+  (`scan_schedule_updated`). API: `GET /api/scan-schedule` (any signed-in user), `PUT /api/scan-schedule` (admin;
+  `{"enabled": false}`, `{"interval_hours": 12}`, `null` resets a field to the env default).
 
 What the scanner checks:
 
@@ -316,7 +345,7 @@ Then open the UI, sign in, and add other users under **Administration → Users*
 
 | Role | Can |
 |---|---|
-| `viewer` | Read everything: dashboard, inventory, findings, vulnerabilities, threats, attack paths, connectors, scan history, IT assets (incl. CSV export) |
+| `viewer` | Read everything: dashboard, inventory, findings, vulnerabilities, threats, attack paths, connectors, scan history and schedule, IT assets (incl. CSV export) |
 | `analyst` | Viewer, plus suppress / resolve / reopen findings, acknowledge / resolve alerts, run connector scans, edit IT assets (assign, return, offboard, dispose, certificates, CSV import), and view notification channels (masked), rules and the delivery log |
 | `admin` | Everything, including user management (create, change role, deactivate, reset password), the audit log, connector settings, and notification channels / rules (test sends, retries) |
 

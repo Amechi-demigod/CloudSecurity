@@ -6,6 +6,8 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PlainSerializer
 
+from .config import MAX_INTERVAL_HOURS, MIN_INTERVAL_HOURS
+
 # Timestamps are stored as naive UTC; serialize them with an explicit "Z".
 UTCDateTime = Annotated[
     datetime,
@@ -310,6 +312,43 @@ class ScanRunOut(ORM):
     findings_open: int
     errors: list[str]
     message: str
+    trigger: str | None = None  # manual | scheduled (None: recorded before scheduled scans existed)
+
+
+class ConnectorScheduleOut(ORM):
+    name: str
+    provider: str
+    configured: bool
+    scheduled: bool
+    not_scheduled_reason: str | None
+    last_run: ScanRunOut | None
+    last_scheduled_run: ScanRunOut | None
+    next_run_at: UTCDateTime | None  # None while scheduled: due now
+    running: bool
+
+
+class ScanScheduleOut(ORM):
+    enabled: bool
+    interval_hours: float
+    enabled_overridden: bool
+    interval_overridden: bool
+    default_enabled: bool
+    default_interval_hours: float
+    min_interval_hours: float
+    max_interval_hours: float
+    updated_at: UTCDateTime | None
+    updated_by: str | None
+    connectors: list[ConnectorScheduleOut]
+
+
+class ScanScheduleUpdate(BaseModel):
+    """Console overrides; null resets a field to its environment default."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool | None = None
+    interval_hours: float | None = Field(default=None, ge=MIN_INTERVAL_HOURS, le=MAX_INTERVAL_HOURS,
+                                         allow_inf_nan=False)
 
 
 # --- Authentication ---------------------------------------------------------------

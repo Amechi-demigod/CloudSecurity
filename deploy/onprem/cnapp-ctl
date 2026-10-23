@@ -1264,6 +1264,15 @@ AZURE_CLIENT_ID=
 AZURE_CLIENT_SECRET=
 AZURE_SUBSCRIPTION_IDS=
 
+# --- Scheduled cloud posture scans (README "Scheduled scans") ---------------------
+# Scan every configured cloud connector automatically (one leader process does it).
+# Defaults: admins can override both in the console (Connectors & scans).
+SCAN_SCHEDULE_ENABLED=true
+# Hours between scheduled scans of a connector: 0.25 to 168, fractions allowed
+SCAN_INTERVAL_HOURS=6
+# Seconds to wait after a (re)start before an overdue scheduled scan runs (0-3600)
+SCAN_STARTUP_DELAY_SECONDS=120
+
 # --- Notifications (optional, docs/NOTIFICATIONS.md) ------------------------------
 # Allow an SMTP relay on a private IP address (internal mail server)
 NOTIFICATIONS_SMTP_ALLOW_PRIVATE=false

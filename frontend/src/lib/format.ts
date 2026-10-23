@@ -19,6 +19,18 @@ export const fmtAgo = (iso: string) => {
   return `${Math.round(s / 86400)}d ago`;
 };
 
+/** "in 4h", "in 25m"; "now" for times in the past. */
+export const fmtUntil = (iso: string) => {
+  const s = Math.round((new Date(iso).getTime() - Date.now()) / 1000);
+  if (s <= 0) return "now";
+  if (s < 3600) return `in ${Math.max(Math.round(s / 60), 1)}m`;
+  if (s < 86400) return `in ${Math.round((s / 3600) * 10) / 10}h`;
+  return `in ${Math.round((s / 86400) * 10) / 10}d`;
+};
+
+/** 6 -> "6 h", 0.5 -> "30 min", 1.5 -> "1.5 h". */
+export const fmtHours = (h: number) => (h < 1 ? `${Math.round(h * 60)} min` : `${Math.round(h * 100) / 100} h`);
+
 export const TYPE_LABEL: Record<string, string> = {
   vm: "Virtual machine",
   storage_account: "Storage account",

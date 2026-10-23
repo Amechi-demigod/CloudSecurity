@@ -16,6 +16,18 @@ def _bool(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _checked_float(name: str, default: float) -> float:
+    """Float setting that is range-checked later: a malformed value becomes NaN,
+    so the startup check reports it by name instead of crashing on import."""
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return float("nan")
+
+
 def _list(name: str) -> list[str]:
     raw = os.getenv(name, "")
     return [p.strip() for p in raw.replace(";", ",").split(",") if p.strip()]
@@ -32,6 +44,11 @@ def _mapping(name: str) -> dict[str, str]:
 
 
 PRODUCTION_ENVS = {"production", "prod"}
+
+# Bounds of the scheduled-scan settings (also enforced on console changes).
+MIN_INTERVAL_HOURS = 0.25
+MAX_INTERVAL_HOURS = 168.0
+MAX_STARTUP_DELAY_SECONDS = 3600
 
 
 @dataclass
@@ -117,6 +134,22 @@ class Settings:
     azure_managed_identity_client_id: str | None = field(
         default_factory=lambda: os.getenv("AZURE_MANAGED_IDENTITY_CLIENT_ID") or None
     )
+
+    # --- Scheduled cloud posture scans (app/services/scan_schedule.py) ----------
+    # Scan every configured cloud connector automatically (one scan run per
+    # connector). Defaults for a new installation: admins can change both in the
+    # console (Connectors & scans), which overrides these until reset.
+    scan_schedule_enabled: bool = field(default_factory=lambda: _bool("SCAN_SCHEDULE_ENABLED", True))
+    # Hours between scheduled scans of a connector, counted from the start of its
+    # previous scheduled scan (fractions allowed, 0.25 to 168).
+    scan_interval_hours: float = field(default_factory=lambda: _checked_float("SCAN_INTERVAL_HOURS", 6.0))
+    # After a (re)start, wait this long before the first scheduled scan, so a
+    # deployment that is restarting settles first (0 to 3600).
+    scan_startup_delay_seconds: float = field(
+        default_factory=lambda: _checked_float("SCAN_STARTUP_DELAY_SECONDS", 120.0))
+    # Internal: run the (leader-elected) scheduler thread in this process. Tests
+    # turn it off; to stop scheduled scans use SCAN_SCHEDULE_ENABLED instead.
+    scan_scheduler_worker_enabled: bool = field(default_factory=lambda: _bool("SCAN_SCHEDULER_WORKER_ENABLED", True))
 
     # --- User authentication ------------------------------------------------
     # First admin, created on startup only when the users table is empty.
@@ -427,6 +460,7 @@ class Settings:
             problems.append("DEVICE_APPROVAL_SELF_COOLDOWN_MINUTES must be between 1 and 1440")
         if not 5 <= self.device_wipe_command_ttl_minutes <= 1440:
             problems.append("DEVICE_WIPE_COMMAND_TTL_MINUTES must be between 5 and 1440")
+        problems.extend(self.scan_schedule_problems())
         if self.entra_client_auth not in {"auto", "certificate", "secret", "managed_identity"}:
             problems.append("ENTRA_CLIENT_AUTH must be auto, certificate, secret or managed_identity")
         if self.entra_enabled:
@@ -434,6 +468,14 @@ class Settings:
                 problems.append("ENTRA_TENANT_ID must be your tenant id, not a multi-tenant alias")
             if self.is_production and not (self.entra_redirect_uri or "").startswith("https://"):
                 problems.append("ENTRA_REDIRECT_URI must be set to an https:// URL in production")
+        return problems
+
+    def scan_schedule_problems(self) -> list[str]:
+        problems = []
+        if not MIN_INTERVAL_HOURS <= self.scan_interval_hours <= MAX_INTERVAL_HOURS:
+            problems.append(f"SCAN_INTERVAL_HOURS must be between {MIN_INTERVAL_HOURS:g} and {MAX_INTERVAL_HOURS:g}")
+        if not 0 <= self.scan_startup_delay_seconds <= MAX_STARTUP_DELAY_SECONDS:
+            problems.append(f"SCAN_STARTUP_DELAY_SECONDS must be between 0 and {MAX_STARTUP_DELAY_SECONDS}")
         return problems
 
 
