@@ -1638,8 +1638,9 @@ ghcr_api_token() { # anonymous-or-PAT bearer token for the registry API
   printf '%s' "$t"
 }
 
-remote_digest() { # remote_digest repo tag bearer
-  curl -fsSI --max-time 20 -H "Authorization: Bearer $3" \
+remote_digest() { # remote_digest repo tag bearer -> digest, or nothing when the tag doesn't exist (yet)
+  # -S off: a 404 while CI is still publishing is expected, so don't print curl's error.
+  curl -fsI --max-time 20 -H "Authorization: Bearer $3" \
     -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' \
     "$(registry_api)/v2/$1/manifests/$2" | tr -d '\r' | awk -F': ' 'tolower($1)=="docker-content-digest"{print $2}'
 }
