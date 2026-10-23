@@ -406,7 +406,12 @@ def test_sensor_inventory_osv_match_and_runtime_in_use(client, fake):
     assert body["asset_created"] is True and body["asset_id"] == "sensor:web-1" and body["packages"] == 3
     assert fake.requests == []  # matching happens in the worker
     run()
-    found = {v.cve_id: v for v in vulns().values() if v.asset_id == "sensor:web-1"}
+    def host_vulns(status="open"):
+        with db.get_session() as s:
+            return {v.cve_id: v for v in s.scalars(select(Vulnerability).where(
+                Vulnerability.asset_id == "sensor:web-1", Vulnerability.status == status))}
+
+    found = host_vulns()
     assert set(found) == {"CVE-2023-5678", "CVE-2023-5363"}
     v = found["CVE-2023-5678"]
     assert v.source == "osv" and v.package == "openssl" and v.version == "3.0.11-1~deb12u2"
@@ -422,7 +427,7 @@ def test_sensor_inventory_osv_match_and_runtime_in_use(client, fake):
                       "version": "3.0.11-1~deb12u2", "kind": "shared_object", "source": "dpkg"}}
     r = client.post("/api/runtime/events", json=[ev], headers=AUTH)
     assert r.status_code == 202 and r.json()["in_use_updates"] == 2
-    after = vulns()["CVE-2023-5678"]
+    after = host_vulns()["CVE-2023-5678"]
     assert after.in_use and after.in_use_source == "sensor" and after.risk_score > before
     # upgrade: resolved
     upgraded = {**INVENTORY, "packages": [
@@ -430,8 +435,8 @@ def test_sensor_inventory_osv_match_and_runtime_in_use(client, fake):
         for p in INVENTORY["packages"]]}
     assert post_inventory(client, upgraded).status_code == 202
     run()
-    assert not any(v.asset_id == "sensor:web-1" for v in vulns().values())
-    assert vulns(status="resolved")["CVE-2023-5678"].resolved_at is not None
+    assert host_vulns() == {}
+    assert host_vulns("resolved")["CVE-2023-5678"].resolved_at is not None
     lst = client.get("/api/vulnerabilities", params={"asset_id": "sensor:web-1", "status": "all"}).json()
     assert {x["status"] for x in lst} == {"resolved"}
 
@@ -443,8 +448,10 @@ def test_sensor_inventory_attaches_to_existing_vm(client, fake):
     r = post_inventory(client, {**INVENTORY, "host": name.upper()})
     assert r.json()["asset_id"] == aid and r.json()["asset_created"] is False
     run()
-    v = vulns()["CVE-2023-5363"]
-    assert v.asset_id == aid
+    with db.get_session() as s:
+        v = s.scalar(select(Vulnerability).where(Vulnerability.asset_id == aid, Vulnerability.source == "osv",
+                                                 Vulnerability.cve_id == "CVE-2023-5363"))
+    assert v is not None
     with db.get_session() as s:
         a = s.get(Asset, aid)
         assert v.internet_exposed == bool(a.internet_exposed)
@@ -454,7 +461,8 @@ def test_osv_offline_keeps_data_and_ingest_still_works(client, fake):
     fake.offline = True
     assert post_inventory(client).status_code == 202
     run()
-    assert not any(v.asset_id == "sensor:web-1" for v in vulns().values())
+    with db.get_session() as s:
+        assert not list(s.scalars(select(Vulnerability).where(Vulnerability.asset_id == "sensor:web-1")))
     with db.get_session() as s:
         st = s.get(VulnFeedStatus, "osv")
         assert st.last_error and st.last_success_at is None
@@ -466,7 +474,9 @@ def test_osv_offline_keeps_data_and_ingest_still_works(client, fake):
             matcher_now()
         s.commit()
     run()
-    assert "CVE-2023-5678" in vulns()
+    with db.get_session() as s:
+        assert s.scalar(select(Vulnerability).where(Vulnerability.asset_id == "sensor:web-1",
+                                                    Vulnerability.cve_id == "CVE-2023-5678")) is not None
 
 
 def test_device_delete_cascades(admin, fake):

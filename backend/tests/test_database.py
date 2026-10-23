@@ -163,9 +163,20 @@ def test_pre_alembic_postgres_database_is_stamped():
     try:
         # How Phase 1/2 created schemas: only the baseline tables existed then (the
         # MFA tables are created too, to exercise 0004_mfa_sso's has_table guards).
-        later = ("notification_", "device", "enrollment_tokens", "agent_", "it_asset", "scan_schedule")
-        baseline = [t for t in db.Base.metadata.sorted_tables if not t.name.startswith(later)]
+        later = ("notification_", "device", "enrollment_tokens", "agent_", "it_asset", "scan_schedule", "vuln_",
+                 "asset_packages")
+        baseline = [t for t in db.Base.metadata.sorted_tables
+                    if not t.name.startswith(later) and t.name != "vulnerabilities"]
         db.Base.metadata.create_all(eng, tables=baseline)
+        # vulnerabilities as it was then: without the CVE-matching columns (device_id -> devices)
+        from sqlalchemy import MetaData, Table
+
+        md = MetaData()
+        db.Base.metadata.tables["assets"].to_metadata(md)
+        new_cols = {"device_id", "kev", "epss", "match_key", "last_seen", "resolved_at", "evidence"}
+        old_vulns = Table("vulnerabilities", md, *[c._copy() for c in db.Base.metadata.tables["vulnerabilities"].columns
+                                                   if c.name not in new_cols])
+        md.create_all(eng, tables=[old_vulns])
         db.run_migrations(eng)  # stamped at the baseline, then upgraded
         with eng.connect() as conn:
             assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == _head()
