@@ -83,14 +83,16 @@ def asset_facets(db: Session = Depends(get_db)):
     def distinct(col):
         return sorted(v for (v,) in db.execute(select(col).distinct()) if v)
 
-    subs = sorted({(s, n) for s, n in db.execute(select(Asset.subscription_id, Asset.subscription_name).distinct())
-                   if s}, key=lambda x: x[1] or "")
+    subs = sorted({(s, n, p) for s, n, p in db.execute(
+        select(Asset.subscription_id, Asset.subscription_name, Asset.provider).distinct()) if s},
+        key=lambda x: (x[2] or "", x[1] or ""))
     return {
         "types": distinct(Asset.type),
         "providers": distinct(Asset.provider),
         "sources": distinct(Asset.source),
         "regions": distinct(Asset.region),
-        "subscriptions": [{"id": s, "name": n or s} for s, n in subs],
+        # Azure subscriptions, AWS accounts and GCP projects
+        "subscriptions": [{"id": s, "name": n or s, "provider": p} for s, n, p in subs],
     }
 
 
@@ -129,6 +131,8 @@ def list_findings(
     rule_id: str | None = None,
     asset_id: str | None = None,
     source: str | None = None,
+    provider: str | None = Query(None, description="Cloud of the affected asset: azure|aws|gcp"),
+    subscription_id: str | None = Query(None, description="Azure subscription, AWS account or GCP project"),
     compliance: str | None = Query(None, description="Substring of a compliance control, e.g. 'CIS Azure 6'"),
     limit: int = Query(500, le=5000),
 ):
@@ -143,7 +147,13 @@ def list_findings(
         stmt = stmt.where(Finding.asset_id == asset_id)
     if source:
         stmt = stmt.where(Finding.source == source)
-    rows = list(db.scalars(stmt))
+    if provider or subscription_id:
+        stmt = stmt.join(Asset, Finding.asset_id == Asset.id)
+        if provider:
+            stmt = stmt.where(Asset.provider == provider)
+        if subscription_id:
+            stmt = stmt.where(Asset.subscription_id == subscription_id)
+    rows = list(db.scalars(stmt).unique())
     if compliance:
         rows = [f for f in rows if any(compliance.lower() in c.lower() for c in f.compliance or [])]
     rows.sort(key=lambda f: (SEV_RANK.get(f.severity, 9), f.rule_id, f.asset_id))

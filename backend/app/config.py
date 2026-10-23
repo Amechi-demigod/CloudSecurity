@@ -6,6 +6,7 @@ in the repository. See `.env.example` at the repo root for the full reference.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 
 
@@ -49,6 +50,12 @@ PRODUCTION_ENVS = {"production", "prod"}
 MIN_INTERVAL_HOURS = 0.25
 MAX_INTERVAL_HOURS = 168.0
 MAX_STARTUP_DELAY_SECONDS = 3600
+
+AWS_ACCESS_KEY_RE = re.compile(r"^(AKIA|ASIA)[A-Z0-9]{12,124}$")
+AWS_ROLE_ARN_RE = re.compile(r"^arn:aws(-[a-z]+)*:iam::\d{12}:role/[\w+=,.@/-]{1,512}$")
+AWS_EXTERNAL_ID_RE = re.compile(r"^[\w+=,.@:/-]{2,1224}$")
+AWS_REGION_RE = re.compile(r"^[a-z]{2}(-[a-z]+)+-\d{1,2}$")
+GCP_PROJECT_RE = re.compile(r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$")
 
 
 @dataclass
@@ -150,6 +157,42 @@ class Settings:
     # Internal: run the (leader-elected) scheduler thread in this process. Tests
     # turn it off; to stop scheduled scans use SCAN_SCHEDULE_ENABLED instead.
     scan_scheduler_worker_enabled: bool = field(default_factory=lambda: _bool("SCAN_SCHEDULER_WORKER_ENABLED", True))
+
+    # AWS read-only posture connector (opt-in, docs/CONNECT_AWS.md). Needs the
+    # AWS managed policies SecurityAudit + ViewOnlyAccess on every scanned account.
+    # How the scanner authenticates:
+    #   auto (default)  access key if AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY are
+    #                   set, else the default credential chain if
+    #                   AWS_USE_DEFAULT_CREDENTIALS=true
+    #   access_key      the dedicated IAM user's access key
+    #   default         boto3's default chain (instance role, ECS/EKS role, profile, SSO...)
+    aws_auth_mode: str = field(default_factory=lambda: (os.getenv("AWS_AUTH_MODE") or "auto").strip().lower())
+    aws_access_key_id: str | None = field(default_factory=lambda: os.getenv("AWS_ACCESS_KEY_ID") or None)
+    aws_secret_access_key: str | None = field(default_factory=lambda: os.getenv("AWS_SECRET_ACCESS_KEY") or None,
+                                              repr=False)
+    aws_use_default_credentials: bool = field(default_factory=lambda: _bool("AWS_USE_DEFAULT_CREDENTIALS", False))
+    # Cross-account: assume one read-only role per target account (comma list).
+    # Empty: scan only the account the credentials belong to.
+    aws_role_arns: list[str] = field(default_factory=lambda: _list("AWS_ROLE_ARNS"))
+    aws_external_id: str | None = field(default_factory=lambda: os.getenv("AWS_EXTERNAL_ID") or None, repr=False)
+    # Regions to scan; empty = every region enabled in the account (ec2:DescribeRegions).
+    aws_regions: list[str] = field(default_factory=lambda: _list("AWS_REGIONS"))
+    # Region for global APIs (IAM, STS, S3 bucket list, DescribeRegions). Change
+    # for GovCloud (us-gov-west-1) or China (cn-north-1).
+    aws_home_region: str = field(default_factory=lambda: (os.getenv("AWS_HOME_REGION") or "us-east-1").strip())
+
+    # GCP read-only posture connector (opt-in, docs/CONNECT_GCP.md). Needs
+    # roles/viewer + roles/iam.securityReviewer on the projects (or organization).
+    # Service account key JSON or workload identity federation config; on-prem it
+    # is mounted read-only from /opt/cnapp/secrets/gcp (cnapp-ctl gcp-key install).
+    gcp_credentials_file: str | None = field(default_factory=lambda: os.getenv("GCP_CREDENTIALS_FILE") or None)
+    # Use Application Default Credentials (GOOGLE_APPLICATION_CREDENTIALS, GCE
+    # metadata server, gcloud ADC) when no credentials file is set.
+    gcp_use_default_credentials: bool = field(default_factory=lambda: _bool("GCP_USE_DEFAULT_CREDENTIALS", False))
+    gcp_project_ids: list[str] = field(default_factory=lambda: _list("GCP_PROJECT_IDS"))
+    # Discover every ACTIVE project under this organization (recursively through folders).
+    gcp_organization_id: str | None = field(
+        default_factory=lambda: (os.getenv("GCP_ORGANIZATION_ID") or "").strip().removeprefix("organizations/") or None)
 
     # --- User authentication ------------------------------------------------
     # First admin, created on startup only when the users table is empty.
@@ -468,6 +511,39 @@ class Settings:
                 problems.append("ENTRA_TENANT_ID must be your tenant id, not a multi-tenant alias")
             if self.is_production and not (self.entra_redirect_uri or "").startswith("https://"):
                 problems.append("ENTRA_REDIRECT_URI must be set to an https:// URL in production")
+        problems.extend(self.cloud_config_problems())
+        return problems
+
+    def cloud_config_problems(self) -> list[str]:
+        """AWS / GCP connector misconfigurations (fatal in every environment).
+
+        Only the syntax is checked here: a missing credentials file just leaves
+        the connector "not configured". Messages never include secret values.
+        """
+        problems = []
+        if self.aws_auth_mode not in {"auto", "access_key", "default"}:
+            problems.append("AWS_AUTH_MODE must be auto, access_key or default")
+        if bool(self.aws_access_key_id) != bool(self.aws_secret_access_key):
+            problems.append("AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be set together")
+        if self.aws_access_key_id and not AWS_ACCESS_KEY_RE.match(self.aws_access_key_id):
+            problems.append("AWS_ACCESS_KEY_ID does not look like an access key id (AKIA... / ASIA...)")
+        for arn in self.aws_role_arns:
+            if not AWS_ROLE_ARN_RE.match(arn):
+                problems.append(f"AWS_ROLE_ARNS: {arn!r} is not an IAM role ARN (arn:aws:iam::<12-digit account>:role/<name>)")
+        if self.aws_external_id is not None and not AWS_EXTERNAL_ID_RE.match(self.aws_external_id):
+            problems.append("AWS_EXTERNAL_ID must be 2-1224 characters of letters, digits and +=,.@:/-")
+        for r in self.aws_regions:
+            if not AWS_REGION_RE.match(r):
+                problems.append(f"AWS_REGIONS: {r!r} is not a region name (e.g. eu-west-1)")
+        if not AWS_REGION_RE.match(self.aws_home_region):
+            problems.append(f"AWS_HOME_REGION: {self.aws_home_region!r} is not a region name (e.g. us-east-1)")
+        for p in self.gcp_project_ids:
+            if not GCP_PROJECT_RE.match(p):
+                problems.append(f"GCP_PROJECT_IDS: {p!r} is not a project ID (6-30 chars: lowercase letters, digits, -)")
+        if self.gcp_organization_id and not self.gcp_organization_id.isdigit():
+            problems.append("GCP_ORGANIZATION_ID must be the numeric organization ID (gcloud organizations list)")
+        if self.gcp_credentials_file and not os.path.isabs(self.gcp_credentials_file):
+            problems.append("GCP_CREDENTIALS_FILE must be an absolute path (on-prem: /run/secrets/gcp/credentials.json)")
         return problems
 
     def scan_schedule_problems(self) -> list[str]:

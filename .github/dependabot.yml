@@ -8,6 +8,10 @@ updates:
     groups:
       azure-sdk:
         patterns: ["azure-*"]
+      aws-sdk:
+        patterns: ["boto3", "botocore", "moto"]
+      google-auth:
+        patterns: ["google-auth"]
 
   - package-ecosystem: pip
     directory: /sensor

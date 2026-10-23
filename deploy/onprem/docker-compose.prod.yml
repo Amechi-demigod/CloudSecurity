@@ -10,6 +10,7 @@
 # Layout (see docs/DEPLOY_ONPREM.md):
 #   /opt/cnapp/cnapp.env              settings (0600)       -> backend env + interpolation below
 #   /opt/cnapp/secrets/generated.env  generated secrets (0600)
+#   /opt/cnapp/secrets/gcp/           GCP connector key (0600, backend uid; cnapp-ctl gcp-key)
 #   /opt/cnapp/tls/server.crt|key     TLS certificate (full chain) and key
 #   volume cnapp_pgdata               PostgreSQL data
 #
@@ -110,7 +111,7 @@ services:
       # (docs/AGENT_UPDATES.md). Set AGENT_UPDATE_AUTO_IMPORT=false in cnapp.env to
       # disable; the console setting overrides it.
       AGENT_UPDATE_AUTO_IMPORT: ${AGENT_UPDATE_AUTO_IMPORT:-true}
-      # Outbound proxy (auto-import, Entra SSO, notifications), from cnapp.env.
+      # Outbound proxy (auto-import, Entra SSO, notifications, AWS / GCP scans), from cnapp.env.
       # Local and stack-internal names always bypass it (health check, database).
       HTTPS_PROXY: ${HTTPS_PROXY:-}
       HTTP_PROXY: ${HTTP_PROXY:-}
@@ -118,6 +119,11 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=64m
+    volumes:
+      # GCP connector key (cnapp-ctl gcp-key install): /opt/cnapp/secrets/gcp is
+      # 0700 and the key 0600, both owned by the backend user (10001); read-only
+      # here. GCP_CREDENTIALS_FILE=/run/secrets/gcp/credentials.json in cnapp.env.
+      - ../secrets/gcp:/run/secrets/gcp:ro
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     mem_limit: ${BACKEND_MEM_LIMIT:-1280m}

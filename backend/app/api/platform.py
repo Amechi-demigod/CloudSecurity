@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from .. import config
 from ..auth import audit, client_ip, require_admin, require_analyst
-from ..connectors import build_registry
+from ..connectors import CLOUD_CONNECTORS, build_registry
 from ..db import get_db
 from ..engine.attack_paths import INTERNET_NODE
 from ..models import Asset, ScanRun, User
@@ -26,9 +26,11 @@ public_router = APIRouter(prefix="/api", tags=["platform"])
 def health(request: Request):
     sim = getattr(request.app.state, "simulator", None)
     s = config.settings
+    reg = build_registry(s)
     return {"status": "ok", "simulation_mode": s.simulation_mode, "simulator_running": bool(sim and sim.running),
             "simulator_leader": bool(sim and sim.is_leader),
-            "azure_configured": build_registry(s)["azure"].is_configured()}
+            # azure_configured / aws_configured / gcp_configured
+            **{f"{n}_configured": bool(n in reg and reg[n].is_configured()) for n in CLOUD_CONNECTORS}}
 
 
 @router.get("/dashboard")
@@ -65,8 +67,17 @@ def attack_path_graph(db: Session = Depends(get_db), limit: int = Query(10, le=5
 
 
 @router.get("/connectors")
-def list_connectors():
-    return [c.info() for c in build_registry(config.settings).values()]
+def list_connectors(db: Session = Depends(get_db)):
+    """Connectors with configuration state, scan scope and their latest scan."""
+    out = []
+    for c in build_registry(config.settings).values():
+        last = db.scalar(select(ScanRun).where(ScanRun.connector == c.name).order_by(ScanRun.started_at.desc()).limit(1))
+        accounts = sorted({(sid, name) for sid, name in db.execute(
+            select(Asset.subscription_id, Asset.subscription_name).where(Asset.source == c.name).distinct()) if sid})
+        out.append({**c.info(),
+                    "last_scan": ScanRunOut.model_validate(last).model_dump(mode="json") if last else None,
+                    "discovered_scopes": [{"id": sid, "name": name or sid} for sid, name in accounts]})
+    return out
 
 
 @router.post("/scans", response_model=ScanRunOut, status_code=202)
@@ -78,9 +89,7 @@ def run_scan(body: ScanRequest, request: Request, user: User = Depends(require_a
     if conn is None:
         raise HTTPException(404, f"unknown connector '{body.connector}'")
     if not conn.is_configured():
-        raise HTTPException(400, f"connector '{body.connector}' is not configured; set AZURE_SUBSCRIPTION_IDS and "
-                                 "a credential: the managed identity (AZURE_MANAGED_IDENTITY_CLIENT_ID) when "
-                                 "deployed on Azure, or AZURE_TENANT_ID/AZURE_CLIENT_ID/AZURE_CLIENT_SECRET locally")
+        raise HTTPException(400, f"connector '{body.connector}' is not configured; {conn.setup_hint}".rstrip("; "))
     run = start_scan(conn, background=True)
     audit(db, "scan_started", actor=user, target=body.connector, ip=client_ip(request), scan_id=run.id)
     db.commit()

@@ -143,7 +143,18 @@ function Shell() {
                 />
                 Runtime feed {health.simulator_running ? "live" : "idle"}
               </div>
-              <div>Azure connector: {health.azure_configured ? "configured" : "not configured"}</div>
+              <div>
+                Cloud connectors:{" "}
+                <span className="text-ink-2">
+                  {[
+                    health.azure_configured && "Azure",
+                    health.aws_configured && "AWS",
+                    health.gcp_configured && "GCP",
+                  ]
+                    .filter(Boolean)
+                    .join(", ") || "none configured"}
+                </span>
+              </div>
             </>
           )}
         </div>

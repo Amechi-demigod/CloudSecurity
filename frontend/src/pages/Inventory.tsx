@@ -2,11 +2,12 @@ import { useState } from "react";
 import { api } from "../api";
 import AssetDrawer from "../components/AssetDrawer";
 import { Card, Empty, ErrorNote, PageHeader, RiskBar, Select, Table, Tag } from "../components/ui";
-import { TYPE_LABEL } from "../lib/format";
+import { PROVIDER_LABEL, SCOPE_LABEL, TYPE_LABEL } from "../lib/format";
 import { useApi } from "../lib/useApi";
 
 export default function Inventory() {
   const [type, setType] = useState("");
+  const [provider, setProvider] = useState("");
   const [sub, setSub] = useState("");
   const [exposed, setExposed] = useState("");
   const [source, setSource] = useState("");
@@ -18,12 +19,13 @@ export default function Inventory() {
     () =>
       api.assets({
         type: type || undefined,
+        provider: provider || undefined,
         subscription_id: sub || undefined,
         source: source || undefined,
         internet_exposed: exposed === "" ? undefined : exposed === "yes",
         q: q || undefined,
       }),
-    [type, sub, exposed, source, q],
+    [type, provider, sub, exposed, source, q],
   );
 
   return (
@@ -44,10 +46,24 @@ export default function Inventory() {
           options={[{ value: "", label: "All" }, ...(facets?.types ?? []).map((t) => ({ value: t, label: TYPE_LABEL[t] ?? t }))]}
         />
         <Select
-          label="Subscription"
+          label="Cloud"
+          value={provider}
+          onChange={(v) => {
+            setProvider(v);
+            setSub("");
+          }}
+          options={[{ value: "", label: "All" }, ...(facets?.providers ?? []).map((p) => ({ value: p, label: PROVIDER_LABEL[p] ?? p }))]}
+        />
+        <Select
+          label={provider ? (SCOPE_LABEL[provider] ?? "Scope") : "Subscription / account / project"}
           value={sub}
           onChange={setSub}
-          options={[{ value: "", label: "All" }, ...(facets?.subscriptions ?? []).map((s) => ({ value: s.id, label: s.name }))]}
+          options={[
+            { value: "", label: "All" },
+            ...(facets?.subscriptions ?? [])
+              .filter((s) => !provider || s.provider === provider)
+              .map((s) => ({ value: s.id, label: provider ? s.name : `${PROVIDER_LABEL[s.provider] ?? s.provider}: ${s.name}` })),
+          ]}
         />
         <Select
           label="Exposure"
@@ -68,12 +84,13 @@ export default function Inventory() {
         ) : data && data.length === 0 ? (
           <Empty>No assets match these filters.</Empty>
         ) : (
-          <Table head={["Name", "Type", "Subscription / RG", "Region", "Context", "Findings", "Vulns", "Max vuln risk", "Alerts"]}>
+          <Table head={["Name", "Type", "Subscription / account / project", "Region", "Context", "Findings", "Vulns", "Max vuln risk", "Alerts"]}>
             {data?.map((a) => (
               <tr key={a.id} className="cursor-pointer hover:bg-surface-2" onClick={() => setSelected(a.id)}>
                 <td className="px-3 py-2 font-medium">{a.name}</td>
                 <td className="px-3 py-2 text-ink-2">{TYPE_LABEL[a.type] ?? a.type}</td>
                 <td className="px-3 py-2 text-xs text-ink-2">
+                  {a.provider !== "azure" && <span className="mr-1 font-medium text-ink-3">{PROVIDER_LABEL[a.provider] ?? a.provider}</span>}
                   {a.subscription_name}
                   {a.resource_group && <div className="text-ink-3">{a.resource_group}</div>}
                 </td>

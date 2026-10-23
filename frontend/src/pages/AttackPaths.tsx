@@ -22,6 +22,18 @@ const TYPE_GLYPH: Record<string, string> = {
   sql_database: "DB",
   key_vault: "KV",
   aks_cluster: "AKS",
+  ec2_instance: "EC2",
+  lambda_function: "λ",
+  iam_role: "ROLE",
+  iam_user: "USER",
+  s3_bucket: "S3",
+  rds_instance: "RDS",
+  gce_instance: "GCE",
+  cloud_function: "FN",
+  cloud_run_service: "RUN",
+  gcp_service_account: "SA",
+  gcs_bucket: "GCS",
+  cloud_sql_instance: "SQL",
 };
 
 type GNode = { id: string; name: string; type: string; sensitive_data?: boolean; internet_exposed?: boolean };

@@ -44,6 +44,12 @@ for k in ("AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET", "AZURE_SU
           "NOTIFICATIONS_ENCRYPTION_KEY", "PUBLIC_BASE_URL", "PUBLIC_AGENT_URL", "NOTIFICATIONS_ALLOW_INSECURE_DEV",
           "SCAN_SCHEDULE_ENABLED", "SCAN_INTERVAL_HOURS", "SCAN_STARTUP_DELAY_SECONDS"):
     os.environ.pop(k, None)
+# AWS / GCP connectors: never pick up the developer's cloud credentials or
+# config files (tests use moto / mocked HTTP and opt in per test).
+for k in [k for k in os.environ if k.startswith(("AWS_", "GCP_", "GOOGLE_", "CLOUDSDK_"))]:
+    os.environ.pop(k, None)
+os.environ.update({"AWS_CONFIG_FILE": os.devnull, "AWS_SHARED_CREDENTIALS_FILE": os.devnull,
+                   "AWS_EC2_METADATA_DISABLED": "true", "MOTO_IAM_LOAD_MANAGED_POLICIES": "true"})
 # MFA / SSO settings (tests opt in per test).
 for k in [k for k in os.environ if k.startswith(("ENTRA_", "MFA_", "AUTH_PASSWORD_LOGIN", "AUTH_BREAK_GLASS"))]:
     os.environ.pop(k, None)

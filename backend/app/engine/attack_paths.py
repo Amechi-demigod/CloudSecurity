@@ -15,10 +15,23 @@ from dataclasses import dataclass, field
 from typing import Any
 
 TRAVERSABLE = {"contains", "connects_to", "uses_identity", "has_access"}
-WORKLOAD_TYPES = {"vm", "pod", "function_app"}
-DATA_TYPES = {"storage_account", "sql_server", "sql_database", "key_vault"}
+WORKLOAD_TYPES = {"vm", "pod", "function_app",
+                  "ec2_instance", "lambda_function",  # AWS
+                  "gce_instance", "cloud_function", "cloud_run_service"}  # GCP
+DATA_TYPES = {"storage_account", "sql_server", "sql_database", "key_vault",
+              "s3_bucket", "rds_instance",  # AWS
+              "gcs_bucket", "cloud_sql_instance"}  # GCP
+IDENTITY_TYPES = {"identity", "iam_role", "iam_user", "gcp_service_account"}
 PRIVILEGED_ROLES = {"Owner", "Contributor", "User Access Administrator", "Storage Blob Data Owner",
-                    "Key Vault Administrator", "Storage Blob Data Contributor", "Key Vault Secrets User"}
+                    "Key Vault Administrator", "Storage Blob Data Contributor", "Key Vault Secrets User",
+                    # AWS managed policies / customer policies allowing *:*
+                    "AdministratorAccess", "PowerUserAccess", "IAMFullAccess", "AmazonS3FullAccess",
+                    "AmazonRDSFullAccess", "*:* (customer/inline policy)",
+                    # GCP roles
+                    "roles/owner", "roles/editor", "roles/storage.admin", "roles/storage.objectAdmin",
+                    "roles/cloudsql.admin", "roles/iam.serviceAccountTokenCreator", "roles/iam.securityAdmin"}
+# Identity scopes that cover a whole subscription / account / project.
+BROAD_SCOPES = {"subscription", "account", "project", "organization"}
 FINDING_W = {"critical": 10, "high": 6, "medium": 2, "low": 0.5}
 INTERNET_NODE = "internet"
 MAX_DEPTH = 6
@@ -84,12 +97,12 @@ def compute_attack_paths(
             reasons.append(f"Misconfigured: {worst['title']}")
             score += min(15.0, sum(FINDING_W.get(f["severity"], 0) for f in fs))
             weak = weak or is_entry or a["type"] in DATA_TYPES
-        if a["type"] == "identity":
+        if a["type"] in IDENTITY_TYPES:
             roles = [r for r in (a.get("properties") or {}).get("roles", []) if r in PRIVILEGED_ROLES]
             if roles:
                 scope = (a.get("properties") or {}).get("scope", "resource")
                 reasons.append(f"Identity with {', '.join(roles)} ({scope} scope)")
-                score += 15 if scope == "subscription" else 8
+                score += 15 if scope in BROAD_SCOPES else 8
         if a.get("sensitive_data"):
             cls = (a.get("properties") or {}).get("data_classification") or "sensitive data"
             reasons.append(f"Holds {cls}")

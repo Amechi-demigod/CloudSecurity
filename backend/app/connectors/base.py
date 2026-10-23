@@ -3,8 +3,10 @@
 A connector discovers cloud resources (and optionally vulnerabilities) and
 returns them in a provider-agnostic `CollectionResult`. The ingest service
 (`app/services/ingest.py`) then upserts them into the inventory and runs the
-posture rules engine. To add AWS/GCP, implement `Connector` and register it in
-`app/connectors/__init__.py::REGISTRY`.
+posture rules engine. Providers (Azure, AWS, GCP) implement `Connector` and are
+registered in `app/connectors/__init__.py::build_registry`. Manual "Run scan"
+and scheduled scans both go through `app/services/scans.py::start_scan`, which
+only runs connectors whose `is_configured()` is true.
 
 Runtime sensors (e.g. a future eBPF agent) do not implement this interface;
 they push events to `POST /api/runtime/events` instead.
@@ -61,11 +63,26 @@ class CollectionResult:
     errors: list[str] = field(default_factory=list)
 
 
+SENSITIVE_TAG_KEYS = {"data_classification", "data-classification", "dataclassification", "classification",
+                      "sensitivity", "data"}
+NON_SENSITIVE_VALUES = {"public", "none", "non-sensitive", "nonsensitive", "general"}
+
+
+def sensitive_from_tags(tags: dict | None) -> tuple[bool, str | None]:
+    """(is_sensitive, classification) from tags / labels such as data-classification=PII."""
+    for k, v in (tags or {}).items():
+        if k.lower() in SENSITIVE_TAG_KEYS and str(v).lower() not in NON_SENSITIVE_VALUES:
+            return True, str(v)
+    return False, None
+
+
 class Connector(ABC):
     #: unique key, also used as `source` on stored rows
     name: str = "base"
     provider: str = "unknown"
     description: str = ""
+    #: shown when a scan is requested while `is_configured()` is false
+    setup_hint: str = ""
 
     @abstractmethod
     def is_configured(self) -> bool:
@@ -75,10 +92,16 @@ class Connector(ABC):
     def collect(self) -> CollectionResult:
         """Discover resources. MUST be read-only against the cloud provider."""
 
+    def scope(self) -> list[str]:
+        """Configured scan targets (subscriptions, accounts, projects...), for the UI."""
+        return []
+
     def info(self) -> dict[str, Any]:
         return {
             "name": self.name,
             "provider": self.provider,
             "description": self.description,
             "configured": self.is_configured(),
+            "scope": self.scope(),
+            "setup_hint": self.setup_hint,
         }
