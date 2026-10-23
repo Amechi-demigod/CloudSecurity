@@ -9,6 +9,9 @@ from ..engine import posture
 from ..engine.risk import cvss_severity, priority_for, vuln_risk_score
 from ..models import Asset, Finding, Relationship, Vulnerability, new_id, utcnow
 from ..notifications import builtin as notify
+from .eol_vulns import sync_eol_vulnerabilities
+
+EOL_VULN_TYPES = {"web_app", "function_app", "postgresql_server", "mysql_server", "redis_cache"}
 
 
 def ingest_collection(db: Session, result: CollectionResult, source: str) -> dict:
@@ -81,7 +84,13 @@ def ingest_collection(db: Session, result: CollectionResult, source: str) -> dic
     if result.vulnerabilities:
         rescore_vulnerabilities(db)
 
-    stats = evaluate_posture(db, [db.get(Asset, i) for i in seen_ids], source)
+    scanned = [db.get(Asset, i) for i in seen_ids]
+    stats = evaluate_posture(db, scanned, source)
+    # end-of-life runtimes / database engines also land on the Vulnerabilities page
+    eol_assets = [a for a in scanned if a is not None and a.type in EOL_VULN_TYPES]
+    if eol_assets:
+        stats.update(sync_eol_vulnerabilities(db, eol_assets, now))
+        rescore_vulnerabilities(db)
     db.commit()
     return {"assets": len(seen_ids), **stats}
 
@@ -103,9 +112,12 @@ def evaluate_posture(db: Session, assets: list[Asset], source: str) -> dict:
         failures = {r.id: (r, ev) for r, ev in posture.evaluate_asset(asset_to_dict(a))}
         existing = {f.rule_id: f for f in db.scalars(select(Finding).where(Finding.asset_id == a.id))}
         for rid, (r, ev) in failures.items():
+            # a rule can give a specific title (e.g. "Runtime PHP 7.4 is end-of-life since 2022-11-28")
+            ev = dict(ev)
+            title = str(ev.pop("_title", "") or r.title)
             f = existing.get(rid)
             if f is None:
-                f = Finding(id=new_id(), rule_id=rid, asset_id=a.id, title=r.title, description=r.description,
+                f = Finding(id=new_id(), rule_id=rid, asset_id=a.id, title=title, description=r.description,
                             severity=r.severity, remediation=r.remediation, compliance=list(r.compliance),
                             evidence=ev, source=source, first_seen=now, last_seen=now)
                 db.add(f)
@@ -114,6 +126,7 @@ def evaluate_posture(db: Session, assets: list[Asset], source: str) -> dict:
             else:
                 f.last_seen = now
                 f.evidence = ev
+                f.title = title
                 if f.status == "resolved":  # regression
                     f.status = "open"
                     f.resolved_at = None

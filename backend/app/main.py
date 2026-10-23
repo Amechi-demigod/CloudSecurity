@@ -21,6 +21,7 @@ from .api import approvals as approvals_api
 from .api import auth as auth_api
 from .api import device_scripts as device_scripts_api
 from .api import devices, inventory, platform, runtime, vulns
+from .api import exposure as exposure_api
 from .api import mfa_sso as mfa_sso_api
 from .asset_lifecycle import api as it_assets_api
 from .notifications import api as notifications_api
@@ -158,6 +159,7 @@ def create_app() -> FastAPI:
     session_required = [Depends(auth.require_viewer)]
     for r in (platform.router, inventory.router, vulns.router, runtime.router, devices.router):
         app.include_router(r, dependencies=session_required)
+    app.include_router(exposure_api.router, dependencies=session_required)  # /api/exposure: any signed-in user
     app.include_router(auth_api.admin_router)
     app.include_router(agent_update_auto_api.router)  # /api/updates/automation, /api/updates/update-now
     app.include_router(notifications_api.router)  # analyst read-only, admin writes

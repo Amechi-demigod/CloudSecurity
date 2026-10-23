@@ -29,7 +29,7 @@ def attack_paths(db: Session, limit: int = 20, include_unconfirmed: bool = True)
                                   "exploit_available": v.exploit_available, "risk_score": v.risk_score})
     findings: dict[str, list] = defaultdict(list)
     for f in db.scalars(select(Finding).where(Finding.status == "open")):
-        findings[f.asset_id].append({"severity": f.severity, "title": f.title})
+        findings[f.asset_id].append({"severity": f.severity, "title": f.title, "rule_id": f.rule_id})
     return compute_attack_paths(assets, rels, vulns, findings, limit=limit, include_unconfirmed=include_unconfirmed)
 
 

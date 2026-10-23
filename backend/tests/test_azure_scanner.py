@@ -9,6 +9,7 @@ from app.connectors.azure import AzureConnector, ReadOnlyClient, ReadOnlyViolati
 from app.engine.posture import evaluate_asset
 from app.models import Finding, Relationship
 from app.services.ingest import asset_to_dict, ingest_collection
+from tests.azure_fakes import ops, with_defaults
 
 SUB = "11111111-2222-3333-4444-555555555555"
 RG = f"/subscriptions/{SUB}/resourceGroups/rg-app/providers"
@@ -25,14 +26,6 @@ KV_ID = f"{RG}/Microsoft.KeyVault/vaults/kv-app"
 AKS_ID = f"{RG}/Microsoft.ContainerService/managedClusters/aks-app"
 FN_ID = f"{RG}/Microsoft.Web/sites/fn-app"
 UAI_ID = f"{RG}/Microsoft.ManagedIdentity/userAssignedIdentities/id-app"
-
-
-def ops(**methods):
-    """Operations-group double: each kwarg becomes a MagicMock returning the value."""
-    o = MagicMock(spec=list(methods) + ["begin_delete", "begin_create_or_update", "delete", "update"])
-    for name, value in methods.items():
-        getattr(o, name).return_value = value
-    return o
 
 
 def build_clients():
@@ -94,8 +87,9 @@ def build_clients():
         NS(role_definition_id=sub_scope + CONTRIB, scope=sub_scope, principal_id="uai-principal"),
         NS(role_definition_id=sub_scope + BLOB_OWNER, scope=ST_ID, principal_id="vm-principal"),
     ]))
-    return {"network": network, "compute": compute, "storage": storage, "sql": sql, "keyvault": keyvault,
-            "containerservice": containerservice, "resource": resource, "authorization": authorization}
+    return with_defaults({"network": network, "compute": compute, "storage": storage, "sql": sql,
+                          "keyvault": keyvault, "containerservice": containerservice, "resource": resource,
+                          "authorization": authorization})
 
 
 @pytest.fixture()
@@ -217,6 +211,13 @@ def test_ingest_merges_and_resolves_on_rescan(session, clients):
     ("keyvault", "vaults", "list_by_subscription", "delete"),
     ("containerservice", "managed_clusters", "list", "begin_delete"),
     ("authorization", "role_assignments", "list_for_subscription", "create"),
+    ("network", "azure_firewalls", "list_all", "begin_delete"),
+    ("network", "private_endpoints", "list_by_subscription", "begin_create_or_update"),
+    ("web", "web_apps", "list", "restart"),
+    ("postgresql", "servers", "list_by_subscription", "begin_restart"),
+    ("mysql", "servers", "list", "begin_stop"),
+    ("cosmosdb", "database_accounts", "list", "begin_regenerate_key"),
+    ("redis", "redis", "list_by_subscription", "begin_force_reboot"),
 ])
 def test_real_sdk_clients_are_wrapped_read_only(kind, group, read_op, write_op):
     """Construct the real azure-mgmt clients (no network I/O) and check the guard."""
@@ -234,6 +235,13 @@ def test_real_sdk_clients_are_wrapped_read_only(kind, group, read_op, write_op):
     ("storage", "storage_accounts", "list_account_sas"),
     ("containerservice", "managed_clusters", "list_cluster_admin_credentials"),
     ("containerservice", "managed_clusters", "list_cluster_user_credentials"),
+    ("web", "web_apps", "list_application_settings"),
+    ("web", "web_apps", "get_auth_settings"),
+    ("web", "web_apps", "list_publishing_profile_xml_with_secrets"),
+    ("cosmosdb", "database_accounts", "list_keys"),
+    ("cosmosdb", "database_accounts", "list_read_only_keys"),
+    ("cosmosdb", "database_accounts", "list_connection_strings"),
+    ("redis", "redis", "list_keys"),
 ])
 def test_secret_returning_list_calls_are_blocked(kind, group, secret_op):
     """list_keys & co. are POSTs that return secrets; a posture scan must never call them."""

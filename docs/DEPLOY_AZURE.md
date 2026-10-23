@@ -193,7 +193,7 @@ az role assignment create --assignee-object-id "$PRINCIPAL" --assignee-principal
 # Many subscriptions: --scope /providers/Microsoft.Management/managementGroups/<mg-id>
 ```
 
-Reader is enough: the scanner only issues `list*`/`get*` calls and the code-level `ReadOnlyClient` guard blocks everything else, including list calls that return secrets. Role assignments take a few minutes to propagate. Locally, the scanner still supports a service principal secret (`AZURE_TENANT_ID`/`AZURE_CLIENT_ID`/`AZURE_CLIENT_SECRET`, see the README) or `AZURE_USE_DEFAULT_CREDENTIAL=true` with `az login`.
+Reader is enough (what it covers and what Reader cannot see: [AZURE_COVERAGE.md](AZURE_COVERAGE.md#permissions)): the scanner only issues `list*`/`get*` calls and the code-level `ReadOnlyClient` guard blocks everything else, including list calls that return secrets. Role assignments take a few minutes to propagate. Locally, the scanner still supports a service principal secret (`AZURE_TENANT_ID`/`AZURE_CLIENT_ID`/`AZURE_CLIENT_SECRET`, see the README) or `AZURE_USE_DEFAULT_CREDENTIAL=true` with `az login`.
 
 ## Enable Sign in with Microsoft and MFA
 

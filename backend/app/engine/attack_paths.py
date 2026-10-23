@@ -17,8 +17,9 @@ Every such chain is reported, in one of two flavours:
   lower and capped at medium severity.
 
 Network-control attribution is generic: any asset that `protects` the entry
-point and carries normalized `security_rules` (the shape
-`posture.open_to_internet` understands) is analysed. Edges may carry a `level`
+point and carries normalized `security_rules` is analysed with the shared rule
+evaluator (`engine/nsg.py`: priority order, first match wins, Deny rules and the
+Azure default rules, destination application security groups). Edges may carry a `level`
 (or `levels`) property; when controls sit at several levels (Azure NIC + subnet
 NSGs) a port only counts as exposed if every level allows it, while controls at
 the same level (several AWS security groups) are combined. Only risky ports
@@ -26,6 +27,13 @@ the same level (several AWS security groups) are combined. Only risky ports
 them: directly via a public IP, or - for an asset reported without a public IP,
 e.g. behind a public load balancer - via the backend ports in its
 `forwarded_ports` property.
+
+Entry points reached only *through* another entry point (a VM behind an Azure
+Firewall DNAT rule lists the firewall in `exposed_only_via`) are not separate
+entries: their paths start at the firewall, which `connects_to` them.
+
+Findings of rules flagged `weakness` (end-of-life runtimes / engines) count as
+exploitable on any hop, like an in-use vulnerability.
 
 The engine works on plain dicts so it is easy to unit test.
 """
@@ -35,18 +43,22 @@ import hashlib
 from dataclasses import dataclass, field
 from typing import Any
 
-from .posture import open_to_internet
+from . import nsg
+from .posture import RULES
 
 TRAVERSABLE = {"contains", "connects_to", "uses_identity", "has_access"}
-WORKLOAD_TYPES = {"vm", "vmss", "pod", "function_app",
+WORKLOAD_TYPES = {"vm", "vmss", "pod", "function_app", "web_app",
                   "ec2_instance", "lambda_function",  # AWS
                   "gce_instance", "cloud_function", "cloud_run_service"}  # GCP
 DATA_TYPES = {"storage_account", "sql_server", "sql_database", "key_vault",
+              "postgresql_server", "mysql_server", "cosmos_account", "redis_cache", "sql_managed_instance",
               "s3_bucket", "rds_instance",  # AWS
               "gcs_bucket", "cloud_sql_instance"}  # GCP
 IDENTITY_TYPES = {"identity", "iam_role", "iam_user", "gcp_service_account"}
 PRIVILEGED_ROLES = {"Owner", "Contributor", "User Access Administrator", "Storage Blob Data Owner",
                     "Key Vault Administrator", "Storage Blob Data Contributor", "Key Vault Secrets User",
+                    "Cosmos DB Built-in Data Contributor", "DocumentDB Account Contributor",
+                    "Redis Cache Contributor", "Entra administrator",
                     # AWS managed policies / customer policies allowing *:*
                     "AdministratorAccess", "PowerUserAccess", "IAMFullAccess", "AmazonS3FullAccess",
                     "AmazonRDSFullAccess", "*:* (customer/inline policy)",
@@ -112,16 +124,13 @@ def _is_network_control(a: dict[str, Any]) -> bool:
     return a["type"] in NETWORK_CONTROL_LABEL or bool((a.get("properties") or {}).get("security_rules"))
 
 
-def _open_ports(a: dict[str, Any]) -> set[int | None]:
+def _open_ports(a: dict[str, Any], target_asgs: list[str] | None = None) -> set[int | None]:
     """Ports from EXPOSURE_PORTS (None = all ports) that the control's rules open to the internet."""
-    out: set[int | None] = set()
-    for port, _ in EXPOSURE_PORTS:
-        try:
-            if open_to_internet(a, port):
-                out.add(port)
-        except Exception:  # noqa: BLE001, S112 - malformed rules never break path analysis
-            continue
-    return out
+    try:
+        exp = nsg.asset_exposure(a, target_asgs=target_asgs)
+    except Exception:  # noqa: BLE001 - malformed rules never break path analysis
+        return set()
+    return {port for port, _ in EXPOSURE_PORTS if exp.rules_for(port)}
 
 
 def _port_label(port: int | None) -> str:
@@ -183,7 +192,8 @@ def network_exposure(
             reasons.append(f"Exposed via {label} {a['name']}: {worst['title']}")
         return score, reasons
 
-    open_by_ctrl = {pid: _open_ports(assets[pid]) for pid, _ in with_rules}
+    asgs = (assets[target_id].get("properties") or {}).get("asgs")
+    open_by_ctrl = {pid: _open_ports(assets[pid], asgs) for pid, _ in with_rules}
     levels: dict[str, set[str]] = {}
     for pid, props in with_rules:
         lv = props.get("levels") or [props.get("level") or "_"]
@@ -236,6 +246,7 @@ def compute_attack_paths(
             protectors.setdefault(r["target_id"], []).append((r["source_id"], r.get("properties") or {}))
 
     cache: dict[tuple[str, bool], tuple[float, list[str], list[str]]] = {}
+    weakness_rules = {r.id for r in RULES if r.weakness}
 
     def node_eval(aid: str, is_entry: bool) -> tuple[float, list[str], list[str]]:
         """Return (score contribution, reasons, weaknesses). Non-empty weaknesses = exploitable hop."""
@@ -250,11 +261,19 @@ def compute_attack_paths(
             exp = (a.get("properties") or {}).get("exposure") or "public endpoint"
             reasons.append(f"Internet-exposed ({exp})")
             score += 15
+            controls = (a.get("properties") or {}).get("network_controls") or []
+            if controls:
+                reasons.append(f"Network controls: {', '.join(controls[:4])}")
             n_score, n_reasons = network_exposure(aid, assets, protectors, findings_by_asset)
             if n_reasons:
                 reasons += n_reasons
                 weak += n_reasons
                 score += n_score
+        elif a.get("internet_exposed") and (a.get("properties") or {}).get("exposed_only_via"):
+            # reached through an upstream entry (e.g. an Azure Firewall DNAT rule)
+            exp = (a.get("properties") or {}).get("exposure")
+            if exp:
+                reasons.append(f"Internet-exposed ({exp})")
         if a["type"] in WORKLOAD_TYPES:
             vulns = [v for v in vulns_by_asset.get(aid, []) if v.get("in_use") and v.get("cvss", 0) >= 7]
             if vulns:
@@ -264,7 +283,13 @@ def compute_attack_paths(
                 reasons.append(r)
                 weak.append(r)
                 score += 0.35 * float(top.get("risk_score", 0))
-        fs = _high(findings_by_asset.get(aid, []))
+        eol = [f for f in findings_by_asset.get(aid, []) if f.get("rule_id") in weakness_rules]
+        for f in eol[:2]:
+            r = f"Vulnerable: {f['title']}"
+            reasons.append(r)
+            weak.append(r)
+            score += FINDING_W.get(f.get("severity", "high"), 0)
+        fs = [f for f in _high(findings_by_asset.get(aid, [])) if f.get("rule_id") not in weakness_rules]
         if fs:
             worst = sorted(fs, key=lambda f: -FINDING_W.get(f["severity"], 0))[0]
             r = f"Misconfigured: {worst['title']}"
@@ -287,7 +312,13 @@ def compute_attack_paths(
         cache[key] = (score, reasons, weak)
         return cache[key]
 
-    entries = [aid for aid, a in assets.items() if a.get("internet_exposed")]
+    exposed = {aid for aid, a in assets.items() if a.get("internet_exposed")}
+
+    def only_via_other_entry(a: dict[str, Any]) -> bool:
+        via = (a.get("properties") or {}).get("exposed_only_via") or []
+        return bool(via) and all(v in exposed for v in via)
+
+    entries = [aid for aid in exposed if not only_via_other_entry(assets[aid])]
     best: dict[tuple[str, str], AttackPath] = {}
     budget = [MAX_EXPANSIONS]
 
