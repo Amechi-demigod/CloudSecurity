@@ -97,12 +97,14 @@ def vulnerability_found(db: Session, v) -> None:
 
 def scan_finished(db: Session, run) -> None:
     failed = run.status == "failed"
+    trigger = run.trigger or "manual"
     emit(db, Event(
         source=SCAN, event_type="failed" if failed else "completed", severity="high" if failed else "low",
-        title=f"{run.connector} scan {'failed' if failed else 'completed'}", summary=run.message or "",
+        title=f"{'Scheduled ' if trigger == 'scheduled' else ''}{run.connector} scan "
+              f"{'failed' if failed else 'completed'}", summary=run.message or "",
         entity_id=run.id, group_key=f"{SCAN}:{run.connector}:{run.status}", rule_id=run.connector,
         link_path=f"/connectors?scan={_q(run.id)}",
-        attributes={"connector": run.connector, "assets_found": run.assets_found,
+        attributes={"connector": run.connector, "trigger": trigger, "assets_found": run.assets_found,
                     "findings_open": run.findings_open, "errors": list(run.errors or [])[:5]},
     ))
 
@@ -152,5 +154,5 @@ register_source(EventSource(ATTACK_PATH, "Attack path", ("created",),
                             "A new exploitable path from the internet to sensitive data.",
                             poll=poll_attack_paths,
                             poll_interval=lambda: nsettings.get().attack_path_poll_minutes * 60))
-register_source(EventSource(SCAN, "Connector scan", ("completed", "failed"),
-                            "A connector scan finished."))
+register_source(EventSource(SCAN, "Cloud scans", ("completed", "failed"),
+                            "A cloud connector scan (manual or scheduled) finished or failed."))

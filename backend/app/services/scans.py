@@ -16,9 +16,13 @@ from .ingest import ingest_collection
 log = logging.getLogger(__name__)
 
 
-def start_scan(connector: Connector, background: bool = True) -> ScanRun:
+MANUAL = "manual"
+SCHEDULED = "scheduled"
+
+
+def start_scan(connector: Connector, background: bool = True, trigger: str = MANUAL) -> ScanRun:
     with dbmod.get_session() as db:
-        run = ScanRun(connector=connector.name, status="running")
+        run = ScanRun(connector=connector.name, status="running", trigger=trigger)
         db.add(run)
         db.commit()
         run_id = run.id

@@ -8,13 +8,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import config
-from ..auth import audit, client_ip, require_analyst
+from ..auth import audit, client_ip, require_admin, require_analyst
 from ..connectors import build_registry
 from ..db import get_db
 from ..engine.attack_paths import INTERNET_NODE
 from ..models import Asset, ScanRun, User
-from ..schemas import ScanRequest, ScanRunOut
-from ..services import analytics
+from ..schemas import ScanRequest, ScanRunOut, ScanScheduleOut, ScanScheduleUpdate
+from ..services import analytics, scan_schedule
 from ..services.scans import start_scan
 
 router = APIRouter(prefix="/api", tags=["platform"])
@@ -85,6 +85,31 @@ def run_scan(body: ScanRequest, request: Request, user: User = Depends(require_a
     audit(db, "scan_started", actor=user, target=body.connector, ip=client_ip(request), scan_id=run.id)
     db.commit()
     return run
+
+
+@router.get("/scan-schedule", response_model=ScanScheduleOut)
+def get_scan_schedule(db: Session = Depends(get_db)):
+    """Scheduled-scan settings and, per connector, the last scan and the next scheduled one."""
+    return scan_schedule.status(db)
+
+
+@router.put("/scan-schedule", response_model=ScanScheduleOut)
+def update_scan_schedule(body: ScanScheduleUpdate, request: Request, user: User = Depends(require_admin),
+                         db: Session = Depends(get_db)):
+    """Override the schedule (admin). Only the fields sent are changed; null resets a
+    field to its environment default (SCAN_SCHEDULE_ENABLED / SCAN_INTERVAL_HOURS)."""
+    fields = set(body.model_fields_set)
+    if not fields:
+        raise HTTPException(422, "nothing to change: send enabled and/or interval_hours")
+    try:
+        before, after = scan_schedule.update(db, actor=user.email, enabled=body.enabled,
+                                             interval_hours=body.interval_hours, fields=fields)
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+    audit(db, "scan_schedule_updated", actor=user, target="scan-schedule", ip=client_ip(request),
+          before=before, after=after)
+    db.commit()
+    return scan_schedule.status(db)
 
 
 @router.get("/scans", response_model=list[ScanRunOut])

@@ -239,7 +239,8 @@ AZURE_CLIENT_SECRET='<password>'
 AZURE_SUBSCRIPTION_IDS=<sub-id-1>,<sub-id-2>
 ```
 
-`sudo cnapp-ctl restart`, then run a scan from the UI. Reader is read-only; scope it to the subscriptions you want
+`sudo cnapp-ctl restart`, then run a scan from the UI (after that it is also scanned automatically every 6 hours, see
+[Scheduled scans](#8-application-settings-for-on-prem)). Reader is read-only; scope it to the subscriptions you want
 scanned. The secret expires (default 1 year): set a reminder, rotate with `az ad sp credential reset`. Egress:
 `login.microsoftonline.com`, `management.azure.com`.
 
@@ -614,6 +615,24 @@ ENTRA_REDIRECT_URI=https://cnapp.corp.local/api/auth/sso/entra/callback   # pres
 ```
 
 Keep the bootstrap admin as break-glass account (`AUTH_BREAK_GLASS_EMAILS`, default `ADMIN_EMAIL`).
+
+**Scheduled cloud scans** (README "Scheduled scans"). Every configured cloud connector (Azure today) is scanned
+automatically, by default every 6 hours; unconfigured connectors are skipped. Settings in `cnapp.env`:
+
+```
+SCAN_SCHEDULE_ENABLED=true        # false: manual "Run scan" only
+SCAN_INTERVAL_HOURS=6             # 0.25 to 168, fractions allowed (0.5 = every 30 minutes)
+SCAN_STARTUP_DELAY_SECONDS=120    # wait after a restart before an overdue scan runs
+```
+
+These are the defaults: an admin can also turn the schedule off/on or change the interval in **Connectors & scans**
+(stored in the database, audited, applied within a minute without a restart; **Reset to defaults** returns to the
+`cnapp.env` values). Installations created before this release do not have the lines in `cnapp.env` and use the
+defaults above; add them to change them. Timing is kept in the database, so `cnapp-ctl restart` / updates do not
+trigger a burst of scans: an overdue scan runs once, two minutes after start. Manual scans do not move the schedule,
+and a scheduled scan that is due while another scan of the connector is still running is skipped (shown as `skipped`
+in the scan history). Failed scans raise a **Cloud scans** notification - create a rule for it under
+**Notifications > Rules** to be alerted.
 
 **Proxy/cookie settings** are set by the compose file: `TRUST_PROXY_HEADERS=true` with `TRUSTED_PROXY_CIDRS` = the
 stack's Docker network (only nginx can reach the API), `COOKIE_SECURE=true`, `CORS_ORIGINS` empty (same origin).

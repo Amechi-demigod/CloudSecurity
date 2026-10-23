@@ -178,13 +178,29 @@ class ScanRun(Base):
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
     connector: Mapped[str] = mapped_column(String(32))
-    status: Mapped[str] = mapped_column(String(16), default="running")  # running|succeeded|failed
+    status: Mapped[str] = mapped_column(String(16), default="running")  # running|succeeded|failed|skipped
     started_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     assets_found: Mapped[int] = mapped_column(Integer, default=0)
     findings_open: Mapped[int] = mapped_column(Integer, default=0)
     errors: Mapped[list] = mapped_column(JSON, default=list)
     message: Mapped[str] = mapped_column(Text, default="")
+    # "manual" (Run scan / POST /api/scans) or "scheduled" (app/services/scan_schedule.py).
+    # NULL on runs recorded before scheduled scans existed (all manual).
+    trigger: Mapped[str | None] = mapped_column(String(16), nullable=True)
+
+
+class ScanScheduleSettings(Base):
+    """Scheduled-scan overrides made in the console (single row, id 1). NULL
+    fields fall back to SCAN_SCHEDULE_ENABLED / SCAN_INTERVAL_HOURS."""
+
+    __tablename__ = "scan_schedule_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    interval_hours: Mapped[float | None] = mapped_column(Float, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_by: Mapped[str] = mapped_column(String(320), default="system")
 
 
 # --- Authentication -----------------------------------------------------------
@@ -257,7 +273,8 @@ class AuditLog(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
     # login_success | login_failure | login_locked | logout | password_changed | user_created |
-    # user_updated | password_reset | finding_updated | alert_updated | scan_started | user_bootstrapped
+    # user_updated | password_reset | finding_updated | alert_updated | scan_started | user_bootstrapped |
+    # scan_schedule_updated
     action: Mapped[str] = mapped_column(String(64), index=True)
     actor_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     actor_email: Mapped[str | None] = mapped_column(String(320), nullable=True)

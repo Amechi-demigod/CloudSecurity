@@ -187,6 +187,10 @@ resource api 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'AZURE_AUTH_MODE', value: 'managed_identity' }
             { name: 'AZURE_MANAGED_IDENTITY_CLIENT_ID', value: backendIdentityClientId }
             { name: 'AZURE_SUBSCRIPTION_IDS', value: scanSubscriptionIds }
+            // Scheduled posture scans of every configured connector (leader-elected,
+            // so one scheduler for all replicas). Admins can override in the console.
+            { name: 'SCAN_SCHEDULE_ENABLED', value: 'true' }
+            { name: 'SCAN_INTERVAL_HOURS', value: '6' }
             // Alert notifications (docs/NOTIFICATIONS.md). Outbound calls to Teams,
             // Slack, SMTP/ACS and webhooks leave through the environment's default
             // egress (no NAT gateway / firewall is deployed). If you add an Azure

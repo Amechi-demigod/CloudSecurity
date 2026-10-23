@@ -28,6 +28,7 @@ from .notifications import settings as notification_settings
 from .notifications.worker import NotificationWorker, set_worker
 from .security import BodySizeLimitMiddleware, SecurityHeadersMiddleware
 from .services.agent_update_auto import AgentUpdateWorker
+from .services.scan_schedule import ScanScheduler
 from .services.simulation import RuntimeSimulator, seed_if_empty
 
 log = logging.getLogger("cnapp")
@@ -66,7 +67,15 @@ async def lifespan(app: FastAPI):
     if s.agent_update_worker_enabled:
         app.state.agent_updates = AgentUpdateWorker()
         app.state.agent_updates.start()
+    # Scheduled cloud posture scans (leader-elected; enabled / interval are read
+    # from the database on every tick, so console changes apply without a restart).
+    app.state.scan_scheduler = None
+    if s.scan_scheduler_worker_enabled:
+        app.state.scan_scheduler = ScanScheduler()
+        app.state.scan_scheduler.start()
     yield
+    if app.state.scan_scheduler:
+        app.state.scan_scheduler.stop()
     if app.state.simulator:
         app.state.simulator.stop()
     if app.state.notifier:
