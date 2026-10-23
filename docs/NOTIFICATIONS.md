@@ -42,7 +42,11 @@ attack-path poller ───────────┘             (inbox)     
   retried after a 5-minute lease. Receivers can de-duplicate on the delivery id
   (`X-CNAPP-Delivery` header / `id` field).
 * **Event sources:** runtime alerts (new + optional status changes), posture
-  findings (new, regressed, optional status changes), vulnerabilities,
+  findings (new, regressed, optional status changes), vulnerabilities (real
+  CVE matches on laptops / Linux hosts are aggregated per CVE: one event "CVE-x in
+  Google Chrome on 37 devices" for new critical or CISA KEV-listed CVEs, at most
+  once per CVE per 24 h, group key `vulnerability:<CVE>:aggregate`; see
+  [VULNERABILITIES.md](VULNERABILITIES.md)),
   attack paths (new confirmed paths, polled every 10 minutes; exposure paths
   without a confirmed weakness do not notify; the first poll records a
   baseline) and cloud scans (source `scan`, label "Cloud scans": completed /

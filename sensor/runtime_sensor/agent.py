@@ -13,6 +13,7 @@ from .collectors.ebpf import EbpfCollector, ebpf_unavailable_reason
 from .config import Config, load_config
 from .detections import apply_detections
 from .enrich import Enricher, K8sEnricher, detect_cloud
+from .inventory import InventoryReporter, inventory_url
 from .schema import RuntimeEvent
 from .shipper import Shipper
 
@@ -59,7 +60,15 @@ class Agent:
             flush_interval=cfg.flush_interval, max_queue=cfg.max_queue, max_retries=cfg.max_retries,
             dry_run=cfg.dry_run, payload_format=cfg.payload_format, ca_file=cfg.ca_file)
         self.collectors = collectors if collectors is not None else build_collectors(cfg)
+        # Host package inventory for vulnerability matching (EVENT_SCHEMA.md#package-inventory).
+        self.inventory = InventoryReporter(
+            url=cfg.inventory_url or inventory_url(cfg.api_url), sensor_id=cfg.sensor_id, host=cfg.host,
+            host_root=cfg.host_root, cloud=self.enricher.cloud, interval=cfg.inventory_interval,
+            send=self._send_inventory, dry_run=cfg.dry_run)
         self._stop = threading.Event()
+
+    def _send_inventory(self, url: str, body: bytes) -> None:
+        self.shipper._post(url, body, self.shipper._headers(), 60.0)
 
     def process(self, ev: RuntimeEvent) -> RuntimeEvent:
         self.enricher.enrich(ev)
@@ -96,6 +105,8 @@ class Agent:
         log.info("sensor %s started: collectors=%s dry_run=%s endpoint=%s", self.cfg.sensor_id,
                  ",".join(c.name for c in active), self.cfg.dry_run, self.cfg.api_url)
         self.shipper.start()
+        if not self.cfg.once:
+            self.inventory.start()
         try:
             while not self._stop.is_set():
                 started = time.monotonic()
@@ -109,6 +120,7 @@ class Agent:
                     c.close()
                 except Exception:
                     pass
+            self.inventory.stop()
             self.shipper.stop()
             log.info("sensor stopped: %s", self.shipper.stats)
 

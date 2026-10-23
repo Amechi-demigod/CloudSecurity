@@ -4,6 +4,7 @@ import { ApiError, api, type CommandType, type DeviceCommand, type DeviceDetail 
 import { useAuth } from "../../auth/context";
 import { CheckBadge, ConnectivityTag, HealthBadge, IssueList } from "../../components/devices";
 import { ApprovalList } from "../../components/approvals";
+import { VulnTable } from "../../components/vulns";
 import { Button, Card, Empty, ErrorNote, Field, Modal, PageHeader, Table, Tag } from "../../components/ui";
 import { CHECK_LABEL, OS_LABEL, fmtBytes, fmtDuration } from "../../lib/devices";
 import { fmtAgo, fmtTime } from "../../lib/format";
@@ -13,7 +14,7 @@ import { LostModeDialog, LostWipeCard, WipeDialog } from "./LostWipe";
 import { RunScriptDialog } from "./RunScriptDialog";
 import { PendingUpdateView, UpdateNowButton } from "./UpdateAutomation";
 
-const TABS = ["Overview", "Posture", "Software", "History", "Commands", "Updates"] as const;
+const TABS = ["Overview", "Posture", "Software", "Vulnerabilities", "History", "Commands", "Updates"] as const;
 type TabName = (typeof TABS)[number];
 
 const ACTIONS: { type: CommandType; label: string; role: Role; help: string; danger?: boolean }[] = [
@@ -350,6 +351,74 @@ function SoftwareTab({ id }: { id: string }) {
         </Table>
       )}
     </Card>
+  );
+}
+
+function VulnerabilitiesTab({ id }: { id: string }) {
+  const [status, setStatus] = useState("open");
+  const { data, error } = useApi(() => api.deviceVulnerabilities(id, status), [id, status], 60000);
+  const [showChecked, setShowChecked] = useState(false);
+  const kev = data?.vulnerabilities.filter((v) => v.kev).length ?? 0;
+  return (
+    <div className="space-y-4">
+      <Card
+        title={`Vulnerabilities${data ? ` (${data.vulnerabilities.length})` : ""}`}
+        actions={
+          <select value={status} onChange={(e) => setStatus(e.target.value)} aria-label="Status"
+            className="rounded border border-line bg-surface-2 px-2 py-1 text-sm text-ink">
+            <option value="open">Open</option>
+            <option value="resolved">Resolved</option>
+            <option value="all">All</option>
+          </select>
+        }
+      >
+        <ErrorNote error={error} />
+        {data && (
+          <p className="mb-2 text-xs text-ink-3">
+            {data.matched_at ? `Matched ${fmtAgo(data.matched_at)}` : "Not matched yet"}
+            {data.pending ? " · re-match queued (inventory changed)" : ""}
+            {data.os?.label ? ` · OS checked as ${data.os.label} ${data.os.version ?? ""}` : ""}
+            {kev > 0 ? ` · ${kev} known exploited (CISA KEV)` : ""}
+            {data.error ? <span className="ml-1 text-sev-high" title={data.error}>· some data could not be refreshed</span> : null}
+          </p>
+        )}
+        {data && data.vulnerabilities.length === 0 ? (
+          <Empty>{data.matched_at ? "No known vulnerabilities in the checked software." : "Matching runs shortly after the next check-in."}</Empty>
+        ) : (
+          <VulnTable rows={data?.vulnerabilities ?? []} showTarget={false} />
+        )}
+      </Card>
+      {data && (
+        <Card
+          title={`Software coverage: ${data.checked.length} checked, ${data.not_checked.length} not checked`}
+          actions={<Button onClick={() => setShowChecked(!showChecked)}>{showChecked ? "Show not checked" : "Show checked"}</Button>}
+        >
+          {showChecked ? (
+            <Table head={["Software", "Version", "Matched as"]}>
+              {data.checked.map((c, i) => (
+                <tr key={`${c.name}-${i}`}>
+                  <td className="px-3 py-1.5">{c.name}</td>
+                  <td className="px-3 py-1.5 font-mono text-xs text-ink-2">{c.version || "—"}</td>
+                  <td className="px-3 py-1.5 font-mono text-[11px] text-ink-3">{c.cpe}</td>
+                </tr>
+              ))}
+            </Table>
+          ) : data.not_checked.length === 0 ? (
+            <Empty>All reported software is covered by the CPE mapping.</Empty>
+          ) : (
+            <Table head={["Software", "Version", "Why not checked"]}>
+              {data.not_checked.map((c, i) => (
+                <tr key={`${c.name}-${i}`}>
+                  <td className="px-3 py-1.5">{c.name}</td>
+                  <td className="px-3 py-1.5 font-mono text-xs text-ink-2">{c.version || "—"}</td>
+                  <td className="px-3 py-1.5 text-xs text-ink-3">{c.reason}</td>
+                </tr>
+              ))}
+            </Table>
+          )}
+        </Card>
+      )}
+    </div>
   );
 }
 
@@ -710,6 +779,7 @@ export default function DeviceDetail() {
       {tab === "Overview" && <Overview device={device} />}
       {tab === "Posture" && <PostureCards device={device} />}
       {tab === "Software" && <SoftwareTab id={device.id} />}
+      {tab === "Vulnerabilities" && <VulnerabilitiesTab id={device.id} />}
       {tab === "History" && <HistoryTab id={device.id} />}
       {tab === "Updates" && <UpdatesTab id={device.id} admin={can("admin") && active} analyst={can("analyst") && active} />}
       {tab === "Commands" && <CommandsTab device={device} commands={cmds.data} error={cmds.error} reload={cmds.reload} />}

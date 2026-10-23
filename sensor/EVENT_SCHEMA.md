@@ -125,3 +125,49 @@ Headers: `Content-Type: application/json`, `Authorization: Bearer <SENSOR_API_TO
 | `severity_hint`, `tags`, `event_id`, `host`, `k8s.node`, `cloud.provider` | `labels` (string map) |
 
 **Backend integration:** the backend accepts native v1.0 events and matches `library.package`/`library.version` on the resolved asset (k8s pod, `cloud.resource_id`, or VM by `host`) against its vulnerability records to set `in_use` (see `backend/app/services/sensor.py`).
+
+## Package inventory
+
+*Added in schema 1.1; runtime events above are unchanged (still `schema_version` `"1.0"`), so older backends keep accepting them.*
+
+Every `SENSOR_INVENTORY_INTERVAL` seconds (default 21600 = 6 h, `0` disables; first report ~30 s after start) the sensor POSTs one **PackageInventory** document for the host to `/api/runtime/packages` (derived from `SENSOR_API_URL`, or `SENSOR_INVENTORY_URL`), with the same headers and bearer token as events. The platform matches the packages against OSV.dev ([docs/VULNERABILITIES.md](../docs/VULNERABILITIES.md)).
+
+- Python: [`runtime_sensor/inventory.py`](runtime_sensor/inventory.py)
+- JSON Schema: [`schema/package-inventory.schema.json`](schema/package-inventory.schema.json)
+
+| Field | Type | Notes |
+|---|---|---|
+| `schema_version` | string | `"1.1"` (`^1\.[0-9]+$` accepted) |
+| `sensor_id`, `host` | string | as on events; the backend resolves the asset by `cloud.resource_id`, then VM name = `host` (a sensor-backed asset is created for unknown hosts) |
+| `collected_at` | string | ISO8601 UTC |
+| `os` | object | `{id, version_id, pretty_name}` from `/etc/os-release` |
+| `cloud` | object \| null | `{provider, resource_id}` as on events |
+| `packages` | array | up to 50,000 entries, see below |
+
+`packages[]`:
+
+| Field | Type | Notes |
+|---|---|---|
+| `name` | string | binary package (`libssl3`) or Python distribution |
+| `version` | string | installed version; rpm as `[epoch:]version-release` |
+| `kind` | enum | `deb`, `apk`, `rpm`, `python` |
+| `ecosystem` | string | OSV ecosystem: `Debian:12`, `Ubuntu:22.04:LTS`, `Alpine:v3.20`, `Rocky Linux:9`, `AlmaLinux:9`, `Red Hat`, `PyPI` (omitted when the distribution has none) |
+| `source_name` | string | dpkg `Source`, apk origin (`o:`), rpm source package |
+| `source_version` | string | dpkg source version when it differs from the binary version (binNMU) |
+
+Only package-manager metadata is read, under `--host-root`: `/var/lib/dpkg/status`, `/lib/apk/db/installed`, `/var/lib/rpm/rpmdb.sqlite` (or `/usr/lib/sysimage/rpm/`, opened read-only/immutable) and `*.dist-info/METADATA` headers in `/usr/local/lib/python3*/{site,dist}-packages`. Container images are not inventoried.
+
+Response: `202 {"asset_id", "asset_created", "packages", "match_requested"}`. A backend without the endpoint answers 404; the sensor logs that once and retries at the next interval.
+
+```json
+{
+  "schema_version": "1.1", "sensor_id": "web-1", "host": "web-1", "collected_at": "2026-10-23T10:00:00.000Z",
+  "os": {"id": "debian", "version_id": "12", "pretty_name": "Debian GNU/Linux 12 (bookworm)"},
+  "cloud": null,
+  "packages": [
+    {"name": "libssl3", "version": "3.0.11-1~deb12u2", "kind": "deb", "source_name": "openssl",
+     "source_version": "3.0.11-1~deb12u2", "ecosystem": "Debian:12"},
+    {"name": "requests", "version": "2.31.0", "kind": "python", "ecosystem": "PyPI"}
+  ]
+}
+```

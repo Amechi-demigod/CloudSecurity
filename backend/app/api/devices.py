@@ -32,6 +32,7 @@ from ..models import (
     DeviceSoftware,
     EnrollmentToken,
     User,
+    Vulnerability,
     utcnow,
 )
 from ..schemas_devices import (
@@ -259,6 +260,32 @@ def device_software(device_id: str = DeviceId, q: str | None = Query(None, max_l
         like = f"%{q.lower()}%"
         stmt = stmt.where(or_(DeviceSoftware.name.ilike(like), DeviceSoftware.publisher.ilike(like)))
     return list(db.scalars(stmt.order_by(DeviceSoftware.name, DeviceSoftware.version)))
+
+
+@router.get("/{device_id}/vulnerabilities")
+def device_vulnerabilities(device_id: str = DeviceId, status: str = Query("open", pattern="^(open|resolved|all)$"),
+                           db: Session = Depends(get_db)):
+    """CVEs matched on this device's OS and installed software (docs/VULNERABILITIES.md),
+    plus which software was checked and which could not be ("not checked")."""
+    from ..api.vulns import vuln_out, z
+    from ..vulnmatch.state import DEVICE, get_state
+
+    d = _get_device(db, device_id)
+    stmt = select(Vulnerability).where(Vulnerability.device_id == device_id)
+    if status != "all":
+        stmt = stmt.where(Vulnerability.status == status)
+    vulns = list(db.scalars(stmt.order_by(Vulnerability.risk_score.desc(), Vulnerability.cvss.desc())))
+    st = get_state(db, DEVICE, device_id)
+    names = {device_id: d.hostname}
+    return {
+        "vulnerabilities": [vuln_out(v, names) for v in vulns],
+        "matched_at": z(st.matched_at) if st else None,
+        "pending": bool(st and st.requested_at),
+        "error": st.error if st else None,
+        "os": st.os_info if st else {},
+        "checked": st.checked if st else [],
+        "not_checked": st.not_checked if st else [],
+    }
 
 
 @router.get("/{device_id}/history", response_model=list[SnapshotOut])

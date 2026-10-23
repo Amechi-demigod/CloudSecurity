@@ -66,7 +66,8 @@ def list_assets(
     nf = Counter(a for (a,) in db.execute(select(Finding.asset_id).where(Finding.status == "open")))
     nv: Counter = Counter()
     mr: dict[str, float] = {}
-    for aid, score in db.execute(select(Vulnerability.asset_id, Vulnerability.risk_score)):
+    for aid, score in db.execute(select(Vulnerability.asset_id, Vulnerability.risk_score)
+                                 .where(Vulnerability.asset_id.is_not(None), Vulnerability.status == "open")):
         nv[aid] += 1
         mr[aid] = max(mr.get(aid, 0.0), score)
     na = Counter(a for (a,) in db.execute(select(Alert.asset_id).where(Alert.status != "resolved")))

@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cnapp.local/schemas/package-inventory/1.1.json",
+  "title": "PackageInventory",
+  "description": "Installed packages of one Linux host, POSTed by the runtime sensor to /api/runtime/packages (added in schema 1.1; runtime events are unchanged). The platform matches them against OSV.dev.",
+  "type": "object",
+  "required": ["schema_version", "sensor_id", "host", "collected_at", "os", "packages"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"type": "string", "pattern": "^1\\.[0-9]+$"},
+    "sensor_id": {"type": "string"},
+    "host": {"type": "string"},
+    "collected_at": {"type": "string", "format": "date-time"},
+    "os": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {"type": ["string", "null"], "description": "os-release ID, e.g. debian, ubuntu, alpine, rocky, almalinux, rhel"},
+        "version_id": {"type": ["string", "null"]},
+        "pretty_name": {"type": ["string", "null"]}
+      }
+    },
+    "cloud": {
+      "oneOf": [
+        {"type": "null"},
+        {"type": "object", "additionalProperties": false,
+         "properties": {"provider": {"type": ["string", "null"], "enum": ["aws", "gcp", "azure", null]},
+                        "resource_id": {"type": ["string", "null"]}}}
+      ]
+    },
+    "packages": {
+      "type": "array",
+      "maxItems": 50000,
+      "items": {
+        "type": "object",
+        "required": ["name", "version", "kind"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {"type": "string", "description": "binary package / distribution name"},
+          "version": {"type": "string", "description": "installed version ([epoch:]version-release for rpm)"},
+          "kind": {"type": "string", "enum": ["deb", "apk", "rpm", "python"]},
+          "ecosystem": {"type": "string", "description": "OSV ecosystem, e.g. Debian:12, Ubuntu:22.04:LTS, Alpine:v3.20, Rocky Linux:9, AlmaLinux:9, Red Hat, PyPI"},
+          "source_name": {"type": "string", "description": "dpkg Source / apk origin / rpm source package"},
+          "source_version": {"type": "string", "description": "dpkg source version when it differs from the binary version"}
+        }
+      }
+    }
+  }
+}

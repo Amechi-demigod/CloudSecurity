@@ -147,6 +147,9 @@ spec:
             - { name: host-etc, mountPath: /host/etc, readOnly: true }
             - { name: host-root-home, mountPath: /host/root, readOnly: true }
             - { name: host-home, mountPath: /host/home, readOnly: true }
+            # Package inventory for vulnerability matching (metadata only, read-only):
+            - { name: host-dpkg, mountPath: /host/var/lib/dpkg, readOnly: true }
+            - { name: host-rpm, mountPath: /host/var/lib/rpm, readOnly: true }
             # eBPF mode only:
             # - { name: debugfs, mountPath: /sys/kernel/debug, readOnly: true }
             # - { name: lib-modules, mountPath: /lib/modules, readOnly: true }
@@ -157,6 +160,8 @@ spec:
         - { name: host-etc, hostPath: { path: /etc } }
         - { name: host-root-home, hostPath: { path: /root, type: DirectoryOrCreate } }
         - { name: host-home, hostPath: { path: /home, type: DirectoryOrCreate } }
+        - { name: host-dpkg, hostPath: { path: /var/lib/dpkg, type: DirectoryOrCreate } }
+        - { name: host-rpm, hostPath: { path: /var/lib/rpm, type: DirectoryOrCreate } }
         # - { name: debugfs, hostPath: { path: /sys/kernel/debug } }
         # - { name: lib-modules, hostPath: { path: /lib/modules } }
         # - { name: usr-src, hostPath: { path: /usr/src } }

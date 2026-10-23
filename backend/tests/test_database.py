@@ -61,7 +61,8 @@ def test_migrations_match_models(tmp_path):
 
 MIGRATION_CHAIN = ["0001_baseline", "0002_device_management", "0003_notifications", "0004_mfa_sso",
                    "0005_agent_installers", "0006_agent_updates", "0007_it_asset_lifecycle",
-                   "0008_agent_update_automation", "0009_device_approvals_scripts", "0010_scheduled_scans"]
+                   "0008_agent_update_automation", "0009_device_approvals_scripts", "0010_scheduled_scans",
+                   "0011_vulnerability_matching"]
 
 
 def test_migration_history_is_linear():
@@ -115,6 +116,42 @@ def test_sqlite_create_all_startup_path(tmp_path):
         names = set(inspect(eng).get_table_names())
         assert {t.name for t in db.Base.metadata.sorted_tables} <= names
         assert {"devices", "notification_rules", "user_mfa", "user_identities"} <= names
+    finally:
+        fresh_db()
+
+
+def test_sqlite_existing_vulnerabilities_table_is_relaxed(tmp_path):
+    """An SQLite database from before CVE matching has vulnerabilities.asset_id
+    NOT NULL; startup rebuilds the table (keeping rows) so endpoint-device
+    vulnerabilities (no asset) can be stored."""
+    if IS_POSTGRES:
+        pytest.skip("SQLite startup path")
+    path = tmp_path / "old.db"
+    old = db.create_db_engine(f"sqlite:///{path}")
+    try:
+        db.run_migrations(old, "0010_scheduled_scans")
+        with old.begin() as conn:
+            conn.execute(text("INSERT INTO assets (id, name, type, provider, tags, internet_exposed, sensitive_data, "
+                              "properties, source, first_seen, last_seen) VALUES ('a1', 'vm1', 'vm', 'azure', '{}', "
+                              "0, 0, '{}', 'simulated', '2026-01-01', '2026-01-01')"))
+            conn.execute(text("INSERT INTO vulnerabilities (id, asset_id, cve_id, package, version, title, cvss, "
+                              "severity, exploit_available, in_use, internet_exposed, sensitive_data_access, "
+                              "risk_score, priority, status, source, first_seen) VALUES ('v1', 'a1', 'CVE-1', "
+                              "'openssl', '1', '', 9.8, 'critical', 0, 0, 0, 0, 10, 'low', 'open', 'simulated', "
+                              "'2026-01-01')"))
+        cols = {c["name"]: c for c in inspect(old).get_columns("vulnerabilities")}
+        assert cols["asset_id"]["nullable"] is False and "device_id" not in cols
+    finally:
+        old.dispose()
+    try:
+        eng = db.init_engine(f"sqlite:///{path}")
+        cols = {c["name"]: c for c in inspect(eng).get_columns("vulnerabilities")}
+        assert cols["asset_id"]["nullable"] is True and "device_id" in cols and "kev" in cols
+        idx = {i["name"] for i in inspect(eng).get_indexes("vulnerabilities")}
+        assert {"ix_vulnerabilities_asset_id", "ix_vulnerabilities_device_id"} <= idx
+        with eng.begin() as conn:
+            assert conn.execute(text("SELECT cve_id, asset_id FROM vulnerabilities")).all() == [("CVE-1", "a1")]
+        db.init_engine(f"sqlite:///{path}")  # idempotent
     finally:
         fresh_db()
 
