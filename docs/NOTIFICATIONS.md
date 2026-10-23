@@ -43,7 +43,8 @@ attack-path poller ───────────┘             (inbox)     
   (`X-CNAPP-Delivery` header / `id` field).
 * **Event sources:** runtime alerts (new + optional status changes), posture
   findings (new, regressed, optional status changes), vulnerabilities,
-  attack paths (new paths, polled every 10 minutes; the first poll records a
+  attack paths (new confirmed paths, polled every 10 minutes; exposure paths
+  without a confirmed weakness do not notify; the first poll records a
   baseline) and cloud scans (source `scan`, label "Cloud scans": completed /
   failed, manual or scheduled; the `trigger` attribute says which, and
   scheduled failures are titled "Scheduled <connector> scan failed").

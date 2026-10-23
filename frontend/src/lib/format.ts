@@ -33,6 +33,7 @@ export const fmtHours = (h: number) => (h < 1 ? `${Math.round(h * 60)} min` : `$
 
 export const TYPE_LABEL: Record<string, string> = {
   vm: "Virtual machine",
+  vmss: "VM scale set",
   storage_account: "Storage account",
   aks_cluster: "AKS cluster",
   pod: "Pod",

@@ -145,7 +145,17 @@ def test_future_timestamps_are_clamped(client):
 def test_attack_paths_endpoints(client):
     paths = client.get("/api/attack-paths").json()
     assert paths and paths[0]["steps"]
-    assert [p["score"] for p in paths] == sorted((p["score"] for p in paths), reverse=True)
+    # confirmed paths first, each group by score
+    assert [p["confirmed"] for p in paths] == sorted((p["confirmed"] for p in paths), reverse=True)
+    for flag in (True, False):
+        group = [p["score"] for p in paths if p["confirmed"] is flag]
+        assert group == sorted(group, reverse=True)
+    assert all({"weaknesses", "note"} <= set(p) and "weak" in p["steps"][0] for p in paths)
+    assert all(p["severity"] in ("medium", "low") and p["note"] for p in paths if not p["confirmed"])
+    confirmed = client.get("/api/attack-paths", params={"confirmed_only": True}).json()
+    assert confirmed and all(p["confirmed"] for p in confirmed)
+    assert all(p["confirmed"] for p in
+               client.get("/api/attack-paths/graph", params={"confirmed_only": True}).json()["paths"])
     names = {p["title"] for p in paths}
     assert any("vm-pay-api-01" in n and "stpaycardvault01" in n for n in names)
     g = client.get("/api/attack-paths/graph", params={"limit": 5}).json()

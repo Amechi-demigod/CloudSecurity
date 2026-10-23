@@ -35,7 +35,9 @@ Relationships: security group → instance / RDS (`protects`), instance and Lamb
 policies → S3 buckets / RDS instances (`has_access`). An EC2 instance is
 internet-exposed when it has a public IP **and** an attached security group allows
 0.0.0.0/0 or ::/0; that gives attack paths such as *Internet → web-1 (SSH open) →
-web-admin role (AdministratorAccess) → customer-data bucket (PII)*. Buckets are
+web-admin role (AdministratorAccess) → customer-data bucket (PII)*; a
+security group finding (SSH/RDP/all ports open) is attributed to the instances it
+protects, e.g. *Exposed via security group web: SSH (22) open to Internet*. Buckets are
 sensitive when tagged `data-classification` / `classification` / `sensitivity` /
 `data` (not `public`); RDS databases always are.
 

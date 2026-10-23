@@ -39,7 +39,9 @@ Editor, Storage or Cloud SQL roles (project or bucket IAM) → buckets / Cloud S
 (`has_access`). A VM is internet-exposed when it has an external IP **and** an
 applicable firewall rule allows 0.0.0.0/0, giving attack paths such as
 *Internet → web-1 (default SA, full scope) → …-compute@ service account (Editor) →
-customer-pii bucket*. Buckets are sensitive when labelled `data-classification` /
+customer-pii bucket*; a firewall rule finding (SSH/RDP/all ports open) is
+attributed to the instances it applies to, e.g. *Exposed via firewall rule
+allow-ssh: SSH (22) open to Internet*. Buckets are sensitive when labelled `data-classification` /
 `classification` / `sensitivity` / `data` (not `public`); Cloud SQL always is.
 
 ## 1. Create the scanner service account

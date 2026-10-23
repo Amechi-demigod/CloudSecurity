@@ -210,6 +210,32 @@ def _vm_enc(a):
     return {"disk_encryption": False} if _p(a, "disk_encryption") is False else None
 
 
+@rule(
+    id="AZ-VMSS-001",
+    title="Scale set instances get public IP addresses",
+    severity="medium",
+    resource_type="vmss",
+    description="Every instance of the scale set is directly reachable from the internet via its own public IP.",
+    remediation="Remove the public IP configuration and front the scale set with a load balancer/App Gateway.",
+    compliance=["CIS Azure 7.1"],
+)
+def _vmss_pip(a):
+    return {"per_instance_public_ip": True} if _p(a, "per_instance_public_ip") else None
+
+
+@rule(
+    id="AZ-VMSS-002",
+    title="Scale set disks are not encrypted (host / CMK)",
+    severity="medium",
+    resource_type="vmss",
+    description="Neither encryption-at-host nor a customer-managed key is configured for the scale set's disks.",
+    remediation="Enable encryption at host or a disk encryption set on the scale set model and upgrade instances.",
+    compliance=["CIS Azure 7.2", "CIS Azure 7.3"],
+)
+def _vmss_enc(a):
+    return {"disk_encryption": False} if _p(a, "disk_encryption") is False else None
+
+
 # --------------------------------------------------------------------------- sql
 @rule(
     id="AZ-SQL-001",

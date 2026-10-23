@@ -110,6 +110,8 @@ export interface PathStep {
   name: string;
   type: string;
   reasons: string[];
+  /** This hop carries a confirmed exploitable weakness. */
+  weak: boolean;
 }
 
 export interface AttackPath {
@@ -121,6 +123,11 @@ export interface AttackPath {
   target_id: string;
   steps: PathStep[];
   edges: { source: string; target: string; type: string }[];
+  /** True if some hop carries an exploitable weakness; false for an exposure path. */
+  confirmed: boolean;
+  weaknesses: string[];
+  /** Why an exposure path is not confirmed (null for confirmed paths). */
+  note: string | null;
 }
 
 export interface ComplianceFramework {
@@ -151,7 +158,7 @@ export interface Dashboard {
   };
   alerts: { open: number; by_severity: Record<string, number>; events_24h: number };
   alerts_over_time: { hour: string; critical: number; high: number; medium: number; low: number }[];
-  attack_paths: { total: number; critical: number };
+  attack_paths: { total: number; critical: number; exposure?: number };
   top_risks: {
     kind: "attack_path" | "vulnerability" | "finding";
     id: string;
@@ -994,13 +1001,14 @@ export const api = {
   updateAlert: (id: string, status: Alert["status"]) =>
     request<Alert>(`/api/alerts/${id}`, { method: "PATCH", body: JSON.stringify({ status }) }),
   events: (limit = 50, source?: string) => request<RuntimeEvent[]>(`/api/runtime/events${qs({ limit, source })}`),
-  attackPaths: (limit = 20) => request<AttackPath[]>(`/api/attack-paths${qs({ limit })}`),
-  attackGraph: (limit = 10) =>
+  attackPaths: (limit = 20, confirmedOnly = false) =>
+    request<AttackPath[]>(`/api/attack-paths${qs({ limit, confirmed_only: confirmedOnly ? "true" : undefined })}`),
+  attackGraph: (limit = 10, confirmedOnly = false) =>
     request<{
       nodes: { id: string; name: string; type: string; internet_exposed?: boolean; sensitive_data?: boolean }[];
       edges: { source: string; target: string; type: string; paths: string[] }[];
       paths: AttackPath[];
-    }>(`/api/attack-paths/graph${qs({ limit })}`),
+    }>(`/api/attack-paths/graph${qs({ limit, confirmed_only: confirmedOnly ? "true" : undefined })}`),
   connectors: () => request<Connector[]>("/api/connectors"),
   scans: () => request<ScanRun[]>("/api/scans"),
   scanSchedule: () => request<ScanSchedule>("/api/scan-schedule"),
