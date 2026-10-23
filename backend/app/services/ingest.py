@@ -41,7 +41,15 @@ def ingest_collection(db: Session, result: CollectionResult, source: str) -> dic
         a.last_seen = now
     db.flush()
 
+    # A connector can report the same edge more than once in one scan (e.g. an
+    # identity granted two data roles on the same key vault). The session doesn't
+    # autoflush, so track this scan's edges here instead of relying on the query.
+    pending: dict[tuple[str, str, str], Relationship] = {}
     for rel in result.relationships:
+        key = (rel.source_id, rel.target_id, rel.type)
+        if key in pending:
+            _merge_relationship_properties(pending[key], rel.properties)
+            continue
         if rel.source_id not in seen_ids and db.get(Asset, rel.source_id) is None:
             continue
         if rel.target_id not in seen_ids and db.get(Asset, rel.target_id) is None:
@@ -54,8 +62,10 @@ def ingest_collection(db: Session, result: CollectionResult, source: str) -> dic
             )
         )
         if exists is None:
-            db.add(Relationship(source_id=rel.source_id, target_id=rel.target_id, type=rel.type,
-                                properties=rel.properties, source=source))
+            exists = Relationship(source_id=rel.source_id, target_id=rel.target_id, type=rel.type,
+                                  properties=dict(rel.properties or {}), source=source)
+            db.add(exists)
+        pending[key] = exists
     db.flush()
 
     for v in result.vulnerabilities:
@@ -155,3 +165,16 @@ def rescore_vulnerabilities(db: Session) -> None:
                                        v.sensitive_data_access)
         v.priority = priority_for(v.risk_score)
     db.flush()
+
+
+def _merge_relationship_properties(rel: Relationship, extra: dict | None) -> None:
+    """Fold a duplicate edge's properties into the first one; a differing `role` becomes `roles`."""
+    if not extra:
+        return
+    props = dict(rel.properties or {})
+    for k, v in extra.items():
+        if k not in props:
+            props[k] = v
+        elif k == "role" and props[k] != v:
+            props["roles"] = sorted(set(props.get("roles") or [props[k]]) | {v})
+    rel.properties = props
