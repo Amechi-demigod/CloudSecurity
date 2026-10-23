@@ -17,6 +17,7 @@ import Devices from "./pages/devices/Devices";
 import Enrollment from "./pages/devices/Enrollment";
 import Scripts from "./pages/devices/Scripts";
 import DashboardPage from "./pages/Dashboard";
+import Exposure from "./pages/Exposure";
 import Findings from "./pages/Findings";
 import Inventory from "./pages/Inventory";
 import Notifications from "./pages/Notifications";
@@ -35,6 +36,7 @@ const NAV: { to: string; label: string; role?: Role }[] = [
   { to: "/findings", label: "Posture findings" },
   { to: "/vulnerabilities", label: "Vulnerabilities" },
   { to: "/threats", label: "Runtime threats" },
+  { to: "/exposure", label: "Exposure" },
   { to: "/attack-paths", label: "Attack paths" },
   { to: "/connectors", label: "Connectors & scans" },
   { to: "/notifications", label: "Notifications", role: "analyst" },
@@ -178,6 +180,7 @@ function Shell() {
             <Route path="/findings" element={<Findings />} />
             <Route path="/vulnerabilities" element={<Vulnerabilities />} />
             <Route path="/threats" element={<Threats />} />
+            <Route path="/exposure" element={<Exposure />} />
             <Route path="/attack-paths" element={<AttackPaths />} />
             <Route path="/connectors" element={<Connectors />} />
             <Route path="/devices" element={<Devices />} />

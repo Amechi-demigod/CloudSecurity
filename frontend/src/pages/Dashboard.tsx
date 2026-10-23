@@ -29,6 +29,27 @@ function DevicesTile() {
   );
 }
 
+function ExposureTile() {
+  const { data: s } = useApi(api.exposureSummary, [], 30000);
+  if (!s) return null;
+  return (
+    <Card title="Cloud exposure" className="mt-4" actions={<Link className="text-xs text-accent" to="/exposure">View all</Link>}>
+      {s.total === 0 ? (
+        <p className="text-sm text-ink-3">No internet-exposed cloud assets found.</p>
+      ) : (
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+          <Stat label="Open to the Internet" value={s.open} sub={`${s.attack_path_entries} attack-path entry points`} />
+          <Link to="/exposure?level=restricted">
+            <Stat label="Restricted" value={s.restricted} sub="public ranges only" />
+          </Link>
+          <Stat label="Risky ports open" value={s.risky_ports_open} sub="admin or database ports" />
+          <Stat label="Exposed data stores" value={s.sensitive} sub={`${s.with_private_endpoint} with a private endpoint`} />
+        </div>
+      )}
+    </Card>
+  );
+}
+
 const axis = { stroke: "var(--color-ink-3)", fontSize: 11, tickLine: false, axisLine: false } as const;
 
 function RiskGauge({ score }: { score: number }) {
@@ -109,6 +130,8 @@ export default function DashboardPage() {
           />
         </div>
       </div>
+
+      <ExposureTile />
 
       <DevicesTile />
 

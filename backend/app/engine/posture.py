@@ -16,6 +16,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from . import nsg
+
 SEVERITIES = ["critical", "high", "medium", "low", "info"]
 SEVERITY_WEIGHT = {"critical": 10, "high": 6, "medium": 3, "low": 1, "info": 0}
 
@@ -33,6 +35,9 @@ class PostureRule:
     description: str
     remediation: str
     compliance: list[str] = field(default_factory=list)
+    #: a failure is a vulnerability-like weakness (e.g. end-of-life runtime): the attack-path
+    #: engine counts it as exploitable on any hop, like an in-use CVE
+    weakness: bool = False
 
     def evaluate(self, asset: dict[str, Any]) -> Evidence:
         if asset.get("type") != self.resource_type:
@@ -61,40 +66,36 @@ def _p(asset: dict, key: str, default=None):
 
 
 # --------------------------------------------------------------------------- helpers
-INTERNET_SOURCES = {"*", "0.0.0.0/0", "internet", "any", "::/0", "0.0.0.0"}
+INTERNET_SOURCES = nsg.INTERNET_SOURCES
 
 
 def _port_matches(port_range: str, port: int | None) -> bool:
     """`port=None` means "all ports" must be open."""
-    pr = str(port_range).strip()
-    if pr in {"*", "0-65535", "any"}:
-        return True
+    ranges = nsg.parse_ports(port_range)
     if port is None:
-        return False
-    for part in pr.split(","):
-        part = part.strip()
-        if "-" in part:
-            lo, hi = part.split("-", 1)
-            if lo.isdigit() and hi.isdigit() and int(lo) <= port <= int(hi):
-                return True
-        elif part.isdigit() and int(part) == port:
-            return True
-    return False
+        return ranges == nsg.FULL
+    return nsg.contains(ranges, port)
 
 
 def open_to_internet(asset: dict, port: int | None) -> list[str]:
-    """Names of inbound Allow rules exposing `port` (or all ports) to the internet."""
-    hits = []
-    for r in _p(asset, "security_rules", []) or []:
-        if str(r.get("direction", "")).lower() != "inbound" or str(r.get("access", "")).lower() != "allow":
-            continue
-        sources = r.get("source_prefixes") or [r.get("source", "")]
-        if not any(str(s).lower() in INTERNET_SOURCES for s in sources):
-            continue
-        ports = r.get("port_ranges") or [r.get("port_range", "")]
-        if any(_port_matches(pr, port) for pr in ports):
-            hits.append(r.get("name", "?"))
-    return hits
+    """Names of the inbound rules that open `port` (None: every port) to the whole internet.
+
+    Rules are evaluated like the cloud does (see `engine/nsg.py`): by priority, first
+    match wins, Deny rules and (for Azure NSGs) the default rules included. A port a
+    higher-priority Deny blocks is not open.
+    """
+    return nsg.asset_exposure(asset).rules_for(port)
+
+
+def partially_open(asset: dict, ports: list[int]) -> list[dict]:
+    """Rules opening any of `ports` to public (non RFC 1918) ranges only, with the ranges."""
+    exp = nsg.asset_exposure(asset)
+    out = []
+    for item in exp.partial_summary():
+        hit = [p for p in ports if nsg.contains(nsg.parse_ports(item["ports"]), p)]
+        if hit:
+            out.append({**item, "ports": hit})
+    return out
 
 
 # --------------------------------------------------------------------------- storage
@@ -180,6 +181,21 @@ def _nsg_rdp(a):
 def _nsg_any(a):
     hits = open_to_internet(a, None)
     return {"rules": hits, "port": "*"} if hits else None
+
+
+@rule(
+    id="AZ-NSG-004",
+    title="NSG allows management ports from public address ranges",
+    severity="low",
+    resource_type="nsg",
+    description="An inbound Allow rule opens SSH, RDP or WinRM to specific public (non RFC 1918) addresses: "
+    "the port is partially exposed to the internet.",
+    remediation="Prefer Azure Bastion or JIT VM access; keep allowed ranges as small as possible and review them.",
+    compliance=["CIS Azure 6.1", "CIS Azure 6.2"],
+)
+def _nsg_partial(a):
+    hits = partially_open(a, [22, 3389, 5985, 5986])
+    return {"partial": hits} if hits else None
 
 
 # --------------------------------------------------------------------------- compute
@@ -437,4 +453,4 @@ def compliance_controls() -> dict[str, list[str]]:
 
 # Provider rule packs register themselves into RULES on import (kept last: they
 # use the helpers above).
-from . import posture_aws, posture_gcp  # noqa: E402,F401
+from . import posture_aws, posture_azure, posture_gcp  # noqa: E402,F401

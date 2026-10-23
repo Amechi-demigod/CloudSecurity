@@ -22,7 +22,7 @@ from app.connectors.azure import (
 from app.engine.posture import evaluate_asset
 from app.services import analytics
 from app.services.ingest import asset_to_dict, ingest_collection
-from tests.test_azure_scanner import ops
+from tests.azure_fakes import ops, with_defaults
 
 SUB = "99999999-2222-3333-4444-555555555555"
 SUB_ID = f"/subscriptions/{SUB}"
@@ -64,12 +64,14 @@ def nsg_rule(name, port, src="*"):
 
 
 def build_clients(subnet_rules=None):
-    subnet_rules = [nsg_rule("ssh", "22", "Internet")] if subnet_rules is None else subnet_rules
+    subnet_rules = [nsg_rule("ssh", "22", "Internet"), nsg_rule("https", "443", "Internet")] \
+        if subnet_rules is None else subnet_rules
     network = NS(
         public_ip_addresses=ops(list_all=[NS(id=LB_PIP, ip_address="20.1.1.1"), NS(id=GW_PIP, ip_address="20.2.2.2")]),
         network_security_groups=ops(list_all=[
             NS(id=SUBNET_NSG, name="subnet-nsg", location="eastus", tags={}, security_rules=subnet_rules),
-            NS(id=VMSS_NSG, name="vmss-nsg", location="eastus", tags={}, security_rules=[nsg_rule("ssh", "22")]),
+            NS(id=VMSS_NSG, name="vmss-nsg", location="eastus", tags={},
+               security_rules=[nsg_rule("ssh", "22"), nsg_rule("https", "443")]),
         ]),
         virtual_networks=ops(list_all=[NS(subnets=[NS(id=SUBNET, network_security_group=NS(id=SUBNET_NSG))])]),
         network_interfaces=ops(list_all=[NS(
@@ -148,9 +150,9 @@ def build_clients(subnet_rules=None):
             NS(role_definition_id=CUSTOM_KV, scope=RG_DATA, principal_id="vmss-principal"),
             NS(role_definition_id=CONTRIB, scope=RG_DATA, principal_id="kubelet-principal"),
         ]))
-    return {"network": network, "compute": compute, "storage": storage, "sql": sql, "keyvault": keyvault,
-            "containerservice": containerservice, "resource": NS(resources=resource_ops),
-            "authorization": authorization}
+    return with_defaults({"network": network, "compute": compute, "storage": storage, "sql": sql,
+                          "keyvault": keyvault, "containerservice": containerservice,
+                          "resource": NS(resources=resource_ops), "authorization": authorization})
 
 
 def collect(clients=None):
@@ -261,7 +263,12 @@ def test_no_errors_and_no_duplicate_edges(result):
 
 
 @pytest.mark.parametrize("role,targets", [
-    ("Owner", {"storage_account", "sql_server", "key_vault"}),
+    ("Owner", {"storage_account", "sql_server", "key_vault", "postgresql_server", "mysql_server",
+               "cosmos_account", "redis_cache", "sql_managed_instance"}),
+    ("DocumentDB Account Contributor", {"cosmos_account"}),
+    ("Cosmos DB Operator", set()),
+    ("Redis Cache Contributor", {"redis_cache"}),
+    ("SQL Managed Instance Contributor", {"sql_managed_instance"}),
     ("Storage Blob Data Reader", {"storage_account"}),
     ("Storage Account Contributor", {"storage_account"}),
     ("Key Vault Secrets User", {"key_vault"}),

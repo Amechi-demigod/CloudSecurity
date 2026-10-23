@@ -930,6 +930,57 @@ export function qs(params: Record<string, string | number | boolean | undefined 
   return s ? `?${s}` : "";
 }
 
+export interface ExposureMethod {
+  kind: string;
+  label: string;
+  detail: string;
+  ports: string[];
+  level: "open" | "restricted" | "blocked";
+  partial?: { source: string; rule?: string; ports?: string[] | number[] }[];
+  via?: string;
+  note?: string;
+}
+
+export interface ExposureItem {
+  id: string;
+  name: string;
+  type: string;
+  provider: string;
+  subscription_id: string | null;
+  subscription_name: string | null;
+  resource_group: string | null;
+  region: string | null;
+  level: "open" | "restricted";
+  attack_path_entry: boolean;
+  exposure: string | null;
+  exposed_only_via: string[];
+  methods: ExposureMethod[];
+  effective_ports: string[];
+  partial_exposure: { source: string; rule?: string; ports?: (string | number)[]; via?: string }[];
+  network_controls: string[];
+  private_endpoints: string[];
+  public_endpoint: string | null;
+  public_network_access: string | boolean | null;
+  sensitive_data: boolean;
+  data_classification: string | null;
+  egress: string | null;
+  findings: { count: number; by_severity: Record<string, number>; top: { id: string; rule_id: string; title: string; severity: Severity }[] };
+  vulnerabilities: { count: number; prioritized: number; top: { id: string; cve_id: string; package: string; severity: string }[] };
+  attack_paths: { id: string; title: string; severity: Severity; confirmed: boolean; score: number; role: string }[];
+}
+
+export interface ExposureSummary {
+  total: number;
+  open: number;
+  restricted: number;
+  attack_path_entries: number;
+  risky_ports_open: number;
+  with_private_endpoint: number;
+  sensitive: number;
+  by_provider: Record<string, number>;
+  by_method: Record<string, number>;
+}
+
 export const api = {
   // --- auth ---
   me: () => request<SessionInfo>("/api/auth/me", { skipAuthHandling: true }),
@@ -1116,6 +1167,13 @@ export const api = {
       edges: { source: string; target: string; type: string; paths: string[] }[];
       paths: AttackPath[];
     }>(`/api/attack-paths/graph${qs({ limit, confirmed_only: confirmedOnly ? "true" : undefined })}`),
+  exposure: (f: { provider?: string; subscription?: string; type?: string; port?: string; level?: string } = {}) =>
+    request<{
+      items: ExposureItem[];
+      facets: { providers: string[]; subscriptions: string[]; types: string[]; ports: string[] };
+      summary: ExposureSummary;
+    }>(`/api/exposure${qs(f)}`),
+  exposureSummary: () => request<ExposureSummary>("/api/exposure/summary"),
   connectors: () => request<Connector[]>("/api/connectors"),
   scans: () => request<ScanRun[]>("/api/scans"),
   scanSchedule: () => request<ScanSchedule>("/api/scan-schedule"),

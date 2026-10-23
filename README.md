@@ -3,9 +3,10 @@
 A cloud security platform MVP inspired by runtime-first CNAPPs such as Upwind. It combines:
 
 - **Asset inventory**: Azure (VMs, VM scale sets, storage accounts, AKS clusters and pods, SQL, NSGs, identities, key vaults, function apps, subscriptions), AWS (accounts, EC2, security groups, S3, EKS, RDS, IAM users/roles, KMS, Lambda, CloudTrail) and GCP (projects, Compute Engine, VPC firewall rules, Cloud Storage, GKE, Cloud SQL, service accounts, Cloud KMS, Cloud Functions, Cloud Run), with region, tags, internet exposure, data sensitivity and relationships.
-- **Posture management (CSPM)**: a declarative rules engine with 22 Azure rules (CIS Azure, CIS AKS), 24 AWS rules (CIS AWS Foundations, CIS EKS, AWS FSBP) and 23 GCP rules (CIS GCP Foundations, CIS GKE). Each finding has a status of open, resolved or suppressed.
+- **Posture management (CSPM)**: a declarative rules engine with 87 Azure rules (CIS Azure, CIS AKS, Microsoft cloud security benchmark), 24 AWS rules (CIS AWS Foundations, CIS EKS, AWS FSBP) and 23 GCP rules (CIS GCP Foundations, CIS GKE). Each finding has a status of open, resolved or suppressed.
 - **Vulnerabilities with runtime context**: real CVE matching for **laptops** (the endpoint agent's installed software and OS, matched against the NVD CVE API by CPE through a curated mapping of ~50 common enterprise products) and **Linux servers/VMs** (the runtime sensor's package inventory, matched with OSV.dev for Debian, Ubuntu, Alpine, Rocky, AlmaLinux, RHEL and PyPI), with CISA KEV and FIRST EPSS exploit context. Workload CVEs are ranked by a risk score that combines CVSS with whether the package is loaded at runtime, internet exposure, sensitive-data reach and exploit availability; the UI shows a **noise-reduction** stat. Software that cannot be matched reliably is listed as "not checked" instead of guessed. See [docs/VULNERABILITIES.md](docs/VULNERABILITIES.md).
 - **Runtime threat detection (CDR)**: a runtime event feed plus 8 detection rules (reverse shell, crypto miner, known-malicious IP, shell in a container, privilege escalation, credential-file access, unexpected outbound connection, IMDS token theft). Each rule maps to MITRE ATT&CK, and each alert has an event timeline.
+- **Cloud exposure**: one view of every internet-reachable asset across Azure, AWS and GCP, with how it is reached (public IP, load balancer, Application Gateway, Azure Firewall DNAT, PaaS public endpoint), effective ports evaluated like the cloud does (NSG priorities, deny and default rules, NIC + subnet), protecting controls, private endpoints and linked findings / vulnerabilities / attack paths. See [Cloud exposure](#cloud-exposure).
 - **Attack paths**: a risk graph covering Internet → exposed resource → workload → identity → sensitive data, with the top paths ranked. *Confirmed* paths carry an exploitable weakness (in-use vulnerability, high-risk misconfiguration, or an NSG / security group / firewall rule opening SSH, RDP or all ports on the entry point); *exposure* paths are the same chains without a confirmed weakness, scored lower. See [Attack paths](#attack-paths).
 - **Dashboard**: overall risk score, findings by severity, top risks, alerts over time and a compliance summary.
 - **Simulated data mode (on by default)**: a seeded "Contoso" environment across three Azure-style subscriptions, plus a background simulator that emits live runtime events.
@@ -65,6 +66,9 @@ backend/
     schemas.py           Pydantic v2 schemas (includes the runtime event schema)
     engine/
       posture.py         declarative CSPM rules + CIS mappings (Azure)
+      posture_azure.py   Azure Firewall, private endpoint, App Service and managed database rules
+      nsg.py             inbound rule evaluator (priority, deny, defaults, ASGs, NIC + subnet)
+      eol.py             bundled end-of-life table (endoflife.date) for runtimes and DB engines
       posture_aws.py     AWS rules (CIS AWS Foundations, CIS EKS, AWS FSBP)
       posture_gcp.py     GCP rules (CIS GCP Foundations, CIS GKE)
       detection.py       CDR detection rules + MITRE mapping
@@ -313,27 +317,34 @@ automatically once configured.
   (`scan_schedule_updated`). API: `GET /api/scan-schedule` (any signed-in user), `PUT /api/scan-schedule` (admin;
   `{"enabled": false}`, `{"interval_hours": 12}`, `null` resets a field to the env default).
 
-What the scanner checks:
+What the scanner checks (87 rules; full coverage table, exposure model and permissions in **[docs/AZURE_COVERAGE.md](docs/AZURE_COVERAGE.md)**):
 
-- **Storage**: public blob access, HTTPS-only, minimum TLS version.
-- **NSGs**: inbound rules allowing 0.0.0.0/0 on 22, 3389 or any port.
-- **VMs**: public IPs; no ADE, encryption-at-host or CMK.
-- **VM scale sets**: per-instance public IPs; no encryption-at-host or CMK.
-- **SQL**: public network access, auditing disabled, a 0.0.0.0–255.255.255.255 firewall rule.
-- **Key Vault**: soft delete and purge protection.
-- **AKS**: RBAC disabled, public API server without authorized IP ranges.
-- **Function apps**: HTTPS-only.
-- **Identities**: Owner or Contributor at subscription scope.
-- **Subscription**: owner and contributor counts.
+| Resource | Rules |
+|---|---|
+| Storage | public blob access, HTTPS-only, minimum TLS, public access despite private endpoint |
+| NSGs | SSH / RDP / all ports open to the internet (rules evaluated by priority with Deny and default rules), management ports open to public ranges only |
+| VMs / scale sets | public IPs; no ADE, encryption-at-host or CMK |
+| Azure Firewall | DNAT to SSH/RDP/WinRM or database ports from any source, threat intelligence off, classic rules without policy, any-to-any network rule, Premium without IDPS |
+| SQL / SQL Managed Instance | public access, auditing, allow-all firewall, minimum TLS, private endpoint; MI public endpoint open through the subnet NSG, Entra-only auth |
+| Key Vault | soft delete, purge protection, reachable from all networks, private endpoint |
+| App Service (web + function apps) | HTTPS only, TLS 1.2, FTP, HTTP/2, managed identity, remote debugging, SCM site restricted, authentication on internet-facing apps, **end-of-life runtime**, client certificates, private endpoint |
+| PostgreSQL / MySQL flexible server | allow-all firewall, Azure services rule, TLS enforcement, minimum TLS, geo-redundant backup, Entra auth, **engine end-of-life**, retired Single Server, private endpoint |
+| Cosmos DB | all networks, key (local) auth, minimum TLS, backup redundancy, private endpoint |
+| Azure Cache for Redis | non-TLS port, minimum TLS, all networks, access-key auth, end-of-life version, private endpoint |
+| AKS | RBAC disabled, public API server without authorized IP ranges |
+| Identities / subscription | Owner or Contributor at subscription scope; owner and contributor counts |
 
 Relationships (they feed [attack paths](#attack-paths)):
 
 - **NSG → VM / scale set** (`protects`): NIC-level NSGs and the NSG of the subnet each NIC (or scale-set NIC configuration) sits in, with `levels: ["nic"]` / `["subnet"]` on the edge.
-- **Internet exposure**: a VM is internet-exposed with a public IP on a NIC, or as a backend of a public load balancer (load-balancing or inbound NAT rule) or public application gateway; a scale set with a per-instance public IP configuration or a public load balancer / application gateway backend pool / NAT pool. The backend ports a public load balancer forwards are stored as `forwarded_ports`.
+- **Internet exposure**: a VM or scale set is internet-exposed when the internet can reach at least one port: through a public IP on a NIC (Standard public IPs without an NSG are closed by default), a public load balancer rule / inbound NAT rule / NAT pool (backend ports the NSGs admit), a public application gateway (backend by NIC, IP or FQDN) or an **Azure Firewall DNAT** rule (to the NIC, to an internal load balancer's backends or to a private endpoint). Inbound NSG rules are evaluated like Azure does: by priority, first match wins, Allow and Deny, default rules, service tags, application security groups, subnet NSG then NIC NSG. A public IP that no rule admits is recorded as `exposure_blocked`, not as exposure. Effective ports are stored as `effective_ports`; ranges reachable only from listed public addresses as `partial_exposure`.
+- **Firewall DNAT** (`connects_to`): `azure_firewall -> VM / scale set / PaaS resource` with the translated port; the backend lists the firewall in `exposed_only_via`, so its attack paths start at the firewall.
+- **Private endpoints**: `vnet -contains-> private_endpoint -connects_to-> target`. A resource with public network access disabled and only private endpoints is not internet-exposed.
+- **Data-plane access** (`has_access`): Cosmos DB data roles, Redis access policies, Entra administrators of SQL / SQL MI / PostgreSQL / MySQL, and ARM roles that reach their data (Owner, Contributor, DocumentDB Account Contributor, Cosmos DB Account Reader, Redis Cache Contributor, SQL Managed Instance Contributor).
 - **Workload → identity** (`uses_identity`): system- and user-assigned identities of VMs, scale sets, function apps and AKS clusters, plus the AKS **kubelet** identity (what pods on the nodes can get tokens for).
 - **Identity → data store** (`has_access`): RBAC role assignments at resource, resource-group, subscription or management-group scope whose role reaches data (Owner, Contributor, `Storage * Data *`, Storage Account Contributor, `Key Vault *` except Key Vault Reader, `SQL *`) create edges to the storage accounts, key vaults and SQL servers in scope. Role names (built-in and custom) are resolved with `role_definitions.list`; custom role *permissions* are not interpreted. Fan-out is capped at 50 stores per assignment, sensitive stores first; the rest is counted in the identity's `data_access_truncated` property. **Key Vault access policies** (vaults not in RBAC mode) granting `get` / `all` / `decrypt` / `unwrapKey` / `sign` / `export` on secrets, keys or certificates also create `has_access` edges.
 
-Data stores are marked sensitive through tags such as `data-classification`, `classification`, `sensitivity` or `data` (for example `data_classification=confidential`). Key vaults and SQL are always treated as sensitive.
+Data stores are marked sensitive through tags such as `data-classification`, `classification`, `sensitivity` or `data` (for example `data_classification=confidential`). Key vaults and databases (SQL, SQL MI, PostgreSQL, MySQL, Cosmos DB, Redis) are always treated as sensitive.
 
 **Read-only guarantee:** every SDK client is wrapped in `ReadOnlyClient`, which only allows `list*` and `get*` operations and raises `ReadOnlyViolation` on anything else (`begin_*`, `create*`, `update`, `delete`, ...). Tests enforce this, and the Reader role enforces it again on the Azure side.
 
@@ -527,14 +538,28 @@ The engine (`backend/app/engine/attack_paths.py`) walks the relationship graph f
 - **Confirmed** (`confirmed: true`): some hop carries an exploitable weakness:
   - an in-use vulnerability with CVSS ≥ 7 on a workload (VM, scale set, pod, function, EC2, GCE, ...);
   - a high/critical finding on the entry point or on a data store, or a sensitive data store that is itself internet-exposed;
-  - for the entry point: a high/critical inbound-exposure finding on a network control that `protects` it (Azure NSG on the NIC or subnet, AWS security group, GCP firewall rule), reported as e.g. *Exposed via NSG web-nsg: SSH (22) open to Internet*. The open ports are derived from the control's rules: Azure NIC- and subnet-level NSGs must **both** allow a port, controls at the same level (several security groups) are combined. Only risky ports count (SSH, RDP, WinRM, Telnet, SMB, common database ports, or all ports), and only if the internet can reach them: directly through a public IP, or, for a workload that is only behind a public load balancer, on the backend ports the load balancer forwards (an application gateway forwards HTTP(S) only, so it never confirms an SSH/RDP rule).
+  - a vulnerability-like finding on any hop: an **end-of-life runtime** (App Service) or database engine, e.g. *Vulnerable: Runtime PHP 7.4 is end-of-life since 2022-11-28*;
+  - for the entry point: a high/critical inbound-exposure finding on a network control that `protects` it (Azure NSG on the NIC or subnet, AWS security group, GCP firewall rule), reported as e.g. *Exposed via NSG web-nsg: SSH (22) open to Internet*. The open ports are derived from the control's rules with the shared evaluator (`engine/nsg.py`: priority order, first match wins, Deny and Azure default rules, destination application security groups), the same one the posture rules use: Azure NIC- and subnet-level NSGs must **both** allow a port, controls at the same level (several security groups) are combined. Only risky ports count (SSH, RDP, WinRM, Telnet, SMB, common database ports, or all ports), and only if the internet can reach them: directly through a public IP, or, for a workload that is only behind a public load balancer, on the backend ports the load balancer forwards (an application gateway forwards HTTP(S) only, so it never confirms an SSH/RDP rule).
 - **Exposure path** (`confirmed: false`, `note: "No exploitable weakness found yet"`): the chain exists but no weakness was found. The score is 60% of the normal score, capped at 54, so the severity is at most *medium*.
 
 Confirmed paths are listed first. `GET /api/attack-paths` and `/api/attack-paths/graph` accept `confirmed_only=true`; the **Attack paths** page has a *Confirmed only / All exposure* switch, shows the weaknesses and the reason for every hop, and explains what is missing when there are no paths. New-path notifications and the dashboard's top risks only use confirmed paths; the dashboard also shows the number of exposure paths.
 
 If the page is empty: there must be an internet-exposed entry point, a link from it to sensitive data (identity with data access), and, for a confirmed path, a weakness. The most common missing piece is sensitivity: tag storage accounts / buckets that hold sensitive data with `data_classification=confidential` and re-scan.
 
-Not covered yet: NSG rule priorities and deny rules (any allow rule from the internet counts, as in the posture rules), Azure Firewall / NVA routing, private endpoints, App Service / function app access restrictions, application gateway or load balancer backends addressed by IP/FQDN instead of NIC, per-instance (Flexible VMSS) NIC overrides, custom role permissions, and Key Vault access policies on RBAC-mode vaults (ignored by Azure too).
+Entry points also include Azure Firewalls with DNAT rules (paths continue to the VM, scale set or private endpoint target), App Service apps that are reachable from the internet (access restrictions and public network access evaluated) and managed databases whose public endpoint admits every address. Private-only resources are never entry points.
+
+Not covered yet: Azure Firewall network / application rules and NVA routing as an inbound path (route tables are informational), Application Gateway listener routing and WAF, per-instance (Flexible VMSS) NIC overrides, custom role permissions, App Service Environment reachability, and Key Vault access policies on RBAC-mode vaults (ignored by Azure too). See [docs/AZURE_COVERAGE.md](docs/AZURE_COVERAGE.md#remaining-limits).
+
+## Cloud exposure
+
+**Exposure** (`GET /api/exposure`, any signed-in user) lists every asset the internet can reach, across Azure, AWS and GCP:
+
+- **Open** (any internet address) or **restricted** (only listed public ranges, shown with the CIDR, e.g. an NSG rule from an office range or a DNAT rule with a source list);
+- **How**: public IP on a NIC, public load balancer rule / NAT, Application Gateway, Azure Firewall DNAT (with the public IP:port and translated target), PaaS public endpoint, App Service access-restriction state;
+- **Effective ports** after NSG evaluation, **protecting controls** (NSGs per level, PaaS firewalls, access restrictions), **private endpoints**, outbound forced tunnelling;
+- linked open **findings**, **vulnerabilities** and **attack paths**; whether the asset is an attack-path entry or reached through another one (e.g. the firewall).
+
+Filters: cloud, subscription / account / project, asset type, port (`?port=22`), level. The dashboard has a **Cloud exposure** tile (`GET /api/exposure/summary`). AWS and GCP assets are described from their connector's exposure text and the ports their security groups / firewall rules open.
 
 ## Risk scoring
 

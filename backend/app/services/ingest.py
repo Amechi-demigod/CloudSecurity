@@ -103,9 +103,12 @@ def evaluate_posture(db: Session, assets: list[Asset], source: str) -> dict:
         failures = {r.id: (r, ev) for r, ev in posture.evaluate_asset(asset_to_dict(a))}
         existing = {f.rule_id: f for f in db.scalars(select(Finding).where(Finding.asset_id == a.id))}
         for rid, (r, ev) in failures.items():
+            # a rule can give a specific title (e.g. "Runtime PHP 7.4 is end-of-life since 2022-11-28")
+            ev = dict(ev)
+            title = str(ev.pop("_title", "") or r.title)
             f = existing.get(rid)
             if f is None:
-                f = Finding(id=new_id(), rule_id=rid, asset_id=a.id, title=r.title, description=r.description,
+                f = Finding(id=new_id(), rule_id=rid, asset_id=a.id, title=title, description=r.description,
                             severity=r.severity, remediation=r.remediation, compliance=list(r.compliance),
                             evidence=ev, source=source, first_seen=now, last_seen=now)
                 db.add(f)
@@ -114,6 +117,7 @@ def evaluate_posture(db: Session, assets: list[Asset], source: str) -> dict:
             else:
                 f.last_seen = now
                 f.evidence = ev
+                f.title = title
                 if f.status == "resolved":  # regression
                     f.status = "open"
                     f.resolved_at = None
