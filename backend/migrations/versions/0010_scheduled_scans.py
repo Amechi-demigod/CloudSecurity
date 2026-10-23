@@ -19,6 +19,17 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    # Guarded like 0004: a schema created by create_all() before it was stamped
+    # (pre-Alembic installs) may already have these.
+    insp = sa.inspect(op.get_bind())
+    if not insp.has_table('scan_schedule_settings'):
+        _create_settings_table()
+    if 'trigger' not in {c['name'] for c in insp.get_columns('scan_runs')}:
+        with op.batch_alter_table('scan_runs', schema=None) as batch_op:
+            batch_op.add_column(sa.Column('trigger', sa.String(length=16), nullable=True))
+
+
+def _create_settings_table() -> None:
     op.create_table('scan_schedule_settings',
     sa.Column('id', sa.Integer(), nullable=False),
     sa.Column('enabled', sa.Boolean(), nullable=True),
@@ -27,8 +38,6 @@ def upgrade() -> None:
     sa.Column('updated_by', sa.String(length=320), nullable=False),
     sa.PrimaryKeyConstraint('id')
     )
-    with op.batch_alter_table('scan_runs', schema=None) as batch_op:
-        batch_op.add_column(sa.Column('trigger', sa.String(length=16), nullable=True))
 
 
 def downgrade() -> None:
