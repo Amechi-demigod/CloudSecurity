@@ -168,6 +168,18 @@ export interface Connector {
   provider: string;
   description: string;
   configured: boolean;
+  /** Configured scan targets: subscriptions, account IDs (role ARNs), projects / organization. */
+  scope: string[];
+  /** What to set when not configured. */
+  setup_hint: string;
+  auth_mode?: string | null;
+  /** AWS: regions scanned. */
+  regions?: string[];
+  /** GCP: credentials file problem (missing / unreadable). */
+  problem?: string | null;
+  last_scan: ScanRun | null;
+  /** Subscriptions / accounts / projects found by previous scans of this connector. */
+  discovered_scopes: { id: string; name: string }[];
 }
 
 export interface ScanRun {
@@ -216,6 +228,8 @@ export interface Health {
   simulation_mode: boolean;
   simulator_running: boolean;
   azure_configured: boolean;
+  aws_configured: boolean;
+  gcp_configured: boolean;
 }
 
 export type Role = "admin" | "analyst" | "viewer";
@@ -943,7 +957,13 @@ export const api = {
   dashboard: () => request<Dashboard>("/api/dashboard"),
   assets: (f: Record<string, string | boolean | undefined> = {}) => request<AssetSummary[]>(`/api/assets${qs(f)}`),
   facets: () =>
-    request<{ types: string[]; regions: string[]; sources: string[]; subscriptions: { id: string; name: string }[] }>(
+    request<{
+      types: string[];
+      providers: string[];
+      regions: string[];
+      sources: string[];
+      subscriptions: { id: string; name: string; provider: string }[];
+    }>(
       "/api/assets/facets",
     ),
   assetDetail: (id: string) =>

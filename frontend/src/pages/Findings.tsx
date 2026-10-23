@@ -4,7 +4,7 @@ import { api, type Finding } from "../api";
 import { useAuth } from "../auth/context";
 import AssetDrawer from "../components/AssetDrawer";
 import { Button, Card, Empty, ErrorNote, PageHeader, Select, SeverityBadge, Table, Tag } from "../components/ui";
-import { TYPE_LABEL, fmtAgo } from "../lib/format";
+import { PROVIDER_LABEL, TYPE_LABEL, fmtAgo } from "../lib/format";
 import { useApi } from "../lib/useApi";
 
 export default function Findings() {
@@ -14,6 +14,7 @@ export default function Findings() {
   const linked = params.get("finding");
   const [status, setStatus] = useState(linked ? "all" : "open");
   const [source, setSource] = useState("");
+  const [provider, setProvider] = useState("");
   const [compliance, setCompliance] = useState("");
   const [expanded, setExpanded] = useState<string | null>(linked);
   const [asset, setAsset] = useState<string | null>(null);
@@ -21,8 +22,15 @@ export default function Findings() {
   const canTriage = useAuth().can("analyst");
 
   const { data, error, reload } = useApi(
-    () => api.findings({ severity: severity || undefined, status, source: source || undefined, compliance: compliance || undefined }),
-    [severity, status, source, compliance],
+    () =>
+      api.findings({
+        severity: severity || undefined,
+        status,
+        source: source || undefined,
+        provider: provider || undefined,
+        compliance: compliance || undefined,
+      }),
+    [severity, status, source, provider, compliance],
   );
 
   async function setFindingStatus(f: Finding, s: Finding["status"]) {
@@ -45,10 +53,16 @@ export default function Findings() {
       <div className="mb-3 flex flex-wrap items-center gap-3">
         <Select label="Severity" value={severity} onChange={setSeverity} options={["", "critical", "high", "medium", "low"]} />
         <Select label="Status" value={status} onChange={setStatus} options={["open", "suppressed", "resolved", "all"]} />
-        <Select label="Source" value={source} onChange={setSource} options={["", "simulated", "azure"]} />
+        <Select
+          label="Cloud"
+          value={provider}
+          onChange={setProvider}
+          options={[{ value: "", label: "All" }, ...["azure", "aws", "gcp"].map((p) => ({ value: p, label: PROVIDER_LABEL[p] }))]}
+        />
+        <Select label="Source" value={source} onChange={setSource} options={["", "simulated", "azure", "aws", "gcp"]} />
         <input
           className="w-48 rounded border border-line bg-surface-2 px-2 py-1 text-sm"
-          placeholder="Compliance, e.g. CIS Azure 6"
+          placeholder="Compliance, e.g. CIS AWS 2.1"
           value={compliance}
           onChange={(e) => setCompliance(e.target.value)}
         />

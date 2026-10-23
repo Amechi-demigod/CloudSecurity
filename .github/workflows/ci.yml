@@ -781,6 +781,40 @@ jobs:
           sudo cnapp-ctl firewall status
           systemctl is-enabled cnapp.service cnapp-firewall.service cnapp-backup.timer
           test "$(systemctl is-enabled cnapp-update.timer)" = disabled
+      - name: cnapp-ctl gcp-key install / status / remove (dummy key; 0600 for the backend user, read-only mount, never printed or in cnapp.env)
+        run: |
+          set -o pipefail
+          k="$RUNNER_TEMP/gcp-key"; mkdir -p "$k"
+          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$k/pk.pem" 2>/dev/null
+          python3 - "$k/pk.pem" "$k/key.json" <<'PY'
+          import json, sys
+          json.dump({"type": "service_account", "project_id": "ci-dummy-project", "private_key_id": "ci",
+                     "private_key": open(sys.argv[1]).read(), "client_id": "1",
+                     "client_email": "cnapp-scanner@ci-dummy-project.iam.gserviceaccount.com",
+                     "token_uri": "https://oauth2.googleapis.com/token"}, open(sys.argv[2], "w"))
+          PY
+          marker="$(sed -n 2p "$k/pk.pem")"; echo "::add-mask::$marker"
+          health() { docker exec cnapp-backend-1 python -c "import json, urllib.request; print(json.load(urllib.request.urlopen('http://127.0.0.1:8000/api/health'))['gcp_configured'])"; }
+          echo '{"type": "authorized_user", "refresh_token": "x"}' > "$k/bad.json"
+          if sudo cnapp-ctl gcp-key install "$k/bad.json" --no-restart; then echo "::error::unsupported credentials type accepted"; exit 1; fi
+          test "$(sudo stat -c '%a %u' /opt/cnapp/secrets/gcp)" = "700 10001"
+          sudo sed -i 's/^GCP_PROJECT_IDS=.*/GCP_PROJECT_IDS=ci-dummy-project/' /opt/cnapp/cnapp.env
+          sudo cnapp-ctl gcp-key install "$k/key.json" 2>&1 | tee "$k/out.txt"
+          grep -q "cnapp-scanner@ci-dummy-project.iam.gserviceaccount.com" "$k/out.txt"
+          test "$(sudo stat -c '%a %u' /opt/cnapp/secrets/gcp/credentials.json)" = "600 10001"
+          sudo grep -qx 'GCP_CREDENTIALS_FILE=/run/secrets/gcp/credentials.json' /opt/cnapp/cnapp.env
+          if sudo grep -q 'PRIVATE KEY' /opt/cnapp/cnapp.env; then echo "::error::key material in cnapp.env"; exit 1; fi
+          sudo cnapp-ctl gcp-key status | tee -a "$k/out.txt"
+          test "$(health)" = True
+          if docker exec cnapp-backend-1 sh -c 'echo x >> /run/secrets/gcp/credentials.json' 2>/dev/null; then
+            echo "::error::key mount is writable"; exit 1; fi
+          if grep -qF "$marker" "$k/out.txt" || docker logs cnapp-backend-1 2>&1 | grep -qF "$marker"; then
+            echo "::error::key material printed"; exit 1; fi
+          sudo sed -i 's/^GCP_PROJECT_IDS=.*/GCP_PROJECT_IDS=/' /opt/cnapp/cnapp.env
+          sudo cnapp-ctl gcp-key remove
+          test ! -e /opt/cnapp/secrets/gcp/credentials.json
+          sudo grep -qx 'GCP_CREDENTIALS_FILE=' /opt/cnapp/cnapp.env
+          test "$(health)" = False
       - name: End-to-end over HTTPS (TLS + CA, redirect, headers, login + CSRF, agent --ca-file, sensor ingest)
         run: |
           python3 deploy/onprem/tests/onprem_e2e.py --base "https://$HOST" --ca "$CA" --email "$ADMIN" \

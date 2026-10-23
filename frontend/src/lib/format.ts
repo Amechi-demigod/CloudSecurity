@@ -44,4 +44,33 @@ export const TYPE_LABEL: Record<string, string> = {
   function_app: "Function app",
   subscription: "Subscription",
   internet: "Internet",
+  // AWS
+  aws_account: "AWS account",
+  ec2_instance: "EC2 instance",
+  security_group: "Security group",
+  s3_bucket: "S3 bucket",
+  eks_cluster: "EKS cluster",
+  rds_instance: "RDS instance",
+  iam_user: "IAM user",
+  iam_role: "IAM role",
+  kms_key: "KMS key",
+  lambda_function: "Lambda function",
+  cloudtrail_trail: "CloudTrail trail",
+  // GCP
+  gcp_project: "GCP project",
+  gce_instance: "Compute instance",
+  gcp_firewall_rule: "VPC firewall rule",
+  gcs_bucket: "Cloud Storage bucket",
+  gke_cluster: "GKE cluster",
+  cloud_sql_instance: "Cloud SQL instance",
+  gcp_service_account: "Service account",
+  gcp_kms_key: "Cloud KMS key",
+  cloud_function: "Cloud Function",
+  cloud_run_service: "Cloud Run service",
 };
+
+/** Cloud provider display names (Asset.provider / connector names). */
+export const PROVIDER_LABEL: Record<string, string> = { azure: "Azure", aws: "AWS", gcp: "GCP" };
+
+/** What a provider calls its top-level scope (Asset.subscription_id). */
+export const SCOPE_LABEL: Record<string, string> = { azure: "Subscription", aws: "Account", gcp: "Project" };

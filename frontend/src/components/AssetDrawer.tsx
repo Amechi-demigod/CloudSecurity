@@ -1,6 +1,6 @@
 import { api } from "../api";
 import { Drawer, ErrorNote, RiskBar, SeverityBadge, Tag } from "./ui";
-import { TYPE_LABEL, fmtAgo } from "../lib/format";
+import { SCOPE_LABEL, TYPE_LABEL, fmtAgo } from "../lib/format";
 import { useApi } from "../lib/useApi";
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -35,9 +35,9 @@ export default function AssetDrawer({ assetId, onClose, onNavigate }: { assetId:
             {a.sensitive_data && <Tag tone="warn">Sensitive data</Tag>}
           </div>
           <dl className="mt-3 grid grid-cols-[8rem_1fr] gap-x-3 gap-y-1 text-sm">
-            <dt className="text-ink-3">Subscription</dt>
+            <dt className="text-ink-3">{SCOPE_LABEL[a.provider] ?? "Subscription"}</dt>
             <dd>{a.subscription_name ?? "—"}</dd>
-            <dt className="text-ink-3">Resource group</dt>
+            <dt className="text-ink-3">{a.provider === "aws" ? "VPC" : a.provider === "gcp" ? "Network / group" : "Resource group"}</dt>
             <dd>{a.resource_group ?? "—"}</dd>
             <dt className="text-ink-3">Resource ID</dt>
             <dd className="break-all font-mono text-xs text-ink-2">{a.id}</dd>

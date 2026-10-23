@@ -29,11 +29,16 @@ readonly FW_CHAIN="CNAPP-INGRESS"
 readonly LOG_DIR="${CNAPP_LOG_DIR:-/var/log/cnapp}"
 readonly F2B_DIR="${CNAPP_F2B_DIR:-/etc/fail2ban}"
 readonly NGINX_UID=101  # nginx in the (unprivileged) frontend image
+readonly BACKEND_UID=10001  # cnapp user in the backend image
 
 APP_DIR="$CNAPP_HOME/app"
 CONF="$CNAPP_HOME/cnapp.env"
 SECRETS_DIR="$CNAPP_HOME/secrets"
 GEN_ENV="$SECRETS_DIR/generated.env"
+# GCP connector credentials: mounted read-only into the backend (docker-compose.prod.yml)
+GCP_KEY_DIR="$SECRETS_DIR/gcp"
+GCP_KEY_FILE="$GCP_KEY_DIR/credentials.json"
+readonly GCP_KEY_CONTAINER_PATH="/run/secrets/gcp/credentials.json"
 TLS_DIR="$CNAPP_HOME/tls"
 CA_DIR="$CNAPP_HOME/ca"
 BACKUP_DIR="$CNAPP_HOME/backups"
@@ -1273,6 +1278,26 @@ SCAN_INTERVAL_HOURS=6
 # Seconds to wait after a (re)start before an overdue scheduled scan runs (0-3600)
 SCAN_STARTUP_DELAY_SECONDS=120
 
+# --- AWS read-only scanner (optional, docs/CONNECT_AWS.md) -------------------------
+# Dedicated IAM user with ONLY the AWS managed policies SecurityAudit + ViewOnlyAccess.
+# Outbound HTTPS to *.amazonaws.com is required (HTTPS_PROXY above if needed).
+AWS_ACCESS_KEY_ID=
+AWS_SECRET_ACCESS_KEY=
+# Other accounts: read-only role ARNs to assume (comma-separated) and their external ID
+AWS_ROLE_ARNS=
+AWS_EXTERNAL_ID=
+# Regions to scan (comma-separated); empty = every region enabled in the account
+AWS_REGIONS=
+
+# --- GCP read-only scanner (optional, docs/CONNECT_GCP.md) -------------------------
+# Service account with roles/viewer + roles/iam.securityReviewer. Its key is NEVER
+# put in this file: sudo cnapp-ctl gcp-key install KEY.json (sets GCP_CREDENTIALS_FILE).
+# Outbound HTTPS to *.googleapis.com is required (HTTPS_PROXY above if needed).
+GCP_PROJECT_IDS=
+# Or scan every active project of an organization (numeric ID)
+GCP_ORGANIZATION_ID=
+GCP_CREDENTIALS_FILE=
+
 # --- Notifications (optional, docs/NOTIFICATIONS.md) ------------------------------
 # Allow an SMTP relay on a private IP address (internal mail server)
 NOTIFICATIONS_SMTP_ALLOW_PRIVATE=false
@@ -1302,6 +1327,8 @@ install_files() { # copy the package (compose, nginx, units, docs) and the CLI
   local src=$1
   run install -d -m 0755 -o root -g root "$CNAPP_HOME" "$APP_DIR" "$APP_DIR/nginx"
   run install -d -m 0700 -o root -g root "$SECRETS_DIR" "$DOCKER_CONFIG" "$BACKUP_DIR" "$STATE_DIR"
+  # Only the backend user may enter it (mounted read-only at /run/secrets/gcp).
+  run install -d -m 0700 -o "$BACKEND_UID" -g "$BACKEND_UID" "$GCP_KEY_DIR"
   run install -d -m 0750 -o root -g "$(tls_gid)" "$TLS_DIR"
   ensure_log_dir
   if [[ "$src" != "$APP_DIR" ]]; then
@@ -2261,6 +2288,100 @@ cmd_approvals() {
   esac
 }
 
+# GCP connector key (docs/CONNECT_GCP.md). The JSON stays out of cnapp.env and
+# out of every log: it is copied to $GCP_KEY_FILE (0600, backend user) and mounted
+# read-only into the backend; only its type and service account email are shown.
+gcp_key_inspect() { # gcp_key_inspect FILE -> "TYPE IDENTITY" on stdout, or an error on stderr (exit 1)
+  have python3 || die "python3 is needed to check the key file"
+  python3 - "$1" <<'PY'
+import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as f:
+        d = json.load(f)
+except Exception as e:  # never echo the content
+    sys.exit(f"not a JSON credentials file ({type(e).__name__})")
+t = d.get("type") if isinstance(d, dict) else None
+if t == "service_account":
+    missing = [k for k in ("client_email", "private_key", "token_uri") if not d.get(k)]
+    if missing:
+        sys.exit("service account key is missing: " + ", ".join(missing))
+    print("service_account", d["client_email"])
+elif t == "external_account":
+    if not d.get("audience") or not d.get("credential_source"):
+        sys.exit("workload identity federation config is missing audience / credential_source")
+    sa = str(d.get("service_account_impersonation_url", "")).rsplit("/", 1)[-1].split(":")[0]
+    print("external_account", sa or d["audience"])
+else:
+    sys.exit(f"unsupported credentials type {t!r} (expected service_account or external_account)")
+PY
+}
+
+gcp_apply() { # gcp_apply restart(0|1)
+  if (( $1 )) && [[ -n "$(compose ps -q backend 2>/dev/null)" ]]; then
+    run compose up -d --force-recreate backend
+    (( DRY_RUN )) || wait_healthy 300 || die "backend not healthy (cnapp-ctl logs backend)"
+  elif (( $1 == 0 )); then
+    echo "  Apply with: sudo cnapp-ctl restart"
+  fi
+}
+
+cmd_gcp_key() {
+  local sub=${1:-status}; shift || true
+  local restart=1 src="" info
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --no-restart) restart=0; shift ;;
+      --dry-run) DRY_RUN=1; shift ;;
+      -*) die "gcp-key: unknown option $1" ;;
+      *) src=$1; shift ;;
+    esac
+  done
+  need_root gcp-key; require_installed
+  case $sub in
+    install)
+      [[ -n $src ]] || die "usage: cnapp-ctl gcp-key install KEY.json [--no-restart]"
+      [[ -f $src && -r $src ]] || die "$src is not a readable file"
+      (( $(stat -c %s "$src") <= 65536 )) || die "$src is too large for a credentials file"
+      info=$(gcp_key_inspect "$src") || die "$src: not a usable GCP credentials file"
+      if (( DRY_RUN )); then echo "[dry-run] install $info credentials as $GCP_KEY_FILE"; return 0; fi
+      install -d -m 0700 -o "$BACKEND_UID" -g "$BACKEND_UID" "$GCP_KEY_DIR"
+      local tmp; tmp=$(mktemp "$GCP_KEY_DIR/.credentials.XXXXXX")
+      install -m 0600 -o "$BACKEND_UID" -g "$BACKEND_UID" "$src" "$tmp"
+      mv -f "$tmp" "$GCP_KEY_FILE"
+      conf_set GCP_CREDENTIALS_FILE "$GCP_KEY_CONTAINER_PATH"
+      ok "installed ${info%% *} credentials for ${info#* } as $GCP_KEY_FILE (0600, read-only in the backend)"
+      [[ -n "$(conf_get GCP_PROJECT_IDS)$(conf_get GCP_ORGANIZATION_ID)" ]] \
+        || warn "set GCP_PROJECT_IDS or GCP_ORGANIZATION_ID in $CONF to enable the GCP connector"
+      echo "  Delete the original copy now: shred -u '$src'"
+      gcp_apply "$restart"
+      ;;
+    remove)
+      if [[ -f $GCP_KEY_FILE ]]; then
+        if (( DRY_RUN )); then echo "[dry-run] delete $GCP_KEY_FILE"; return 0; fi
+        if have shred; then shred -u "$GCP_KEY_FILE"; else rm -f "$GCP_KEY_FILE"; fi
+        ok "deleted $GCP_KEY_FILE"
+      else
+        ok "no GCP key installed"
+      fi
+      conf_set GCP_CREDENTIALS_FILE ""
+      echo "  Also delete the key in Google Cloud: gcloud iam service-accounts keys list --iam-account <sa-email>"
+      gcp_apply "$restart"
+      ;;
+    status)
+      echo "GCP_CREDENTIALS_FILE=$(conf_get GCP_CREDENTIALS_FILE)"
+      echo "GCP_PROJECT_IDS=$(conf_get GCP_PROJECT_IDS)  GCP_ORGANIZATION_ID=$(conf_get GCP_ORGANIZATION_ID)"
+      if [[ -f $GCP_KEY_FILE ]]; then
+        echo "Key file:  $GCP_KEY_FILE ($(stat -c '%a uid=%u' "$GCP_KEY_FILE"), modified $(date -r "$GCP_KEY_FILE" '+%F %T'))"
+        info=$(gcp_key_inspect "$GCP_KEY_FILE") || true
+        echo "Identity:  ${info:-unreadable}"
+      else
+        echo "Key file:  none (sudo cnapp-ctl gcp-key install KEY.json)"
+      fi
+      ;;
+    *) die "usage: cnapp-ctl gcp-key install KEY.json [--no-restart] | remove [--no-restart] | status" ;;
+  esac
+}
+
 cmd_show_secret() {
   need_root show-secret; require_installed
   local k=${1:-}
@@ -2358,6 +2479,12 @@ Operations
   reset-password --email E [--generate]   reset-mfa --email E
   show-secret INGEST_API_TOKEN|...        print one generated secret (e.g. for the runtime sensor)
 
+Cloud connectors (read-only; docs/CONNECT_AWS.md, docs/CONNECT_GCP.md)
+  gcp-key install KEY.json [--no-restart] install a GCP service account key / WIF config for the backend
+                                          ($GCP_KEY_DIR, 0600, mounted read-only; never in cnapp.env)
+  gcp-key remove [--no-restart]           delete it again (shred) and unset GCP_CREDENTIALS_FILE
+  gcp-key status                          key type, service account and permissions (never the key)
+
 Endpoint agent auto-update (docs/AGENT_UPDATES.md)
   agent-release import BUNDLE.tar.gz      import a signed agent release (signature checked, audited)
   agent-release fetch --tag agent-vX.Y.Z [--repo OWNER/REPO]   download it from GitHub Releases, then import
@@ -2398,6 +2525,7 @@ main() {
     reset-password) user_cli reset "$@" ;;
     reset-mfa) cmd_reset_mfa "$@" ;;
     show-secret) cmd_show_secret "$@" ;;
+    gcp-key) cmd_gcp_key "$@" ;;
     agent-release) cmd_agent_release "$@" ;;
     scripts) cmd_scripts "$@" ;;
     approvals) cmd_approvals "$@" ;;

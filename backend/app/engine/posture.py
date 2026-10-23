@@ -7,7 +7,8 @@ remediation text and compliance mappings.
 
 Rules operate only on *normalized* properties, so the same rules apply to the
 simulated environment and to real Azure scans (the Azure connector maps SDK
-objects onto these property names).
+objects onto these property names). AWS and GCP rules live in
+`posture_aws.py` / `posture_gcp.py` and register into the same catalog.
 """
 from __future__ import annotations
 
@@ -406,3 +407,8 @@ def compliance_controls() -> dict[str, list[str]]:
         for c in r.compliance:
             m.setdefault(c, []).append(r.id)
     return m
+
+
+# Provider rule packs register themselves into RULES on import (kept last: they
+# use the helpers above).
+from . import posture_aws, posture_gcp  # noqa: E402,F401

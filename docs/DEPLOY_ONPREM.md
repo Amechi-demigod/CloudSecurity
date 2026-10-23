@@ -44,6 +44,8 @@ To size up, edit `/opt/cnapp/cnapp.env` and run `sudo cnapp-ctl restart`:
 | OS security updates | `archive.ubuntu.com`, `security.ubuntu.com` (or your mirror) |
 | Entra ID sign-in (optional) | `login.microsoftonline.com` |
 | Azure scanner (optional) | `login.microsoftonline.com`, `management.azure.com` |
+| AWS scanner (optional, [CONNECT_AWS.md](CONNECT_AWS.md)) | `*.amazonaws.com` (STS, IAM, S3, S3 Control and EC2/EKS/RDS/KMS/Lambda/CloudTrail in each scanned region) |
+| GCP scanner (optional, [CONNECT_GCP.md](CONNECT_GCP.md)) | `oauth2.googleapis.com`, `*.googleapis.com` (Resource Manager, Compute, Storage, GKE, Cloud SQL, IAM, KMS, Functions, Run) |
 | Teams notifications (optional) | `*.webhook.office.com`, `*.logic.azure.com`, `*.api.powerplatform.com` |
 | Slack notifications (optional) | `hooks.slack.com` |
 | Email notifications (optional) | your SMTP relay, port 587/465 (set `NOTIFICATIONS_SMTP_ALLOW_PRIVATE=true` for an internal relay) |
@@ -88,6 +90,7 @@ Files on the server:
 | `/opt/cnapp/cnapp.env` | settings (hostname, image tag, sizing, Entra/Azure settings) | `0600 root` |
 | `/opt/cnapp/secrets/generated.env` | generated DB password, `SESSION_SECRET`, `INGEST_API_TOKEN`, `MFA_ENCRYPTION_KEY`, `NOTIFICATIONS_ENCRYPTION_KEY` | dir `0700`, file `0600` |
 | `/opt/cnapp/secrets/docker/`, `ghcr-token` | GHCR read-only credentials | `0700` / `0600` |
+| `/opt/cnapp/secrets/gcp/credentials.json` | GCP scanner key (`cnapp-ctl gcp-key install`), mounted read-only into the backend | dir `0700`, file `0600`, owner uid 10001 (backend) |
 | `/opt/cnapp/ca/` | built-in root CA (`ca.key` never leaves this dir, never mounted into a container) | `0700`, key `0600` |
 | `/opt/cnapp/tls/` | `server.crt` (full chain), `server.key`, `cnapp-root-ca.crt` (public) | `0750 root:cnapp-tls`, key `0640` |
 | `/opt/cnapp/backups/` | database dumps and config archives | `0700`, files `0600` |
@@ -243,6 +246,19 @@ AZURE_SUBSCRIPTION_IDS=<sub-id-1>,<sub-id-2>
 [Scheduled scans](#8-application-settings-for-on-prem)). Reader is read-only; scope it to the subscriptions you want
 scanned. The secret expires (default 1 year): set a reminder, rotate with `az ad sp credential reset`. Egress:
 `login.microsoftonline.com`, `management.azure.com`.
+
+### 3.10 Configure the AWS and GCP scanners (optional)
+Both are read-only and step-by-step in their own guides:
+
+- **AWS** ([CONNECT_AWS.md](CONNECT_AWS.md)): an IAM user with only `SecurityAudit` + `ViewOnlyAccess` (or a
+  cross-account `CNAPPReadOnly` role with an external ID per account); fill `AWS_ACCESS_KEY_ID`,
+  `AWS_SECRET_ACCESS_KEY`, optionally `AWS_ROLE_ARNS`, `AWS_EXTERNAL_ID`, `AWS_REGIONS` in `cnapp.env`, then
+  `sudo cnapp-ctl restart`.
+- **GCP** ([CONNECT_GCP.md](CONNECT_GCP.md)): a service account with `roles/viewer` + `roles/iam.securityReviewer`;
+  install its key with `sudo cnapp-ctl gcp-key install KEY.json` (stored in `/opt/cnapp/secrets/gcp/`, never in
+  `cnapp.env`), set `GCP_PROJECT_IDS` or `GCP_ORGANIZATION_ID` in `cnapp.env`, then `sudo cnapp-ctl restart`.
+
+Behind a proxy, `HTTPS_PROXY` / `NO_PROXY` in `cnapp.env` apply to both scanners.
 
 ## 4. TLS
 

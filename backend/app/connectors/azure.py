@@ -17,6 +17,7 @@ from typing import Any
 
 from ..config import Settings
 from .base import AssetRecord, CollectionResult, Connector, RelationshipRecord
+from .base import sensitive_from_tags as _sensitive_from_tags
 
 log = logging.getLogger(__name__)
 
@@ -34,9 +35,6 @@ BUILTIN_ROLES = {
 }
 DATA_ROLES = {"Owner", "Contributor", "Storage Blob Data Owner", "Storage Blob Data Contributor",
               "Storage Blob Data Reader", "Key Vault Administrator", "Key Vault Secrets User"}
-SENSITIVE_TAG_KEYS = {"data_classification", "data-classification", "dataclassification", "classification",
-                      "sensitivity", "data"}
-NON_SENSITIVE_VALUES = {"public", "none", "non-sensitive", "nonsensitive", "general"}
 
 READ_PREFIXES = ("list", "get")
 # Some list*/get* operations are POSTs that return secrets (storage keys, SAS
@@ -200,13 +198,6 @@ def _norm_id(rid: str | None) -> str:
     return (rid or "").lower()
 
 
-def _sensitive_from_tags(tags: dict | None) -> tuple[bool, str | None]:
-    for k, v in (tags or {}).items():
-        if k.lower() in SENSITIVE_TAG_KEYS and str(v).lower() not in NON_SENSITIVE_VALUES:
-            return True, str(v)
-    return False, None
-
-
 def _enabled(v: Any) -> bool:
     return str(v).lower() in {"enabled", "true"}
 
@@ -219,6 +210,9 @@ class AzureConnector(Connector):
     name = "azure"
     provider = "azure"
     description = "Read-only Azure posture scan via azure-mgmt SDKs (Reader role)."
+    setup_hint = ("set AZURE_SUBSCRIPTION_IDS and a credential: the managed identity "
+                  "(AZURE_MANAGED_IDENTITY_CLIENT_ID) when deployed on Azure, or "
+                  "AZURE_TENANT_ID/AZURE_CLIENT_ID/AZURE_CLIENT_SECRET locally")
 
     def __init__(self, settings: Settings, client_factory: Callable[[str, str], Any] | None = None):
         self.settings = settings
@@ -227,6 +221,9 @@ class AzureConnector(Connector):
     def is_configured(self) -> bool:
         s = self.settings
         return bool(s.azure_subscription_ids) and (resolve_auth_mode(s) is not None or self._factory is not None)
+
+    def scope(self) -> list[str]:
+        return list(self.settings.azure_subscription_ids)
 
     def info(self) -> dict:
         return {**super().info(), "auth_mode": resolve_auth_mode(self.settings)}

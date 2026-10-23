@@ -2,17 +2,17 @@
 
 A cloud security platform MVP inspired by runtime-first CNAPPs such as Upwind. It combines:
 
-- **Asset inventory**: VMs, storage accounts, AKS clusters and pods, SQL servers and databases, NSGs, identities, key vaults, function apps and subscriptions, with region, tags, internet exposure, data sensitivity and relationships.
-- **Posture management (CSPM)**: a declarative rules engine with 21 rules mapped to CIS Azure and CIS AKS controls. Each finding has a status of open, resolved or suppressed.
+- **Asset inventory**: Azure (VMs, storage accounts, AKS clusters and pods, SQL, NSGs, identities, key vaults, function apps, subscriptions), AWS (accounts, EC2, security groups, S3, EKS, RDS, IAM users/roles, KMS, Lambda, CloudTrail) and GCP (projects, Compute Engine, VPC firewall rules, Cloud Storage, GKE, Cloud SQL, service accounts, Cloud KMS, Cloud Functions, Cloud Run), with region, tags, internet exposure, data sensitivity and relationships.
+- **Posture management (CSPM)**: a declarative rules engine with 21 Azure rules (CIS Azure, CIS AKS), 24 AWS rules (CIS AWS Foundations, CIS EKS, AWS FSBP) and 23 GCP rules (CIS GCP Foundations, CIS GKE). Each finding has a status of open, resolved or suppressed.
 - **Vulnerabilities with runtime context**: CVEs on packages are ranked by a risk score that combines CVSS with whether the package is loaded at runtime, internet exposure, sensitive-data reach and exploit availability. The UI shows a **noise-reduction** stat.
 - **Runtime threat detection (CDR)**: a runtime event feed plus 8 detection rules (reverse shell, crypto miner, known-malicious IP, shell in a container, privilege escalation, credential-file access, unexpected outbound connection, IMDS token theft). Each rule maps to MITRE ATT&CK, and each alert has an event timeline.
 - **Attack paths**: a risk graph covering Internet → exposed resource → vulnerable workload → identity → sensitive data, with the top paths ranked.
 - **Dashboard**: overall risk score, findings by severity, top risks, alerts over time and a compliance summary.
 - **Simulated data mode (on by default)**: a seeded "Contoso" environment across three Azure-style subscriptions, plus a background simulator that emits live runtime events.
-- **Real Azure posture connector (opt-in, read-only)**: uses the azure-identity and azure-mgmt-* SDKs. A "Run scan" button merges the results into the same model with `source="azure"`.
+- **Real cloud posture connectors (opt-in, read-only)**: Azure (azure-mgmt-* SDKs), AWS (boto3, SecurityAudit + ViewOnlyAccess, cross-account roles) and GCP (Google REST APIs via google-auth, Viewer + Security Reviewer). A "Run scan" button merges the results into the same model with `source="azure"`, `"aws"` or `"gcp"`; see [Cloud connectors](#cloud-connectors-read-only).
 - **Login, sessions and role-based access control**: every API endpoint and page requires sign-in (viewer, analyst or admin roles), with an admin Users page and an audit log. See [Authentication & access control](#authentication--access-control).
 - **IT asset lifecycle**: hardware records for every agent-enrolled device plus monitors, phones, docks and laptops without an agent; assignment and chain-of-custody history, offboarding with retrieval tracking and overdue reminders, warranties, disposal with wipe/destruction certificates, idle-device detection, CSV import/export. See **[docs/ASSET_MANAGEMENT.md](docs/ASSET_MANAGEMENT.md)**.
-- **Pluggable connectors** and a documented **runtime sensor ingest API** so a real eBPF sensor, AWS or GCP can be added later.
+- **Pluggable connectors** and a documented **runtime sensor ingest API** for the runtime sensor.
 
 ## Architecture
 
@@ -21,6 +21,8 @@ flowchart LR
   subgraph Sources
     SIM[Simulated connector<br/>seed + live event simulator]
     AZ[Azure connector<br/>read-only, Reader role]
+    AWS[AWS connector<br/>read-only, SecurityAudit + ViewOnlyAccess]
+    GCP[GCP connector<br/>read-only, Viewer + Security Reviewer]
     SENSOR[Runtime sensor<br/>sensor/, procfs + optional eBPF]
     AGENT[Endpoint agent<br/>endpoint-agent/, Windows + macOS]
   end
@@ -37,6 +39,8 @@ flowchart LR
 
   SIM --> ING
   AZ --> ING
+  AWS --> ING
+  GCP --> ING
   SENSOR -- POST /api/runtime/events --> DR
   AGENT -- "/api/agent/* (per-device credential, pull)" --> DB
   ING --> PR --> DB
@@ -60,7 +64,9 @@ backend/
                          User, UserSession, AuditLog
     schemas.py           Pydantic v2 schemas (includes the runtime event schema)
     engine/
-      posture.py         declarative CSPM rules + CIS mappings
+      posture.py         declarative CSPM rules + CIS mappings (Azure)
+      posture_aws.py     AWS rules (CIS AWS Foundations, CIS EKS, AWS FSBP)
+      posture_gcp.py     GCP rules (CIS GCP Foundations, CIS GKE)
       detection.py       CDR detection rules + MITRE mapping
       risk.py            vulnerability risk score, noise reduction, overall risk score
       attack_paths.py    graph traversal and path scoring
@@ -68,6 +74,8 @@ backend/
       base.py            Connector interface + records
       simulated.py       seed generator + attack scenarios
       azure.py           read-only Azure scanner (ReadOnlyClient guard)
+      aws.py             read-only AWS scanner (ReadOnlyAwsClient guard, boto3)
+      gcp.py             read-only GCP scanner (ReadOnlyGcpClient guard, REST + google-auth)
     services/            ingest, runtime, scans, simulation, analytics
     api/                 routers
   migrations/            Alembic migrations (PostgreSQL)
@@ -226,6 +234,15 @@ On first start, simulated mode seeds the database (`backend/cnapp.db`) and backf
 | `SCAN_SCHEDULE_ENABLED` | `true` | Scan every configured cloud connector automatically ([Scheduled scans](#scheduled-scans)). Default for the console setting |
 | `SCAN_INTERVAL_HOURS` | `6` | Hours between scheduled scans of a connector, fractions allowed (`0.25` to `168`; outside that range the API refuses to start). Default for the console setting |
 | `SCAN_STARTUP_DELAY_SECONDS` | `120` | Wait after a (re)start before the first scheduled scan (`0` to `3600`) |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | | Access key of the dedicated read-only IAM user ([docs/CONNECT_AWS.md](docs/CONNECT_AWS.md)) |
+| `AWS_USE_DEFAULT_CREDENTIALS` | `false` | Use boto3's default credential chain (instance role, profile, SSO) when no access key is set |
+| `AWS_AUTH_MODE` | `auto` | `auto`, `access_key` or `default` |
+| `AWS_ROLE_ARNS` / `AWS_EXTERNAL_ID` | | Read-only roles to assume in other accounts (comma-separated) and their external ID |
+| `AWS_REGIONS` | *(all enabled)* | Regions to scan (comma-separated) |
+| `AWS_HOME_REGION` | `us-east-1` | Region for IAM/STS/S3 listing (`us-gov-west-1`, `cn-north-1` in other partitions) |
+| `GCP_CREDENTIALS_FILE` | | Absolute path of the service account key / workload identity federation config ([docs/CONNECT_GCP.md](docs/CONNECT_GCP.md)); on-prem set by `cnapp-ctl gcp-key install` |
+| `GCP_USE_DEFAULT_CREDENTIALS` | `false` | Use Application Default Credentials when no file is set |
+| `GCP_PROJECT_IDS` / `GCP_ORGANIZATION_ID` | | Projects to scan (comma-separated) and/or every active project of an organization |
 
 ## Connecting a real Azure environment (read-only)
 
@@ -309,6 +326,27 @@ What the scanner checks:
 Relationships come from NICs (VM↔NSG), VM identities, and RBAC role assignments (identity → data store). Data stores are marked sensitive through tags such as `data-classification`, `classification`, `sensitivity` or `data`. Key vaults and SQL are always treated as sensitive.
 
 **Read-only guarantee:** every SDK client is wrapped in `ReadOnlyClient`, which only allows `list*` and `get*` operations and raises `ReadOnlyViolation` on anything else (`begin_*`, `create*`, `update`, `delete`, ...). Tests enforce this, and the Reader role enforces it again on the Azure side.
+
+## Cloud connectors (read-only)
+
+| Connector | Library | Least-privilege access | Setup |
+|---|---|---|---|
+| `azure` | azure-identity + azure-mgmt-* | built-in **Reader** role | [above](#connecting-a-real-azure-environment-read-only), [docs/DEPLOY_AZURE.md](docs/DEPLOY_AZURE.md#enable-the-azure-scanner) |
+| `aws` | boto3 | AWS managed policies **SecurityAudit** + **ViewOnlyAccess** (IAM user, instance role, or a role assumed in each account with an external ID) | **[docs/CONNECT_AWS.md](docs/CONNECT_AWS.md)** |
+| `gcp` | google-auth + the Google Cloud REST APIs | **roles/viewer** + **roles/iam.securityReviewer** on the projects or the organization | **[docs/CONNECT_GCP.md](docs/CONNECT_GCP.md)** |
+
+All three work the same way:
+
+- **Configured check:** each connector's `is_configured()` is true once credentials and a scope (subscriptions / an access key or role / projects or an organization) are set. `GET /api/health` reports `azure_configured`, `aws_configured` and `gcp_configured`; `GET /api/connectors` lists each connector with its scope, regions, last scan and the accounts/projects found.
+- **Scanning:** **Connectors & scans → Run scan** (or `POST /api/scans` with `{"connector": "aws"}`) runs the connector through `app/services/scans.py::start_scan`, the single entry point also used for scheduled scans. One scan per connector runs at a time (advisory lock).
+- **One model:** assets, relationships and findings land in the same inventory, findings, attack paths and dashboard with `source="aws"` / `"gcp"` (`provider` likewise). Inventory and Findings have a **Cloud** filter; the Azure subscription, AWS account or GCP project is the asset's `subscription_id`.
+- **Partial results:** throttling is retried (botocore adaptive retries; exponential backoff on HTTP 429/5xx for Google), lists are paginated, and a failing account, project, region or service is recorded in the scan's errors (shown under **Scan history**) while the rest of the scan continues. GCP APIs that are not enabled in a project are skipped.
+- **Read-only guard:** AWS clients are wrapped in `ReadOnlyAwsClient` (only `describe_*` / `list_*` / `get_*`, plus `generate_credential_report`; S3 object reads, Lambda code, SSM parameters, secrets, EC2 password data and `meta` are blocked). Every Google request goes through `ReadOnlyGcpClient` (only `get*` / `list*` / `aggregatedList` / `search*` methods, HTTP GET except the read-only `getIamPolicy` POST, only `*.googleapis.com`; object and secret reads and token minting are blocked). Tests enforce both, and the IAM roles enforce it again on the cloud side.
+- **Network:** the server needs outbound HTTPS (443) to `*.amazonaws.com` (AWS) and `*.googleapis.com` + `oauth2.googleapis.com` (GCP). Behind a proxy set `HTTPS_PROXY` (and `NO_PROXY`) in `/opt/cnapp/cnapp.env`; both SDKs honour it.
+
+What the AWS scanner checks (rule IDs `AWS-*`): root MFA and root access keys, password policy length, console users without MFA, access keys older than 90 days, `*:*` admin policies on users and roles; public S3 buckets, Block Public Access, TLS-only bucket policies; EC2 instances with SSH/RDP open to the internet, IMDSv1; security groups open on 22/3389 or all ports, default security group in use; public, unencrypted or unbacked-up RDS; public EKS endpoints, EKS audit logging; KMS key rotation; multi-region CloudTrail, log file validation; Lambda function URLs without auth. Attack paths follow internet → exposed EC2 (via its security group) → instance role with admin / S3 / RDS access → sensitive S3 bucket or RDS database.
+
+What the GCP scanner checks (rule IDs `GCP-*`): service accounts with Owner/Editor/*Admin, user-managed keys older than 90 days, `allUsers` on the project, project-wide Service Account User / Token Creator, too many Owners; firewall rules open on 22/3389/all ports; VMs with external IPs or the default service account with full API scope; public buckets, uniform bucket-level access; GKE legacy ABAC, public control plane, public nodes, Workload Identity; Cloud SQL open to 0.0.0.0/0, public IP, SSL, backups; KMS rotation; unauthenticated Cloud Run services and Cloud Functions. Attack paths follow internet → exposed VM (firewall) → its service account (Editor, Storage/SQL roles, bucket IAM) → sensitive bucket or Cloud SQL.
 
 ## Authentication & access control
 
@@ -482,14 +520,14 @@ A dormant vulnerability can never score above 20. An in-use, exposed vulnerabili
 
 ## Extending
 
-- **New cloud provider**: implement `app/connectors/base.py::Connector` (`is_configured`, `collect`) and register it in `app/connectors/__init__.py`. Normalize resources onto the existing asset types and property names so the posture rules apply unchanged, or add rules for new types.
-- **New posture rule**: add a function decorated with `@rule(...)` in `app/engine/posture.py`.
+- **New cloud provider**: implement `app/connectors/base.py::Connector` (`is_configured`, `collect`, `setup_hint`, `scope`) and register it in `app/connectors/__init__.py`. Normalize resources onto asset types and property names the posture rules understand, or add rules for new types; add workload / data / identity types to `app/engine/attack_paths.py`.
+- **New posture rule**: add a function decorated with `@rule(...)` in `app/engine/posture.py` (Azure), `posture_aws.py` or `posture_gcp.py`.
 - **New detection**: add a function decorated with `@detection(...)` in `app/engine/detection.py`.
 
 ## Security notes
 
 - No secrets are committed. Only `.env.example` is tracked; `.env`, `*.pem`, `*.key` and local DB files are git-ignored.
-- The Azure connector is strictly read-only (Reader role plus the code-level guard).
+- The Azure, AWS and GCP connectors are strictly read-only (Reader / SecurityAudit + ViewOnlyAccess / Viewer + Security Reviewer, plus a code-level guard each). The GCP key file is never stored in `cnapp.env`; on-prem it lives in `/opt/cnapp/secrets/gcp/` (0600, backend user) and is mounted read-only.
 - Endpoint agents authenticate to `/api/agent/*` with per-device secrets (only SHA-256 stored), obtained with short-lived enrollment tokens; remote actions are allow-listed on the server and in the agent, need a reason and are audited ([details](docs/DEVICE_MANAGEMENT.md#security-model)).
 - The sensor ingest endpoint requires a bearer token (`INGEST_API_TOKEN`) and is disabled when none is set. Request bodies are capped (`MAX_REQUEST_BYTES`) and every event field is length and range checked.
 - Every other API endpoint requires a signed-in user with the right role (see [Authentication & access control](#authentication--access-control)): Argon2id passwords, server-side sessions in an `HttpOnly` / `SameSite=Lax` / `Secure` cookie, CSRF tokens on state-changing requests, account lockout, per-IP login rate limiting and an audit log.
@@ -499,7 +537,6 @@ A dormant vulnerability can never score above 20. An in-use, exposed vulnerabili
 ## Roadmap
 
 - Wider eBPF coverage in the runtime sensor (file access attribution, accept/privilege events without polling).
-- **AWS** and **GCP** connectors.
 - **DSPM**: data discovery and classification instead of tag-based sensitivity.
 - **API security**: discovery of exposed APIs and runtime API traffic analysis.
 - **CI/CD shift-left**: IaC scanning and image scanning in pipelines, linked to the runtime findings.
@@ -507,7 +544,7 @@ A dormant vulnerability can never score above 20. An in-use, exposed vulnerabili
 
 ## Limitations (MVP)
 
-- Vulnerability data and runtime events in simulated mode are synthetic. The Azure connector covers posture only; it has no runtime or CVE data.
+- Vulnerability data and runtime events in simulated mode are synthetic. The Azure, AWS and GCP connectors cover posture only; they have no runtime or CVE data.
 - CIS control numbers are approximate mappings for illustration.
 - On PostgreSQL the backend can run several replicas/workers (the simulator and scans use advisory-lock leader election), but the login rate limiter is in-memory: it resets on restart and counts per worker process, so the effective limit is `LOGIN_RATE_LIMIT` x workers x replicas. Per-account lockout is stored in the database and is exact.
 - No SSO or MFA yet; passwords are the only sign-in method.
