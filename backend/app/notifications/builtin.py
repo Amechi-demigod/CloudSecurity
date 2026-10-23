@@ -122,7 +122,8 @@ def poll_attack_paths(db: Session, state: dict, now: datetime) -> tuple[list[Eve
     """
     from ..services import analytics
 
-    paths = analytics.attack_paths(db, limit=100)
+    # Only confirmed (exploitable) paths notify; exposure paths would be noise.
+    paths = analytics.attack_paths(db, limit=100, include_unconfirmed=False)
     current = {p.id: p for p in paths}
     seen = set(state.get("seen") or [])
     events: list[Event] = []

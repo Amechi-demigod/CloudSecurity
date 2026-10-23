@@ -44,14 +44,17 @@ def get_compliance(db: Session = Depends(get_db)):
 
 
 @router.get("/attack-paths")
-def list_attack_paths(db: Session = Depends(get_db), limit: int = Query(20, le=100)):
-    return [asdict(p) for p in analytics.attack_paths(db, limit=limit)]
+def list_attack_paths(db: Session = Depends(get_db), limit: int = Query(20, le=100),
+                      confirmed_only: bool = Query(False, description="Only paths with an exploitable weakness")):
+    """Attack paths, confirmed first. Exposure paths (no weakness yet) have `confirmed=false`."""
+    return [asdict(p) for p in analytics.attack_paths(db, limit=limit, include_unconfirmed=not confirmed_only)]
 
 
 @router.get("/attack-paths/graph")
-def attack_path_graph(db: Session = Depends(get_db), limit: int = Query(10, le=50)):
+def attack_path_graph(db: Session = Depends(get_db), limit: int = Query(10, le=50),
+                      confirmed_only: bool = Query(False, description="Only paths with an exploitable weakness")):
     """Union of the top-N attack paths as a node/edge graph for visualization."""
-    paths = analytics.attack_paths(db, limit=limit)
+    paths = analytics.attack_paths(db, limit=limit, include_unconfirmed=not confirmed_only)
     node_ids: set[str] = set()
     edges: dict[tuple, dict] = {}
     for p in paths:

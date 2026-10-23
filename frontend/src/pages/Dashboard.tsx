@@ -102,7 +102,11 @@ export default function DashboardPage() {
             sub={`${nr.dormant} vulns not loaded at runtime`}
           />
           <Stat label="Active threats" value={d.alerts.open} sub={`${d.alerts.events_24h} runtime events / 24h`} />
-          <Stat label="Attack paths" value={d.attack_paths.total} sub={`${d.attack_paths.critical} critical`} />
+          <Stat
+            label="Attack paths"
+            value={d.attack_paths.total}
+            sub={`${d.attack_paths.critical} critical${d.attack_paths.exposure ? `, +${d.attack_paths.exposure} exposure paths` : ""}`}
+          />
         </div>
       </div>
 

@@ -43,11 +43,15 @@ def build_clients():
         public_ip_addresses=ops(list_all=[NS(id=PIP_ID, ip_address="52.1.2.3")]),
         network_security_groups=ops(list_all=[NS(id=NSG_ID, name="web-nsg", location="eastus", tags={},
                                                  security_rules=[rule("ssh", "22"), rule("rdp", "3389", "10.0.0.0/8")])]),
+        virtual_networks=ops(list_all=[]),
+        load_balancers=ops(list_all=[]),
+        application_gateways=ops(list_all=[]),
         network_interfaces=ops(list_all=[NS(
-            virtual_machine=NS(id=VM_ID), network_security_group=NS(id=NSG_ID),
+            id=f"{RG}/Microsoft.Network/networkInterfaces/web-01-nic", virtual_machine=NS(id=VM_ID),
+            network_security_group=NS(id=NSG_ID),
             ip_configurations=[NS(public_ip_address=NS(id=PIP_ID))])]),
     )
-    compute = NS(virtual_machines=ops(list_all=[NS(
+    compute = NS(virtual_machine_scale_sets=ops(list_all=[]), virtual_machines=ops(list_all=[NS(
         id=VM_ID, name="web-01", location="eastus", tags={"env": "prod"},
         hardware_profile=NS(vm_size="Standard_B2s"),
         storage_profile=NS(os_disk=NS(os_type="Linux", encryption_settings=None,
@@ -85,7 +89,7 @@ def build_clients():
         NS(properties={"httpsOnly": False}) if "sites" in rid else NS(properties={"principalId": "uai-principal"}))
     resource = NS(resources=resource_ops)
     sub_scope = f"/subscriptions/{SUB}"
-    authorization = NS(role_assignments=ops(list_for_subscription=[
+    authorization = NS(role_definitions=ops(list=[]), role_assignments=ops(list_for_subscription=[
         *[NS(role_definition_id=sub_scope + OWNER, scope=sub_scope, principal_id=f"user{i}") for i in range(5)],
         NS(role_definition_id=sub_scope + CONTRIB, scope=sub_scope, principal_id="uai-principal"),
         NS(role_definition_id=sub_scope + BLOB_OWNER, scope=ST_ID, principal_id="vm-principal"),

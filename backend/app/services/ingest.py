@@ -65,6 +65,8 @@ def ingest_collection(db: Session, result: CollectionResult, source: str) -> dic
             exists = Relationship(source_id=rel.source_id, target_id=rel.target_id, type=rel.type,
                                   properties=dict(rel.properties or {}), source=source)
             db.add(exists)
+        else:  # re-reported by this scan: its properties (role, NSG level...) reflect the current state
+            exists.properties = dict(rel.properties or {})
         pending[key] = exists
     db.flush()
 

@@ -259,6 +259,10 @@ def test_attack_path_internet_ec2_admin_role_sensitive_data(aws):
     p = next(p for p in paths if p.entry_id == web and p.target_id == pii)
     assert [s.type for s in p.steps] == ["ec2_instance", "iam_role", "s3_bucket"]
     assert any("SSH/RDP" in r for r in p.steps[0].reasons)
+    # the security group's finding is attributed to the instance through `protects`
+    assert any(r.startswith("Exposed via security group web") and "SSH (22)" in r and r.endswith("open to Internet")
+               for r in p.steps[0].reasons), p.steps[0].reasons
+    assert p.confirmed and p.steps[0].weak
     assert any("AdministratorAccess (account scope)" in r for r in p.steps[1].reasons)
     assert p.severity in ("critical", "high")
     assert any(p.entry_id == web and p.target_id == orders for p in paths)

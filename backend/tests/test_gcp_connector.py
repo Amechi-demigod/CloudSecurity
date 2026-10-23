@@ -250,6 +250,9 @@ def test_attack_path_internet_vm_editor_sa_to_sensitive_bucket(result):
     pii = by_name(result, "acme-pii").id
     p = next(p for p in paths if p.entry_id == web and p.target_id == pii)
     assert [s.type for s in p.steps] == ["gce_instance", "gcp_service_account", "gcs_bucket"]
+    # the firewall rule's finding is attributed to the VM through `protects`
+    assert "Exposed via firewall rule allow-ssh: SSH (22) open to Internet" in p.steps[0].reasons, p.steps[0].reasons
+    assert p.confirmed and p.steps[0].weak
     assert any("roles/editor" in r for r in p.steps[1].reasons)
     # the publicly open database is a one-hop path on its own
     assert any(p.entry_id == p.target_id == by_name(result, "orders-db").id for p in paths)

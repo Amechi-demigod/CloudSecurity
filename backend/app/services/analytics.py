@@ -15,11 +15,12 @@ from ..models import Alert, Asset, Finding, Relationship, RuntimeEvent, Vulnerab
 SEV_ORDER = ["critical", "high", "medium", "low", "info"]
 
 
-def attack_paths(db: Session, limit: int = 20):
+def attack_paths(db: Session, limit: int = 20, include_unconfirmed: bool = True):
+    """Top attack paths (confirmed first). `include_unconfirmed=False`: confirmed paths only."""
     assets = {a.id: {"id": a.id, "name": a.name, "type": a.type, "internet_exposed": a.internet_exposed,
                      "sensitive_data": a.sensitive_data, "properties": a.properties or {}}
               for a in db.scalars(select(Asset))}
-    rels = [{"source_id": r.source_id, "target_id": r.target_id, "type": r.type}
+    rels = [{"source_id": r.source_id, "target_id": r.target_id, "type": r.type, "properties": r.properties or {}}
             for r in db.scalars(select(Relationship))]
     vulns: dict[str, list] = defaultdict(list)
     for v in db.scalars(select(Vulnerability).where(Vulnerability.status == "open")):
@@ -28,7 +29,7 @@ def attack_paths(db: Session, limit: int = 20):
     findings: dict[str, list] = defaultdict(list)
     for f in db.scalars(select(Finding).where(Finding.status == "open")):
         findings[f.asset_id].append({"severity": f.severity, "title": f.title})
-    return compute_attack_paths(assets, rels, vulns, findings, limit=limit)
+    return compute_attack_paths(assets, rels, vulns, findings, limit=limit, include_unconfirmed=include_unconfirmed)
 
 
 def compliance_summary(db: Session) -> list[dict]:
@@ -83,7 +84,7 @@ def dashboard(db: Session) -> dict:
                                     .order_by(Finding.severity, Finding.first_seen.desc()).limit(50)))
     crit_findings.sort(key=lambda f: SEV_ORDER.index(f.severity))
     top_risks = []
-    for p in paths[:3]:
+    for p in [p for p in paths if p.confirmed][:3]:
         top_risks.append({"kind": "attack_path", "id": p.id, "title": p.title, "severity": p.severity,
                           "score": p.score, "asset_id": p.entry_id})
     for v in top_vulns:
@@ -107,7 +108,9 @@ def dashboard(db: Session) -> dict:
         },
         "alerts": {"open": len(open_alerts), "by_severity": dict(Counter(open_alerts)), "events_24h": events_24h},
         "alerts_over_time": alerts_over_time,
-        "attack_paths": {"total": len(paths), "critical": sum(1 for p in paths if p.severity == "critical")},
+        "attack_paths": {"total": sum(1 for p in paths if p.confirmed),
+                         "critical": sum(1 for p in paths if p.severity == "critical"),
+                         "exposure": sum(1 for p in paths if not p.confirmed)},
         "top_risks": top_risks,
         "compliance": compliance_summary(db),
     }
