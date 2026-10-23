@@ -29,6 +29,7 @@ from ..models import (
 )
 from ..notifications import device_source
 from ..schemas_devices import MAX_INTERVAL_SECONDS, MIN_INTERVAL_SECONDS, CheckinRequest
+from ..vulnmatch import state as vuln_state
 
 ENROLL_TOKEN_PREFIX = "cne_"  # noqa: S105 (a public prefix, not a secret)
 DEVICE_SECRET_PREFIX = "cnd_"  # noqa: S105
@@ -153,6 +154,10 @@ def apply_checkin(db: Session, device: Device, body: CheckinRequest, ip: str | N
                                        install_date=item.install_date, source=item.source))
         db.add_all(rows)
         device.software_count = len(rows)
+        # Re-match against CVE data after the debounce period (background worker;
+        # no network here, never blocks the check-in).
+        vuln_state.inventory_changed(db, vuln_state.DEVICE, device.id,
+                                     vuln_state.device_inventory_digest(device, rows), now)
 
     # Issue codes at the previous check-in (None: first check-in), to notify about new ones only.
     prev = db.scalar(select(DevicePostureSnapshot.issues).where(DevicePostureSnapshot.device_id == device.id)

@@ -443,6 +443,43 @@ class Settings:
     asset_notification_poll_seconds: float = field(
         default_factory=lambda: float(os.getenv("ASSET_NOTIFICATION_POLL_SECONDS", "3600")))
 
+    # --- Vulnerability (CVE) matching (docs/VULNERABILITIES.md) -----------------
+    # Match endpoint software (NVD by CPE) and sensor-reported Linux packages
+    # (OSV.dev) against public vulnerability data, flag CISA KEV and add EPSS.
+    # Needs egress to services.nvd.nist.gov, api.osv.dev, www.cisa.gov and
+    # api.first.org (HTTPS_PROXY / NO_PROXY are honoured).
+    vuln_matching_enabled: bool = field(default_factory=lambda: _bool("VULN_MATCHING_ENABLED", True))
+    # Optional NVD API key (https://nvd.nist.gov/developers/request-an-api-key):
+    # 50 instead of 5 requests per 30 s. Never logged.
+    nvd_api_key: str | None = field(default_factory=lambda: (os.getenv("NVD_API_KEY") or "").strip() or None)
+    nvd_api_url: str = field(default_factory=lambda: (
+        os.getenv("NVD_API_URL") or "https://services.nvd.nist.gov/rest/json/cves/2.0").strip())
+    osv_api_url: str = field(default_factory=lambda: (os.getenv("OSV_API_URL") or "https://api.osv.dev").strip()
+                             .rstrip("/"))
+    kev_url: str = field(default_factory=lambda: (os.getenv("KEV_URL") or (
+        "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json")).strip())
+    epss_enabled: bool = field(default_factory=lambda: _bool("EPSS_ENABLED", True))
+    epss_api_url: str = field(default_factory=lambda: (
+        os.getenv("EPSS_API_URL") or "https://api.first.org/data/v1/epss").strip())
+    # Re-match every device / asset this often even without inventory changes
+    # (new CVEs are published every day).
+    vuln_rematch_interval_hours: float = field(
+        default_factory=lambda: _checked_float("VULN_REMATCH_INTERVAL_HOURS", 12.0))
+    # KEV catalog (and EPSS scores) refresh interval.
+    vuln_kev_refresh_hours: float = field(default_factory=lambda: _checked_float("VULN_KEV_REFRESH_HOURS", 24.0))
+    # How long NVD product data / OSV results are reused before an (incremental) refresh.
+    vuln_nvd_cache_hours: float = field(default_factory=lambda: _checked_float("VULN_NVD_CACHE_HOURS", 12.0))
+    vuln_osv_cache_hours: float = field(default_factory=lambda: _checked_float("VULN_OSV_CACHE_HOURS", 12.0))
+    # A changed inventory (agent check-in / sensor report) is matched after this
+    # quiet period, so bursts of check-ins are handled together.
+    vuln_debounce_seconds: float = field(default_factory=lambda: _checked_float("VULN_DEBOUNCE_SECONDS", 120.0))
+    # Notify about new vulnerabilities at or above this severity (KEV-listed
+    # ones always), aggregated per CVE: critical | high | medium | low.
+    vuln_notify_min_severity: str = field(
+        default_factory=lambda: (os.getenv("VULN_NOTIFY_MIN_SEVERITY") or "critical").strip().lower())
+    # Internal: run the (leader-elected) matching worker thread in this process.
+    vuln_worker_enabled: bool = field(default_factory=lambda: _bool("VULN_WORKER_ENABLED", True))
+
     @property
     def entra_enabled(self) -> bool:
         return bool(self.entra_tenant_id and self.entra_client_id)
@@ -504,6 +541,7 @@ class Settings:
         if not 5 <= self.device_wipe_command_ttl_minutes <= 1440:
             problems.append("DEVICE_WIPE_COMMAND_TTL_MINUTES must be between 5 and 1440")
         problems.extend(self.scan_schedule_problems())
+        problems.extend(self.vuln_matching_problems())
         if self.entra_client_auth not in {"auto", "certificate", "secret", "managed_identity"}:
             problems.append("ENTRA_CLIENT_AUTH must be auto, certificate, secret or managed_identity")
         if self.entra_enabled:
@@ -544,6 +582,19 @@ class Settings:
             problems.append("GCP_ORGANIZATION_ID must be the numeric organization ID (gcloud organizations list)")
         if self.gcp_credentials_file and not os.path.isabs(self.gcp_credentials_file):
             problems.append("GCP_CREDENTIALS_FILE must be an absolute path (on-prem: /run/secrets/gcp/credentials.json)")
+        return problems
+
+    def vuln_matching_problems(self) -> list[str]:
+        problems = []
+        for name, value, lo, hi in (("VULN_REMATCH_INTERVAL_HOURS", self.vuln_rematch_interval_hours, 1, 720),
+                                    ("VULN_KEV_REFRESH_HOURS", self.vuln_kev_refresh_hours, 1, 720),
+                                    ("VULN_NVD_CACHE_HOURS", self.vuln_nvd_cache_hours, 1, 720),
+                                    ("VULN_OSV_CACHE_HOURS", self.vuln_osv_cache_hours, 1, 720),
+                                    ("VULN_DEBOUNCE_SECONDS", self.vuln_debounce_seconds, 0, 86400)):
+            if not lo <= value <= hi:
+                problems.append(f"{name} must be between {lo} and {hi}")
+        if self.vuln_notify_min_severity not in {"critical", "high", "medium", "low"}:
+            problems.append("VULN_NOTIFY_MIN_SEVERITY must be critical, high, medium or low")
         return problems
 
     def scan_schedule_problems(self) -> list[str]:

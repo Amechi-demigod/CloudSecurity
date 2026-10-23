@@ -4,7 +4,7 @@ A cloud security platform MVP inspired by runtime-first CNAPPs such as Upwind. I
 
 - **Asset inventory**: Azure (VMs, VM scale sets, storage accounts, AKS clusters and pods, SQL, NSGs, identities, key vaults, function apps, subscriptions), AWS (accounts, EC2, security groups, S3, EKS, RDS, IAM users/roles, KMS, Lambda, CloudTrail) and GCP (projects, Compute Engine, VPC firewall rules, Cloud Storage, GKE, Cloud SQL, service accounts, Cloud KMS, Cloud Functions, Cloud Run), with region, tags, internet exposure, data sensitivity and relationships.
 - **Posture management (CSPM)**: a declarative rules engine with 22 Azure rules (CIS Azure, CIS AKS), 24 AWS rules (CIS AWS Foundations, CIS EKS, AWS FSBP) and 23 GCP rules (CIS GCP Foundations, CIS GKE). Each finding has a status of open, resolved or suppressed.
-- **Vulnerabilities with runtime context**: CVEs on packages are ranked by a risk score that combines CVSS with whether the package is loaded at runtime, internet exposure, sensitive-data reach and exploit availability. The UI shows a **noise-reduction** stat.
+- **Vulnerabilities with runtime context**: real CVE matching for **laptops** (the endpoint agent's installed software and OS, matched against the NVD CVE API by CPE through a curated mapping of ~50 common enterprise products) and **Linux servers/VMs** (the runtime sensor's package inventory, matched with OSV.dev for Debian, Ubuntu, Alpine, Rocky, AlmaLinux, RHEL and PyPI), with CISA KEV and FIRST EPSS exploit context. Workload CVEs are ranked by a risk score that combines CVSS with whether the package is loaded at runtime, internet exposure, sensitive-data reach and exploit availability; the UI shows a **noise-reduction** stat. Software that cannot be matched reliably is listed as "not checked" instead of guessed. See [docs/VULNERABILITIES.md](docs/VULNERABILITIES.md).
 - **Runtime threat detection (CDR)**: a runtime event feed plus 8 detection rules (reverse shell, crypto miner, known-malicious IP, shell in a container, privilege escalation, credential-file access, unexpected outbound connection, IMDS token theft). Each rule maps to MITRE ATT&CK, and each alert has an event timeline.
 - **Attack paths**: a risk graph covering Internet → exposed resource → workload → identity → sensitive data, with the top paths ranked. *Confirmed* paths carry an exploitable weakness (in-use vulnerability, high-risk misconfiguration, or an NSG / security group / firewall rule opening SSH, RDP or all ports on the entry point); *exposure* paths are the same chains without a confirmed weakness, scored lower. See [Attack paths](#attack-paths).
 - **Dashboard**: overall risk score, findings by severity, top risks, alerts over time and a compliance summary.
@@ -77,6 +77,7 @@ backend/
       aws.py             read-only AWS scanner (ReadOnlyAwsClient guard, boto3)
       gcp.py             read-only GCP scanner (ReadOnlyGcpClient guard, REST + google-auth)
     services/            ingest, runtime, scans, simulation, analytics
+    vulnmatch/           real CVE matching: NVD CPE (laptops), OSV (Linux packages), KEV/EPSS, worker
     api/                 routers
   migrations/            Alembic migrations (PostgreSQL)
   gunicorn.conf.py       production server settings
@@ -93,6 +94,7 @@ device-scripts/          the reviewed script library (signed by .github/workflow
 docs/NOTIFICATIONS.md    alert notifications: Teams, Slack, email, signed webhooks, rules
 docs/ASSET_MANAGEMENT.md IT asset lifecycle: asset records, custody, offboarding, disposal, CSV, notifications
 docs/AUTH.md             MFA (TOTP) and Microsoft Entra ID sign-in, break-glass accounts
+docs/VULNERABILITIES.md  CVE matching: sources, CPE mapping table, limits, egress, adding mappings
 scripts/smoke_test.py    end-to-end smoke test (CI and the deploy workflow)
 scripts/agent_e2e.py     endpoint agent <-> backend end-to-end test (CI on Windows and macOS runners)
 docker-compose.yml       local stack (SQLite); docker-compose.postgres.yml adds PostgreSQL
@@ -485,7 +487,9 @@ The runtime sensor in [`sensor/`](sensor/README.md) pushes events to `POST /api/
 - maps `network_connect`/`network_accept` to `network_connection` and `privilege_change` to `privilege_escalation`, and runs the same CDR rules as simulated events (plus CDR-009, a fallback for events the sensor marks `high`/`critical`);
 - links events to inventory assets by Kubernetes pod name and namespace, then `cloud.resource_id` (ARM id), then VM name = `host`;
 - de-duplicates on `event_id`, so sensor retries never double-count;
-- uses `library_loaded` events to set the vulnerability **in use at runtime** flag (package and version match, with distro/soname aliases such as `libssl3` to `openssl`) and re-scores risk. The flag expires if the sensor's hourly heartbeat stops for 3 hours. Events show up in the UI tagged `sensor`, next to `sim` events.
+- uses `library_loaded` events to set the vulnerability **in use at runtime** flag (package and version match, with distro/soname aliases such as `libssl3` to `openssl`, and the binary packages of OSV-matched source packages) and re-scores risk. The flag expires if the sensor's hourly heartbeat stops for 3 hours. Events show up in the UI tagged `sensor`, next to `sim` events.
+
+Every 6 hours the sensor also sends the host's **package inventory** (dpkg / apk / rpm and pip-installed Python packages) to `POST /api/runtime/packages` (same token; schema in [`sensor/EVENT_SCHEMA.md`](sensor/EVENT_SCHEMA.md#package-inventory)). The backend stores it on the host's asset (creating a sensor-backed `vm` asset for hosts that are not in a cloud inventory) and matches it with OSV.dev in the background ([docs/VULNERABILITIES.md](docs/VULNERABILITIES.md)).
 
 **Legacy format** (used by the built-in simulator and the sensor's `cnapp-mvp` mode):
 
@@ -540,7 +544,7 @@ runtime = 1.0 if the package is loaded at runtime, else 0.2
 context = 0.4 + 0.25·internet_exposed + 0.20·exploit_available + 0.15·sensitive_data_access
 ```
 
-A dormant vulnerability can never score above 20. An in-use, exposed vulnerability with CVSS ≥ 5 always scores at least 32.5, so it ranks above any dormant one. **Noise reduction** is the share of vulnerabilities in packages that are not loaded at runtime.
+A dormant vulnerability can never score above 20. An in-use, exposed vulnerability with CVSS ≥ 5 always scores at least 32.5, so it ranks above any dormant one. **Noise reduction** is the share of workload vulnerabilities in packages that are not loaded at runtime. `exploit_available` is set for CVEs in the CISA KEV catalog. Laptop vulnerabilities have no runtime sensor, so they are scored as in use (installed desktop apps are launched by users) without internet exposure, and are left out of the noise-reduction stat.
 
 ## Extending
 
@@ -564,12 +568,12 @@ A dormant vulnerability can never score above 20. An in-use, exposed vulnerabili
 - **DSPM**: data discovery and classification instead of tag-based sensitivity.
 - **API security**: discovery of exposed APIs and runtime API traffic analysis.
 - **CI/CD shift-left**: IaC scanning and image scanning in pipelines, linked to the runtime findings.
-- SSO (OIDC/SAML), MFA and multi-tenancy; a real vulnerability scanner feed (for example Trivy or Grype); more CIS controls.
+- SAML SSO and multi-tenancy; container image and cloud VM (agentless) vulnerability scanning; more CIS controls.
 
 ## Limitations (MVP)
 
-- Vulnerability data and runtime events in simulated mode are synthetic. The Azure, AWS and GCP connectors cover posture only; they have no runtime or CVE data.
+- Vulnerability data and runtime events in simulated mode are synthetic. The Azure, AWS and GCP connectors cover posture only; real CVE data comes from the endpoint agent (laptops) and the runtime sensor's package inventory (Linux hosts). Container images are not scanned, and laptop software outside the curated CPE mapping is reported as "not checked" ([limits](docs/VULNERABILITIES.md#limits)).
 - CIS control numbers are approximate mappings for illustration.
 - On PostgreSQL the backend can run several replicas/workers (the simulator and scans use advisory-lock leader election), but the login rate limiter is in-memory: it resets on restart and counts per worker process, so the effective limit is `LOGIN_RATE_LIMIT` x workers x replicas. Per-account lockout is stored in the database and is exact.
-- No SSO or MFA yet; passwords are the only sign-in method.
-- Device management covers inventory, posture and a few remote actions on Windows and macOS; no compliance policies, CVE matching of installed software or Linux endpoints yet (see [limitations](docs/DEVICE_MANAGEMENT.md#limitations)).
+- Single sign-on is Microsoft Entra ID (OIDC) only; no SAML or other identity providers yet.
+- Device management covers inventory, posture, CVE matching of the OS and mapped software, and a few remote actions on Windows and macOS; no compliance policies or Linux endpoints yet (see [limitations](docs/DEVICE_MANAGEMENT.md#limitations)).

@@ -12,7 +12,7 @@ Single Ubuntu Server 24.04 box, internal network / VPN only. Full guide: [docs/D
 | Admin email | `you@corp.com` | becomes the first (break-glass) admin |
 | GHCR read token | GitHub PAT with **read:packages** | GitHub > Settings > Developer settings > Personal access tokens. Classic PAT: tick only `read:packages`. Save it in a file on the server, e.g. `~/ghcr.token` |
 | Client ranges | `10.0.0.0/8,192.168.0.0/16` | LAN + VPN ranges allowed to reach 80/443 |
-| Outbound HTTPS | ghcr.io, pkg-containers.githubusercontent.com, Docker Hub, download.docker.com, Ubuntu mirrors | plus login.microsoftonline.com / management.azure.com / Teams / Slack / SMTP if you use them |
+| Outbound HTTPS | ghcr.io, pkg-containers.githubusercontent.com, Docker Hub, download.docker.com, Ubuntu mirrors; for CVE matching services.nvd.nist.gov, api.osv.dev, www.cisa.gov, api.first.org | plus login.microsoftonline.com / management.azure.com / Teams / Slack / SMTP if you use them |
 | (optional) internal CA | AD CS certificate + key for `cnapp.corp.local` | otherwise the built-in CA is used |
 
 ## Install (about 10 minutes)

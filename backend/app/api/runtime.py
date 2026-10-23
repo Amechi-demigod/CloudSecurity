@@ -21,14 +21,17 @@ from ..schemas import (
     AlertUpdate,
     AssetOut,
     IngestResult,
+    PackageIngestResult,
     RuntimeEventIn,
     RuntimeEventOut,
     SensorEventV1,
+    SensorPackageInventoryV1,
     TimelineEntry,
 )
 from ..security import require_ingest_token
 from ..services.runtime import ingest_event
 from ..services.sensor import AssetResolver, apply_library_loaded, expire_stale_in_use, normalize_v1
+from ..vulnmatch.inventory import ingest_packages
 
 router = APIRouter(prefix="/api", tags=["runtime"])
 # Sensor ingest: authenticated by the INGEST_API_TOKEN bearer token, not user sessions.
@@ -110,10 +113,25 @@ def ingest_runtime_events(payload: Any = Body(...), db: Session = Depends(get_db
                         duplicates=duplicates, in_use_updates=in_use_updates)
 
 
+@ingest_router.post("/runtime/packages", response_model=PackageIngestResult, status_code=202,
+                    dependencies=[Depends(require_ingest_token)])
+def ingest_runtime_packages(inv: SensorPackageInventoryV1, db: Session = Depends(get_db)):
+    """Package inventory of one Linux host (sensor/EVENT_SCHEMA.md#package-inventory).
+
+    Stored on the host's asset (created as a sensor-backed `vm` asset when the
+    host is not in the cloud inventory); the vulnerability worker matches it
+    against OSV.dev after a short debounce. Requires the ingest bearer token.
+    """
+    res = ingest_packages(db, inv)
+    db.commit()
+    return res
+
+
 @router.get("/runtime/schema")
 def runtime_event_schema():
     """JSON schemas of the accepted sensor event payloads (native v1.0 and legacy)."""
-    return {"v1": SensorEventV1.model_json_schema(), "legacy": RuntimeEventIn.model_json_schema()}
+    return {"v1": SensorEventV1.model_json_schema(), "legacy": RuntimeEventIn.model_json_schema(),
+            "package_inventory_v1": SensorPackageInventoryV1.model_json_schema()}
 
 
 @router.get("/runtime/events", response_model=list[RuntimeEventOut])

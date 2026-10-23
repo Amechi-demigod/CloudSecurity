@@ -5,7 +5,7 @@ CloudSecurity can track company laptops and desktops alongside cloud workloads. 
 It works in the spirit of Intune, with deliberate limits:
 
 - **Our own agent only.** There is no Microsoft Graph / Intune integration and no Apple or Windows MDM protocol, so no MDM enrollment profiles or Apple Push certificates are needed.
-- **Inventory, posture and safe remote actions.** Compliance policies and vulnerable-software (CVE) matching are not implemented yet. The data they need (posture history and the installed-software list with versions) is already stored.
+- **Inventory, posture and safe remote actions.** The OS and installed software are matched against public CVE data (NVD by CPE, CISA KEV, EPSS; see [VULNERABILITIES.md](VULNERABILITIES.md)) and shown on the device's **Vulnerabilities** tab. Compliance policies are not implemented yet.
 - **No arbitrary command execution.** The agent never runs scripts or shell commands written on the server. The only scripts it runs are **approved scripts**: reviewed in this repository, signed with a dedicated script-signing key the server never holds, verified by the agent right before running, with typed, validated parameters ([DEVICE_SCRIPTS.md](DEVICE_SCRIPTS.md), [ADR-0001](ADR-0001-signed-device-scripts.md)).
 - **High-risk actions need two admins.** Remote wipe (Windows only) and medium/high-risk scripts run only after a second admin approves them ([Two-person approval](#two-person-approval)).
 
@@ -532,11 +532,12 @@ Installers: `PUBLIC_BASE_URL` (required, https; embedded in installers), `AGENT_
 ## Limitations
 
 - Windows 10/11 and macOS only. Windows Server works for inventory, but Security Center and BitLocker checks may report `unknown` there. Linux reports only basic inventory.
-- No compliance policies, no CVE matching for installed software, no software deployment, no MDM features (configuration profiles, Apple Business Manager / Autopilot). Remote wipe is Windows only (no macOS erase without MDM); lost mode on macOS cannot force a lock.
+- No compliance policies, no software deployment, no MDM features (configuration profiles, Apple Business Manager / Autopilot). Remote wipe is Windows only (no macOS erase without MDM); lost mode on macOS cannot force a lock.
 - `lock_device` on macOS depends on the user's "require password after sleep" setting (see above). On Windows it needs a signed-in session.
 - Commands run within about a minute only while the device is online and polling. Offline devices pick them up within the 24 h expiry.
 - Windows screen-lock detection reads the machine inactivity policy and the screen-saver settings of signed-in users. When neither is configured it reports `unknown`, although Windows may still require sign-in on wake.
 - Software inventory covers registry uninstall entries (Windows) and `.app` bundles (macOS). Packages installed without either (for example Homebrew formulae, portable apps or Microsoft Store apps for other users) are not listed.
+- CVE matching covers the operating system build and the applications in the curated CPE mapping; everything else is listed as "not checked" on the device's Vulnerabilities tab. Microsoft 365 Apps / Office are recognised but not matched, because NVD publishes no fixed build numbers for them ([VULNERABILITIES.md](VULNERABILITIES.md#limits)).
 - Rate limiting is in-memory per backend process, like the login limiter.
 - Log bundles are stored in the database (capped). Large fleets should move them to Blob Storage.
 - Binaries are not signed by CI. See [Packaging and code signing](#packaging-and-code-signing). Pre-configured installers are always unsigned ([Code signing](#code-signing)).

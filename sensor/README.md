@@ -91,6 +91,8 @@ Every flag has an environment variable default. Run `python3 -m runtime_sensor -
 | `SENSOR_COLLECTORS` | `--collectors` | `process,network,file,library` |
 | `SENSOR_POLL_INTERVAL` | `--poll-interval` | `2` seconds |
 | `SENSOR_LIBRARY_INTERVAL` | `--library-interval` | `60` seconds |
+| `SENSOR_INVENTORY_INTERVAL` | `--inventory-interval` | `21600` seconds (6 h) between host package inventories; `0` disables |
+| `SENSOR_INVENTORY_URL` | `--inventory-url` | derived from `SENSOR_API_URL` (`.../api/runtime/packages`) |
 | `SENSOR_EBPF` | `--ebpf auto\|on\|off` | `auto` (uses eBPF if root and bcc are present) |
 | `SENSOR_DRY_RUN` | `--dry-run` | false |
 | `SENSOR_DETECTIONS` | `--no-detections` | enabled |
@@ -147,6 +149,7 @@ The backend exposes `POST /api/runtime/events`. It accepts native schema v1.0 ev
 - Set `SENSOR_API_URL=http://<backend>:8000/api/runtime/events` and `SENSOR_API_TOKEN` to the backend's `INGEST_API_TOKEN`.
 - The default `--payload-format list` sends native v1.0 events. The backend maps them onto its detection engine (`network_connect`/`network_accept` -> `network_connection`, `privilege_change` -> `privilege_escalation`, `k8s`/`container_id` -> container context), de-duplicates on `event_id`, and raises CDR-009 for events the sensor marks `high`/`critical` that no backend rule covers.
 - `library_loaded` events set the vulnerability "in use at runtime" flag on the matching asset (package name + version, with distro/soname aliases such as `libssl3` -> `openssl`). The flag expires if the hourly heartbeat stops for 3 hours. Only heartbeats that flip a vulnerability are stored as runtime events.
+- Every `SENSOR_INVENTORY_INTERVAL` the sensor POSTs the host's package inventory (dpkg with source packages, apk with origins, the sqlite rpmdb of RHEL/Rocky/Alma 9+, and pip-installed packages under `/usr/local/lib/python3*`) to `/api/runtime/packages` with the same token ([schema](EVENT_SCHEMA.md#package-inventory)). The platform matches it with OSV.dev and creates vulnerabilities on the host's asset, which `library_loaded` events then mark "in use". Older platforms answer 404; the sensor logs that once and keeps working. On Kubernetes the DaemonSet mounts `/var/lib/dpkg` and `/var/lib/rpm` read-only for this.
 - `--payload-format cnapp-mvp` is still supported for older backends (see [EVENT_SCHEMA.md](EVENT_SCHEMA.md#cnapp-mvp-mapping)); it drops `library_loaded`.
 - Asset matching: the backend links an event to an inventory asset by Kubernetes pod name (+ namespace), then `cloud.resource_id` (set `SENSOR_CLOUD_RESOURCE_ID` to the ARM ID), then the VM name matching `host`.
 - Error handling: 429 and 5xx responses and network errors are retried with exponential backoff and jitter (up to `SENSOR_MAX_RETRIES`). Other 4xx responses drop the batch and log a warning. When the queue is full, the oldest events are dropped and counted (`stats` are logged at shutdown).
@@ -157,6 +160,7 @@ The backend exposes `POST /api/runtime/events`. It accepts native schema v1.0 ev
 - **eBPF code is untested in CI.** It needs a Linux kernel and bcc. If eBPF fails, the sensor falls back to polling (`--ebpf auto`). `--ebpf on` fails hard instead.
 - **File events don't identify the process.** inotify can't tell which process acted, and reads are detected via `IN_OPEN`. In poll-fallback mode only modifications are visible, not reads.
 - **TCP only.** UDP and DNS aren't collected. Loopback is ignored by default (`--include-loopback`).
-- **Python packages are only seen through native extensions.** Library detection finds packages that have native extensions (`.so`) in `maps`. Pure-Python packages don't appear in memory maps. RPM databases aren't parsed (falls back to a soname guess).
+- **Python packages are only seen through native extensions.** Library detection finds packages that have native extensions (`.so`) in `maps`. Pure-Python packages don't appear in memory maps. For `library_loaded`, RPM databases aren't parsed (falls back to a soname guess); the package inventory does read the sqlite rpmdb (RHEL 9+ family), but not the older BerkeleyDB/ndb formats.
+- **Package inventory covers the host only.** Container image contents are not inventoried, and distributions without an OSV ecosystem (Amazon Linux, SUSE, Arch, Container-Optimized OS) are reported but not matched.
 - **Pod name and namespace need RBAC.** Resolving them requires the Kubernetes API (`list pods`). Without it, only node and pod UID are reported. `/var/run/secrets/kubernetes.io` on the host is mostly empty: pod SA tokens live under `/var/lib/kubelet/pods/*/volumes`, which isn't mounted by default because it would give the sensor read access to every secret.
 - **Per-poll cost.** Every poll reads `stat` and `status` for every PID, and the fd scan runs only when a connection's owner is unknown. That's fine for typical nodes (a few thousand PIDs) but not tuned for very large hosts.

@@ -37,12 +37,20 @@ os.environ.update({
     "AGENT_UPDATE_DEFAULT_MODE": "manual",
     # Scheduled scans: tests drive the scheduler explicitly (no background thread).
     "SCAN_SCHEDULER_WORKER_ENABLED": "false",
+    # Vulnerability matching: tests drive the worker explicitly with fake feeds
+    # (no background thread, never any NVD / OSV / KEV / EPSS network access).
+    "VULN_WORKER_ENABLED": "false",
+    "NVD_API_URL": "https://nvd.invalid/rest/json/cves/2.0",
+    "OSV_API_URL": "https://osv.invalid",
+    "KEV_URL": "https://kev.invalid/kev.json",
+    "EPSS_API_URL": "https://epss.invalid/data/v1/epss",
 })
 for k in ("AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET", "AZURE_SUBSCRIPTION_IDS", "AZURE_AUTH_MODE",
           "AZURE_MANAGED_IDENTITY_CLIENT_ID", "AZURE_USE_DEFAULT_CREDENTIAL", "SESSION_SECRET", "DEBUG",
           "TRUST_PROXY_HEADERS", "TRUSTED_PROXY_CIDRS", "API_DOCS_ENABLED", "LOG_FORMAT", "CORS_ORIGINS",
           "NOTIFICATIONS_ENCRYPTION_KEY", "PUBLIC_BASE_URL", "PUBLIC_AGENT_URL", "NOTIFICATIONS_ALLOW_INSECURE_DEV",
-          "SCAN_SCHEDULE_ENABLED", "SCAN_INTERVAL_HOURS", "SCAN_STARTUP_DELAY_SECONDS"):
+          "SCAN_SCHEDULE_ENABLED", "SCAN_INTERVAL_HOURS", "SCAN_STARTUP_DELAY_SECONDS",
+          "NVD_API_KEY", "VULN_MATCHING_ENABLED", "VULN_DEBOUNCE_SECONDS", "VULN_NOTIFY_MIN_SEVERITY"):
     os.environ.pop(k, None)
 # AWS / GCP connectors: never pick up the developer's cloud credentials or
 # config files (tests use moto / mocked HTTP and opt in per test).

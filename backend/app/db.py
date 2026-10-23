@@ -97,6 +97,7 @@ def init_engine(url: str, migrate: bool | None = None) -> Engine:
         with locks.advisory_lock("schema-migration"):
             if is_sqlite(engine):
                 Base.metadata.create_all(engine)
+                _relax_not_null(engine)
                 _add_missing_columns(engine)
             else:
                 run_migrations(engine)
@@ -143,6 +144,39 @@ def _add_missing_columns(eng: Engine) -> None:
                     ddl = col.type.compile(dialect=eng.dialect)
                     # identifiers come from our own ORM metadata, never from user input
                     conn.execute(text(f'ALTER TABLE "{table.name}" ADD COLUMN "{col.name}" {ddl}'))
+
+
+# (table, column) pairs that became nullable after release; SQLite cannot
+# ALTER a NOT NULL constraint away, so such tables are rebuilt once.
+RELAXED_COLUMNS = (("vulnerabilities", "asset_id"),)
+
+
+def _relax_not_null(eng: Engine) -> None:
+    """SQLite only: rebuild a table whose column is NOT NULL in the database but
+    nullable in the ORM (e.g. vulnerabilities.asset_id since endpoint devices
+    have vulnerabilities too). Data, including columns added since, is kept."""
+    from sqlalchemy import inspect, text
+
+    insp = inspect(eng)
+    for table_name, column in RELAXED_COLUMNS:
+        if not insp.has_table(table_name):
+            continue
+        cols = {c["name"]: c for c in insp.get_columns(table_name)}
+        if column not in cols or cols[column]["nullable"]:
+            continue
+        table = Base.metadata.tables[table_name]
+        common = [c.name for c in table.columns if c.name in cols]
+        collist = ", ".join(f'"{c}"' for c in common)
+        old = f"_old_{table_name}"
+        log.warning("Rebuilding SQLite table %s to make %s nullable", table_name, column)
+        with eng.begin() as conn:
+            for idx in insp.get_indexes(table_name):
+                conn.execute(text(f'DROP INDEX IF EXISTS "{idx["name"]}"'))
+            conn.execute(text(f'ALTER TABLE "{table_name}" RENAME TO "{old}"'))
+            table.create(conn)
+            # identifiers come from our own ORM metadata, never from user input
+            conn.execute(text(f'INSERT INTO "{table_name}" ({collist}) SELECT {collist} FROM "{old}"'))  # noqa: S608
+            conn.execute(text(f'DROP TABLE "{old}"'))
 
 
 def get_session() -> Session:

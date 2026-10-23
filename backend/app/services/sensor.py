@@ -160,7 +160,10 @@ def apply_library_loaded(db: Session, asset_id: str | None, library: dict[str, A
     flipped = 0
     for v in db.scalars(select(Vulnerability).where(Vulnerability.asset_id == asset_id,
                                                     Vulnerability.status == "open")):
-        if normalize_package(v.package) != pkg or not version_matches(library.get("version"), v.version):
+        # OSV-matched rows carry the source package (openssl) and, in evidence,
+        # the binary packages built from it (libssl3) that the sensor sees mapped.
+        names = {normalize_package(v.package)} | {normalize_package(b) for b in (v.evidence or {}).get("binaries", [])}
+        if pkg not in names or not version_matches(library.get("version"), v.version):
             continue
         v.in_use_last_seen = now
         if not v.in_use:

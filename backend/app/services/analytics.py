@@ -23,7 +23,8 @@ def attack_paths(db: Session, limit: int = 20, include_unconfirmed: bool = True)
     rels = [{"source_id": r.source_id, "target_id": r.target_id, "type": r.type, "properties": r.properties or {}}
             for r in db.scalars(select(Relationship))]
     vulns: dict[str, list] = defaultdict(list)
-    for v in db.scalars(select(Vulnerability).where(Vulnerability.status == "open")):
+    for v in db.scalars(select(Vulnerability).where(Vulnerability.status == "open",
+                                                    Vulnerability.asset_id.is_not(None))):
         vulns[v.asset_id].append({"cve_id": v.cve_id, "package": v.package, "cvss": v.cvss, "in_use": v.in_use,
                                   "exploit_available": v.exploit_available, "risk_score": v.risk_score})
     findings: dict[str, list] = defaultdict(list)
@@ -78,7 +79,10 @@ def dashboard(db: Session) -> dict:
 
     events_24h = db.scalar(select(func.count()).select_from(RuntimeEvent).where(RuntimeEvent.timestamp >= start)) or 0
 
-    top_vulns = sorted(vulns, key=lambda v: -v.risk_score)[:5]
+    # Workload (asset) vulnerabilities carry runtime context; endpoint devices
+    # have their own page, so they count in totals but not in "top risks".
+    workload = [v for v in vulns if v.asset_id]
+    top_vulns = sorted(workload, key=lambda v: -v.risk_score)[:5]
     crit_findings = list(db.scalars(select(Finding).where(Finding.status == "open",
                                                           Finding.severity.in_(["critical", "high"]))
                                     .order_by(Finding.severity, Finding.first_seen.desc()).limit(50)))
@@ -104,7 +108,9 @@ def dashboard(db: Session) -> dict:
             "total": len(vulns),
             "prioritized": sum(1 for v in vulns if v.priority in ("critical", "high")),
             "by_priority": {s: sum(1 for v in vulns if v.priority == s) for s in SEV_ORDER[:4]},
-            "noise_reduction": noise_reduction(v.in_use for v in vulns),
+            "noise_reduction": noise_reduction(v.in_use for v in workload),
+            "on_devices": sum(1 for v in vulns if v.device_id),
+            "kev": sum(1 for v in vulns if v.kev),
         },
         "alerts": {"open": len(open_alerts), "by_severity": dict(Counter(open_alerts)), "events_24h": events_24h},
         "alerts_over_time": alerts_over_time,

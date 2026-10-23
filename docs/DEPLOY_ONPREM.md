@@ -50,6 +50,7 @@ To size up, edit `/opt/cnapp/cnapp.env` and run `sudo cnapp-ctl restart`:
 | Slack notifications (optional) | `hooks.slack.com` |
 | Email notifications (optional) | your SMTP relay, port 587/465 (set `NOTIFICATIONS_SMTP_ALLOW_PRIVATE=true` for an internal relay) |
 | Agent release auto-import (on by default, [AGENT_UPDATES.md](AGENT_UPDATES.md)) | `api.github.com`, `github.com`, `release-assets.githubusercontent.com`, `objects.githubusercontent.com` |
+| Vulnerability (CVE) matching (on by default, [VULNERABILITIES.md](VULNERABILITIES.md)) | `services.nvd.nist.gov`, `api.osv.dev`, `www.cisa.gov`, `api.first.org` |
 
 The backend uses `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` from `cnapp.env` (passed through by the compose file;
 `localhost`, `127.0.0.1` and the stack's service names are always exempt), and `cnapp-ctl agent-release fetch`

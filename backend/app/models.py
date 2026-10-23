@@ -100,12 +100,20 @@ class Finding(Base):
 
 
 class Vulnerability(Base):
-    """A CVE on a package inside a workload, enriched with runtime context."""
+    """A CVE on a package inside a workload (asset) or on an endpoint device,
+    enriched with runtime context. Exactly one of asset_id / device_id is set:
+    cloud workloads and sensor-reported Linux hosts are assets, laptops running
+    the endpoint agent are devices (docs/VULNERABILITIES.md)."""
 
     __tablename__ = "vulnerabilities"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
-    asset_id: Mapped[str] = mapped_column(String(512), ForeignKey("assets.id", ondelete="CASCADE"), index=True)
+    asset_id: Mapped[str | None] = mapped_column(String(512), ForeignKey("assets.id", ondelete="CASCADE"), index=True,
+                                                 nullable=True)
+    device_id: Mapped[str | None] = mapped_column(String(32), ForeignKey("devices.id", ondelete="CASCADE",
+                                                                         name="fk_vulnerabilities_device_id"),
+                                                  index=True,
+                                                  nullable=True)
     cve_id: Mapped[str] = mapped_column(String(32), index=True)
     package: Mapped[str] = mapped_column(String(128))
     version: Mapped[str] = mapped_column(String(64))
@@ -123,11 +131,87 @@ class Vulnerability(Base):
     sensitive_data_access: Mapped[bool] = mapped_column(Boolean, default=False)
     risk_score: Mapped[float] = mapped_column(Float, default=0.0, index=True)
     priority: Mapped[str] = mapped_column(String(16), default="low")
-    status: Mapped[str] = mapped_column(String(16), default="open")
+    status: Mapped[str] = mapped_column(String(16), default="open")  # open | resolved
+    # simulated | nvd (endpoint software matched by CPE) | osv (Linux packages)
     source: Mapped[str] = mapped_column(String(32), default="simulated")
     first_seen: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    # Real matching (app/vulnmatch): CISA KEV listing, FIRST EPSS probability,
+    # what matched (CPE product / OSV ecosystem), when it was last confirmed and
+    # when it was resolved (software upgraded or removed).
+    kev: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    epss: Mapped[float | None] = mapped_column(Float, nullable=True)
+    match_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    last_seen: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    evidence: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
-    asset: Mapped[Asset] = relationship(lazy="joined")
+    # Devices carry large inventory JSON, so there is no eager relationship to
+    # them; readers look device names up in one query (api/vulns.py).
+    asset: Mapped[Asset | None] = relationship(lazy="joined")
+
+
+class AssetPackage(Base):
+    """Installed OS / language package on a Linux host, as reported by the
+    runtime sensor's package inventory (POST /api/runtime/packages)."""
+
+    __tablename__ = "asset_packages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    asset_id: Mapped[str] = mapped_column(String(512), ForeignKey("assets.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    version: Mapped[str] = mapped_column(String(128), default="")
+    # OSV ecosystem, e.g. "Debian:12", "Ubuntu:22.04:LTS", "Alpine:v3.20", "Rocky Linux:9", "PyPI"
+    ecosystem: Mapped[str] = mapped_column(String(64), default="")
+    # Source package (dpkg Source / apk origin / rpm source name); vulnerability feeds key on it.
+    source_name: Mapped[str] = mapped_column(String(255), default="")
+    kind: Mapped[str] = mapped_column(String(16), default="")  # deb | apk | rpm | python
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class VulnMatchState(Base):
+    """Vulnerability-matching state of one device or asset: a hash of its
+    inventory (re-match when it changes), when a match was requested / last
+    done, and which software could or could not be checked."""
+
+    __tablename__ = "vuln_match_state"
+    __table_args__ = (UniqueConstraint("target_type", "target_id", name="uq_vuln_match_target"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    target_type: Mapped[str] = mapped_column(String(8))  # device | asset
+    target_id: Mapped[str] = mapped_column(String(512))
+    inventory_hash: Mapped[str] = mapped_column(String(64), default="")
+    requested_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    matched_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    checked: Mapped[list] = mapped_column(JSON, default=list)
+    not_checked: Mapped[list] = mapped_column(JSON, default=list)
+    os_info: Mapped[dict] = mapped_column(JSON, default=dict)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class VulnFeedCache(Base):
+    """Cached vulnerability-feed responses (NVD per CPE product, OSV records,
+    the KEV catalog, EPSS scores) with an expiry, so matching works offline
+    from the last good copy and the public APIs are not hammered."""
+
+    __tablename__ = "vuln_feed_cache"
+
+    key: Mapped[str] = mapped_column(String(255), primary_key=True)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    data: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class VulnFeedStatus(Base):
+    """Freshness / last error of each feed (nvd, osv, kev, epss), shown on the
+    Vulnerabilities page."""
+
+    __tablename__ = "vuln_feed_status"
+
+    feed: Mapped[str] = mapped_column(String(16), primary_key=True)
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    items: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class RuntimeEvent(Base):

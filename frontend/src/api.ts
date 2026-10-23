@@ -49,7 +49,11 @@ export interface Finding {
 
 export interface Vulnerability {
   id: string;
-  asset_id: string;
+  /** Cloud workload / sensor host. Null for endpoint-device vulnerabilities. */
+  asset_id: string | null;
+  /** Laptop (endpoint agent). Null for asset vulnerabilities. */
+  device_id?: string | null;
+  device_name?: string | null;
   cve_id: string;
   package: string;
   version: string;
@@ -68,6 +72,96 @@ export interface Vulnerability {
   status: string;
   asset_name: string | null;
   asset_type: string | null;
+  /** simulated | nvd (endpoint software by CPE) | osv (Linux packages) */
+  source?: string;
+  first_seen?: string | null;
+  kev?: boolean | null;
+  epss?: number | null;
+  last_seen?: string | null;
+  resolved_at?: string | null;
+  evidence?: Record<string, unknown> | null;
+}
+
+export interface VulnByCve {
+  cve_id: string;
+  title: string;
+  cvss: number;
+  severity: Severity;
+  kev: boolean;
+  epss: number | null;
+  max_risk: number;
+  packages: string[];
+  fixed_versions: string[];
+  devices: string[];
+  assets: string[];
+  device_count: number;
+  asset_count: number;
+  sources: string[];
+}
+
+export interface VulnBySoftware {
+  package: string;
+  cve_count: number;
+  kev_count: number;
+  severity: Severity;
+  by_severity: Record<string, number>;
+  versions: string[];
+  fixed_versions: string[];
+  device_count: number;
+  asset_count: number;
+  max_risk: number;
+}
+
+export interface VulnFeed {
+  feed: string;
+  label: string;
+  host: string;
+  last_success_at: string | null;
+  last_attempt_at: string | null;
+  last_error: string | null;
+  items: number | null;
+}
+
+export interface VulnTargetCounts {
+  total: number;
+  matched: number;
+  pending: number;
+  errors: number;
+  last_matched_at: string | null;
+}
+
+export interface VulnStatus {
+  enabled: boolean;
+  worker_running: boolean;
+  nvd_api_key_configured: boolean;
+  rematch_interval_hours: number;
+  feeds: VulnFeed[];
+  devices: VulnTargetCounts;
+  assets: VulnTargetCounts;
+  software_checked: number;
+  software_not_checked: number;
+  not_checked_top: { name: string; devices: number; reason: string }[];
+  mapping_rules: number;
+}
+
+export interface CheckedSoftware {
+  name: string;
+  version: string;
+  product?: string;
+  cpe?: string;
+  rule?: string;
+  publisher?: string;
+  reason?: string;
+}
+
+export interface DeviceVulnerabilities {
+  vulnerabilities: Vulnerability[];
+  matched_at: string | null;
+  pending: boolean;
+  error: string | null;
+  os: { cpe?: string; version?: string; label?: string };
+  checked: CheckedSoftware[];
+  not_checked: CheckedSoftware[];
 }
 
 export interface Alert {
@@ -995,7 +1089,20 @@ export const api = {
       critical_cvss_in_use: number;
       in_use_and_exposed: number;
       exploitable_in_use: number;
+      total: number;
+      assets: { open: number; affected: number };
+      devices: { open: number; affected: number };
+      kev: { open: number; cves: number };
     }>("/api/vulnerabilities/stats"),
+  vulnByCve: (f: Record<string, string | boolean | undefined> = {}) =>
+    request<VulnByCve[]>(`/api/vulnerabilities/by-cve${qs(f)}`),
+  vulnBySoftware: (f: Record<string, string | boolean | undefined> = {}) =>
+    request<VulnBySoftware[]>(`/api/vulnerabilities/by-software${qs(f)}`),
+  vulnStatus: () => request<VulnStatus>("/api/vulnerabilities/status"),
+  /** Analyst: queue every device / asset for matching now. */
+  vulnRematch: () => request<{ queued: number; worker_running: boolean }>("/api/vulnerabilities/rematch", { method: "POST" }),
+  deviceVulnerabilities: (id: string, status = "open") =>
+    request<DeviceVulnerabilities>(`/api/devices/${encodeURIComponent(id)}/vulnerabilities${qs({ status })}`),
   alerts: (f: Record<string, string | undefined> = {}) => request<Alert[]>(`/api/alerts${qs(f)}`),
   alert: (id: string) => request<AlertDetail>(`/api/alerts/${id}`),
   updateAlert: (id: string, status: Alert["status"]) =>

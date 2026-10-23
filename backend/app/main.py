@@ -30,6 +30,7 @@ from .security import BodySizeLimitMiddleware, SecurityHeadersMiddleware
 from .services.agent_update_auto import AgentUpdateWorker
 from .services.scan_schedule import ScanScheduler
 from .services.simulation import RuntimeSimulator, seed_if_empty
+from .vulnmatch import worker as vuln_worker
 
 log = logging.getLogger("cnapp")
 
@@ -73,7 +74,17 @@ async def lifespan(app: FastAPI):
     if s.scan_scheduler_worker_enabled:
         app.state.scan_scheduler = ScanScheduler()
         app.state.scan_scheduler.start()
+    # Vulnerability (CVE) matching: feeds, debounced re-matching, KEV / EPSS
+    # (leader-elected; never runs inside a request).
+    app.state.vuln_worker = None
+    if s.vuln_worker_enabled and s.vuln_matching_enabled:
+        app.state.vuln_worker = vuln_worker.VulnWorker()
+        vuln_worker.set_worker(app.state.vuln_worker)
+        app.state.vuln_worker.start()
     yield
+    if app.state.vuln_worker:
+        app.state.vuln_worker.stop()
+        vuln_worker.set_worker(None)
     if app.state.scan_scheduler:
         app.state.scan_scheduler.stop()
     if app.state.simulator:
@@ -128,7 +139,9 @@ def create_app() -> FastAPI:
                                                                           s.max_request_bytes),
                                     it_assets_api.UPLOAD_PREFIXES[1]: max(s.asset_certificate_max_bytes,
                                                                           s.max_request_bytes),
-                                    "/api/scripts/bundles": max(s.device_script_max_bundle_bytes, s.max_request_bytes)})
+                                    "/api/scripts/bundles": max(s.device_script_max_bundle_bytes, s.max_request_bytes),
+                                    # sensor package inventory (a few thousand packages per host)
+                                    "/api/runtime/packages": max(8 * 1024 * 1024, s.max_request_bytes)})
     app.add_middleware(SecurityHeadersMiddleware, hsts_max_age=s.hsts_max_age if s.is_production else 0)
 
     # Public: health probe, login, sensor ingest (own bearer-token auth) and the

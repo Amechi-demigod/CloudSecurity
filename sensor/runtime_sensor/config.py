@@ -30,6 +30,8 @@ class Config:
     collectors: List[str] = field(default_factory=lambda: list(ALL_COLLECTORS))
     poll_interval: float = 2.0
     library_interval: float = 60.0
+    inventory_interval: float = 21600.0  # host package inventory (0 = off)
+    inventory_url: Optional[str] = None  # default: next to api_url (/api/runtime/packages)
     dry_run: bool = False
     detections: bool = True
     ebpf: str = "auto"  # auto | on | off
@@ -71,6 +73,11 @@ def build_parser() -> argparse.ArgumentParser:
                    help="seconds between /proc polls (env SENSOR_POLL_INTERVAL)")
     p.add_argument("--library-interval", type=float, default=float(e("SENSOR_LIBRARY_INTERVAL", "60")),
                    help="seconds between loaded-library scans (env SENSOR_LIBRARY_INTERVAL)")
+    p.add_argument("--inventory-interval", type=float, default=float(e("SENSOR_INVENTORY_INTERVAL", "21600")),
+                   help="seconds between host package inventories sent for vulnerability matching; 0 disables "
+                        "(env SENSOR_INVENTORY_INTERVAL, default 6 h)")
+    p.add_argument("--inventory-url", default=e("SENSOR_INVENTORY_URL"),
+                   help="package inventory endpoint (env SENSOR_INVENTORY_URL; default derived from --api-url)")
     p.add_argument("--dry-run", action="store_true", default=_env_bool("SENSOR_DRY_RUN", False),
                    help="print events as JSON lines to stdout instead of POSTing (env SENSOR_DRY_RUN)")
     p.add_argument("--no-detections", dest="detections", action="store_false",
@@ -126,6 +133,8 @@ def load_config(argv: Optional[List[str]] = None) -> Config:
         collectors=collectors,
         poll_interval=args.poll_interval,
         library_interval=args.library_interval,
+        inventory_interval=args.inventory_interval,
+        inventory_url=args.inventory_url or None,
         dry_run=args.dry_run,
         detections=args.detections,
         ebpf=args.ebpf,

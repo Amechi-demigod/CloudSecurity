@@ -84,7 +84,8 @@ class FindingUpdate(BaseModel):
 
 class VulnerabilityOut(ORM):
     id: str
-    asset_id: str
+    asset_id: str | None = None
+    device_id: str | None = None
     cve_id: str
     package: str
     version: str
@@ -103,6 +104,14 @@ class VulnerabilityOut(ORM):
     status: str
     asset_name: str | None = None
     asset_type: str | None = None
+    device_name: str | None = None
+    source: str = "simulated"
+    first_seen: UTCDateTime | None = None
+    kev: bool | None = None
+    epss: float | None = None
+    last_seen: UTCDateTime | None = None
+    resolved_at: UTCDateTime | None = None
+    evidence: dict[str, Any] | None = None
 
 
 class AlertOut(ORM):
@@ -287,6 +296,42 @@ class SensorEventV1(BaseModel):
     cloud: SensorCloud | None = None
     severity_hint: Literal["info", "low", "medium", "high", "critical"] = "info"
     tags: Annotated[list[Annotated[str, Field(max_length=128)]], Field(max_length=64)] = Field(default_factory=list)
+
+
+class SensorOs(BaseModel):
+    id: Short | None = None  # os-release ID: debian | ubuntu | alpine | rocky | almalinux | rhel ...
+    version_id: Short | None = None
+    pretty_name: Short | None = None
+
+
+class SensorPackage(BaseModel):
+    name: Short
+    version: Short
+    # OSV ecosystem, e.g. "Debian:12", "Ubuntu:22.04:LTS", "Alpine:v3.20", "Rocky Linux:9", "PyPI"
+    ecosystem: Annotated[str, Field(max_length=64)] | None = None
+    source_name: Short | None = None  # dpkg Source / apk origin / rpm source package
+    source_version: Short | None = None
+    kind: Literal["deb", "apk", "rpm", "python"] | None = None
+
+
+class SensorPackageInventoryV1(BaseModel):
+    """Package inventory of one Linux host (sensor/EVENT_SCHEMA.md#package-inventory),
+    POSTed to /api/runtime/packages every few hours."""
+
+    schema_version: Annotated[str, Field(pattern=r"^1\.\d+$")]
+    sensor_id: Short | None = None
+    host: Short | None = None
+    collected_at: datetime | None = None
+    os: SensorOs | None = None
+    cloud: SensorCloud | None = None
+    packages: Annotated[list[SensorPackage], Field(max_length=50000)]
+
+
+class PackageIngestResult(BaseModel):
+    asset_id: str
+    asset_created: bool
+    packages: int
+    match_requested: bool
 
 
 class IngestResult(BaseModel):

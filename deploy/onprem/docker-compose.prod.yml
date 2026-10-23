@@ -111,7 +111,8 @@ services:
       # (docs/AGENT_UPDATES.md). Set AGENT_UPDATE_AUTO_IMPORT=false in cnapp.env to
       # disable; the console setting overrides it.
       AGENT_UPDATE_AUTO_IMPORT: ${AGENT_UPDATE_AUTO_IMPORT:-true}
-      # Outbound proxy (auto-import, Entra SSO, notifications, AWS / GCP scans), from cnapp.env.
+      # Outbound proxy (auto-import, Entra SSO, notifications, AWS / GCP scans,
+      # vulnerability feeds: NVD / OSV / CISA KEV / EPSS), from cnapp.env.
       # Local and stack-internal names always bypass it (health check, database).
       HTTPS_PROXY: ${HTTPS_PROXY:-}
       HTTP_PROXY: ${HTTP_PROXY:-}
