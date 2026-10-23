@@ -6,6 +6,7 @@ The Vulnerabilities page and each device's **Vulnerabilities** tab show real CVE
 |---|---|---|---|
 | **Laptops** (Windows 10/11, macOS) | endpoint agent check-ins: OS build + installed applications | [NVD CVE API 2.0](https://nvd.nist.gov/developers/vulnerabilities) by CPE, through a curated mapping table | device detail → Vulnerabilities, Vulnerabilities page (Affected = Laptops) |
 | **Linux servers / VMs / Kubernetes nodes** | runtime sensor package inventory (dpkg, apk, rpm, pip) | [OSV.dev](https://osv.dev) (`querybatch`) | the host's asset (inventory drawer), Vulnerabilities page, attack paths |
+| **Azure App Service runtimes, PostgreSQL / MySQL / Redis engines** | Azure scan (site config, server version) | bundled end-of-life table ([endoflife.date](https://endoflife.date), `backend/app/engine/eol.py`; no network call) | Vulnerabilities page (`source = eol`, id `EOL-<STACK>-<version>`, CVSS 7.5, in use), the matching posture finding, attack paths; see [AZURE_COVERAGE.md](AZURE_COVERAGE.md#end-of-life-table) |
 | Simulated environment | seed data | - | unchanged (`source = simulated`) |
 
 Every match is enriched with:

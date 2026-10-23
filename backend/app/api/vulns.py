@@ -90,7 +90,7 @@ class Filters:
                  severity: str | None = None, asset_id: str | None = None, device_id: str | None = None,
                  cve_id: str | None = None, kev: bool | None = None,
                  package: str | None = Query(None, max_length=128, description="software / package name contains"),
-                 source: str | None = Query(None, pattern="^(simulated|nvd|osv)$")):
+                 source: str | None = Query(None, pattern="^(simulated|nvd|osv|eol)$")):
         self.kw = dict(status=status, scope=scope, in_use=in_use, internet_exposed=internet_exposed,
                        priority=priority, severity=severity, asset_id=asset_id, device_id=device_id, cve_id=cve_id,
                        kev=kev, package=package, source=source)

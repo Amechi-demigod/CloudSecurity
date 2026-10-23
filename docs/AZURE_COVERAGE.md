@@ -36,7 +36,9 @@ Node.js, Python, .NET, Ruby, PowerShell, Java 7, PostgreSQL, MySQL and Redis on 
 the table when versions reach end of life. Runtimes are read from `linuxFxVersion` / `windowsFxVersion` /
 `netFrameworkVersion` (v5+) / `phpVersion` / `pythonVersion` / `nodeVersion` / `powerShellVersion` / `javaVersion`.
 EOL findings have a specific title ("Runtime PHP 7.4 is end-of-life since 2022-11-28") and count as exploitable
-weaknesses on any attack-path hop, like an in-use CVE.
+weaknesses on any attack-path hop, like an in-use CVE. Each scan also records them as **Vulnerability** rows (`source = eol`, id
+`EOL-<STACK>-<version>`, e.g. `EOL-PHP-7.4`, CVSS 7.5, in use) so they appear on the Vulnerabilities page with
+the asset's runtime context; a row resolves when the app or server is upgraded.
 
 ## Exposure model
 

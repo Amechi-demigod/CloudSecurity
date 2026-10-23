@@ -645,3 +645,35 @@ def test_vm_public_ip_blocked_by_nsg_is_not_exposed():
     assert not by_name(collect(clients))["app-vm"].internet_exposed
     net.public_ip_addresses.list_all.return_value[-1].sku = NS(name="Basic")
     assert by_name(collect(clients))["app-vm"].properties["effective_ports"] == ["*"]
+
+
+def test_eol_runtimes_and_engines_become_vulnerabilities(empty_client):
+    from app import db
+    from app.models import Vulnerability
+
+    clients = build_clients()
+    session = db.get_session()
+    try:
+        stats = ingest_collection(session, collect(clients), source="azure")
+        assert stats["eol_opened"] == 4
+        rows = {v.cve_id: v for v in session.query(Vulnerability).filter_by(source="eol")}
+        assert set(rows) == {"EOL-PHP-7.4", "EOL-POSTGRESQL-11", "EOL-MYSQL-5.7.44", "EOL-REDIS-4.0.14"}
+        php = rows["EOL-PHP-7.4"]
+        assert php.title == "PHP 7.4 is end-of-life since 2022-11-28" and php.in_use and php.status == "open"
+        assert php.internet_exposed and php.priority in ("critical", "high")
+        assert php.evidence["url"] == "https://endoflife.date/php"
+    finally:
+        session.close()
+    listed = empty_client.get("/api/vulnerabilities", params={"source": "eol"}).json()
+    assert {v["cve_id"] for v in listed} == set(rows)
+    # the app is upgraded: the next scan resolves its row
+    web_cfg = clients["web"].web_apps.get_configuration.side_effect
+    clients["web"].web_apps.get_configuration.side_effect = lambda rg, n: NS(
+        **{**vars(web_cfg(rg, n)), "linux_fx_version": "PHP|8.3"})
+    session = db.get_session()
+    try:
+        stats = ingest_collection(session, collect(clients), source="azure")
+        assert stats["eol_resolved"] == 1 and stats["eol_opened"] == 0
+        assert session.query(Vulnerability).filter_by(cve_id="EOL-PHP-7.4").one().status == "resolved"
+    finally:
+        session.close()
