@@ -1,9 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ApiError, api, isMfaChallenge, setAuthHandlers, setCsrfToken, type Role, type SessionInfo, type User } from "../api";
+import {
+  ApiError,
+  api,
+  isMfaChallenge,
+  setAuthHandlers,
+  setCsrfToken,
+  type OrganizationBrief,
+  type Role,
+  type SessionInfo,
+  type User,
+} from "../api";
 import { AuthContext, hasRole, type AuthState } from "./context";
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null | undefined>(undefined);
+  const [organization, setOrganization] = useState<OrganizationBrief | null>(null);
+  const [platformAdmin, setPlatformAdmin] = useState(false);
   const [sessionExpired, setSessionExpired] = useState(false);
   const [forbidden, setForbidden] = useState<string | null>(null);
   const userRef = useRef(user);
@@ -20,6 +32,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .then((s) => {
         if (cancelled) return;
         setCsrfToken(s.csrf_token);
+        setOrganization(s.organization ?? null);
+        setPlatformAdmin(!!s.platform_admin);
         setUser(s.user);
       })
       .catch((e) => {
@@ -49,6 +63,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setCsrfToken(s.csrf_token);
     setSessionExpired(false);
     setForbidden(null);
+    setOrganization(s.organization ?? null);
+    setPlatformAdmin(!!s.platform_admin);
+    setUser(s.user);
+  }, []);
+
+  const refresh = useCallback(async () => {
+    const s = await api.me();
+    setCsrfToken(s.csrf_token);
+    setOrganization(s.organization ?? null);
+    setPlatformAdmin(!!s.platform_admin);
     setUser(s.user);
   }, []);
 
@@ -67,6 +91,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } finally {
       setCsrfToken(null);
       setSessionExpired(false);
+      setOrganization(null);
+      setPlatformAdmin(false);
       setUser(null);
     }
   }, []);
@@ -78,6 +104,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const value = useMemo<AuthState>(
     () => ({
       user,
+      organization,
+      platformAdmin,
+      refresh,
       sessionExpired,
       login,
       completeLogin,
@@ -87,7 +116,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       forbidden,
       dismissForbidden: () => setForbidden(null),
     }),
-    [user, sessionExpired, login, completeLogin, logout, changePassword, forbidden],
+    [user, organization, platformAdmin, refresh, sessionExpired, login, completeLogin, logout, changePassword, forbidden],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

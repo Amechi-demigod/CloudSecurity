@@ -7,6 +7,9 @@ import { Button } from "../components/ui";
 
 interface FromState {
   from?: string;
+  /** Prefilled after accepting an invitation. */
+  email?: string;
+  notice?: string;
 }
 
 function safeRedirect(from: string | undefined | null): string {
@@ -54,7 +57,8 @@ export default function Login() {
   const [breakGlass, setBreakGlass] = useState(false);
   const ssoError = new URLSearchParams(location.search).get("sso_error");
 
-  const [email, setEmail] = useState("");
+  const [email, setEmail] = useState(() => (location.state as FromState | null)?.email ?? "");
+  const notice = (location.state as FromState | null)?.notice;
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -228,6 +232,11 @@ export default function Login() {
           {ssoError && step.kind === "password" && !error && (
             <div role="alert" className="mt-4 rounded-md border border-sev-critical/60 bg-sev-critical/10 px-3 py-2 text-sm text-ink">
               {ssoErrorMessage(ssoError)}
+            </div>
+          )}
+          {notice && !error && step.kind === "password" && (
+            <div role="status" className="mt-4 rounded-md border border-good/50 bg-good/10 px-3 py-2 text-sm text-ink">
+              {notice}
             </div>
           )}
           {sessionExpired && !error && step.kind === "password" && (
