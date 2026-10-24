@@ -16,6 +16,10 @@ Every tick (default 30 s) the leader (one per deployment, see app/locks.py):
 
 Feed failures are recorded (vuln_feed_status) and matching continues from the
 cached data; nothing here ever runs inside an agent check-in.
+
+Feeds (KEV, EPSS, NVD / OSV caches) are global reference data, fetched once
+for the platform; steps 1 (re-flagging, notifications) to 4 run once per
+active organisation in a session scoped to it.
 """
 from __future__ import annotations
 
@@ -27,10 +31,19 @@ from datetime import datetime, timedelta
 
 from sqlalchemy import delete, select
 
-from .. import config
+from .. import config, tenancy
 from .. import db as dbmod
 from ..locks import LeaderLock
-from ..models import Asset, AssetPackage, Device, DeviceSoftware, Vulnerability, VulnFeedStatus, VulnMatchState, utcnow
+from ..models import (
+    AssetPackage,
+    Device,
+    DeviceSoftware,
+    Vulnerability,
+    VulnFeedStatus,
+    VulnMatchState,
+    get_asset,
+    utcnow,
+)
 from . import feeds, matcher
 from .notify import Item, notify
 from .state import ASSET, DEVICE
@@ -58,20 +71,37 @@ def _due(st: VulnFeedStatus | None, every: timedelta, now: datetime) -> bool:
     return now - st.last_attempt_at >= (FEED_RETRY if st.last_error else every)
 
 
-def refresh_kev(db, now: datetime, *, force: bool = False) -> tuple[bool, int]:
-    """Refresh KEV (when due); re-flag open vulnerabilities. Returns (refreshed, notifications)."""
+def fetch_kev_if_due(db, now: datetime, *, force: bool = False) -> dict | None:
+    """Refresh the (global) KEV catalog when due. Returns it, or None when not
+    due / the fetch failed (recorded in vuln_feed_status). Commits."""
     s = config.settings
     if not force and not _due(db.get(VulnFeedStatus, "kev"), timedelta(hours=s.vuln_kev_refresh_hours), now):
-        return False, 0
+        return None
     try:
         cat = feeds.fetch_kev()
     except feeds.FeedError as e:
         log.warning("KEV refresh failed: %s", e)
         feeds.record_status(db, "kev", ok=False, error=str(e), now=now)
         db.commit()
-        return False, 0
+        return None
     feeds.cache_put(db, "kev", {"cves": cat}, timedelta(days=30), now)
     feeds.record_status(db, "kev", ok=True, items=len(cat), now=now)
+    db.commit()
+    return cat
+
+
+def refresh_kev(db, now: datetime, *, force: bool = False) -> tuple[bool, int]:
+    """Refresh KEV (when due); re-flag the open vulnerabilities of the session's
+    organisation. Returns (refreshed, notifications)."""
+    cat = fetch_kev_if_due(db, now, force=force)
+    if cat is None:
+        return False, 0
+    return True, apply_kev(db, cat, now)
+
+
+def apply_kev(db, cat: dict, now: datetime) -> int:
+    """Re-flag open vulnerabilities (session's organisation) from the KEV
+    catalog and notify about newly known-exploited ones. Returns notifications."""
     newly: list[Item] = []
     for v in db.scalars(select(Vulnerability).where(Vulnerability.source.in_((matcher.NVD, matcher.OSV)),
                                                     Vulnerability.status == "open")):
@@ -87,7 +117,7 @@ def refresh_kev(db, now: datetime, *, force: bool = False) -> tuple[bool, int]:
                 newly.append(_item(db, v))
     sent = notify(db, newly, now, reason="kev")
     db.commit()
-    return True, sent
+    return sent
 
 
 def refresh_epss(db, now: datetime) -> None:
@@ -184,7 +214,7 @@ def match_due(db, now: datetime, limit: int = MAX_TARGETS_PER_TICK, *, force: bo
                     continue
                 out = matcher.match_device(db, d, now)
             else:
-                a = db.get(Asset, st.target_id)
+                a = get_asset(db, st.target_id)
                 if a is None:
                     st.requested_at = None
                     continue
@@ -210,18 +240,29 @@ def match_due(db, now: datetime, limit: int = MAX_TARGETS_PER_TICK, *, force: bo
 
 
 def run_once(now: datetime | None = None, *, force: bool = False) -> TickResult:
-    """One full pass (used by the worker tick and tests). `force` matches queued
-    targets without waiting for the debounce period."""
+    """One full pass over every active organisation (used by the worker tick and
+    tests). `force` matches queued targets without waiting for the debounce period."""
     now = now or utcnow()
-    with dbmod.get_session() as db:
-        refreshed, sent = refresh_kev(db, now)
-        queue_targets(db, now)
-        res = match_due(db, now, force=force)
-        refresh_epss(db, now)
-        cleanup(db, now)
-        res.kev_refreshed = refreshed
-        res.notifications += sent
-        return res
+    with dbmod.get_session(unscoped=True) as g:
+        cat = fetch_kev_if_due(g, now)
+    res = TickResult(True, kev_refreshed=cat is not None)
+    for org_id, db in tenancy.for_each_active_org():
+        try:
+            if cat is not None:
+                res.notifications += apply_kev(db, cat, now)
+            queue_targets(db, now)
+            r = match_due(db, now, force=force)
+            res.matched += r.matched
+            res.errors += r.errors
+            res.notifications += r.notifications
+            cleanup(db, now)
+        except Exception as e:  # one organisation must not stop the others
+            db.rollback()
+            log.exception("vulnerability matching of organisation %s failed", org_id)
+            res.errors.append(f"organisation {org_id}: {e}")
+    with dbmod.get_session(unscoped=True) as g:
+        refresh_epss(g, now)  # scores are global; written to every organisation's open vulnerabilities
+    return res
 
 
 class VulnWorker:

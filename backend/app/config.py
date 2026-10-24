@@ -91,6 +91,9 @@ class Settings:
         default_factory=lambda: float(os.getenv("SIMULATOR_ATTACK_PROBABILITY", "0.05"))
     )
     seed: int = field(default_factory=lambda: int(os.getenv("SEED", "42")))
+    # Internal (not from the environment): False in the settings of
+    # organisations other than the default (app/connectors/org_config.py).
+    simulated_connector_available: bool = field(default=True)
 
     # Shared secret required on POST /api/runtime/events (sensor ingest) as
     # "Authorization: Bearer <token>". The sensor sends it from SENSOR_API_TOKEN.
@@ -186,6 +189,9 @@ class Settings:
     # Service account key JSON or workload identity federation config; on-prem it
     # is mounted read-only from /opt/cnapp/secrets/gcp (cnapp-ctl gcp-key install).
     gcp_credentials_file: str | None = field(default_factory=lambda: os.getenv("GCP_CREDENTIALS_FILE") or None)
+    # Service-account key JSON content (never from the environment: set for an
+    # organisation's console-configured GCP connector, app/connectors/org_config.py).
+    gcp_credentials_json: str | None = field(default=None, repr=False)
     # Use Application Default Credentials (GOOGLE_APPLICATION_CREDENTIALS, GCE
     # metadata server, gcloud ADC) when no credentials file is set.
     gcp_use_default_credentials: bool = field(default_factory=lambda: _bool("GCP_USE_DEFAULT_CREDENTIALS", False))
@@ -193,6 +199,17 @@ class Settings:
     # Discover every ACTIVE project under this organization (recursively through folders).
     gcp_organization_id: str | None = field(
         default_factory=lambda: (os.getenv("GCP_ORGANIZATION_ID") or "").strip().removeprefix("organizations/") or None)
+
+    # --- Organisations (multi-tenancy, docs/MULTI_TENANCY.md) ---------------
+    # Name of the organisation existing data is migrated into (the installation
+    # operator's own organisation; it keeps using the environment-configured
+    # connectors, ingest token and SSO). Only used when it is first created.
+    default_org_name: str = field(
+        default_factory=lambda: (os.getenv("DEFAULT_ORG_NAME") or "Default organisation").strip()[:128])
+    # Platform owners ("super admins"): manage organisations in the platform
+    # console, in addition to users flagged with `python -m app.cli platform-admin`.
+    platform_admin_emails: list[str] = field(
+        default_factory=lambda: [e.lower() for e in _list("PLATFORM_ADMIN_EMAILS")])
 
     # --- User authentication ------------------------------------------------
     # First admin, created on startup only when the users table is empty.

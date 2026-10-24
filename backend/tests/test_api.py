@@ -196,8 +196,8 @@ def test_scan_endpoint_merges_results(empty_client, monkeypatch):
 
     monkeypatch.setattr(platform, "build_registry", lambda s: {"azure": FakeConnector()})
     # run synchronously for the test
-    monkeypatch.setattr(platform, "start_scan", lambda c, background=True: __import__(
-        "app.services.scans", fromlist=["start_scan"]).start_scan(c, background=False))
+    monkeypatch.setattr(platform, "start_scan", lambda c, org, background=True: __import__(
+        "app.services.scans", fromlist=["start_scan"]).start_scan(c, org, background=False))
     r = empty_client.post("/api/scans", json={"connector": "azure"})
     assert r.status_code == 202, r.text
     assert r.json()["status"] == "succeeded" and r.json()["assets_found"] == 1

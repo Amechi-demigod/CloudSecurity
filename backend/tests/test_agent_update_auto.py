@@ -76,14 +76,14 @@ def assign(c, device_id, ring_id):
 
 
 def settings_row():
-    with db.get_session() as s:
-        st = s.get(AgentUpdateSettings, 1)
+    with db.get_session("default") as s:
+        st = s.get(AgentUpdateSettings, "default")
         s.expunge(st)
         return st
 
 
 def events(event_type: str):
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         return list(s.scalars(select(NotificationEvent).where(NotificationEvent.event_type == event_type)))
 
 
@@ -140,7 +140,7 @@ def test_pending_state_explains_blocked_and_done(admin, key, tmp_path):
 
 # ----------------------------------------------------------------------------- jitter
 def test_fleet_size_aware_jitter(admin, monkeypatch):
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         assert svc.effective_jitter_seconds(s) == 120
         monkeypatch.setattr(config.settings, "agent_update_jitter_seconds", 0)
         assert svc.effective_jitter_seconds(s) == 0  # no devices
@@ -184,7 +184,7 @@ def test_update_now_device(admin, key, tmp_path):
     # Asking twice does not pile up commands.
     admin.post("/api/updates/update-now", json={"device_id": new_id})
     admin.post("/api/updates/update-now", json={"device_id": new_id})
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         pending = s.scalars(select(DeviceCommand).where(DeviceCommand.device_id == new_id,
                                                         DeviceCommand.status == "pending")).all()
         assert len(pending) == 1
@@ -273,11 +273,11 @@ def test_automatic_mode_pilot_then_everyone(admin, key, tmp_path):
     assert st["rollout"]["pilot_devices"] == 1
     assert events("rollout_started")
     # Before the soak: nothing changes.
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         assert auto.auto_tick(s, utcnow() + timedelta(hours=23)).action == "none"
         s.commit()
     # After the soak without failures: every ring (incl. All devices) targets it.
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         assert auto.auto_tick(s, utcnow() + timedelta(hours=25)).action == "promoted"
         s.commit()
     assert {r["target_version"] for r in admin.get("/api/updates/rings").json()} == {"1.0.0"}
@@ -302,7 +302,7 @@ def test_automatic_mode_pauses_on_pilot_failure_and_promote_override(admin, key,
                                                          "to_version": "1.0.0", "status": "rolled_back",
                                                          "detail": "health check failed"})
     assert r.status_code == 204
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         res = auto.auto_tick(s, utcnow() + timedelta(hours=1))
         s.commit()
     assert res.action == "paused" and "pilot-2" in res.detail
@@ -311,7 +311,7 @@ def test_automatic_mode_pauses_on_pilot_failure_and_promote_override(admin, key,
     ev = events("rollout_paused")
     assert ev and ev[0].severity == "high"
     # Still paused after the soak: the rest of the fleet does not get it.
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         assert auto.auto_tick(s, utcnow() + timedelta(days=3)).action == "none"
         s.commit()
     assert ring(admin, "All devices")["target_version"] is None and checkin(other) is None
@@ -336,7 +336,7 @@ def test_failed_status_holds_promotion_at_end_of_soak(admin, key, tmp_path):
     p_agent.post("/api/agent/updates/status", json={"release_id": rel["id"], "from_version": CI_VERSION,
                                                      "to_version": "1.0.0", "status": "failed",
                                                      "detail": "download failed (will retry)"})
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         assert auto.auto_tick(s, utcnow() + timedelta(minutes=30)).action == "none"  # transient, during soak
         assert auto.auto_tick(s, utcnow() + timedelta(hours=2)).action == "paused"  # still failed at the end
         s.commit()
@@ -353,14 +353,14 @@ def test_manual_mode_leaves_rings_alone(admin, key, tmp_path):
 
 
 def test_worker_tick_runs_the_rollout(admin, key, tmp_path):
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         auto.get_settings(s).mode = "automatic"
         s.commit()
-    with db.get_session() as s:  # import without the hook having run in automatic mode
+    with db.get_session("default") as s:  # import without the hook having run in automatic mode
         auto.get_settings(s).mode = "manual"
         s.commit()
     upload(admin, make_bundle(tmp_path, "1.0.0", [key]))
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         auto.get_settings(s).mode = "automatic"
         s.commit()
     w = auto.AgentUpdateWorker()
@@ -405,7 +405,7 @@ def test_auto_import_from_github(admin, key, tmp_path, monkeypatch):
     monkeypatch.setattr(auto, "http_get_json", fake_json)
     monkeypatch.setattr(auto, "http_download", fake_download)
     set_mode(admin, mode="automatic", auto_import_enabled=True, auto_import_repo="Amechi-demigod/CloudSecurity")
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         assert auto.import_due(auto.get_settings(s), utcnow())
         res = auto.check_github(s)
         s.commit()
@@ -416,19 +416,19 @@ def test_auto_import_from_github(admin, key, tmp_path, monkeypatch):
     a = [x for x in audits("agent_release_imported") if x.detail.get("source") == "auto-import"]
     assert a and a[0].actor_email == "auto-import:github.com/Amechi-demigod/CloudSecurity"
     assert events("release_imported")
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         assert not auto.import_due(auto.get_settings(s), utcnow())  # next check after the interval
         assert auto.check_github(s)["message"].startswith("no new release")
         s.commit()
     # A release signed with an untrusted key is refused, surfaced and not retried.
     listing.append(gh_release("agent-v1.1.0", size=len(bundles["agent-v1.1.0"])))
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         res = auto.check_github(s)
         s.commit()
     assert res["status"] == "error" and "not signed by a trusted release key" in res["message"]
     assert events("release_import_failed")[0].severity == "high"
     assert [r["version"] for r in admin.get("/api/updates/releases").json()] == ["1.0.0"]
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         again = auto.check_github(s)
         s.commit()
     assert again["status"] == "error" and "not retried" in again["message"] and len(events("release_import_failed")) == 1
@@ -450,12 +450,12 @@ def test_auto_import_offline_only_logs(admin, monkeypatch):
 def test_auto_import_real_network_errors_are_offline(admin, monkeypatch):
     # Unroutable address: the real httpx path turns a connection failure into "offline".
     monkeypatch.setattr(config.settings, "agent_update_releases_api", "https://127.0.0.1:9")
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         res = auto.check_github(s)
         s.commit()
     assert res["status"] == "offline", res
     monkeypatch.setattr(config.settings, "agent_update_releases_api", "http://example.com")
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         assert auto.check_github(s)["status"] == "error"
 
 

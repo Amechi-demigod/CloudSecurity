@@ -18,7 +18,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..engine.risk import priority_for, vuln_risk_score
-from ..models import Asset, Vulnerability, utcnow
+from ..models import Asset, Vulnerability, get_asset, utcnow
 from ..schemas import SensorEventV1
 
 # The sensor re-emits library_loaded for live mappings every hour; give it
@@ -91,7 +91,7 @@ class AssetResolver:
                 if not namespace or (a.properties or {}).get("namespace") in (None, namespace):
                     return a.id
         if rid:
-            a = db.get(Asset, rid.lower())
+            a = get_asset(db, rid.lower())
             if a is not None:
                 return a.id
         if host:

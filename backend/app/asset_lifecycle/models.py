@@ -10,7 +10,7 @@
 * `it_asset_certificates`: wipe / destruction certificates (PDF or image),
   stored in the database so `pg_dump` backups (`cnapp-ctl backup`) include them.
 * `it_asset_settings`: admin-managed sites, custom field definitions, default
-  currency and thresholds (one row).
+  currency and thresholds (one row per organisation).
 
 These are not the cloud inventory `assets` table (VMs, storage accounts, ...).
 """
@@ -19,11 +19,12 @@ from __future__ import annotations
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import JSON, Date, DateTime, ForeignKey, Integer, LargeBinary, Numeric, String, Text
+from sqlalchemy import JSON, Date, DateTime, ForeignKey, Integer, LargeBinary, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ..db import Base
 from ..models import new_id, utcnow
+from ..tenancy import TenantMixin
 
 ASSET_STATUSES = ("in_stock", "assigned", "in_repair", "retrieval_pending", "retrieved", "lost", "stolen", "disposed")
 ASSET_TYPES = ("laptop", "desktop", "computer", "monitor", "phone", "tablet", "dock", "peripheral", "headset",
@@ -31,11 +32,13 @@ ASSET_TYPES = ("laptop", "desktop", "computer", "monitor", "phone", "tablet", "d
 DISPOSAL_METHODS = ("recycled", "destroyed", "resold", "donated", "returned_to_vendor", "other")
 
 
-class ItAsset(Base):
+class ItAsset(TenantMixin, Base):
     __tablename__ = "it_assets"
+    # Asset tags are unique within an organisation.
+    __table_args__ = (UniqueConstraint("organization_id", "asset_tag", name="uq_it_assets_org_asset_tag"),)
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
-    asset_tag: Mapped[str] = mapped_column(String(64), unique=True)
+    asset_tag: Mapped[str] = mapped_column(String(64))
     serial_number: Mapped[str] = mapped_column(String(128), default="", index=True)
     asset_type: Mapped[str] = mapped_column(String(32), default="other", index=True)
     manufacturer: Mapped[str] = mapped_column(String(128), default="")
@@ -75,7 +78,7 @@ class ItAsset(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
-class ItAssetEvent(Base):
+class ItAssetEvent(TenantMixin, Base):
     """Chain-of-custody entry. event_type: created, updated, assigned, returned,
     status_changed, offboarding, offboarding_cancelled, disposed, imported,
     device_linked, certificate_uploaded, certificate_deleted."""
@@ -95,7 +98,7 @@ class ItAssetEvent(Base):
     detail: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
-class ItAssetOffboarding(Base):
+class ItAssetOffboarding(TenantMixin, Base):
     __tablename__ = "it_asset_offboardings"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
@@ -112,7 +115,7 @@ class ItAssetOffboarding(Base):
     closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
-class ItAssetCertificate(Base):
+class ItAssetCertificate(TenantMixin, Base):
     """Wipe / destruction certificate (size-capped; type checked by magic bytes)."""
 
     __tablename__ = "it_asset_certificates"
@@ -128,13 +131,14 @@ class ItAssetCertificate(Base):
     data: Mapped[bytes] = mapped_column(LargeBinary)
 
 
-class ItAssetSettings(Base):
-    """Admin-managed settings (a single row, id=1). Missing keys fall back to the
-    ASSET_* environment variables."""
+class ItAssetSettings(TenantMixin, Base):
+    """Admin-managed settings (one row per organisation). Missing keys fall back
+    to the ASSET_* environment variables."""
 
     __tablename__ = "it_asset_settings"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organization_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("organizations.id", name="fk_it_asset_settings_organization_id"), primary_key=True)
     data: Mapped[dict] = mapped_column(JSON, default=dict)
     updated_by: Mapped[str | None] = mapped_column(String(320), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

@@ -23,7 +23,7 @@ from tests.test_sso import FakeEntra, app_client, browser, idp, me, sso_login  #
 
 
 def device_events(event_type: str | None = None) -> list[NotificationEvent]:
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         q = select(NotificationEvent).where(NotificationEvent.source == "device").order_by(NotificationEvent.id)
         if event_type:
             q = q.where(NotificationEvent.event_type == event_type)
@@ -89,7 +89,7 @@ def test_overdue_updates_emit_event(device, monkeypatch):
     body["posture"]["os_updates"] = {"status": "fail", "data": {"pending_count": 3}}
     assert agent.post("/api/agent/checkin", json=body).status_code == 200
     assert device_events("os_updates_pending") == []  # within the grace period
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         s.get(Device, device_id).updates_pending_since = utcnow() - timedelta(days=30)
         s.commit()
     assert agent.post("/api/agent/checkin", json=body).status_code == 200
@@ -122,11 +122,11 @@ def test_stale_and_inactive_devices_are_polled(device):
     now = utcnow()
 
     def poll(at):
-        with db.get_session() as s:
+        with db.get_session("default") as s:
             dispatcher.poll_sources(s, now=at, force=True)
 
     def age(delta):
-        with db.get_session() as s:
+        with db.get_session("default") as s:
             s.get(Device, device_id).last_seen_at = now - delta
             s.commit()
 
@@ -146,7 +146,7 @@ def test_stale_and_inactive_devices_are_polled(device):
     poll(now)
     assert len(device_events("stale")) == 2
     # revoked devices are not reported
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         s.get(Device, device_id).status = "revoked"
         s.commit()
     age(timedelta(days=8))
@@ -157,7 +157,7 @@ def test_stale_and_inactive_devices_are_polled(device):
 def test_first_poll_does_not_flood(device):
     agent, device_id = device
     assert agent.post("/api/agent/checkin", json=windows_checkin()).status_code == 200
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         s.get(Device, device_id).last_seen_at = utcnow() - timedelta(days=30)
         s.commit()
         dispatcher.poll_sources(s, force=True)
@@ -182,14 +182,14 @@ def test_rules_can_select_device_events(device):
 def test_device_rule_end_to_end_delivery(empty_client, device, transport):  # noqa: F811
     """A rule created in the rule builder (API) routes a device issue to a channel."""
     agent, device_id = device
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         channel_id = add_channel(s).id
     r = empty_client.post("/api/notifications/rules", json={
         "name": "Laptop firewall", "sources": ["device"], "event_types": ["firewall_off"],
         "min_severity": "medium", "channel_ids": [channel_id], "throttle_minutes": 0})
     assert r.status_code == 201, r.text
     assert agent.post("/api/agent/checkin", json=posture(firewall="off", disk_encryption="off")).status_code == 200
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         now = utcnow() + timedelta(seconds=5)
         dispatcher.process_events(s, now)
         # only firewall_off is selected (disk_encryption_off is not)
@@ -214,7 +214,7 @@ def test_notification_failure_never_breaks_checkin(device, monkeypatch):
 def _raw_enrollment_token() -> str:
     raw = svc.new_enrollment_token()
     now = utcnow()
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         s.add(EnrollmentToken(name="direct", token_hash=svc.hash_secret(raw), token_prefix=raw[:10], max_uses=5,
                               created_by="test", created_at=now, expires_at=now + timedelta(hours=1)))
         s.commit()
@@ -287,7 +287,7 @@ def test_sso_users_device_actions_rbac_and_audit(app_client, idp, monkeypatch): 
     no_csrf.cookies = analyst.cookies
     assert queue(no_csrf, device_id, "recheck_posture").status_code == 403
 
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         cmd = s.get(DeviceCommand, ok.json()["id"])
         assert cmd.requested_by_email == "alice@example.com"
         row = s.scalars(select(AuditLog).where(AuditLog.action == "device_command_created")

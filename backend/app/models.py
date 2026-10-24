@@ -17,6 +17,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     LargeBinary,
@@ -27,6 +28,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
+from .tenancy import TenantMixin
 
 
 def utcnow() -> datetime:
@@ -37,9 +39,99 @@ def new_id() -> str:
     return uuid.uuid4().hex
 
 
-class Asset(Base):
+# --- Organisations (multi-tenancy, docs/MULTI_TENANCY.md) ---------------------------
+
+ORG_STATUSES = ("active", "suspended")
+
+
+class Organization(Base):
+    """A customer organisation (tenant). Everything a customer owns carries its
+    `organization_id` (app/tenancy.py). The default organisation (id "default")
+    holds the data of the original single-organisation installation."""
+
+    __tablename__ = "organizations"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(128))
+    # URL-safe short name, unique on the platform.
+    slug: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    contact_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    logo_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    # active | suspended (suspended: no sign-in, agent / sensor requests refused, no background jobs)
+    status: Mapped[str] = mapped_column(String(16), default="active", index=True)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Commercial plan and limits, for later (not enforced yet).
+    plan: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    max_users: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_devices: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    created_by: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    suspended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    suspended_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+
+class OrganizationMembership(TenantMixin, Base):
+    """A user's role in an organisation. Version 1 allows one membership per
+    user (enforced by the application); the table already supports several."""
+
+    __tablename__ = "organization_memberships"
+    __table_args__ = (UniqueConstraint("organization_id", "user_id", name="uq_organization_memberships_org_user"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(32), ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    role: Mapped[str] = mapped_column(String(16), default="viewer")  # admin | analyst | viewer
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class IngestToken(TenantMixin, Base):
+    """Bearer token a runtime sensor sends to POST /api/runtime/*. Each token
+    belongs to one organisation; only HMAC/SHA-256 of it is stored. The legacy
+    INGEST_API_TOKEN environment variable keeps working for the default
+    organisation."""
+
+    __tablename__ = "ingest_tokens"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(128))
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    token_prefix: Mapped[str] = mapped_column(String(16))
+    created_by: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class ConnectorConfig(TenantMixin, Base):
+    """Per-organisation cloud connector settings (azure | aws | gcp). Secret
+    fields (client secret, access key, service-account key) are stored
+    encrypted (Fernet, NOTIFICATIONS_ENCRYPTION_KEY / MFA key, see
+    app/connectors/org_config.py). The default organisation falls back to the
+    AZURE_* / AWS_* / GCP_* environment variables while it has no row."""
+
+    __tablename__ = "connector_configs"
+    __table_args__ = (UniqueConstraint("organization_id", "provider", name="uq_connector_configs_org_provider"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    provider: Mapped[str] = mapped_column(String(16))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    config: Mapped[dict] = mapped_column(JSON, default=dict)
+    secret_ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True)
+    secret_hints: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_by: Mapped[str | None] = mapped_column(String(320), nullable=True)
+
+
+class Asset(TenantMixin, Base):
     __tablename__ = "assets"
 
+    # Composite primary key (organization_id, id): the natural id comes from the
+    # cloud (ARM resource id, ARN, GCP resource name, sensor host id), and two
+    # organisations may well scan the same resource; rows referencing an asset
+    # carry the organisation in their foreign key too, so a reference can never
+    # point into another organisation.
+    organization_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("organizations.id", name="fk_assets_organization_id"), primary_key=True)
     # For Azure this is the full ARM resource id (lower-cased).
     id: Mapped[str] = mapped_column(String(512), primary_key=True)
     name: Mapped[str] = mapped_column(String(255))
@@ -60,30 +152,53 @@ class Asset(Base):
     last_seen: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
-class Relationship(Base):
+def get_asset(db, asset_id: str | None) -> Asset | None:
+    """The asset `asset_id` of the session's organisation (composite primary key)."""
+    from .tenancy import require_org
+
+    return db.get(Asset, (require_org(db), asset_id)) if asset_id else None
+
+
+def get_runtime_event(db, event_id: str | None) -> RuntimeEvent | None:
+    from .tenancy import require_org
+
+    return db.get(RuntimeEvent, (require_org(db), event_id)) if event_id else None
+
+
+class Relationship(TenantMixin, Base):
     """Directed edge between two assets (used for the risk graph / attack paths)."""
 
     __tablename__ = "relationships"
-    __table_args__ = (UniqueConstraint("source_id", "target_id", "type"),)
+    __table_args__ = (
+        UniqueConstraint("organization_id", "source_id", "target_id", "type", name="uq_relationships_edge"),
+        ForeignKeyConstraint(["organization_id", "source_id"], ["assets.organization_id", "assets.id"],
+                             ondelete="CASCADE", name="fk_relationships_source_asset"),
+        ForeignKeyConstraint(["organization_id", "target_id"], ["assets.organization_id", "assets.id"],
+                             ondelete="CASCADE", name="fk_relationships_target_asset"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    source_id: Mapped[str] = mapped_column(String(512), ForeignKey("assets.id", ondelete="CASCADE"), index=True)
-    target_id: Mapped[str] = mapped_column(String(512), ForeignKey("assets.id", ondelete="CASCADE"), index=True)
+    source_id: Mapped[str] = mapped_column(String(512), index=True)
+    target_id: Mapped[str] = mapped_column(String(512), index=True)
     # contains | uses_identity | has_access | protects | connects_to
     type: Mapped[str] = mapped_column(String(64))
     properties: Mapped[dict] = mapped_column(JSON, default=dict)
     source: Mapped[str] = mapped_column(String(32), default="simulated")
 
 
-class Finding(Base):
+class Finding(TenantMixin, Base):
     """A posture (CSPM) finding: one rule failing on one asset."""
 
     __tablename__ = "findings"
-    __table_args__ = (UniqueConstraint("rule_id", "asset_id"),)
+    __table_args__ = (
+        UniqueConstraint("organization_id", "rule_id", "asset_id", name="uq_findings_rule_asset"),
+        ForeignKeyConstraint(["organization_id", "asset_id"], ["assets.organization_id", "assets.id"],
+                             ondelete="CASCADE", name="fk_findings_asset"),
+    )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
     rule_id: Mapped[str] = mapped_column(String(64), index=True)
-    asset_id: Mapped[str] = mapped_column(String(512), ForeignKey("assets.id", ondelete="CASCADE"), index=True)
+    asset_id: Mapped[str] = mapped_column(String(512), index=True)
     title: Mapped[str] = mapped_column(String(255))
     description: Mapped[str] = mapped_column(Text, default="")
     severity: Mapped[str] = mapped_column(String(16), index=True)
@@ -99,17 +214,20 @@ class Finding(Base):
     asset: Mapped[Asset] = relationship(lazy="joined")
 
 
-class Vulnerability(Base):
+class Vulnerability(TenantMixin, Base):
     """A CVE on a package inside a workload (asset) or on an endpoint device,
     enriched with runtime context. Exactly one of asset_id / device_id is set:
     cloud workloads and sensor-reported Linux hosts are assets, laptops running
     the endpoint agent are devices (docs/VULNERABILITIES.md)."""
 
     __tablename__ = "vulnerabilities"
+    __table_args__ = (
+        ForeignKeyConstraint(["organization_id", "asset_id"], ["assets.organization_id", "assets.id"],
+                             ondelete="CASCADE", name="fk_vulnerabilities_asset"),
+    )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
-    asset_id: Mapped[str | None] = mapped_column(String(512), ForeignKey("assets.id", ondelete="CASCADE"), index=True,
-                                                 nullable=True)
+    asset_id: Mapped[str | None] = mapped_column(String(512), index=True, nullable=True)
     device_id: Mapped[str | None] = mapped_column(String(32), ForeignKey("devices.id", ondelete="CASCADE",
                                                                          name="fk_vulnerabilities_device_id"),
                                                   index=True,
@@ -150,14 +268,18 @@ class Vulnerability(Base):
     asset: Mapped[Asset | None] = relationship(lazy="joined")
 
 
-class AssetPackage(Base):
+class AssetPackage(TenantMixin, Base):
     """Installed OS / language package on a Linux host, as reported by the
     runtime sensor's package inventory (POST /api/runtime/packages)."""
 
     __tablename__ = "asset_packages"
+    __table_args__ = (
+        ForeignKeyConstraint(["organization_id", "asset_id"], ["assets.organization_id", "assets.id"],
+                             ondelete="CASCADE", name="fk_asset_packages_asset"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    asset_id: Mapped[str] = mapped_column(String(512), ForeignKey("assets.id", ondelete="CASCADE"), index=True)
+    asset_id: Mapped[str] = mapped_column(String(512), index=True)
     name: Mapped[str] = mapped_column(String(255))
     version: Mapped[str] = mapped_column(String(128), default="")
     # OSV ecosystem, e.g. "Debian:12", "Ubuntu:22.04:LTS", "Alpine:v3.20", "Rocky Linux:9", "PyPI"
@@ -168,13 +290,13 @@ class AssetPackage(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
-class VulnMatchState(Base):
+class VulnMatchState(TenantMixin, Base):
     """Vulnerability-matching state of one device or asset: a hash of its
     inventory (re-match when it changes), when a match was requested / last
     done, and which software could or could not be checked."""
 
     __tablename__ = "vuln_match_state"
-    __table_args__ = (UniqueConstraint("target_type", "target_id", name="uq_vuln_match_target"),)
+    __table_args__ = (UniqueConstraint("organization_id", "target_type", "target_id", name="uq_vuln_match_target"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     target_type: Mapped[str] = mapped_column(String(8))  # device | asset
@@ -214,9 +336,13 @@ class VulnFeedStatus(Base):
     items: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
-class RuntimeEvent(Base):
+class RuntimeEvent(TenantMixin, Base):
     __tablename__ = "runtime_events"
 
+    # Composite primary key: sensors may supply the event id (de-duplication),
+    # so ids are only unique within an organisation.
+    organization_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("organizations.id", name="fk_runtime_events_organization_id"), primary_key=True)
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
     timestamp: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
     asset_id: Mapped[str | None] = mapped_column(String(512), index=True, nullable=True)
@@ -228,16 +354,18 @@ class RuntimeEvent(Base):
     source: Mapped[str] = mapped_column(String(32), default="simulated")
 
 
-class AlertEvent(Base):
+class AlertEvent(TenantMixin, Base):
     __tablename__ = "alert_events"
-
-    alert_id: Mapped[str] = mapped_column(String(32), ForeignKey("alerts.id", ondelete="CASCADE"), primary_key=True)
-    event_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("runtime_events.id", ondelete="CASCADE"), primary_key=True
+    __table_args__ = (
+        ForeignKeyConstraint(["organization_id", "event_id"], ["runtime_events.organization_id", "runtime_events.id"],
+                             ondelete="CASCADE", name="fk_alert_events_event"),
     )
 
+    alert_id: Mapped[str] = mapped_column(String(32), ForeignKey("alerts.id", ondelete="CASCADE"), primary_key=True)
+    event_id: Mapped[str] = mapped_column(String(32), primary_key=True)
 
-class Alert(Base):
+
+class Alert(TenantMixin, Base):
     """A runtime detection (CDR) produced by the detection rules engine."""
 
     __tablename__ = "alerts"
@@ -257,7 +385,7 @@ class Alert(Base):
     last_seen: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
-class ScanRun(Base):
+class ScanRun(TenantMixin, Base):
     __tablename__ = "scan_runs"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
@@ -274,13 +402,14 @@ class ScanRun(Base):
     trigger: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
 
-class ScanScheduleSettings(Base):
-    """Scheduled-scan overrides made in the console (single row, id 1). NULL
-    fields fall back to SCAN_SCHEDULE_ENABLED / SCAN_INTERVAL_HOURS."""
+class ScanScheduleSettings(TenantMixin, Base):
+    """Scheduled-scan overrides made in the console (one row per organisation).
+    NULL fields fall back to SCAN_SCHEDULE_ENABLED / SCAN_INTERVAL_HOURS."""
 
     __tablename__ = "scan_schedule_settings"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organization_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("organizations.id", name="fk_scan_schedule_settings_organization_id"), primary_key=True)
     enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     interval_hours: Mapped[float | None] = mapped_column(Float, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
@@ -297,6 +426,9 @@ UNUSABLE_PASSWORD_PREFIX = "!"  # noqa: S105 (marker, not a password)
 
 
 class User(Base):
+    """A person's account (platform-wide: an email address is unique on the
+    platform). Roles are per organisation (`OrganizationMembership`)."""
+
     __tablename__ = "users"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
@@ -304,8 +436,11 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(128), default="")
     password_hash: Mapped[str] = mapped_column(String(255))
-    role: Mapped[str] = mapped_column(String(16), default="viewer")  # admin | analyst | viewer
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Platform owner ("super admin"): manages organisations in the platform
+    # console. Separate from organisation roles. Also granted by
+    # PLATFORM_ADMIN_EMAILS (app/auth.py:is_platform_admin).
+    is_platform_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     failed_login_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -317,6 +452,11 @@ class User(Base):
                                                passive_deletes=True)
     identities: Mapped[list[UserIdentity]] = relationship(back_populates="user", cascade="all, delete-orphan",
                                                           passive_deletes=True)
+
+    # Not columns: the organisation and role the current request acts with, set
+    # by the authentication dependencies (app/auth.py) from the membership.
+    role = None  # admin | analyst | viewer
+    organization_id = None
 
     @property
     def mfa_enabled(self) -> bool:
@@ -340,6 +480,10 @@ class UserSession(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)  # sha256(token) hex
     user_id: Mapped[str] = mapped_column(String(32), ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    # The organisation this session acts in (the user's membership at sign-in).
+    organization_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("organizations.id", ondelete="CASCADE", name="fk_user_sessions_organization_id"),
+        index=True)
     csrf_token: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
@@ -351,9 +495,12 @@ class UserSession(Base):
     user: Mapped[User] = relationship(lazy="joined")
 
 
-class AuditLog(Base):
+class AuditLog(TenantMixin, Base):
     __tablename__ = "audit_log"
 
+    # Events that cannot be tied to an organisation (sign-in attempts for unknown
+    # accounts, rejected enrollments, platform-wide jobs) are recorded in the
+    # default organisation's log: the platform operator's (app/auth.py:audit).
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
     # login_success | login_failure | login_locked | logout | password_changed | user_created |
@@ -375,7 +522,7 @@ class AuditLog(Base):
 DEVICE_OS_FAMILIES = ("windows", "macos", "linux")
 
 
-class EnrollmentToken(Base):
+class EnrollmentToken(TenantMixin, Base):
     """Admin-issued secret an agent exchanges for a per-device credential."""
 
     __tablename__ = "enrollment_tokens"
@@ -399,7 +546,7 @@ class EnrollmentToken(Base):
     device_group: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
-class Device(Base):
+class Device(TenantMixin, Base):
     __tablename__ = "devices"
     __table_args__ = (Index("ix_devices_os_machine", "os_family", "machine_id"),)
 
@@ -471,7 +618,7 @@ class Device(Base):
     agent_features: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
 
-class DeviceCredential(Base):
+class DeviceCredential(TenantMixin, Base):
     """Per-device secret. Only sha256(secret) is stored; rotated on re-enrollment."""
 
     __tablename__ = "device_credentials"
@@ -486,7 +633,7 @@ class DeviceCredential(Base):
     device: Mapped[Device] = relationship(lazy="joined")
 
 
-class DevicePostureSnapshot(Base):
+class DevicePostureSnapshot(TenantMixin, Base):
     """One row per check-in (history); the latest values are also on `devices`."""
 
     __tablename__ = "device_posture_snapshots"
@@ -502,7 +649,7 @@ class DevicePostureSnapshot(Base):
     software_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
-class DeviceSoftware(Base):
+class DeviceSoftware(TenantMixin, Base):
     """Installed software (latest inventory). Kept with versions so that
     vulnerable-software matching can be added later."""
 
@@ -518,7 +665,7 @@ class DeviceSoftware(Base):
     source: Mapped[str] = mapped_column(String(32), default="")  # registry_hklm64 | applications | ...
 
 
-class DeviceCommand(Base):
+class DeviceCommand(TenantMixin, Base):
     """Allow-listed remote action, pulled by the agent and executed at most once."""
 
     __tablename__ = "device_commands"
@@ -547,7 +694,7 @@ class DeviceCommand(Base):
     acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
-class DeviceApproval(Base):
+class DeviceApproval(TenantMixin, Base):
     """Two-person ("maker-checker") approval of a high-risk device action
     (remote wipe, medium/high-risk script). The action only becomes a
     DeviceCommand once a different admin approves (or, when self-approval is
@@ -626,7 +773,7 @@ class DeviceScript(Base):
     bundle: Mapped[DeviceScriptBundle] = relationship(back_populates="scripts")
 
 
-class DeviceLogBundle(Base):
+class DeviceLogBundle(TenantMixin, Base):
     """Agent log bundle uploaded for a collect_logs command (size-capped, gzip tar)."""
 
     __tablename__ = "device_log_bundles"
@@ -687,15 +834,16 @@ class AgentReleaseArtifact(Base):
     release: Mapped[AgentRelease] = relationship(back_populates="artifacts")
 
 
-class AgentUpdateRing(Base):
+class AgentUpdateRing(TenantMixin, Base):
     """Rollout ring: devices (by explicit assignment or device group) and the
     release they should run, with a percentage rollout and pause switch.
     Rings are evaluated by `position`; the default ring catches the rest."""
 
     __tablename__ = "agent_update_rings"
+    __table_args__ = (UniqueConstraint("organization_id", "name", name="uq_agent_update_rings_org_name"),)
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
-    name: Mapped[str] = mapped_column(String(64), unique=True)
+    name: Mapped[str] = mapped_column(String(64))
     description: Mapped[str] = mapped_column(String(500), default="")
     position: Mapped[int] = mapped_column(Integer, default=100)
     device_groups: Mapped[list] = mapped_column(JSON, default=list)
@@ -709,14 +857,17 @@ class AgentUpdateRing(Base):
     updated_by: Mapped[str] = mapped_column(String(320), default="system")
 
 
-class AgentUpdateSettings(Base):
-    """Update automation (single row, id 1): the update mode, the automatic
-    rollout state of the newest release, and the GitHub Releases auto-import.
-    Nullable auto-import fields fall back to the environment defaults."""
+class AgentUpdateSettings(TenantMixin, Base):
+    """Update automation (one row per organisation): the update mode and the
+    automatic rollout state of the newest release. The GitHub Releases
+    auto-import fields are platform-wide: only the default organisation's row
+    is used (releases are shared by every organisation). Nullable auto-import
+    fields fall back to the environment defaults."""
 
     __tablename__ = "agent_update_settings"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organization_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("organizations.id", name="fk_agent_update_settings_organization_id"), primary_key=True)
     mode: Mapped[str] = mapped_column(String(16), default="automatic")  # automatic | manual
     soak_hours: Mapped[int] = mapped_column(Integer, default=24)
     auto_import_enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
@@ -737,7 +888,7 @@ class AgentUpdateSettings(Base):
     updated_by: Mapped[str] = mapped_column(String(320), default="system")
 
 
-class AgentUpdateEvent(Base):
+class AgentUpdateEvent(TenantMixin, Base):
     """Update status history reported by agents."""
 
     __tablename__ = "agent_update_events"

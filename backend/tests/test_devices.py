@@ -105,7 +105,7 @@ def test_secret_is_hashed_at_rest(admin, device):
     secret = agent.headers["Authorization"].split()[1]
     from app.models import DeviceCredential
 
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         cred = s.query(DeviceCredential).filter_by(device_id=device_id).one()
         assert cred.secret_hash != secret and len(cred.secret_hash) == 64
 
@@ -128,7 +128,7 @@ def test_expired_and_revoked_tokens_rejected(admin):
     token2 = new_token(admin, expires_in_hours=1)
     from app.models import EnrollmentToken
 
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         for t in s.query(EnrollmentToken):
             t.expires_at = utcnow() - timedelta(seconds=1)
         s.commit()
@@ -266,7 +266,7 @@ def test_history_is_pruned(admin, device, monkeypatch):
     config.reload_settings()
     for _ in range(5):
         assert agent.post("/api/agent/checkin", json=windows_checkin()).status_code == 200
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         assert s.query(DevicePostureSnapshot).filter_by(device_id=device_id).count() == 3
     monkeypatch.delenv("DEVICE_HISTORY_LIMIT")
     config.reload_settings()
@@ -296,7 +296,7 @@ def test_updates_pending_grace_period(admin, device):
     body["posture"]["os_updates"] = {"status": "fail", "data": {"pending_count": 3}}
     agent.post("/api/agent/checkin", json=body)
     assert admin.get(f"/api/devices/{device_id}").json()["issues"] == []  # within grace period
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         s.get(Device, device_id).updates_pending_since = utcnow() - timedelta(days=20)
         s.commit()
     issues = admin.get(f"/api/devices/{device_id}").json()["issues"]
@@ -309,7 +309,7 @@ def test_updates_pending_grace_period(admin, device):
                                           (timedelta(days=9), "inactive")])
 def test_stale_and_inactive(admin, device, age, expected):
     _, device_id = device
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         s.get(Device, device_id).last_seen_at = utcnow() - age
         s.commit()
     d = admin.get(f"/api/devices/{device_id}").json()
@@ -349,7 +349,7 @@ def test_command_lifecycle_once_only(admin, device):
 def test_command_expiry(admin, device):
     agent, device_id = device
     cid = queue(admin, device_id, "collect_logs").json()["id"]
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         s.get(DeviceCommand, cid).expires_at = utcnow() - timedelta(seconds=1)
         s.commit()
     assert agent.get("/api/agent/commands").json()["commands"] == []
@@ -493,7 +493,7 @@ def test_delete_device_removes_everything(admin, device):
     assert admin.delete(f"/api/devices/{device_id}?reason=decommissioned").status_code == 204
     assert admin.get(f"/api/devices/{device_id}").status_code == 404
     assert agent.get("/api/agent/commands").status_code == 401
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         assert s.query(DeviceCommand).count() == 0 and s.query(DevicePostureSnapshot).count() == 0
     assert admin.get("/api/audit-log?action=device_deleted").json()[0]["detail"]["reason"] == "decommissioned"
 
@@ -529,7 +529,7 @@ def test_spike_of_rejected_agent_requests_is_audited_and_notified(admin, monkeyp
     agent = agent_client(admin.app)
     agent.headers["Authorization"] = "Bearer cnd_" + "x" * 40
     assert [agent.get("/api/agent/commands").status_code for _ in range(8)] == [401] * 8
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         events = list(s.scalars(select(NotificationEvent).where(NotificationEvent.source == "agent_security")))
         audits = list(s.scalars(select(AuditLog).where(AuditLog.action == "agent_auth_failure_spike")))
     # One alert per window, not one per rejected request.

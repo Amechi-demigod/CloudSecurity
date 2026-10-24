@@ -58,8 +58,8 @@ def make_scheduler(clock: Clock, connectors: list[Connector], delay_seconds: flo
     immediately, or left running with finish=False)."""
     launched: list[str] = []
 
-    def launcher(conn: Connector):
-        with dbmod.get_session() as db:
+    def launcher(conn: Connector, org_id: str = "default"):
+        with dbmod.get_session("default") as db:
             db.add(ScanRun(connector=conn.name, trigger=SCHEDULED, started_at=clock.now,
                            status="succeeded" if finish else "running",
                            finished_at=clock.now if finish else None))
@@ -67,7 +67,7 @@ def make_scheduler(clock: Clock, connectors: list[Connector], delay_seconds: flo
         launched.append(conn.name)
 
     s = sched.ScanScheduler(startup_delay_seconds=delay_seconds, clock=clock,
-                            registry_factory=lambda: {c.name: c for c in connectors}, launcher=launcher)
+                            registry_factory=lambda *_: {c.name: c for c in connectors}, launcher=launcher)
     return s, launched
 
 
@@ -78,7 +78,7 @@ def clean(session):
 
 
 def add_run(connector: str, started: datetime, trigger: str | None = SCHEDULED, status: str = "succeeded"):
-    with dbmod.get_session() as db:
+    with dbmod.get_session("default") as db:
         db.add(ScanRun(connector=connector, trigger=trigger, started_at=started, status=status,
                        finished_at=None if status == "running" else started + timedelta(minutes=5)))
         db.commit()
@@ -105,7 +105,7 @@ def test_schedule_timing_with_fake_clock(clean):
         clock.now = start + 6 * H
         assert s.tick(clock.now).started == ["fake"]
         # Fractional interval set in the console applies on the next tick.
-        with dbmod.get_session() as db:
+        with dbmod.get_session("default") as db:
             sched.update(db, actor="admin@example.com", enabled=None, interval_hours=0.5, fields={"interval_hours"})
             db.commit()
         clock.advance(timedelta(minutes=29))
@@ -113,7 +113,7 @@ def test_schedule_timing_with_fake_clock(clean):
         clock.advance(timedelta(minutes=1))
         assert s.tick(clock.now).started == ["fake"]
         # Disabled: nothing runs, however overdue.
-        with dbmod.get_session() as db:
+        with dbmod.get_session("default") as db:
             sched.update(db, actor="admin@example.com", enabled=False, interval_hours=None, fields={"enabled"})
             db.commit()
         clock.advance(10 * H)
@@ -130,7 +130,7 @@ def test_disabled_by_environment(clean, monkeypatch):
     try:
         assert s.tick(clock.now).started == []
         # ... until an admin turns it on in the console.
-        with dbmod.get_session() as db:
+        with dbmod.get_session("default") as db:
             sched.update(db, actor="admin@example.com", enabled=True, interval_hours=None, fields={"enabled"})
             db.commit()
         assert s.tick(clock.now).started == ["fake"]
@@ -172,7 +172,7 @@ def test_no_overlap_skips_and_logs(clean, caplog):
             res = s.tick(clock.now)
         assert res.started == [] and res.skipped == ["fake"]
         assert "skipped" in caplog.text
-        with dbmod.get_session() as db:
+        with dbmod.get_session("default") as db:
             skipped = db.scalars(select(ScanRun).where(ScanRun.status == "skipped")).all()
             assert len(skipped) == 1 and skipped[0].trigger == SCHEDULED
         # Not retried every minute; the next attempt is one interval later.
@@ -252,9 +252,9 @@ def test_unconfigured_and_simulated_connectors_are_skipped(clean, monkeypatch):
 
 def test_failed_scheduled_scan_is_recorded_and_notifies(clean):
     conn = FakeConnector(fail=True)
-    run = start_scan(conn, background=False, trigger=SCHEDULED)
+    run = start_scan(conn, "default", background=False, trigger=SCHEDULED)
     assert run.status == "failed" and "cloud API unreachable" in run.message and run.finished_at
-    with dbmod.get_session() as db:
+    with dbmod.get_session("default") as db:
         ev = db.scalars(select(NotificationEvent).where(NotificationEvent.source == "scan")).one()
         assert ev.event_type == "failed" and ev.severity == "high"
         assert ev.title == "Scheduled fake scan failed"
@@ -262,7 +262,7 @@ def test_failed_scheduled_scan_is_recorded_and_notifies(clean):
 
 
 def test_manual_scan_trigger_recorded(clean):
-    run = start_scan(FakeConnector(), background=False)
+    run = start_scan(FakeConnector(), "default", background=False)
     assert run.trigger == MANUAL and run.status == "succeeded"
 
 
@@ -273,7 +273,7 @@ def test_orphaned_running_scan_is_failed_and_notifies(clean):
     try:
         # The orphan is cleaned up, and it anchors the schedule (started 20 min ago).
         assert s.tick(clock.now).started == []
-        with dbmod.get_session() as db:
+        with dbmod.get_session("default") as db:
             run = db.scalars(select(ScanRun)).one()
             assert run.status == "failed" and "Interrupted" in run.message
             ev = db.scalars(select(NotificationEvent)).one()
@@ -284,24 +284,24 @@ def test_orphaned_running_scan_is_failed_and_notifies(clean):
 
 def test_recent_running_scan_is_not_treated_as_orphan(clean):
     add_run("fake", T0 - timedelta(minutes=2), status="running")
-    with dbmod.get_session() as db:
+    with dbmod.get_session("default") as db:
         assert sched.recover_orphans(db, "fake", T0) == 0
 
 
 def test_scan_holding_its_lock_is_not_an_orphan(clean):
     add_run("fake", T0 - 3 * H, status="running")
-    with advisory_lock("scan-fake"), dbmod.get_session() as db:
+    with advisory_lock("scan-fake"), dbmod.get_session("default") as db:
         assert sched.recover_orphans(db, "fake", T0) == 0
 
 
 def test_execute_scan_unchanged_for_existing_run(clean):
-    with dbmod.get_session() as db:
+    with dbmod.get_session("default") as db:
         run = ScanRun(connector="fake", status="running")
         db.add(run)
         db.commit()
         rid = run.id
-    execute_scan(FakeConnector(), rid)
-    with dbmod.get_session() as db:
+    execute_scan(FakeConnector(), rid, "default")
+    with dbmod.get_session("default") as db:
         assert db.get(ScanRun, rid).status == "succeeded"
 
 
@@ -357,7 +357,7 @@ def test_schedule_api(client):
     body = r.json()
     assert body["interval_hours"] == 6 and not body["interval_overridden"] and body["enabled"] is False
 
-    with dbmod.get_session() as db:
+    with dbmod.get_session("default") as db:
         entries = db.scalars(select(AuditLog).where(AuditLog.action == "scan_schedule_updated")
                              .order_by(AuditLog.id)).all()
         assert len(entries) == 2

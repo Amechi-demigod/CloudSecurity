@@ -13,7 +13,7 @@ import re
 from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
-from ..models import Asset, AssetPackage, utcnow
+from ..models import Asset, AssetPackage, get_asset, utcnow
 from ..schemas import PackageIngestResult, SensorPackageInventoryV1
 from . import state
 
@@ -45,11 +45,11 @@ def _resolve_asset(db: Session, inv: SensorPackageInventoryV1) -> tuple[Asset, b
 
     rid = inv.cloud.resource_id if inv.cloud else None
     aid = AssetResolver(db)._resolve(rid, None, None, inv.host)
-    a = db.get(Asset, aid) if aid else None
+    a = get_asset(db, aid) if aid else None
     if a is not None:
         return a, False
     ident = (rid or "").lower() or f"sensor:{(inv.host or inv.sensor_id or 'unknown').lower()}"
-    a = db.get(Asset, ident)
+    a = get_asset(db, ident)
     if a is not None:
         return a, False
     now = utcnow()

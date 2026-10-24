@@ -41,7 +41,7 @@ def new_asset(c, **kw):
 
 
 def add_device(**kw) -> str:
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         d = Device(hostname=kw.pop("hostname", "LAPTOP-001"), os_family="windows",
                    serial_number=kw.pop("serial_number", "PF12345"), manufacturer="LENOVO",
                    model=kw.pop("model", "ThinkPad X1 Carbon"), last_seen_at=kw.pop("last_seen_at", utcnow()),
@@ -52,7 +52,7 @@ def add_device(**kw) -> str:
 
 
 def audit_actions() -> list[str]:
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         return [a.action for a in s.scalars(select(AuditLog).order_by(AuditLog.id))]
 
 
@@ -355,18 +355,18 @@ def test_notifications_overdue_warranty_unseen_lost(admin):
     admin.get("/api/it-assets")  # sync creates the device's asset record
 
     def asset_events():
-        with db.get_session() as s:
+        with db.get_session("default") as s:
             return sorted((e.event_type, e.attributes.get("asset_tag")) for e in s.scalars(
                 select(NotificationEvent).where(NotificationEvent.source == "asset_lifecycle")))
 
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         dispatcher.poll_sources(s, force=True)
     got = asset_events()
     types = [t for t, _ in got]
     assert ("warranty_expiring", "WK-W") in got and ("retrieval_overdue", "WK-R") in got
     assert types.count("device_unseen") == 1 and len(got) == 3
     # no repeats while nothing changes
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         dispatcher.poll_sources(s, force=True)
     assert len(asset_events()) == 3
     # push event for lost / stolen

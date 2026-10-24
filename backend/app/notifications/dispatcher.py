@@ -17,7 +17,8 @@ from typing import Any
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
 
-from ..models import Asset, utcnow
+from .. import tenancy
+from ..models import Asset, get_asset, utcnow
 from . import channels as ch
 from . import crypto, messages
 from . import settings as nsettings
@@ -61,7 +62,7 @@ def process_events(db: Session, now: datetime | None = None, limit: int | None =
         if not rules:
             continue
         if ev.asset_id and ev.asset_id not in assets:
-            assets[ev.asset_id] = db.get(Asset, ev.asset_id)
+            assets[ev.asset_id] = get_asset(db, ev.asset_id)
         asset = assets.get(ev.asset_id) if ev.asset_id else None
         ctx = build_context(ev, asset)
         for rule in rules:
@@ -150,7 +151,7 @@ def poll_sources(db: Session, now: datetime | None = None, force: bool = False) 
     for src in sources():
         if src.poll is None:
             continue
-        st = db.get(NotificationSourceState, src.name)
+        st = db.get(NotificationSourceState, (tenancy.require_org(db), src.name))
         interval = src.poll_interval() if src.poll_interval else 600.0
         if not force and st is not None and st.last_run_at and st.last_run_at > now - timedelta(seconds=interval):
             continue

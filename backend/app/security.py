@@ -1,13 +1,17 @@
 """Request hardening: body-size limit middleware and sensor-ingest authentication."""
 from __future__ import annotations
 
+import hashlib
 import hmac
 import logging
 
-from fastapi import Header, HTTPException
+from fastapi import Depends, Header, HTTPException
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from . import config
+from . import config, tenancy
+from .db import get_db
 
 log = logging.getLogger(__name__)
 
@@ -83,22 +87,58 @@ async def _reject(send: Send, limit: int) -> None:
     await send({"type": "http.response.body", "body": body})
 
 
-def require_ingest_token(authorization: str | None = Header(None)) -> None:
-    """FastAPI dependency guarding POST /api/runtime/events.
+INGEST_TOKEN_PREFIX = "cni_"  # noqa: S105 (token prefix, not a secret)
 
-    Fail-closed: if INGEST_API_TOKEN is not configured the endpoint is disabled
-    (503) unless INGEST_ALLOW_UNAUTHENTICATED=true is set for local development.
-    The runtime sensor sends `Authorization: Bearer <SENSOR_API_TOKEN>`.
+
+def hash_ingest_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def require_ingest_token(authorization: str | None = Header(None), db: Session = Depends(get_db)) -> str:
+    """FastAPI dependency guarding the runtime-sensor ingest (POST /api/runtime/*).
+
+    The bearer token decides the organisation the data belongs to, and the
+    request's database session is scoped to it:
+
+    * a per-organisation ingest token (`cni_...`, created by an organisation
+      admin; only its SHA-256 is stored), or
+    * the legacy INGEST_API_TOKEN environment variable: the default organisation.
+
+    Fail-closed: with neither configured the endpoint is disabled (503) unless
+    INGEST_ALLOW_UNAUTHENTICATED=true is set for local development (default
+    organisation). The runtime sensor sends `Authorization: Bearer <SENSOR_API_TOKEN>`.
     """
+    from .models import IngestToken, utcnow
+
     s = config.settings
+    scheme, _, supplied = (authorization or "").strip().partition(" ")
+    supplied = supplied.strip()
+    bearer = scheme.lower() == "bearer" and bool(supplied) and len(supplied) <= 256
+    if bearer and supplied.startswith(INGEST_TOKEN_PREFIX):
+        with tenancy.unscoped(db):
+            tok = db.scalar(select(IngestToken).where(IngestToken.token_hash == hash_ingest_token(supplied),
+                                                      IngestToken.revoked_at.is_(None)))
+        if tok is not None:
+            org = tenancy.get_org(db, tok.organization_id)
+            if org is None or org.status != "active":
+                raise HTTPException(403, "organisation suspended")
+            tenancy.set_org(db, tok.organization_id)
+            tok.last_used_at = utcnow()  # committed with the ingest
+            return tok.organization_id
     token = s.ingest_api_token
+    if bearer and token and hmac.compare_digest(supplied.encode(), token.encode()):
+        tenancy.set_org(db, tenancy.DEFAULT_ORG_ID)
+        return tenancy.DEFAULT_ORG_ID
     if not token:
         if s.ingest_allow_unauthenticated:
-            return
-        raise HTTPException(503, "sensor ingest disabled: set INGEST_API_TOKEN on the backend")
-    scheme, _, supplied = (authorization or "").strip().partition(" ")
-    if scheme.lower() != "bearer" or not hmac.compare_digest(supplied.strip().encode(), token.encode()):
-        raise HTTPException(401, "invalid or missing sensor token", headers={"WWW-Authenticate": "Bearer"})
+            tenancy.set_org(db, tenancy.DEFAULT_ORG_ID)
+            return tenancy.DEFAULT_ORG_ID
+        with tenancy.unscoped(db):
+            any_tokens = db.scalar(select(IngestToken.id).where(IngestToken.revoked_at.is_(None)).limit(1))
+        if not any_tokens:
+            raise HTTPException(503, "sensor ingest disabled: set INGEST_API_TOKEN on the backend or create an "
+                                     "ingest token (Settings > Organisation)")
+    raise HTTPException(401, "invalid or missing sensor token", headers={"WWW-Authenticate": "Bearer"})
 
 
 class SecurityHeadersMiddleware:

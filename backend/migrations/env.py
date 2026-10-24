@@ -37,10 +37,23 @@ def run_migrations_online() -> None:
         engine = create_db_engine(app_config.settings.database_url)
     try:
         with engine.connect() as connection:
-            context.configure(connection=connection, target_metadata=target_metadata,
-                              render_as_batch=connection.dialect.name == "sqlite", compare_type=True)
-            with context.begin_transaction():
-                context.run_migrations()
+            sqlite = connection.dialect.name == "sqlite"
+            if sqlite:
+                # Batch migrations rebuild SQLite tables (copy, DROP, rename); with
+                # foreign keys enforced, dropping a referenced table would cascade
+                # deletes into its children. Only settable outside a transaction.
+                connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
+                connection.commit()  # end the autobegun (empty) transaction
+            try:
+                context.configure(connection=connection, target_metadata=target_metadata,
+                                  render_as_batch=sqlite, compare_type=True)
+                with context.begin_transaction():
+                    context.run_migrations()
+            finally:
+                if sqlite:
+                    connection.rollback()  # nothing pending: alembic committed
+                    connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+                    connection.commit()
     finally:
         if owned:
             engine.dispose()

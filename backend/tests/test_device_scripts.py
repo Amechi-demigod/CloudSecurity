@@ -149,7 +149,7 @@ def test_import_and_library(admin, key, tmp_path):
     r = upload(admin, bundle(tmp_path, "1.0.5", [key]))
     assert r.status_code == 422 and "anti-rollback" in r.json()["detail"]
     assert admin.get("/api/scripts").json()["bundle"]["version"] == "1.1.0"
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         acts = [a.action for a in s.scalars(select(AuditLog))]
     assert acts.count("device_script_bundle_imported") == 2 and "device_script_bundle_rejected" in acts
 

@@ -22,27 +22,33 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from .. import config, entra, mfa
+from .. import config, entra, mfa, tenancy
 from ..auth import (
     ROLE_RANK,
+    OrgAccessError,
     _token_id,
+    active_admins,
+    attach_membership,
     audit,
     client_ip,
     create_session,
     current_session,
     current_user,
+    is_platform_admin,
     login_limiter,
     normalize_email,
+    org_user,
     require_admin,
     revoke_user_sessions,
+    set_membership,
     set_session_cookie,
     verify_password,
 )
 from ..db import get_db
-from ..models import UNUSABLE_PASSWORD_PREFIX, OidcAuthRequest, User, UserIdentity, UserSession, utcnow
+from ..models import UNUSABLE_PASSWORD_PREFIX, OidcAuthRequest, Organization, User, UserIdentity, UserSession, utcnow
 from ..schemas import (
     AuthProviders,
     LoginComplete,
@@ -53,6 +59,7 @@ from ..schemas import (
     MfaSetupOut,
     MfaStatus,
     MfaTokenRequest,
+    OrganizationBrief,
     RecoveryCodesOut,
     SessionInfo,
     UserOut,
@@ -69,10 +76,12 @@ OIDC_REQUEST_TTL = timedelta(minutes=10)
 CALLBACK_PATH = "/api/auth/sso/entra/callback"
 
 
-def session_info(sess: UserSession, recovery_codes: list[str] | None = None) -> LoginComplete:
+def session_info(db: Session, sess: UserSession, recovery_codes: list[str] | None = None) -> LoginComplete:
+    org = db.get(Organization, sess.organization_id)
     return LoginComplete(user=UserOut.model_validate(sess.user), csrf_token=sess.csrf_token,
                          expires_at=sess.expires_at, idle_timeout_minutes=config.settings.session_idle_minutes,
-                         recovery_codes=recovery_codes)
+                         recovery_codes=recovery_codes, organization=OrganizationBrief.model_validate(org),
+                         platform_admin=is_platform_admin(sess.user))
 
 
 def safe_return_path(path: str | None) -> str:
@@ -99,6 +108,14 @@ def register_failure(db: Session, user: User, ip: str, action: str, **detail) ->
 
 def _start_session(db: Session, user: User, request: Request, *, method: str, mfa_method: str | None = None
                    ) -> tuple[str, UserSession]:
+    try:
+        attach_membership(db, user)
+    except OrgAccessError as e:
+        audit(db, "login_denied", actor=user, ip=client_ip(request), reason=e.reason)
+        db.commit()
+        raise HTTPException(403, "Your organisation's access is suspended. Contact the platform administrator."
+                            if e.reason == "organization_suspended" else
+                            "This account is not a member of any organisation.") from None
     user.failed_login_count = 0
     user.locked_until = None
     user.last_login_at = utcnow()
@@ -112,9 +129,12 @@ def _start_session(db: Session, user: User, request: Request, *, method: str, mf
 
 def finish_first_factor(db: Session, user: User, request: Request, *, method: str
                         ) -> tuple[str, UserSession] | MfaChallengeOut:
-    """Issue a session, or an MFA challenge when a second step is required. Commits."""
+    """Issue a session, or an MFA challenge when a second step is required. Commits.
+    Raises OrgAccessError when the user has no active organisation."""
     s = config.settings
     ip = client_ip(request)
+    if user.organization_id is None:
+        attach_membership(db, user)
     local_mfa = method == "password" or s.entra_enforce_local_mfa
     purpose = None
     if local_mfa and user.mfa_enabled:
@@ -185,7 +205,7 @@ def login_mfa(body: MfaCodeRequest, request: Request, response: Response, db: Se
     token, sess = _start_session(db, user, request, method=ch.method, mfa_method=used)
     db.commit()
     set_session_cookie(response, token)
-    return session_info(sess)
+    return session_info(db, sess)
 
 
 # --- login step 2: forced enrolment ---------------------------------------------------------
@@ -221,7 +241,7 @@ def login_enroll_confirm(body: MfaCodeRequest, request: Request, response: Respo
     token, sess = _start_session(db, user, request, method=ch.method, mfa_method="totp")
     db.commit()
     set_session_cookie(response, token)
-    return session_info(sess, recovery_codes=codes)
+    return session_info(db, sess, recovery_codes=codes)
 
 
 # --- self-service (signed in) -------------------------------------------------------------
@@ -321,7 +341,7 @@ def admin_reset_mfa(user_id: str, request: Request, admin: User = Depends(curren
                     db: Session = Depends(get_db)):
     """Remove a user's authenticator and recovery codes (lost device). They are
     signed out; if their role requires MFA they enrol again at the next login."""
-    user = db.get(User, user_id)
+    user = org_user(db, user_id)
     if user is None:
         raise HTTPException(404, "user not found")
     had = user.mfa_enabled
@@ -331,7 +351,7 @@ def admin_reset_mfa(user_id: str, request: Request, admin: User = Depends(curren
     audit(db, "mfa_reset", actor=admin, target=user.email, ip=client_ip(request), had_mfa=had)
     db.commit()
     db.refresh(user)
-    return user
+    return org_user(db, user_id)
 
 
 # --- providers ---------------------------------------------------------------------------
@@ -416,13 +436,16 @@ class _Deny(Exception):
         self.reason, self.email, self.detail = reason, email, detail
 
 
-def _active_admins(db: Session) -> int:
-    return db.scalar(select(func.count()).select_from(User).where(User.role == "admin", User.is_active.is_(True))) or 0
-
-
 def _resolve_user(db: Session, claims: dict, ip: str) -> User:
-    """Find (or provision) the local user for validated Entra claims and apply role mapping."""
+    """Find (or provision) the local user for validated Entra claims and apply role mapping.
+
+    The environment-configured Entra ID app (ENTRA_*) belongs to the default
+    organisation: only its members can sign in with it and JIT provisioning
+    creates members of it. A user of another organisation is refused even if
+    the Entra tenant asserts their email address (an Entra tenant controls the
+    email claims of its own accounts)."""
     s = config.settings
+    org = tenancy.DEFAULT_ORG_ID
     tid, oid = str(claims["tid"]), str(claims["oid"])
     email = entra.claimed_email(claims)
     role = entra.mapped_role(claims)
@@ -440,12 +463,17 @@ def _resolve_user(db: Session, claims: dict, ip: str) -> User:
             if not s.entra_jit_provisioning:
                 raise _Deny("not_provisioned", email)
             name = str(claims.get("name") or "")[:128]
-            user = User(email=normalize_email(email)[:320], name=name, role=role or s.entra_default_role,
+            user = User(email=normalize_email(email)[:320], name=name,
                         password_hash=UNUSABLE_PASSWORD_PREFIX + "sso", password_changed_at=None)
             db.add(user)
             db.flush()
+            set_membership(db, user, org, role or s.entra_default_role)
             audit(db, "user_provisioned", actor_email="system", target=user.email, ip=ip, provider="entra",
                   role=user.role, oid=oid)
+        try:
+            attach_membership(db, user, org)
+        except OrgAccessError:
+            raise _Deny("not_provisioned", email) from None
         identity = UserIdentity(user_id=user.id, provider="entra", tenant_id=tid, subject=oid, email=email)
         db.add(identity)
         user.identities.append(identity)
@@ -454,16 +482,20 @@ def _resolve_user(db: Session, claims: dict, ip: str) -> User:
 
     if not user.is_active:
         raise _Deny("inactive", user.email)
+    try:
+        attach_membership(db, user, org)
+    except OrgAccessError as e:
+        raise _Deny("not_provisioned" if e.reason == "no_membership" else e.reason, user.email) from None
     if role and role != user.role:
         demotes_last_admin = (user.role == "admin" and ROLE_RANK[role] < ROLE_RANK["admin"]
-                              and _active_admins(db) <= 1)
+                              and active_admins(db) <= 1)
         if demotes_last_admin:
             audit(db, "user_role_sync_skipped", actor_email="system", target=user.email, ip=ip,
                   reason="last_active_admin", mapped_role=role)
         else:
             audit(db, "user_updated", actor_email="system", target=user.email, ip=ip, source="entra_role_map",
                   changes={"role": [user.role, role]})
-            user.role = role
+            set_membership(db, user, org, role)
     identity.last_login_at = utcnow()
     if email:
         identity.email = email[:320]
@@ -477,6 +509,7 @@ def entra_callback(request: Request, code: str | None = None, state: str | None 
     the user in exactly like a password login (same cookie and CSRF token)."""
     _entra_ready()
     ip = client_ip(request)
+    tenancy.set_org(db, tenancy.DEFAULT_ORG_ID)  # the ENTRA_* app is the default organisation's
 
     def fail(reason: str, email: str | None = None, clear: bool = True, **detail) -> RedirectResponse:
         db.rollback()
@@ -513,7 +546,10 @@ def entra_callback(request: Request, code: str | None = None, state: str | None 
     except _Deny as d:
         return fail(d.reason, d.email, **d.detail)
 
-    result = finish_first_factor(db, user, request, method="entra")
+    try:
+        result = finish_first_factor(db, user, request, method="entra")
+    except OrgAccessError as e:
+        return fail(e.reason, user.email)
     if isinstance(result, MfaChallengeOut):
         frag = f"mfa_token={quote(result.mfa_token)}&purpose={result.purpose}&next={quote(pending.return_to)}"
         return _login_redirect(fragment=frag)

@@ -1,6 +1,8 @@
 """Admin CLI.
 
-    python -m app.cli create-user --email you@example.com --role admin [--name "Your Name"]
+    python -m app.cli create-user --email you@example.com --role admin [--name "Your Name"] [--org SLUG]
+    python -m app.cli platform-admin you@example.com        # make a user a platform owner (--revoke to undo)
+    python -m app.cli org-list                              # organisations with usage counts
     python -m app.cli reset-password --email you@example.com
     python -m app.cli reset-mfa --email you@example.com   # lost authenticator (break-glass)
     python -m app.cli migrate        # apply schema migrations (Alembic on PostgreSQL)
@@ -23,8 +25,8 @@ import sys
 
 from sqlalchemy import select
 
-from . import auth, config, db
-from .models import ROLES, User, utcnow
+from . import auth, config, db, tenancy
+from .models import ROLES, Organization, User, utcnow
 
 
 def _read_password(from_stdin: bool) -> str:
@@ -40,28 +42,79 @@ def _read_password(from_stdin: bool) -> str:
     return pw
 
 
+def _org_by_slug(slug: str) -> Organization:
+    with db.get_session(unscoped=True) as s:
+        org = s.scalar(select(Organization).where(Organization.slug == slug.strip().lower()))
+        if org is None:
+            raise SystemExit(f"error: no organisation with slug {slug!r} (python -m app.cli org-list)")
+        return org
+
+
+def _user_session(email: str):
+    """(session scoped to the user's organisation, user) for user maintenance commands."""
+    s = db.get_session(unscoped=True)
+    user = s.scalar(select(User).where(User.email == email))
+    if user is None:
+        s.close()
+        raise SystemExit(f"error: no user {email}")
+    rows = auth.memberships(s, user.id)
+    if rows:
+        tenancy.set_org(s, rows[0][1].id)
+        user = s.scalar(select(User).where(User.email == email))
+    return s, user
+
+
 def create_user(args: argparse.Namespace) -> int:
     email = auth.normalize_email(args.email)
     if "@" not in email:
         raise SystemExit("error: invalid email")
-    with db.get_session() as s:
+    org = _org_by_slug(args.org)
+    with db.get_session(org.id) as s:
         if s.scalar(select(User).where(User.email == email)):
             raise SystemExit(f"error: user {email} already exists (use reset-password)")
         pw = _read_password(args.password_stdin)
-        s.add(User(email=email, name=args.name or "", role=args.role, password_hash=auth.hash_password(pw),
-                   password_changed_at=utcnow()))
+        user = User(email=email, name=args.name or "", password_hash=auth.hash_password(pw),
+                    password_changed_at=utcnow())
+        s.add(user)
+        s.flush()
+        auth.set_membership(s, user, org.id, args.role)
         auth.audit(s, "user_created", actor_email="cli", target=email, role=args.role)
         s.commit()
-    print(f"Created {args.role} user {email}")
+    print(f"Created {args.role} user {email} in organisation {org.name} ({org.slug})")
+    return 0
+
+
+def platform_admin(args: argparse.Namespace) -> int:
+    """Grant (or revoke) the platform-owner flag: manage organisations in the platform console."""
+    email = auth.normalize_email(args.email)
+    s, user = _user_session(email)
+    with s:
+        user.is_platform_admin = not args.revoke
+        auth.audit(s, "platform_admin_revoked" if args.revoke else "platform_admin_granted", actor_email="cli",
+                   target=email)
+        s.commit()
+    if args.revoke:
+        print(f"{email} is no longer a platform administrator"
+              + (" (still listed in PLATFORM_ADMIN_EMAILS)" if email in config.settings.platform_admin_emails else ""))
+    else:
+        print(f"{email} is now a platform administrator (Platform > Organisations in the console)")
+    return 0
+
+
+def org_list(args: argparse.Namespace) -> int:
+    from .services import organizations
+
+    with db.get_session(unscoped=True) as s:
+        for org, usage in organizations.list_with_usage(s):
+            print(f"{org.slug:24} {org.status:9} users={usage['users']:<4} devices={usage['devices']:<5} "
+                  f"assets={usage['assets']:<6} {org.name}" + ("  [default]" if org.is_default else ""))
     return 0
 
 
 def reset_password(args: argparse.Namespace) -> int:
     email = auth.normalize_email(args.email)
-    with db.get_session() as s:
-        user = s.scalar(select(User).where(User.email == email))
-        if user is None:
-            raise SystemExit(f"error: no user {email}")
+    s, user = _user_session(email)
+    with s:
         pw = _read_password(args.password_stdin)
         user.password_hash = auth.hash_password(pw)
         user.password_changed_at = utcnow()
@@ -79,10 +132,8 @@ def reset_mfa(args: argparse.Namespace) -> int:
     from . import mfa
 
     email = auth.normalize_email(args.email)
-    with db.get_session() as s:
-        user = s.scalar(select(User).where(User.email == email))
-        if user is None:
-            raise SystemExit(f"error: no user {email}")
+    s, user = _user_session(email)
+    with s:
         had = user.mfa_enabled
         mfa.disable(s, user)
         user.failed_login_count, user.locked_until = 0, None
@@ -103,7 +154,7 @@ def migrate(args: argparse.Namespace) -> int:
 def rotate_notification_key(args: argparse.Namespace) -> int:
     from .notifications import crypto, dispatcher
 
-    with db.get_session() as s:
+    with db.get_session(unscoped=True) as s:  # every organisation's channels
         try:
             n = dispatcher.rotate_channel_secrets(s)
         except (crypto.DecryptionFailed, crypto.EncryptionUnavailable) as exc:
@@ -119,7 +170,7 @@ def agent_release_import(args: argparse.Namespace) -> int:
     from .services import agent_updates
 
     data = sys.stdin.buffer.read() if args.bundle == "-" else open(args.bundle, "rb").read()  # noqa: SIM115
-    with db.get_session() as s:
+    with db.get_session(tenancy.DEFAULT_ORG_ID) as s:
         try:
             rel = agent_updates.import_bundle(s, data, args.actor)
         except agent_updates.ReleaseError as e:
@@ -149,7 +200,7 @@ def agent_release_list(args: argparse.Namespace) -> int:
     from .models import AgentRelease
     from .services import agent_updates
 
-    with db.get_session() as s:
+    with db.get_session(tenancy.DEFAULT_ORG_ID) as s:
         rels = sorted(s.scalars(select(AgentRelease)), key=lambda r: agent_updates.version_sort_key(r.version),
                       reverse=True)
         for r in rels:
@@ -166,7 +217,7 @@ def device_scripts_import(args: argparse.Namespace) -> int:
     from .services import device_scripts
 
     data = sys.stdin.buffer.read() if args.bundle == "-" else open(args.bundle, "rb").read()  # noqa: SIM115
-    with db.get_session() as s:
+    with db.get_session(tenancy.DEFAULT_ORG_ID) as s:
         try:
             b = device_scripts.import_bundle(s, data, args.actor)
         except device_scripts.ScriptBundleError as e:
@@ -187,7 +238,7 @@ def device_scripts_import(args: argparse.Namespace) -> int:
 def device_scripts_list(args: argparse.Namespace) -> int:
     from .services import device_scripts
 
-    with db.get_session() as s:
+    with db.get_session(tenancy.DEFAULT_ORG_ID) as s:
         bundles = device_scripts.bundles(s)
         latest = device_scripts.latest_bundle(s)
         for b in bundles:
@@ -203,7 +254,7 @@ def agent_release_check(args: argparse.Namespace) -> int:
     """Check GitHub Releases for a new signed agent release and import it (same checks as an upload)."""
     from .services import agent_update_auto
 
-    with db.get_session() as s:
+    with db.get_session(tenancy.DEFAULT_ORG_ID) as s:
         res = agent_update_auto.check_github(s, actor=args.actor)
         auth.audit(s, "agent_release_check_requested", actor_email=args.actor, status=res["status"],
                    message=res["message"][:500])
@@ -216,7 +267,7 @@ def notify_server_update(args: argparse.Namespace) -> int:
     """Raise a server-update notification (cnapp-ctl update: failure or automatic rollback)."""
     from .notifications import server_update_source
 
-    with db.get_session() as s:
+    with db.get_session(tenancy.DEFAULT_ORG_ID) as s:
         if not server_update_source.server_update_event(s, args.status, args.from_tag, args.to_tag,
                                                         args.detail, automatic=args.automatic):
             print("could not queue the notification", file=sys.stderr)
@@ -235,8 +286,15 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--email", required=True)
     c.add_argument("--name", default="")
     c.add_argument("--role", choices=ROLES, default="viewer")
+    c.add_argument("--org", default=tenancy.DEFAULT_ORG_SLUG, help="organisation slug (default: the default one)")
     c.add_argument("--password-stdin", action="store_true", help="read the password from stdin")
     c.set_defaults(func=create_user)
+    pa = sub.add_parser("platform-admin", help="make a user a platform administrator (manages organisations)")
+    pa.add_argument("email")
+    pa.add_argument("--revoke", action="store_true", help="remove the flag instead")
+    pa.set_defaults(func=platform_admin)
+    ol = sub.add_parser("org-list", help="list organisations with usage counts")
+    ol.set_defaults(func=org_list)
     r = sub.add_parser("reset-password", help="set a new password, unlock and reactivate a user")
     r.add_argument("--email", required=True)
     r.add_argument("--password-stdin", action="store_true", help="read the password from stdin")

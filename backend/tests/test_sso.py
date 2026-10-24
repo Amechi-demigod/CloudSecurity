@@ -134,7 +134,7 @@ def error_of(r: httpx.Response) -> str | None:
 
 
 def audit_rows(action: str) -> list[AuditLog]:
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         return list(s.scalars(select(AuditLog).where(AuditLog.action == action).order_by(AuditLog.id)))
 
 
@@ -206,7 +206,7 @@ def test_sso_login_links_existing_user_and_issues_normal_session(admin, idp):
     b.headers["X-CSRF-Token"] = info["csrf_token"]
     assert b.post("/api/auth/logout").status_code == 204
 
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         ident = s.scalar(select(UserIdentity))
         assert (ident.provider, ident.tenant_id, ident.subject) == ("entra", TENANT, "oid-alice")
         assert s.scalar(select(OidcAuthRequest)) is None  # consumed
@@ -267,7 +267,7 @@ def test_state_is_bound_to_the_browser(admin, idp):
 def test_expired_request(admin, idp):
     b = browser(admin)
     q = start(b, idp)
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         s.scalar(select(OidcAuthRequest)).expires_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=1)
         s.commit()
     assert error_of(callback(b, code="c", state=q["state"])) == "expired"
@@ -335,7 +335,7 @@ def test_signing_key_rollover_refetches_jwks(admin, idp):
 def test_unknown_user_without_jit(admin, idp):
     r = sso_login(browser(admin), idp)
     assert error_of(r) == "not_provisioned"
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         assert s.scalar(select(User).where(User.email == "alice@example.com")) is None
     assert audit_rows("sso_login_failure")[-1].actor_email == "alice@example.com"
 

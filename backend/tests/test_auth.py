@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from app import config, db
+from app import auth, config, db
 from app.models import AuditLog, User, UserSession, utcnow
 from tests.conftest import ADMIN_EMAIL, ADMIN_PASSWORD, AUTH, BASE_URL, login, make_user, reset_database
 
@@ -22,7 +22,7 @@ def new_client(app) -> TestClient:
 
 
 def audit_actions() -> list[str]:
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         return [a.action for a in s.scalars(select(AuditLog).order_by(AuditLog.id))]
 
 
@@ -45,7 +45,7 @@ def test_login_success_sets_hardened_cookie(anon_client):
     me = anon_client.get("/api/auth/me")
     assert me.status_code == 200 and me.json()["user"]["email"] == ADMIN_EMAIL
     assert me.json()["csrf_token"] == body["csrf_token"]
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         token = anon_client.cookies.get("cnapp_session")
         assert s.get(UserSession, token) is None  # only the hash is stored
         assert s.scalar(select(User).where(User.email == ADMIN_EMAIL)).last_login_at is not None
@@ -88,7 +88,7 @@ def test_logout_revokes_session(client):
 
 
 def test_idle_timeout_expires_session(client):
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         for sess in s.scalars(select(UserSession)):
             sess.last_seen_at = utcnow() - timedelta(minutes=config.settings.session_idle_minutes + 1)
         s.commit()
@@ -97,7 +97,7 @@ def test_idle_timeout_expires_session(client):
 
 
 def test_absolute_expiry(client):
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         for sess in s.scalars(select(UserSession)):
             sess.expires_at = utcnow() - timedelta(seconds=1)
         s.commit()
@@ -105,12 +105,12 @@ def test_absolute_expiry(client):
 
 
 def test_activity_extends_idle_window(client):
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         for sess in s.scalars(select(UserSession)):
             sess.last_seen_at = utcnow() - timedelta(minutes=config.settings.session_idle_minutes - 1)
         s.commit()
     assert client.get("/api/auth/me").status_code == 200
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         assert all(utcnow() - x.last_seen_at < timedelta(minutes=1) for x in s.scalars(select(UserSession)))
 
 
@@ -125,13 +125,13 @@ def test_account_lockout(anon_client, monkeypatch):
     r = anon_client.post("/api/auth/login", json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD})
     assert r.status_code == 401 and r.json()["detail"] == GENERIC
     assert "login_locked" in audit_actions()
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         u = s.scalar(select(User).where(User.email == ADMIN_EMAIL))
         assert u.locked_until is not None and u.locked_until > utcnow() + timedelta(minutes=14)
         u.locked_until = utcnow() - timedelta(seconds=1)  # lockout elapses
         s.commit()
     login(anon_client)
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         u = s.scalar(select(User).where(User.email == ADMIN_EMAIL))
         assert u.failed_login_count == 0 and u.locked_until is None
 
@@ -340,15 +340,16 @@ def test_change_password(client):
 # --- bootstrap & CLI -------------------------------------------------------------------
 
 def test_bootstrap_admin_created_once(anon_client):
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         users = list(s.scalars(select(User)))
-    assert [(u.email, u.role) for u in users] == [(ADMIN_EMAIL, "admin")]
+        roles = [(u.email, auth.memberships(s, u.id)[0][0].role) for u in users]
+    assert roles == [(ADMIN_EMAIL, "admin")]
     assert users[0].password_hash.startswith("$argon2id$")
     assert "user_bootstrapped" in audit_actions()
 
     from app.auth import bootstrap_admin
 
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         assert bootstrap_admin(s) is None  # users exist: no-op
 
 
@@ -365,7 +366,7 @@ def test_no_admin_without_valid_env(monkeypatch, email, password):
 
     try:
         with new_client(create_app()) as c:
-            with db.get_session() as s:
+            with db.get_session("default") as s:
                 assert s.scalars(select(User)).first() is None
             r = c.post("/api/auth/login", json={"email": "a@example.com", "password": password or "x" * 12})
             assert r.status_code == 401
@@ -381,7 +382,7 @@ def test_cli_create_user_and_reset(session, monkeypatch, capsys):
     monkeypatch.setattr("sys.stdin", io.StringIO("cli-password-123\n"))
     assert cli.main(["create-user", "--email", "Ops@Example.com", "--role", "admin", "--password-stdin"]) == 0
     u = session.scalar(select(User).where(User.email == "ops@example.com"))
-    assert u is not None and u.role == "admin"
+    assert u is not None and auth.memberships(session, u.id)[0][0].role == "admin"
     from app.auth import verify_password
 
     assert verify_password(u.password_hash, "cli-password-123")

@@ -423,7 +423,7 @@ def test_scan_through_ingest_and_scan_service(session, monkeypatch):
 
     conn = GcpConnector(settings(), session_factory=lambda: FakeSession(routes()), sleep=lambda s: None,
                         now=lambda: NOW)
-    run = scans.start_scan(conn, background=False)
+    run = scans.start_scan(conn, "default", background=False)
     assert run.status == "succeeded" and run.connector == "gcp" and run.assets_found > 10
     fs = session.query(Finding).filter(Finding.source == "gcp").all()
     assert {"GCP-GCS-001", "GCP-SQL-001", "GCP-IAM-001"} <= {f.rule_id for f in fs}

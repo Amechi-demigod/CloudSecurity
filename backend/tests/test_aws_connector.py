@@ -347,7 +347,7 @@ def test_partial_scan_is_recorded_on_the_scan_run(aws, monkeypatch, session):
         return original(self, service, region)
 
     monkeypatch.setattr(awsmod.AwsClients, "__call__", flaky)
-    run = scans.start_scan(connector(), background=False)
+    run = scans.start_scan(connector(), "default", background=False)
     assert run.status == "succeeded" and run.connector == "aws" and run.assets_found > 15
     assert len(run.errors) == 2 and all("/eks: ClientError" in e for e in run.errors)
     rule_ids = {f.rule_id for f in session.query(Finding).filter(Finding.source == "aws")}

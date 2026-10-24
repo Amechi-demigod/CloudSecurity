@@ -163,10 +163,12 @@ class ReadOnlyGcpClient:
             params["pageToken"] = token
 
 
-AUTH_MODES = ("credentials_file", "default")
+AUTH_MODES = ("credentials_json", "credentials_file", "default")
 
 
 def resolve_auth_mode(settings: Settings) -> str | None:
+    if settings.gcp_credentials_json:
+        return "credentials_json"
     if settings.gcp_credentials_file:
         return "credentials_file"
     if settings.gcp_use_default_credentials:
@@ -191,7 +193,11 @@ def build_session(settings: Settings) -> Any:
     from google.auth.transport.requests import AuthorizedSession
 
     mode = resolve_auth_mode(settings)
-    if mode == "credentials_file":
+    if mode == "credentials_json":
+        import json
+
+        creds, _ = google.auth.load_credentials_from_dict(json.loads(settings.gcp_credentials_json), scopes=SCOPES)
+    elif mode == "credentials_file":
         problem = credentials_file_problem(settings)
         if problem:
             raise RuntimeError(problem)
@@ -298,7 +304,8 @@ class GcpConnector(Connector):
         if self._session_factory is not None:
             return True
         mode = resolve_auth_mode(s)
-        return mode == "default" or (mode == "credentials_file" and credentials_file_problem(s) is None)
+        return mode in ("default", "credentials_json") or (
+            mode == "credentials_file" and credentials_file_problem(s) is None)
 
     def scope(self) -> list[str]:
         s = self.settings

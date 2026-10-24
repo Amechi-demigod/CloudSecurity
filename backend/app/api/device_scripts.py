@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 from sqlalchemy import select
 from sqlalchemy.orm import Session, undefer
 
-from ..auth import audit, client_ip, require_admin, require_viewer
+from ..auth import audit, client_ip, require_admin, require_installation_admin, require_viewer
 from ..db import get_db
 from ..models import Device, DeviceApproval, DeviceCommand, DeviceScript, DeviceScriptBundle, User, utcnow
 from ..services import approvals
@@ -65,7 +65,8 @@ def list_bundles(db: Session = Depends(get_db)):
 
 @router.post("/bundles", status_code=201)
 def import_bundle(request: Request, data: bytes = Body(..., media_type="application/gzip"),
-                  admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+                  admin: User = Depends(require_installation_admin), db: Session = Depends(get_db)):
+    """Import a signed device-script bundle (shared by every organisation: platform administrators only)."""
     try:
         b = svc.import_bundle(db, data, admin.email)
     except svc.ScriptBundleError as e:

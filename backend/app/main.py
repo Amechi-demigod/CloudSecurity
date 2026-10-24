@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import JSONResponse, RedirectResponse
 
-from . import auth, config, db, locks, logging_setup
+from . import auth, config, db, locks, logging_setup, tenancy
 from .api import agent as agent_api
 from .api import agent_update_auto as agent_update_auto_api
 from .api import agent_updates as agent_updates_api
@@ -43,7 +43,7 @@ async def lifespan(app: FastAPI):
     # Several replicas / workers may start together: one at a time creates the
     # first admin and seeds the simulated environment.
     with locks.advisory_lock("startup"):
-        with db.get_session() as session:
+        with db.get_session(tenancy.DEFAULT_ORG_ID) as session:
             auth.bootstrap_admin(session)
         if s.simulation_mode:
             seed_if_empty(s.seed)

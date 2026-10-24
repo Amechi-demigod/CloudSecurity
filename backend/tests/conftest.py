@@ -130,7 +130,7 @@ def session():
     """Fresh, empty database session."""
     config.reload_settings()
     fresh_db()
-    s = db.get_session()
+    s = db.get_session("default")
     yield s
     s.close()
 
