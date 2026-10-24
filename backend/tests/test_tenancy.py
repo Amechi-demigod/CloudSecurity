@@ -182,7 +182,9 @@ def test_new_organisation_starts_empty(tenants):
         else:
             assert items == [], url
     dash = a.get("/api/dashboard").json()
-    assert dash["assets"]["total"] == 0 if isinstance(dash.get("assets"), dict) else True
+    assert dash["assets"]["total"] == 0 and dash["open_findings"] == 0 and dash["top_risks"] == []
+    assert dash["vulnerabilities"]["total"] == 0 and dash["alerts"]["open"] == 0
+    assert d.get("/api/dashboard").json()["assets"]["total"] > 10
     assert a.get("/api/attack-paths").json() == []
     graph = a.get("/api/attack-paths/graph").json()
     assert graph["nodes"] == [] and graph["edges"] == []
