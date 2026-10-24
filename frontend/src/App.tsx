@@ -26,7 +26,10 @@ import Security from "./pages/Security";
 import Threats from "./pages/Threats";
 import Vulnerabilities from "./pages/Vulnerabilities";
 import AuditLog from "./pages/admin/AuditLog";
+import OrganizationPage from "./pages/admin/Organization";
 import Users from "./pages/admin/Users";
+import Invite from "./pages/Invite";
+import Organizations from "./pages/platform/Organizations";
 
 const NAV: { to: string; label: string; role?: Role }[] = [
   { to: "/", label: "Dashboard" },
@@ -44,6 +47,7 @@ const NAV: { to: string; label: string; role?: Role }[] = [
 
 const ADMIN_NAV: { to: string; label: string; badge?: "approvals" }[] = [
   { to: "/approvals", label: "Approvals", badge: "approvals" },
+  { to: "/admin/organization", label: "Organisation" },
   { to: "/admin/users", label: "Users" },
   { to: "/admin/audit-log", label: "Audit log" },
 ];
@@ -86,8 +90,28 @@ function RequireRole({ role, children }: { role: Role; children: ReactNode }) {
   return can(role) ? <>{children}</> : <NotPermitted />;
 }
 
+function RequirePlatformAdmin({ children }: { children: ReactNode }) {
+  const { platformAdmin } = useAuth();
+  return platformAdmin ? <>{children}</> : <NotPermitted />;
+}
+
+/** Which organisation the session works in (every page shows only its data). */
+function OrgIndicator() {
+  const { organization } = useAuth();
+  if (!organization) return null;
+  return (
+    <div className="mr-auto flex min-w-0 items-center gap-2 text-sm" title={`You are working in ${organization.name}`}>
+      <span aria-hidden className="flex h-6 w-6 items-center justify-center rounded bg-surface-2 text-xs font-semibold text-ink-2">
+        {organization.name.slice(0, 1).toUpperCase()}
+      </span>
+      <span className="truncate font-medium text-ink">{organization.name}</span>
+      <span className="sr-only">(current organisation)</span>
+    </div>
+  );
+}
+
 function Shell() {
-  const { can, forbidden, dismissForbidden } = useAuth();
+  const { can, forbidden, dismissForbidden, platformAdmin } = useAuth();
   const { data: health, error } = useApi(api.health, [], 15000);
   const admin = can("admin");
   const { data: approvals } = useApi(() => (admin ? api.approvalSummary() : Promise.resolve(null)), [admin], admin ? 30000 : undefined);
@@ -131,6 +155,16 @@ function Shell() {
               ))}
             </>
           )}
+          {platformAdmin && (
+            <>
+              <li className="px-3 pb-1 pt-4 text-[11px] font-semibold uppercase tracking-wide text-ink-3">Platform</li>
+              <li>
+                <NavLink to="/platform/organizations" className={navClass}>
+                  Organisations
+                </NavLink>
+              </li>
+            </>
+          )}
         </ul>
         <div className="space-y-1 border-t border-line px-4 py-3 text-[11px] text-ink-3">
           {error && <div className="text-sev-critical">API unreachable</div>}
@@ -163,6 +197,7 @@ function Shell() {
       </nav>
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex items-center justify-end gap-3 border-b border-line bg-surface-1 px-6 py-2">
+          <OrgIndicator />
           <UserMenu />
         </header>
         <main className="min-w-0 flex-1 overflow-y-auto px-6 py-5">
@@ -195,7 +230,9 @@ function Shell() {
             <Route path="/notifications" element={<RequireRole role="analyst"><Notifications /></RequireRole>} />
             <Route path="/account/security" element={<Security />} />
             <Route path="/approvals" element={<RequireRole role="admin"><Approvals /></RequireRole>} />
+            <Route path="/admin/organization" element={<RequireRole role="admin"><OrganizationPage /></RequireRole>} />
             <Route path="/admin/users" element={<RequireRole role="admin"><Users /></RequireRole>} />
+            <Route path="/platform/organizations" element={<RequirePlatformAdmin><Organizations /></RequirePlatformAdmin>} />
             <Route path="/admin/audit-log" element={<RequireRole role="admin"><AuditLog /></RequireRole>} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
@@ -209,6 +246,7 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
+      <Route path="/invite" element={<Invite />} />
       <Route
         path="/*"
         element={

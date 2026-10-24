@@ -18,6 +18,8 @@ environment-based settings (`AZURE_*`, `AWS_*`, `GCP_*`, `INGEST_API_TOKEN`,
 - [Background jobs](#background-jobs)
 - [Per-organisation cloud connectors](#per-organisation-cloud-connectors)
 - [Platform owners](#platform-owners)
+- [Onboarding a new organisation](#onboarding-a-new-organisation)
+- [Email for invitations](#email-for-invitations)
 - [Upgrading an existing installation](#upgrading-an-existing-installation)
 - [Limits and deferred items](#limits-and-deferred-items)
 
@@ -174,6 +176,59 @@ Data shared by every organisation can only be changed by a platform owner or an
 admin of the default organisation: importing / withdrawing signed agent
 releases and device-script bundles, and the GitHub auto-import settings.
 
+Platform console (**Platform → Organisations**, `/api/platform/*`): list
+organisations with usage (users, active devices, cloud assets, scans, pending
+invitations), create one, edit its profile / plan / limits, suspend and
+reactivate it, see its members and invitations, invite or re-invite people.
+Every action is recorded in the affected organisation's audit log. There is
+**no impersonation**: a platform owner cannot open an organisation's data.
+
+## Onboarding a new organisation
+
+Sign-up is **invite-only**; there is no public registration.
+
+1. A platform owner opens **Platform → Organisations → New organisation**,
+   enters the name (the short name is derived from it), an optional contact
+   email and plan, and the **first administrator's email**.
+2. The first admin receives an invitation email with a link
+   `https://<PUBLIC_BASE_URL>/invite#token=cnv_…`. The token is random,
+   **single-use** and expires after `INVITE_TTL_HOURS` (default 72); only its
+   SHA-256 is stored, and it travels in the URL fragment, so it never reaches
+   server logs or `Referer` headers. Re-sending creates a new link and the old
+   one stops working.
+3. Opening the link shows the organisation and role; they choose a password
+   (12+ characters) and are signed in. When their role must use MFA
+   (`MFA_REQUIRED_ROLES`), they sign in normally next and enrol their
+   authenticator.
+4. They invite their teammates from **Administration → Organisation → Invite
+   people** (viewer, analyst or admin), create sensor tokens, and enter their
+   cloud connector credentials on the same page. Admins can still create users
+   with an initial password on the Users page.
+
+Accounts are platform-wide and belong to one organisation in this version, so
+an email address that already has an account cannot be invited.
+
+## Email for invitations
+
+Invitations are sent with the same senders as the email notification channel
+(SMTP with STARTTLS / implicit TLS, or Azure Communication Services Email) using
+platform-level settings:
+
+| Variable | Default | Description |
+|---|---|---|
+| `PLATFORM_SMTP_HOST` / `PLATFORM_SMTP_PORT` | / `587` | Mail server for transactional email |
+| `PLATFORM_SMTP_SECURITY` | `starttls` | `starttls` or `tls` (implicit, port 465) |
+| `PLATFORM_SMTP_USERNAME` / `PLATFORM_SMTP_PASSWORD` | | Optional authentication |
+| `PLATFORM_SMTP_FROM` | | Sender, e.g. `CloudSecurity <no-reply@example.com>` (required with a host) |
+| `PLATFORM_ACS_CONNECTION_STRING` / `PLATFORM_ACS_SENDER` | | Alternative: Azure Communication Services Email |
+| `PUBLIC_BASE_URL` | | Base of the invitation links (falls back to the address the console was opened with) |
+| `INVITE_TTL_HOURS` | `72` | Invitation lifetime (1 to 720) |
+
+A relay on a private address needs `NOTIFICATIONS_SMTP_ALLOW_PRIVATE=true` (the
+same SSRF guard as notification email). **Without a mail server the invitation
+is still created and the console shows the link** for the inviter to copy and
+pass on securely.
+
 ## Upgrading an existing installation
 
 Nothing to do: update as usual (`sudo cnapp-ctl update` on-prem, or the deploy
@@ -185,7 +240,9 @@ into a membership with the same role. Sessions, device credentials, enrollment
 tokens, `INGEST_API_TOKEN`, cloud connectors, schedules and notification rules
 keep working.
 
-Optionally make yourself a platform owner (see above) to manage organisations.
+Optionally make yourself a platform owner (see above) to manage organisations,
+rename the default organisation under **Administration → Organisation**, and
+configure [email for invitations](#email-for-invitations).
 
 Downgrading below `0013_organizations` deletes every row that does not belong to
 the default organisation and deactivates accounts that are not members of it.
@@ -200,7 +257,8 @@ the default organisation and deactivates accounts that are not members of it.
   it). Per-organisation SSO configuration is deferred.
 - **PostgreSQL row-level security** as a second layer is deferred (see above).
 - Plan / limit fields (`plan`, `max_users`, `max_devices`) are stored but not
-  enforced.
+  enforced. The logo URL is stored but not displayed yet (the console's content
+  security policy only loads its own images; logo upload is deferred).
 - Organisation-specific `MFA_REQUIRED_ROLES`, session timeouts, notification
   encryption keys and simulation mode remain platform-wide settings.
 - Deleting an organisation is not supported (suspend it instead).

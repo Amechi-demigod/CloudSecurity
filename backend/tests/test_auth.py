@@ -188,6 +188,8 @@ PUBLIC = {("GET", "/api/health"), ("POST", "/api/auth/login"), ("POST", "/api/ru
 PUBLIC |= {("POST", "/api/auth/login/mfa"), ("POST", "/api/auth/login/mfa/enroll/start"),
            ("POST", "/api/auth/login/mfa/enroll/confirm"), ("GET", "/api/auth/providers"),
            ("GET", "/api/auth/sso/entra/login"), ("GET", "/api/auth/sso/entra/callback")}
+# Accepting an invitation: the single-use invitation token is the credential (tested in test_invitations.py).
+PUBLIC |= {("POST", "/api/invitations/lookup"), ("POST", "/api/invitations/accept")}
 
 
 def test_every_endpoint_requires_auth(anon_client):
