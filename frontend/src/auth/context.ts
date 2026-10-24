@@ -1,5 +1,5 @@
 import { createContext, useContext } from "react";
-import type { LoginResult, Role, SessionInfo, User } from "../api";
+import type { LoginResult, OrganizationBrief, Role, SessionInfo, User } from "../api";
 
 export const ROLE_RANK: Record<Role, number> = { viewer: 0, analyst: 1, admin: 2 };
 
@@ -8,6 +8,12 @@ export const ROLE_LABEL: Record<Role, string> = { viewer: "Viewer", analyst: "An
 export interface AuthState {
   /** undefined while the initial /api/auth/me check is in flight */
   user: User | null | undefined;
+  /** The organisation the session acts in. */
+  organization: OrganizationBrief | null;
+  /** Platform owner: may open the platform console. */
+  platformAdmin: boolean;
+  /** Re-read /api/auth/me (e.g. after renaming the organisation). */
+  refresh: () => Promise<void>;
   /** true when the last session ended because it expired (shown on the login page) */
   sessionExpired: boolean;
   /** Password step: a session, or an MFA challenge to complete with the second step. */

@@ -350,11 +350,24 @@ export interface User {
   auth_sources: string[];
 }
 
+export interface OrganizationBrief {
+  id: string;
+  name: string;
+  slug: string;
+  status: "active" | "suspended";
+  is_default: boolean;
+  logo_url: string | null;
+}
+
 export interface SessionInfo {
   user: User;
   csrf_token: string;
   expires_at: string;
   idle_timeout_minutes: number;
+  /** The organisation this session acts in. */
+  organization: OrganizationBrief | null;
+  /** May open the platform console (manage organisations). */
+  platform_admin: boolean;
 }
 
 /** Returned by login instead of a session when a second step is needed. */
