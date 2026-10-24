@@ -430,9 +430,12 @@ def test_scan_scheduler_runs_each_organisation_with_its_own_connectors(tenants):
 
     launched: list[tuple[str, str]] = []
 
+    def short(org_id):  # connector names are at most 32 characters
+        return "fake-default" if org_id == "default" else "fake-acme"
+
     def registry(db_, org_id):
         assert tenancy.org_id(db_) == org_id
-        return {f"fake-{org_id}": Fake(f"fake-{org_id}")}
+        return {short(org_id): Fake(short(org_id))}
 
     def launcher(conn, org_id):
         launched.append((org_id, conn.name))
@@ -445,11 +448,11 @@ def test_scan_scheduler_runs_each_organisation_with_its_own_connectors(tenants):
         res = s.tick()
     finally:
         s._leader.release()
-    assert sorted(launched) == sorted([("default", "fake-default"), (tenants.acme_id, f"fake-{tenants.acme_id}")])
-    assert "fake-default" in res.started
+    assert sorted(launched) == sorted([("default", "fake-default"), (tenants.acme_id, "fake-acme")])
+    assert "fake-default" in res.started and f"{tenants.acme_id}/fake-acme" in res.started
     acme_scans = _items(tenants.acme.get("/api/scans"))
-    assert [x["connector"] for x in acme_scans] == [f"fake-{tenants.acme_id}"]
-    assert f"fake-{tenants.acme_id}" not in {x["connector"] for x in _items(tenants.default.get("/api/scans"))}
+    assert [x["connector"] for x in acme_scans] == ["fake-acme"]
+    assert "fake-acme" not in {x["connector"] for x in _items(tenants.default.get("/api/scans"))}
 
 
 def test_vulnerability_worker_matches_each_organisation_separately(tenants):
