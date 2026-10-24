@@ -192,9 +192,12 @@ def test_scan_flows_into_inventory_findings_and_filters(empty_client, monkeypatc
     assert r.status_code == 202, r.text
     import time
 
-    for _ in range(100):
+    # The scan runs in a background thread; on a slow CI runner the full rule
+    # set + post-scan steps can take several seconds, so wait on a deadline.
+    deadline = time.monotonic() + 60
+    while True:
         runs = empty_client.get("/api/scans").json()
-        if runs and runs[0]["status"] != "running":
+        if (runs and runs[0]["status"] != "running") or time.monotonic() > deadline:
             break
         time.sleep(0.05)
     run = runs[0]
