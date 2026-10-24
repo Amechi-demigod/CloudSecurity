@@ -14,9 +14,10 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from ..db import Base
 from ..models import new_id, utcnow
+from ..tenancy import TenantMixin
 
 
-class NotificationChannel(Base):
+class NotificationChannel(TenantMixin, Base):
     __tablename__ = "notification_channels"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
@@ -37,7 +38,7 @@ class NotificationChannel(Base):
     last_test_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
 
-class NotificationRule(Base):
+class NotificationRule(TenantMixin, Base):
     __tablename__ = "notification_rules"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
@@ -74,7 +75,7 @@ class NotificationRule(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
-class NotificationEvent(Base):
+class NotificationEvent(TenantMixin, Base):
     """Inbox: one row per notifiable event, written in the producer's transaction."""
 
     __tablename__ = "notification_events"
@@ -100,7 +101,7 @@ class NotificationEvent(Base):
     processed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
 
 
-class NotificationDelivery(Base):
+class NotificationDelivery(TenantMixin, Base):
     """Outbox + delivery log: one message to one channel."""
 
     __tablename__ = "notification_deliveries"
@@ -133,7 +134,7 @@ class NotificationDelivery(Base):
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
-class NotificationThrottle(Base):
+class NotificationThrottle(TenantMixin, Base):
     """When a (rule, channel, group) was last notified, and how much was suppressed since."""
 
     __tablename__ = "notification_throttle"
@@ -147,7 +148,7 @@ class NotificationThrottle(Base):
     suppressed: Mapped[int] = mapped_column(Integer, default=0)
 
 
-class NotificationDigestItem(Base):
+class NotificationDigestItem(TenantMixin, Base):
     """Events waiting for a rule's next daily digest."""
 
     __tablename__ = "notification_digest_items"
@@ -163,11 +164,14 @@ class NotificationDigestItem(Base):
     link_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
 
 
-class NotificationSourceState(Base):
+class NotificationSourceState(TenantMixin, Base):
     """Bookkeeping for pull-based event sources (e.g. the attack-path poller)."""
 
     __tablename__ = "notification_source_state"
 
+    organization_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("organizations.id", name="fk_notification_source_state_organization_id"),
+        primary_key=True)
     source: Mapped[str] = mapped_column(String(32), primary_key=True)
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     state: Mapped[dict] = mapped_column(JSON, default=dict)

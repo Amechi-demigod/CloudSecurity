@@ -1,9 +1,10 @@
 """Scheduled cloud posture scans.
 
 A leader-elected background job (one per deployment, whatever the number of
-gunicorn workers / replicas) scans every configured cloud connector every
-`interval_hours` (default 6, SCAN_INTERVAL_HOURS), one ScanRun per connector,
-recorded with trigger="scheduled".
+gunicorn workers / replicas) scans every configured cloud connector of every
+active organisation every `interval_hours` (default 6, SCAN_INTERVAL_HOURS;
+each organisation has its own schedule settings and connector configuration),
+one ScanRun per connector, recorded with trigger="scheduled".
 
 Timing is derived from the database, never from process memory, so restarts
 neither cause scan storms nor missed scans:
@@ -34,14 +35,14 @@ from datetime import datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import config
-from .. import db as dbmod
+from .. import config, tenancy
 from ..connectors import build_registry
 from ..connectors.base import Connector
+from ..connectors.org_config import org_settings
 from ..locks import LeaderLock, advisory_lock
 from ..models import ScanRun, ScanScheduleSettings, utcnow
 from ..notifications import builtin as notify
-from .scans import SCHEDULED, start_scan
+from .scans import SCHEDULED, scan_lock_name, start_scan
 
 log = logging.getLogger(__name__)
 
@@ -67,7 +68,7 @@ class Schedule:
 
 
 def get_row(db: Session) -> ScanScheduleSettings | None:
-    return db.get(ScanScheduleSettings, 1)
+    return db.get(ScanScheduleSettings, tenancy.require_org(db))
 
 
 def effective(db: Session) -> Schedule:
@@ -88,7 +89,7 @@ def update(db: Session, *, actor: str, enabled: bool | None, interval_hours: flo
     given fields. Returns (before, after) for the audit log. Caller commits."""
     row = get_row(db)
     if row is None:
-        row = ScanScheduleSettings(id=1)
+        row = ScanScheduleSettings(organization_id=tenancy.require_org(db))
         db.add(row)
     before = {"enabled": row.enabled, "interval_hours": row.interval_hours}
     if "enabled" in fields:
@@ -105,9 +106,15 @@ def update(db: Session, *, actor: str, enabled: bool | None, interval_hours: flo
 
 
 # ----------------------------------------------------------------------------- connectors
+def registry_for(db: Session) -> dict[str, Connector]:
+    """The connectors of the session's organisation (its own cloud settings)."""
+    return build_registry(org_settings(db))
+
+
 def schedule_reason(conn: Connector) -> str | None:
     """Why `conn` is not scanned on schedule, or None if it is."""
-    if conn.name == SIMULATED and not config.settings.simulation_mode:
+    sim = getattr(conn, "simulation_mode", None)
+    if conn.name == SIMULATED and not (config.settings.simulation_mode if sim is None else sim):
         return "simulated connector (SIMULATION_MODE is off)"
     if not conn.is_configured():
         return "not configured"
@@ -139,15 +146,15 @@ def next_due(last_scheduled: ScanRun | None, interval: timedelta) -> datetime | 
     return last_scheduled.started_at + interval if last_scheduled is not None else None
 
 
-def scan_lock_free(connector: str) -> bool:
-    with advisory_lock(f"scan-{connector}", blocking=False) as got:
+def scan_lock_free(connector: str, org_id: str = tenancy.DEFAULT_ORG_ID) -> bool:
+    with advisory_lock(scan_lock_name(org_id, connector), blocking=False) as got:
         return got
 
 
 def recover_orphans(db: Session, connector: str, now: datetime) -> int:
     """Mark runs left "running" by a dead process as failed. Caller commits."""
     stale = [r for r in running_runs(db, connector) if now - r.started_at >= ORPHAN_GRACE]
-    if not stale or not scan_lock_free(connector):
+    if not stale or not scan_lock_free(connector, tenancy.require_org(db)):
         return 0
     for run in stale:
         run.status = "failed"
@@ -159,11 +166,16 @@ def recover_orphans(db: Session, connector: str, now: datetime) -> int:
 
 
 # ----------------------------------------------------------------------------- scheduler
-Launcher = Callable[[Connector], object]
+Launcher = Callable[[Connector, str], object]
+RegistryFactory = Callable[[Session, str], dict[str, Connector]]
 
 
-def _launch(conn: Connector) -> object:
-    return start_scan(conn, background=True, trigger=SCHEDULED)
+def _launch(conn: Connector, org_id: str) -> object:
+    return start_scan(conn, org_id, background=True, trigger=SCHEDULED)
+
+
+def _label(org_id: str, name: str) -> str:
+    return name if tenancy.is_default(org_id) else f"{org_id}/{name}"
 
 
 @dataclass
@@ -182,13 +194,13 @@ class ScanScheduler:
 
     def __init__(self, tick_seconds: float = 60.0, startup_delay_seconds: float | None = None,
                  clock: Callable[[], datetime] = utcnow,
-                 registry_factory: Callable[[], dict[str, Connector]] | None = None,
+                 registry_factory: RegistryFactory | None = None,
                  launcher: Launcher = _launch):
         self.tick_seconds = tick_seconds
         self.clock = clock
         delay = config.settings.scan_startup_delay_seconds if startup_delay_seconds is None else startup_delay_seconds
         self.not_before = clock() + timedelta(seconds=delay)
-        self._registry_factory = registry_factory or (lambda: build_registry(config.settings))
+        self._registry_factory = registry_factory or (lambda db, _org: registry_for(db))
         self._launch = launcher
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -221,31 +233,39 @@ class ScanScheduler:
             return TickResult(True, [], [], waiting=True)
         started: list[str] = []
         skipped: list[str] = []
-        with dbmod.get_session() as db:
-            sched = effective(db)
-            if not sched.enabled:
-                return TickResult(True, [], [])
-            for conn in schedulable(self._registry_factory()):
-                try:
-                    recover_orphans(db, conn.name, now)
-                    db.commit()
-                    due = next_due(last_scheduled_run(db, conn.name), sched.interval)
-                    if due is not None and now < due:
-                        continue
-                    if running_runs(db, conn.name):
-                        log.warning("scheduled %s scan skipped: the previous scan is still running", conn.name)
-                        db.add(ScanRun(connector=conn.name, trigger=SCHEDULED, status="skipped", started_at=now,
-                                       finished_at=now, message="Skipped: the previous scan was still running."))
-                        db.commit()
-                        skipped.append(conn.name)
-                        continue
-                    log.info("starting scheduled %s scan (every %g h)", conn.name, sched.interval_hours)
-                    self._launch(conn)
-                    started.append(conn.name)
-                except Exception:
-                    db.rollback()
-                    log.exception("scheduled %s scan could not be started", conn.name)
+        for org_id, db in tenancy.for_each_active_org():
+            try:
+                self._tick_org(db, org_id, now, started, skipped)
+            except Exception:
+                db.rollback()
+                log.exception("scheduled scans of organisation %s failed", org_id)
         return TickResult(True, started, skipped)
+
+    def _tick_org(self, db: Session, org_id: str, now: datetime, started: list[str], skipped: list[str]) -> None:
+        sched = effective(db)
+        if not sched.enabled:
+            return
+        for conn in schedulable(self._registry_factory(db, org_id)):
+            label = _label(org_id, conn.name)
+            try:
+                recover_orphans(db, conn.name, now)
+                db.commit()
+                due = next_due(last_scheduled_run(db, conn.name), sched.interval)
+                if due is not None and now < due:
+                    continue
+                if running_runs(db, conn.name):
+                    log.warning("scheduled %s scan skipped: the previous scan is still running", label)
+                    db.add(ScanRun(connector=conn.name, trigger=SCHEDULED, status="skipped", started_at=now,
+                                   finished_at=now, message="Skipped: the previous scan was still running."))
+                    db.commit()
+                    skipped.append(label)
+                    continue
+                log.info("starting scheduled %s scan (every %g h)", label, sched.interval_hours)
+                self._launch(conn, org_id)
+                started.append(label)
+            except Exception:
+                db.rollback()
+                log.exception("scheduled %s scan could not be started", label)
 
     def _run(self) -> None:
         while not self._stop.wait(self.tick_seconds):
@@ -261,7 +281,7 @@ def status(db: Session, now: datetime | None = None) -> dict:
     sched = effective(db)
     s = config.settings
     connectors = []
-    for conn in build_registry(s).values():
+    for conn in registry_for(db).values():
         reason = schedule_reason(conn)
         last_sched = last_scheduled_run(db, conn.name)
         due = next_due(last_sched, sched.interval) if sched.enabled and reason is None else None

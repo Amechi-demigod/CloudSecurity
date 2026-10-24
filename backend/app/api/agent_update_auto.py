@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .. import tenancy
 from ..auth import ROLE_RANK, audit, client_ip, current_user, require_admin, require_viewer
 from ..db import get_db
 from ..models import AgentRelease, AgentUpdateRing, Device, User, utcnow
@@ -69,7 +70,11 @@ def set_automation(body: AutomationIn, request: Request, admin: User = Depends(r
                    db: Session = Depends(get_db)):
     st = auto.get_settings(db)
     changes = {}
-    for f in ("mode", "soak_hours", "auto_import_enabled", "auto_import_repo", "auto_import_interval_minutes"):
+    import_fields = ("auto_import_enabled", "auto_import_repo", "auto_import_interval_minutes")
+    if any(getattr(body, f) is not None for f in import_fields) and not tenancy.is_default(admin.organization_id):
+        raise HTTPException(403, "the GitHub auto-import is shared by every organisation: it is managed by the "
+                                 "platform operator")
+    for f in ("mode", "soak_hours", *import_fields):
         v = getattr(body, f)
         if v is not None and v != getattr(st, f):
             changes[f] = {"from": getattr(st, f), "to": v}
@@ -109,6 +114,8 @@ def promote_now(body: ReasonIn, request: Request, admin: User = Depends(require_
 @router.post("/automation/check-github")
 def check_github_now(request: Request, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     """Run the auto-import check now (also when the periodic check is disabled)."""
+    if not tenancy.is_default(admin.organization_id):
+        raise HTTPException(403, "the GitHub auto-import is managed by the platform operator")
     res = auto.check_github(db, actor=f"auto-import (requested by {admin.email})")
     audit(db, "agent_release_check_requested", actor=admin, ip=client_ip(request), status=res["status"],
           message=res["message"][:500])

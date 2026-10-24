@@ -7,9 +7,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import config
+from .. import config, tenancy
 from ..auth import audit, client_ip, require_admin, require_analyst
 from ..connectors import CLOUD_CONNECTORS, build_registry
+from ..connectors.org_config import org_settings
 from ..db import get_db
 from ..engine.attack_paths import INTERNET_NODE
 from ..models import Asset, ScanRun, User
@@ -73,7 +74,7 @@ def attack_path_graph(db: Session = Depends(get_db), limit: int = Query(10, le=5
 def list_connectors(db: Session = Depends(get_db)):
     """Connectors with configuration state, scan scope and their latest scan."""
     out = []
-    for c in build_registry(config.settings).values():
+    for c in build_registry(org_settings(db)).values():
         last = db.scalar(select(ScanRun).where(ScanRun.connector == c.name).order_by(ScanRun.started_at.desc()).limit(1))
         accounts = sorted({(sid, name) for sid, name in db.execute(
             select(Asset.subscription_id, Asset.subscription_name).where(Asset.source == c.name).distinct()) if sid})
@@ -87,13 +88,13 @@ def list_connectors(db: Session = Depends(get_db)):
 def run_scan(body: ScanRequest, request: Request, user: User = Depends(require_analyst),
              db: Session = Depends(get_db)):
     """Start a read-only connector scan in the background (e.g. `{"connector": "azure"}`)."""
-    registry = build_registry(config.settings)
+    registry = build_registry(org_settings(db))
     conn = registry.get(body.connector)
     if conn is None:
         raise HTTPException(404, f"unknown connector '{body.connector}'")
     if not conn.is_configured():
         raise HTTPException(400, f"connector '{body.connector}' is not configured; {conn.setup_hint}".rstrip("; "))
-    run = start_scan(conn, background=True)
+    run = start_scan(conn, tenancy.require_org(db), background=True)
     audit(db, "scan_started", actor=user, target=body.connector, ip=client_ip(request), scan_id=run.id)
     db.commit()
     return run

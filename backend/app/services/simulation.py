@@ -1,4 +1,5 @@
-"""Seeding + background runtime-event simulator (simulated data mode)."""
+"""Seeding + background runtime-event simulator (simulated data mode). The
+simulated environment belongs to the default organisation."""
 from __future__ import annotations
 
 import logging
@@ -12,6 +13,7 @@ from .. import db as dbmod
 from ..connectors.simulated import SimulatedConnector, benign_events, generate_history, pick_scenario, workload_dicts
 from ..locks import LeaderLock
 from ..models import Asset, utcnow
+from ..tenancy import DEFAULT_ORG_ID
 from .ingest import ingest_collection
 from .runtime import ingest_event
 
@@ -23,7 +25,7 @@ def seed_if_empty(seed: int = 42, history: bool = True) -> bool:
 
     Callers starting several replicas at once should hold the "startup" lock
     (see app.main) so only one of them seeds."""
-    with dbmod.get_session() as db:
+    with dbmod.get_session(DEFAULT_ORG_ID) as db:
         if db.scalar(select(func.count()).select_from(Asset)):
             return False
         result = SimulatedConnector(seed).collect()
@@ -40,7 +42,7 @@ def seed_if_empty(seed: int = 42, history: bool = True) -> bool:
 
 def simulate_tick(rng: random.Random, attack_probability: float = 0.25) -> int:
     """Emit one batch of live events. Returns number of events ingested."""
-    with dbmod.get_session() as db:
+    with dbmod.get_session(DEFAULT_ORG_ID) as db:
         workloads = workload_dicts(list(db.scalars(select(Asset).where(Asset.type.in_(["vm", "pod", "function_app"])))))
         if not workloads:
             return 0

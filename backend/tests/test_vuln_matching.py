@@ -63,7 +63,7 @@ def run(**kw):
 
 
 def vulns(device_id=None, status="open"):
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         stmt = select(Vulnerability)
         if device_id:
             stmt = stmt.where(Vulnerability.device_id == device_id)
@@ -75,7 +75,7 @@ def vulns(device_id=None, status="open"):
 # --------------------------------------------------------------------------- devices (NVD)
 def test_checkin_queues_and_worker_matches(admin, fake):
     _, dev = new_device(admin)
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         st = s.scalar(select(VulnMatchState).where(VulnMatchState.target_id == dev))
         assert st is not None and st.requested_at is not None and st.matched_at is None
     assert fake.requests == []  # the check-in itself never talks to a feed
@@ -136,7 +136,7 @@ def test_resolved_on_upgrade_and_reopened_on_downgrade(admin, fake):
     # Downgrade: the same row is reopened, not duplicated
     assert agent.post("/api/agent/checkin", json=checkin_body(SOFTWARE)).status_code == 200
     run()
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         rows = list(s.scalars(select(Vulnerability).where(Vulnerability.device_id == dev,
                                                           Vulnerability.cve_id == "CVE-2024-10487")))
     assert len(rows) == 1 and rows[0].status == "open" and rows[0].resolved_at is None
@@ -155,7 +155,7 @@ def test_offline_keeps_existing_and_never_blocks_checkins(admin, fake):
     run()
     before = set(vulns(dev))
     fake.offline = True
-    with db.get_session() as s:  # expire the caches so a refresh is attempted
+    with db.get_session("default") as s:  # expire the caches so a refresh is attempted
         for row in s.scalars(select(VulnFeedCache)):
             row.expires_at = row.fetched_at - timedelta(seconds=1)
         st = s.get(VulnFeedStatus, "kev")
@@ -176,7 +176,7 @@ def test_offline_keeps_existing_and_never_blocks_checkins(admin, fake):
 def test_offline_without_cache_does_not_resolve(admin, fake):
     agent, dev = new_device(admin)
     run()
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         for row in list(s.scalars(select(VulnFeedCache).where(VulnFeedCache.key.like("nvd:%")))):
             s.delete(row)
         s.commit()
@@ -202,7 +202,7 @@ def test_feeds_are_cached_between_devices(admin, fake):
 def test_incremental_nvd_refresh(admin, fake):
     new_device(admin)
     run()
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         for row in s.scalars(select(VulnFeedCache).where(VulnFeedCache.key.like("nvd:%"))):
             row.expires_at = row.fetched_at
         s.commit()
@@ -226,7 +226,7 @@ def test_nvd_rate_limit_and_api_key_not_logged(admin, fake, monkeypatch, caplog)
     def refetch():
         fake.sleeps.clear()
         fake.requests.clear()
-        with db.get_session() as s:
+        with db.get_session("default") as s:
             for row in list(s.scalars(select(VulnFeedCache).where(VulnFeedCache.key.like("nvd:%")))):
                 s.delete(row)
             s.commit()
@@ -241,7 +241,7 @@ def test_nvd_rate_limit_and_api_key_not_logged(admin, fake, monkeypatch, caplog)
     fake.fail_hosts = {"nvd.invalid"}
     assert refetch()
     assert "secret-test-nvd-key" not in caplog.text
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         assert "secret-test-nvd-key" not in (s.get(VulnFeedStatus, "nvd").last_error or "")
     assert admin.get("/api/vulnerabilities/status").json()["nvd_api_key_configured"] is True
     monkeypatch.delenv("NVD_API_KEY")
@@ -256,7 +256,7 @@ def test_proxy_settings_are_honoured():
 
 # --------------------------------------------------------------------------- notifications
 def _vuln_events():
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         return list(s.scalars(select(NotificationEvent).where(NotificationEvent.source == "vulnerability")))
 
 
@@ -282,7 +282,7 @@ def test_kev_listing_notifies_existing(admin, fake):
     assert [e.entity_id for e in _vuln_events()] == ["CVE-2024-10487"]
     fake.kev["vulnerabilities"].append({"cveID": "CVE-2024-99002", "dateAdded": "2024-11-02",
                                         "requiredAction": "Update", "dueDate": "2024-11-23"})
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         worker.refresh_kev(s, matcher_now(), force=True)
     v = vulns()["CVE-2024-99002"]
     assert v.kev and v.exploit_available
@@ -407,7 +407,7 @@ def test_sensor_inventory_osv_match_and_runtime_in_use(client, fake):
     assert fake.requests == []  # matching happens in the worker
     run()
     def host_vulns(status="open"):
-        with db.get_session() as s:
+        with db.get_session("default") as s:
             return {v.cve_id: v for v in s.scalars(select(Vulnerability).where(
                 Vulnerability.asset_id == "sensor:web-1", Vulnerability.status == status))}
 
@@ -442,18 +442,18 @@ def test_sensor_inventory_osv_match_and_runtime_in_use(client, fake):
 
 
 def test_sensor_inventory_attaches_to_existing_vm(client, fake):
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         vm = s.scalars(select(Asset).where(Asset.type == "vm")).first()
         name, aid = vm.name, vm.id
     r = post_inventory(client, {**INVENTORY, "host": name.upper()})
     assert r.json()["asset_id"] == aid and r.json()["asset_created"] is False
     run()
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         v = s.scalar(select(Vulnerability).where(Vulnerability.asset_id == aid, Vulnerability.source == "osv",
                                                  Vulnerability.cve_id == "CVE-2023-5363"))
     assert v is not None
-    with db.get_session() as s:
-        a = s.get(Asset, aid)
+    with db.get_session("default") as s:
+        a = s.get(Asset, ("default", aid))
         assert v.internet_exposed == bool(a.internet_exposed)
 
 
@@ -461,20 +461,20 @@ def test_osv_offline_keeps_data_and_ingest_still_works(client, fake):
     fake.offline = True
     assert post_inventory(client).status_code == 202
     run()
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         assert not list(s.scalars(select(Vulnerability).where(Vulnerability.asset_id == "sensor:web-1")))
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         st = s.get(VulnFeedStatus, "osv")
         assert st.last_error and st.last_success_at is None
         state = s.scalar(select(VulnMatchState).where(VulnMatchState.target_id == "sensor:web-1"))
         assert any("offline" in n["reason"] for n in state.not_checked)
     fake.offline = False
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         s.scalar(select(VulnMatchState).where(VulnMatchState.target_id == "sensor:web-1")).requested_at = \
             matcher_now()
         s.commit()
     run()
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         assert s.scalar(select(Vulnerability).where(Vulnerability.asset_id == "sensor:web-1",
                                                     Vulnerability.cve_id == "CVE-2023-5678")) is not None
 
@@ -484,12 +484,12 @@ def test_device_delete_cascades(admin, fake):
     run()
     assert vulns(dev)
     assert admin.delete(f"/api/devices/{dev}?reason=decommissioned").status_code == 204
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         assert s.get(Device, dev) is None
         assert not list(s.scalars(select(Vulnerability).where(Vulnerability.device_id == dev)))
         assert not list(s.scalars(select(DeviceSoftware).where(DeviceSoftware.device_id == dev)))
     run()  # state of the deleted device is cleaned up
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         assert s.scalar(select(VulnMatchState).where(VulnMatchState.target_id == dev)) is None
 
 
@@ -507,7 +507,7 @@ def test_osv_vulnerability_in_use_feeds_attack_paths(empty_client, fake):
     from app.models import Relationship
     from app.services import analytics
 
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         s.add(Asset(id="vm-1", name="web-1", type="vm", provider="azure", internet_exposed=True, tags={},
                     properties={"exposure": "public IP"}, source="azure"))
         s.add(Asset(id="st-1", name="customerdata", type="storage_account", provider="azure", sensitive_data=True,
@@ -520,7 +520,7 @@ def test_osv_vulnerability_in_use_feeds_attack_paths(empty_client, fake):
           "library": {"path": "/usr/lib/x86_64-linux-gnu/libssl.so.3", "package": "libssl3",
                       "version": "3.0.11-1~deb12u2", "kind": "shared_object", "source": "dpkg"}}
     assert empty_client.post("/api/runtime/events", json=[ev], headers=AUTH).json()["in_use_updates"] == 2
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         paths = analytics.attack_paths(s, limit=10)
     reasons = [r for p in paths for st in p.steps for r in st.reasons]
     assert any("CVE-2023-5363 in openssl (loaded at runtime" in r for r in reasons), reasons

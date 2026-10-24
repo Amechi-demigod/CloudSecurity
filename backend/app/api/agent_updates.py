@@ -24,7 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import config
-from ..auth import audit, client_ip, require_admin, require_viewer
+from ..auth import audit, client_ip, require_admin, require_installation_admin, require_viewer
 from ..db import get_db
 from ..models import AgentRelease, AgentUpdateEvent, AgentUpdateRing, Device, User, utcnow
 from ..notifications import agent_update_source
@@ -203,8 +203,9 @@ def device_update_state(device_id: str = Id32(), limit: int = Query(50, ge=1, le
 # ----------------------------------------------------------------------------- user API: admin
 @router.post("/releases", status_code=201)
 def import_release(request: Request, data: bytes = Body(..., media_type="application/gzip"),
-                   admin: User = Depends(require_admin), db: Session = Depends(get_db)):
-    """Import a signed release bundle (.tar.gz: manifest.json + binaries)."""
+                   admin: User = Depends(require_installation_admin), db: Session = Depends(get_db)):
+    """Import a signed release bundle (.tar.gz: manifest.json + binaries). Releases
+    are shared by every organisation: platform administrators only."""
     try:
         rel = svc.import_bundle(db, data, admin.email)
     except svc.ReleaseError as e:
@@ -226,8 +227,8 @@ class Reason(BaseModel):
 
 
 @router.post("/releases/{release_id}/withdraw")
-def withdraw_release(body: Reason, request: Request, release_id: str = Id32(), admin: User = Depends(require_admin),
-                     db: Session = Depends(get_db)):
+def withdraw_release(body: Reason, request: Request, release_id: str = Id32(),
+                     admin: User = Depends(require_installation_admin), db: Session = Depends(get_db)):
     """Stop offering a release (devices already running it keep it; point rings elsewhere to move them)."""
     rel = db.get(AgentRelease, release_id)
     if rel is None:

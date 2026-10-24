@@ -4,7 +4,9 @@ Every replica / gunicorn worker starts one; only the process holding the
 "notification-dispatcher" leader lock (PostgreSQL advisory lock, or a SQLite
 file lock) processes events and sends. The others re-check each interval and
 take over if the leader goes away. Runs in its own thread, so slow webhooks
-never block API requests or the detection pipeline.
+never block API requests or the detection pipeline. Each step runs once per
+active organisation, in a session scoped to it (an organisation's events only
+ever match its own rules and go to its own channels).
 """
 from __future__ import annotations
 
@@ -12,7 +14,7 @@ import logging
 import threading
 from datetime import datetime, timedelta
 
-from .. import db as dbmod
+from .. import tenancy
 from ..locks import LeaderLock
 from ..models import utcnow
 from . import dispatcher
@@ -75,12 +77,13 @@ class NotificationWorker:
         if self._last_cleanup is None or now - self._last_cleanup >= CLEANUP_EVERY:
             steps.append(("cleanup", lambda db: dispatcher.cleanup(db, now)))
             self._last_cleanup = now
-        for name, fn in steps:
-            try:
-                with dbmod.get_session() as db:
-                    stats[name] = fn(db)
-            except Exception:  # one failing step must not stop the others
-                log.exception("notification dispatcher step %s failed", name)
+        for org_id, db in tenancy.for_each_active_org():
+            for name, fn in steps:
+                try:
+                    stats[name] = _merge(stats.get(name), fn(db))
+                except Exception:  # one failing step must not stop the others
+                    db.rollback()
+                    log.exception("notification dispatcher step %s failed for organisation %s", name, org_id)
         self.last_tick_at = now
         return stats
 
@@ -90,6 +93,17 @@ class NotificationWorker:
                 self.tick()
             except Exception:
                 log.exception("notification dispatcher tick failed")
+
+
+def _merge(a, b):
+    """Add up per-organisation step results (counts, or dicts of counts)."""
+    if a is None:
+        return b
+    if isinstance(a, dict) and isinstance(b, dict):
+        return {k: _merge(a.get(k), b.get(k)) for k in a.keys() | b.keys()}
+    if isinstance(a, int | float) and isinstance(b, int | float):
+        return a + b
+    return a if b is None else b
 
 
 _worker: NotificationWorker | None = None

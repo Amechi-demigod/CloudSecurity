@@ -95,11 +95,14 @@ def _alert_safe(summary: dict) -> None:
 def _alert(summary: dict) -> None:
     from .. import db as dbmod
     from ..auth import audit
+    from ..tenancy import DEFAULT_ORG_ID
 
     top = ", ".join(f"{t['ip']} ({t['count']})" for t in summary["top_ips"])
     minutes = max(1, summary["window_seconds"] // 60)
     log.warning("agent API: %d rejected requests in %d min (top sources: %s)", summary["count"], minutes, top)
-    session = dbmod.get_session()
+    # Rejected requests carry no valid credential, hence no organisation: the
+    # alert goes to the platform operator (the default organisation).
+    session = dbmod.get_session(DEFAULT_ORG_ID)
     try:
         audit(session, "agent_auth_failure_spike", actor_email="system:agent-api", **summary)
         emit(session, Event(

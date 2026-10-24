@@ -11,6 +11,7 @@ from ..connectors.base import Connector
 from ..locks import advisory_lock
 from ..models import Finding, ScanRun, utcnow
 from ..notifications import builtin as notify
+from ..tenancy import DEFAULT_ORG_ID
 from .ingest import ingest_collection
 
 log = logging.getLogger(__name__)
@@ -20,23 +21,31 @@ MANUAL = "manual"
 SCHEDULED = "scheduled"
 
 
-def start_scan(connector: Connector, background: bool = True, trigger: str = MANUAL) -> ScanRun:
-    with dbmod.get_session() as db:
+def scan_lock_name(org_id: str, connector: str) -> str:
+    """One scan per (organisation, connector) at a time. The default
+    organisation keeps the pre multi-tenancy lock name."""
+    return f"scan-{connector}" if org_id == DEFAULT_ORG_ID else f"scan-{org_id}-{connector}"
+
+
+def start_scan(connector: Connector, org_id: str, background: bool = True, trigger: str = MANUAL) -> ScanRun:
+    """Run `connector` (built with the organisation's settings,
+    app/connectors/org_config.py) and store the results in `org_id`."""
+    with dbmod.get_session(org_id) as db:
         run = ScanRun(connector=connector.name, status="running", trigger=trigger)
         db.add(run)
         db.commit()
         run_id = run.id
     if background:
-        threading.Thread(target=execute_scan, args=(connector, run_id), daemon=True).start()
+        threading.Thread(target=execute_scan, args=(connector, run_id, org_id), daemon=True).start()
     else:
-        execute_scan(connector, run_id)
-    with dbmod.get_session() as db:
+        execute_scan(connector, run_id, org_id)
+    with dbmod.get_session(org_id) as db:
         return db.get(ScanRun, run_id)
 
 
-def execute_scan(connector: Connector, run_id: str) -> None:
-    # One scan per connector at a time, across all replicas / workers.
-    with advisory_lock(f"scan-{connector.name}"), dbmod.get_session() as db:
+def execute_scan(connector: Connector, run_id: str, org_id: str) -> None:
+    # One scan per connector and organisation at a time, across all replicas / workers.
+    with advisory_lock(scan_lock_name(org_id, connector.name)), dbmod.get_session(org_id) as db:
         run = db.get(ScanRun, run_id)
         try:
             result = connector.collect()

@@ -18,7 +18,8 @@ CLOUD_CONNECTORS = ("azure", "aws", "gcp")
 
 def build_registry(settings: Settings) -> dict[str, Connector]:
     return {
-        "simulated": SimulatedConnector(seed=settings.seed),
+        "simulated": SimulatedConnector(seed=settings.seed, simulation_mode=settings.simulation_mode,
+                                        available=settings.simulated_connector_available),
         "azure": AzureConnector(settings),
         "aws": AwsConnector(settings),
         "gcp": GcpConnector(settings),

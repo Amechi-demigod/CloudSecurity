@@ -99,7 +99,7 @@ def set_ring(c, ring_id, **body):
 
 
 def audits(action: str) -> list[AuditLog]:
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         return list(s.scalars(select(AuditLog).where(AuditLog.action == action)))
 
 
@@ -295,7 +295,7 @@ def test_explicit_ring_groups_and_pin(admin, key, tmp_path):
     set_ring(admin, pilot["id"], target_release_id=r2["id"])
     assert checkin(agent)["update"]["version"] == "1.1.0"
     # Device group "pilot" puts it in the Pilot ring.
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         s.get(Device, device_id).device_group = "pilot"
         s.commit()
     assert checkin(agent)["update"]["version"] == "1.2.0"
@@ -320,7 +320,7 @@ def test_explicit_ring_groups_and_pin(admin, key, tmp_path):
     assert c.status_code == 201, c.text
     admin.put(f"/api/updates/devices/{device_id}", json={"ring_id": c.json()["id"], "reason": "x" * 5})
     assert admin.delete(f"/api/updates/rings/{c.json()['id']}", params={"reason": "cleanup"}).status_code == 204
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         assert s.get(Device, device_id).update_ring_id is None
 
 
@@ -353,7 +353,7 @@ def test_status_reporting_history_audit_and_notifications(admin, key, tmp_path):
     # A release that rolled back on this device is not offered to it again.
     assert checkin(agent)["update"] is None
     assert len(audits("agent_update_rolled_back")) == 1
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         ev = s.scalars(select(NotificationEvent).where(NotificationEvent.source == "agent_update")).all()
         assert [e.event_type for e in ev] == ["update_rolled_back"]
     summary = admin.get("/api/updates/summary").json()
@@ -401,7 +401,7 @@ def test_cli_notify_server_update(admin, capsys):
                           "detail": "health check failed", "automatic": True, "actor": "cnapp-ctl"})()
     assert cli.notify_server_update(args) == 0
     assert "rolled_back" in capsys.readouterr().out
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         ev = s.scalars(select(NotificationEvent).where(NotificationEvent.source == "server_update")).all()
         assert [(e.event_type, e.severity) for e in ev] == [("update_rolled_back", "high")]
         assert ev[0].attributes["automatic"] is True and ev[0].attributes["to_tag"] == "b" * 40

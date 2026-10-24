@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from ..connectors.base import CollectionResult
 from ..engine import posture
 from ..engine.risk import cvss_severity, priority_for, vuln_risk_score
-from ..models import Asset, Finding, Relationship, Vulnerability, new_id, utcnow
+from ..models import Asset, Finding, Relationship, Vulnerability, get_asset, new_id, utcnow
 from ..notifications import builtin as notify
 from .eol_vulns import sync_eol_vulnerabilities
 
@@ -25,7 +25,7 @@ def ingest_collection(db: Session, result: CollectionResult, source: str) -> dic
     for rec in result.assets:
         aid = rec.id
         seen_ids.add(aid)
-        a = db.get(Asset, aid)
+        a = get_asset(db, aid)
         if a is None:
             a = Asset(id=aid, first_seen=now)
             db.add(a)
@@ -53,9 +53,9 @@ def ingest_collection(db: Session, result: CollectionResult, source: str) -> dic
         if key in pending:
             _merge_relationship_properties(pending[key], rel.properties)
             continue
-        if rel.source_id not in seen_ids and db.get(Asset, rel.source_id) is None:
+        if rel.source_id not in seen_ids and get_asset(db, rel.source_id) is None:
             continue
-        if rel.target_id not in seen_ids and db.get(Asset, rel.target_id) is None:
+        if rel.target_id not in seen_ids and get_asset(db, rel.target_id) is None:
             continue
         exists = db.scalar(
             select(Relationship).where(
@@ -84,7 +84,7 @@ def ingest_collection(db: Session, result: CollectionResult, source: str) -> dic
     if result.vulnerabilities:
         rescore_vulnerabilities(db)
 
-    scanned = [db.get(Asset, i) for i in seen_ids]
+    scanned = [get_asset(db, i) for i in seen_ids]
     stats = evaluate_posture(db, scanned, source)
     # end-of-life runtimes / database engines also land on the Vulnerabilities page
     eol_assets = [a for a in scanned if a is not None and a.type in EOL_VULN_TYPES]

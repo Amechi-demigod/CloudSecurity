@@ -514,11 +514,15 @@ class SimulatedConnector(Connector):
     provider = "azure"
     description = "Synthetic multi-subscription Azure environment (demo / default mode)."
 
-    def __init__(self, seed: int = 42):
+    def __init__(self, seed: int = 42, simulation_mode: bool | None = None, available: bool = True):
         self.seed = seed
+        # SIMULATION_MODE (scheduled demo scans; None: the global setting); `available` is False for
+        # organisations other than the default one (demo data is the default's).
+        self.simulation_mode = simulation_mode
+        self.available = available
 
     def is_configured(self) -> bool:
-        return True
+        return self.available
 
     def collect(self) -> CollectionResult:
         return generate_environment(self.seed)

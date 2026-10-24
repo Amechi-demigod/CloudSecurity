@@ -14,7 +14,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .. import config
+from .. import config, tenancy
 from ..models import Device, utcnow
 from .models import ItAsset, ItAssetEvent, ItAssetOffboarding, ItAssetSettings
 
@@ -35,22 +35,23 @@ class AssetError(ValueError):
 
 # --------------------------------------------------------------------------- settings
 def settings_row(db: Session) -> ItAssetSettings:
-    row = db.get(ItAssetSettings, 1)
+    oid = tenancy.require_org(db)
+    row = db.get(ItAssetSettings, oid)
     if row is None:
-        row = ItAssetSettings(id=1, data={})
+        row = ItAssetSettings(organization_id=oid, data={})
         db.add(row)
         try:
             db.flush()
         except IntegrityError:  # created concurrently
             db.rollback()
-            row = db.get(ItAssetSettings, 1)
+            row = db.get(ItAssetSettings, oid)
     return row
 
 
 def get_settings(db: Session) -> dict[str, Any]:
     """Effective settings: stored overrides on top of the ASSET_* env defaults."""
     s = config.settings
-    row = db.get(ItAssetSettings, 1)
+    row = db.get(ItAssetSettings, tenancy.require_org(db))
     stored = (row.data if row else {}) or {}
     return {
         "default_currency": stored.get("default_currency") or s.asset_default_currency,

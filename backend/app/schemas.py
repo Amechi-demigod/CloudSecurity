@@ -421,11 +421,24 @@ class UserOut(ORM):
     auth_sources: list[str] = []
 
 
+class OrganizationBrief(ORM):
+    id: str
+    name: str
+    slug: str
+    status: str
+    is_default: bool = False
+    logo_url: str | None = None
+
+
 class SessionInfo(BaseModel):
     user: UserOut
     csrf_token: str
     expires_at: UTCDateTime
     idle_timeout_minutes: float
+    # The organisation this session acts in, and whether the user may open the
+    # platform console (manage organisations).
+    organization: OrganizationBrief | None = None
+    platform_admin: bool = False
 
 
 class ChangePasswordRequest(BaseModel):

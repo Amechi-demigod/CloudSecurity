@@ -68,12 +68,12 @@ def request_wipe(c, device_id, hostname="LAPTOP-001", **kw):
 
 
 def actions():
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         return [a.action for a in s.scalars(select(AuditLog).order_by(AuditLog.id))]
 
 
 def events(source="device_approvals"):
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         return [e.event_type for e in s.scalars(select(NotificationEvent).where(NotificationEvent.source == source)
                                                 .order_by(NotificationEvent.id))]
 
@@ -207,7 +207,7 @@ def test_wipe_two_person_flow_ack_and_replay(admin, admin2):
     assert admin2.post(f"/api/approvals/{a['id']}/reject", json={"reason": "late"}).status_code == 409
     d = admin.get(f"/api/devices/{dev}").json()
     assert d["wipe"]["status"] == "queued" and d["device_state"] == "wipe_pending"
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         c = s.get(DeviceCommand, r.json()["command_id"])
         assert c.type == "wipe_device" and c.approval_id == a["id"] and c.approved_by_email == "second-admin@example.com"
         ttl = c.expires_at - c.created_at
@@ -230,7 +230,7 @@ def test_wipe_two_person_flow_ack_and_replay(admin, admin2):
               "device_wipe_acknowledged", "device_command_completed"):
         assert x in acts, x
     assert sorted(events()) == sorted(["approval_requested", "approval_approved", "action_executed", "wipe_acknowledged"])
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         sev = s.scalars(select(NotificationEvent.severity).where(
             NotificationEvent.source == "device_approvals", NotificationEvent.event_type == "approval_requested")).one()
         assert sev == "critical"
@@ -244,7 +244,7 @@ def test_ack_only_for_wipe_and_not_after_expiry(admin, admin2):
     a = request_wipe(admin, dev).json()
     admin2.post(f"/api/approvals/{a['id']}/approve", json={"confirm_hostname": "LAPTOP-001"})
     (cmd,) = poll(agent)
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         s.get(DeviceCommand, cmd["id"]).expires_at = utcnow() - timedelta(seconds=1)
         s.commit()
     assert agent.post(f"/api/agent/commands/{cmd['id']}/ack", json={"nonce": cmd["nonce"]}).status_code == 409
@@ -270,7 +270,7 @@ def test_reject_and_cancel(admin, admin2):
 def test_requests_expire(admin, admin2):
     agent, dev = enrolled(admin)
     a = request_wipe(admin, dev).json()
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         s.get(DeviceApproval, a["id"]).expires_at = utcnow() - timedelta(minutes=1)
         s.commit()
     assert admin2.get("/api/approvals").json() == []  # open requests only
@@ -284,7 +284,7 @@ def test_requests_expire(admin, admin2):
 def test_default_ttl_is_24h(admin):
     _, dev = enrolled(admin)
     a = request_wipe(admin, dev).json()
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         row = s.get(DeviceApproval, a["id"])
         assert row.expires_at - row.requested_at == timedelta(hours=24)
 
@@ -316,14 +316,14 @@ def test_self_approval_requires_name_and_cooling_off(admin, self_approval):
     assert poll(agent) == []  # still cooling off
     assert admin.get("/api/approvals/summary").json()["cooling_off"] == 1
     # Fast-forward past the delay: the next agent poll releases it.
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         s.get(DeviceApproval, a["id"]).execute_after = utcnow() - timedelta(seconds=1)
         s.commit()
     (cmd,) = poll(agent)
     assert cmd["type"] == "wipe_device"
     row = admin.get(f"/api/approvals/{a['id']}").json()
     assert row["status"] == "executed" and row["command_id"] == cmd["id"]
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         detail = s.scalars(select(AuditLog.detail).where(AuditLog.action == "device_approval_approved")).one()
         assert detail["self_approved"] is True
 
@@ -334,7 +334,7 @@ def test_self_approval_can_be_cancelled_during_cooling_off(admin, self_approval)
     admin.post(f"/api/approvals/{a['id']}/approve", json={"confirm_hostname": "LAPTOP-001"})
     r = admin.post(f"/api/approvals/{a['id']}/cancel", json={"reason": "changed my mind"})
     assert r.status_code == 200 and r.json()["status"] == "cancelled"
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         s.get(DeviceApproval, a["id"]).execute_after = utcnow() - timedelta(seconds=1)
         s.commit()
     assert poll(agent) == []
@@ -381,6 +381,6 @@ def test_device_delete_cascades_approvals(admin):
     request_wipe(admin, dev)
     admin.post(f"/api/devices/{dev}/revoke", json={"reason": "gone"})
     assert admin.delete(f"/api/devices/{dev}?reason=cleanup").status_code == 204
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         assert s.scalars(select(DeviceApproval)).all() == []
         assert s.get(Device, dev) is None

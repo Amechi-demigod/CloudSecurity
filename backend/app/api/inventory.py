@@ -11,7 +11,7 @@ from ..auth import audit, client_ip, require_analyst
 from ..db import get_db
 from ..engine import posture
 from ..engine.detection import DETECTION_RULES
-from ..models import Alert, Asset, Finding, Relationship, User, Vulnerability, utcnow
+from ..models import Alert, Asset, Finding, Relationship, User, Vulnerability, get_asset, utcnow
 from ..notifications import builtin as notify
 from ..schemas import (
     AlertOut,
@@ -100,13 +100,13 @@ def asset_facets(db: Session = Depends(get_db)):
 @router.get("/assets/detail")
 def asset_detail(id: str, db: Session = Depends(get_db)):
     """Asset detail. (`id` is a query param because ARM ids contain slashes.)"""
-    a = db.get(Asset, id)
+    a = get_asset(db, id)
     if a is None:
         raise HTTPException(404, "asset not found")
     rels = []
     for r in db.scalars(select(Relationship).where(or_(Relationship.source_id == id, Relationship.target_id == id))):
         other_id, direction = (r.target_id, "out") if r.source_id == id else (r.source_id, "in")
-        other = db.get(Asset, other_id)
+        other = get_asset(db, other_id)
         if other is not None:
             rels.append(RelationshipOut(type=r.type, direction=direction,
                                         asset=AssetRef(id=other.id, name=other.name, type=other.type)))

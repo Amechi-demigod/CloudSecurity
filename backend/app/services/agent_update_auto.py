@@ -29,7 +29,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import config
+from .. import config, tenancy
 from .. import db as dbmod
 from ..auth import audit
 from ..locks import LeaderLock
@@ -58,15 +58,25 @@ IN_PROGRESS = ("downloading", "verified", "installing")
 
 # ----------------------------------------------------------------------------- settings
 def get_settings(db: Session) -> AgentUpdateSettings:
-    st = db.get(AgentUpdateSettings, 1)
+    """The session organisation's update settings (created on first use)."""
+    oid = tenancy.require_org(db)
+    st = db.get(AgentUpdateSettings, oid)
     if st is None:
         s = config.settings
         mode = s.agent_update_default_mode if s.agent_update_default_mode in MODES else "automatic"
-        st = AgentUpdateSettings(id=1, mode=mode, soak_hours=max(0, min(720, s.agent_update_default_soak_hours)),
+        st = AgentUpdateSettings(organization_id=oid, mode=mode, soak_hours=max(0, min(720, s.agent_update_default_soak_hours)),
                                  updated_at=utcnow(), updated_by="system")
         db.add(st)
         db.flush()
     return st
+
+
+def import_settings(db: Session) -> AgentUpdateSettings | None:
+    """The platform-wide auto-import settings: the default organisation's row."""
+    if tenancy.is_default(tenancy.org_id(db)):
+        return get_settings(db)
+    return db.scalar(select(AgentUpdateSettings).where(AgentUpdateSettings.organization_id == tenancy.DEFAULT_ORG_ID)
+                     .execution_options(tenant_unscoped=True))
 
 
 def import_enabled(st: AgentUpdateSettings) -> bool:
@@ -216,18 +226,21 @@ def automation_state(db: Session, now: datetime | None = None) -> dict:
     if rel is not None and st.auto_stage == "pilot" and st.auto_stage_at:
         promote_at = st.auto_stage_at + timedelta(hours=st.soak_hours)
     pilot_count = len(pilot_devices(db, pilot, all_rings)) if pilot else 0
+    imp = import_settings(db) or AgentUpdateSettings()
     return {
         "mode": st.mode, "soak_hours": st.soak_hours,
         "rollout": {"release_id": rel.id if rel else None, "version": rel.version if rel else None,
                     "stage": st.auto_stage if rel else None, "stage_at": _z(st.auto_stage_at) if rel else None,
                     "promote_at": _z(promote_at), "paused_reason": st.auto_paused_reason,
                     "pilot_ring": pilot.name if pilot else None, "pilot_devices": pilot_count},
-        "auto_import": {"enabled": import_enabled(st), "repo": import_repo(st),
-                        "interval_minutes": import_interval(st),
+        "auto_import": {"enabled": import_enabled(imp), "repo": import_repo(imp),
+                        "interval_minutes": import_interval(imp),
                         "enabled_default": config.settings.agent_update_auto_import,
-                        "checked_at": _z(st.import_checked_at), "status": st.import_status,
-                        "message": st.import_message, "failed_version": st.import_failed_version,
-                        "api": config.settings.agent_update_releases_api},
+                        "checked_at": _z(imp.import_checked_at), "status": imp.import_status,
+                        "message": imp.import_message, "failed_version": imp.import_failed_version,
+                        "api": config.settings.agent_update_releases_api,
+                        # Only the platform operator (default organisation) manages the import.
+                        "managed_here": tenancy.is_default(tenancy.org_id(db))},
         "jitter_seconds": svc.effective_jitter_seconds(db),
         "updated_at": _z(st.updated_at), "updated_by": st.updated_by,
     }
@@ -494,19 +507,23 @@ class AgentUpdateWorker:
         if not leader:
             return False
         now = now or utcnow()
+        # Releases are shared by every organisation: the GitHub auto-import is a
+        # platform job, configured on (and audited / notified to) the default
+        # organisation. Each organisation then rolls out with its own rings / mode.
         try:
-            with dbmod.get_session() as db:
-                auto_tick(db, now)
-                db.commit()
-        except Exception:
-            log.exception("automatic agent rollout step failed")
-        try:
-            with dbmod.get_session() as db:
+            with dbmod.get_session(tenancy.DEFAULT_ORG_ID) as db:
                 if import_due(get_settings(db), now):
                     check_github(db, now)
                 db.commit()
         except Exception:
             log.exception("agent release auto-import failed")
+        for org_id, db in tenancy.for_each_active_org():
+            try:
+                auto_tick(db, now)
+                db.commit()
+            except Exception:
+                db.rollback()
+                log.exception("automatic agent rollout step failed for organisation %s", org_id)
         return True
 
     def _run(self) -> None:

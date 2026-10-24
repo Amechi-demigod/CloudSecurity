@@ -16,10 +16,10 @@ from fastapi import APIRouter, Body, Depends, Header, HTTPException, Path, Reque
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import config
+from .. import config, tenancy
 from ..auth import RateLimiter, audit, client_ip
 from ..db import get_db
-from ..models import Device, DeviceCommand, DeviceCredential, DeviceLogBundle, utcnow
+from ..models import Device, DeviceCommand, DeviceCredential, DeviceLogBundle, EnrollmentToken, utcnow
 from ..notifications import agent_security, approval_source, device_source
 from ..schemas_devices import (
     AgentCommand,
@@ -58,9 +58,14 @@ def current_device(request: Request, authorization: str | None = Header(None),
     token = token.strip()
     if scheme.lower() != "bearer" or not token.startswith(svc.DEVICE_SECRET_PREFIX) or len(token) > 128:
         raise _deny(401, "missing or invalid device credential", request)
-    cred = db.scalar(select(DeviceCredential).where(DeviceCredential.secret_hash == svc.hash_secret(token)))
+    # The credential determines the organisation: everything this request reads
+    # or writes is scoped to it (app/tenancy.py).
+    with tenancy.unscoped(db):
+        cred = db.scalar(select(DeviceCredential).where(DeviceCredential.secret_hash == svc.hash_secret(token)))
     if cred is None:
         raise _deny(401, "missing or invalid device credential", request)
+    _require_active_org(db, cred.organization_id, request)
+    tenancy.set_org(db, cred.organization_id)
     device = cred.device
     if device.status != "active":
         raise _deny(403, "device revoked: re-enroll with a new enrollment token", request, "revoked_device")
@@ -77,6 +82,12 @@ def current_device(request: Request, authorization: str | None = Header(None),
     return device
 
 
+def _require_active_org(db: Session, org_id: str, request: Request) -> None:
+    org = tenancy.get_org(db, org_id)
+    if org is None or org.status != "active":
+        raise _deny(403, "organisation suspended", request, "suspended_organization")
+
+
 @router.post("/enroll", response_model=EnrollResponse)
 def enroll(body: EnrollRequest, request: Request, db: Session = Depends(get_db)):
     """Exchange an enrollment token for a per-device credential (shown once)."""
@@ -89,7 +100,14 @@ def enroll(body: EnrollRequest, request: Request, db: Session = Depends(get_db))
             or not enroll_limiter.hit(f"ip:{ip}", s.enroll_rate_limit, s.enroll_rate_window_seconds)):
         agent_security.rejected("enroll_rate_limited", ip)
         raise HTTPException(429, "too many enrollment attempts", headers={"Retry-After": "60"})
-    token = svc.consume_enrollment_token(db, body.token)
+    # The enrollment token determines the organisation the device joins.
+    with tenancy.unscoped(db):
+        org_id = db.scalar(select(EnrollmentToken.organization_id)
+                           .where(EnrollmentToken.token_hash == svc.hash_secret(body.token)))
+    if org_id is not None:
+        _require_active_org(db, org_id, request)
+        tenancy.set_org(db, org_id)
+    token = svc.consume_enrollment_token(db, body.token) if org_id is not None else None
     info = body.device
     if token is None:
         enroll_failure_limiter.hit(f"ip:{ip}", s.enroll_failure_limit, s.enroll_rate_window_seconds)

@@ -42,12 +42,12 @@ def code_at(secret: str, clock: Clock, offset_steps: int = 0) -> str:
 
 
 def audit_actions() -> list[str]:
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         return [a.action for a in s.scalars(select(AuditLog).order_by(AuditLog.id))]
 
 
 def audit_rows(action: str) -> list[AuditLog]:
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         return list(s.scalars(select(AuditLog).where(AuditLog.action == action).order_by(AuditLog.id)))
 
 
@@ -102,7 +102,7 @@ def test_enrolment_is_verified_before_enable(client, clock):
     assert st["enabled"] and st["recovery_codes_remaining"] == 10
     assert client.post("/api/auth/mfa/totp/setup").status_code == 409
 
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         row = s.scalar(select(UserMfa))
         assert secret not in row.totp_secret_enc and row.pending_secret_enc is None
         assert mfa.decrypt_secret(row.totp_secret_enc) == secret
@@ -114,7 +114,7 @@ def test_enrolment_is_verified_before_enable(client, clock):
 
 def test_setup_expires(client, clock):
     secret = client.post("/api/auth/mfa/totp/setup").json()["secret"]
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         s.scalar(select(UserMfa)).pending_created_at = utcnow() - timedelta(minutes=16)
         s.commit()
     assert client.post("/api/auth/mfa/totp/enable", json={"code": code_at(secret, clock)}).status_code == 409
@@ -195,7 +195,7 @@ def test_wrong_codes_lock_the_account(client, clock, monkeypatch):
     token = password_step(b)["mfa_token"]
     for _ in range(2):
         assert b.post("/api/auth/login/mfa", json={"mfa_token": token, "code": "999999"}).status_code == 401
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         assert s.scalar(select(User).where(User.email == ADMIN_EMAIL)).locked_until is not None
     clock.advance()
     r = b.post("/api/auth/login/mfa", json={"mfa_token": token, "code": code_at(secret, clock)})
@@ -217,7 +217,7 @@ def test_challenge_attempt_limit_and_expiry(client, clock, monkeypatch):
     assert r.status_code == 401 and "sign in again" in r.json()["detail"]
 
     token = password_step(b)["mfa_token"]
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         for ch in s.scalars(select(MfaChallenge)):
             ch.expires_at = utcnow() - timedelta(seconds=1)
         s.commit()
@@ -264,7 +264,7 @@ def test_disable_requires_password_and_code(client, clock):
     assert "cnapp_session" in client.cookies and client.get("/api/auth/me").status_code == 200
     # plain password login again
     assert password_step(new_browser(client)).get("csrf_token")
-    with db.get_session() as s:
+    with db.get_session("default") as s:
         assert s.scalar(select(MfaRecoveryCode)) is None
     assert audit_rows("mfa_disabled")[0].detail["verified_with"] == "totp"
     assert "mfa_disable_failure" in audit_actions()

@@ -530,7 +530,7 @@ def test_exposure_api(empty_client):
     from app import db
 
     client = empty_client
-    session = db.get_session()
+    session = db.get_session("default")
     try:
         ingest_collection(session, collect(), source="azure")
     finally:
@@ -652,7 +652,7 @@ def test_eol_runtimes_and_engines_become_vulnerabilities(empty_client):
     from app.models import Vulnerability
 
     clients = build_clients()
-    session = db.get_session()
+    session = db.get_session("default")
     try:
         stats = ingest_collection(session, collect(clients), source="azure")
         assert stats["eol_opened"] == 4
@@ -670,7 +670,7 @@ def test_eol_runtimes_and_engines_become_vulnerabilities(empty_client):
     web_cfg = clients["web"].web_apps.get_configuration.side_effect
     clients["web"].web_apps.get_configuration.side_effect = lambda rg, n: NS(
         **{**vars(web_cfg(rg, n)), "linux_fx_version": "PHP|8.3"})
-    session = db.get_session()
+    session = db.get_session("default")
     try:
         stats = ingest_collection(session, collect(clients), source="azure")
         assert stats["eol_resolved"] == 1 and stats["eol_opened"] == 0

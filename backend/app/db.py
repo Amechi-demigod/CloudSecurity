@@ -97,10 +97,16 @@ def init_engine(url: str, migrate: bool | None = None) -> Engine:
         with locks.advisory_lock("schema-migration"):
             if is_sqlite(engine):
                 Base.metadata.create_all(engine)
+                _upgrade_sqlite_tenancy(engine)
                 _relax_not_null(engine)
                 _add_missing_columns(engine)
             else:
                 run_migrations(engine)
+            with get_session(unscoped=True) as session:
+                from . import tenancy
+
+                tenancy.ensure_default_org(session)
+                session.commit()
     return engine
 
 
@@ -179,13 +185,95 @@ def _relax_not_null(eng: Engine) -> None:
             conn.execute(text(f'DROP TABLE "{old}"'))
 
 
-def get_session() -> Session:
+# New NOT NULL columns of tables rebuilt by _upgrade_sqlite_tenancy, with the
+# value existing rows get (SQL literals).
+_SQLITE_NEW_COLUMN_VALUES = {"organization_id": "'default'", "is_platform_admin": "0"}
+
+
+def _upgrade_sqlite_tenancy(eng: Engine) -> None:
+    """SQLite only: bring a database created before multi-tenancy to the current
+    schema (what the 0013_organizations migration does on PostgreSQL). Every
+    existing row goes to the default organisation and user roles become
+    memberships of it. Tables whose columns differ from the ORM in a way an ALTER
+    cannot fix (a new NOT NULL column, a dropped column, a new primary key) are
+    rebuilt with their data. Idempotent: nothing to do on an up-to-date database."""
+    from sqlalchemy import inspect, text
+
+    from .tenancy import DEFAULT_ORG_ID
+
+    insp = inspect(eng)
+    existing = set(insp.get_table_names())
+    if "users" not in existing:
+        return
+    rebuild = []
+    for table in Base.metadata.sorted_tables:
+        if table.name not in existing:
+            continue
+        db_cols = {c["name"] for c in insp.get_columns(table.name)}
+        orm_cols = {c.name for c in table.columns}
+        new_required = [c for c in table.columns if c.name not in db_cols and c.name in _SQLITE_NEW_COLUMN_VALUES]
+        if new_required or (db_cols - orm_cols):
+            rebuild.append((table, db_cols))
+    if not rebuild:
+        return
+    log.warning("Upgrading SQLite database to organisations: rebuilding %d tables (existing data goes to the "
+                "default organisation)", len(rebuild))
+    with eng.connect() as conn:
+        conn.exec_driver_sql("PRAGMA foreign_keys=OFF")
+        conn.exec_driver_sql("PRAGMA legacy_alter_table=ON")  # keep other tables' FKs pointing at the new table
+        conn.commit()  # pragmas only apply outside a transaction; end the autobegun one
+        try:
+            with conn.begin():
+                users_cols = {c["name"] for c in insp.get_columns("users")}
+                if "role" in users_cols:
+                    # Roles move to memberships of the default organisation.
+                    conn.execute(text(
+                        "INSERT INTO organization_memberships (organization_id, user_id, role, created_at) "
+                        "SELECT :org, id, role, created_at FROM users WHERE id NOT IN "
+                        "(SELECT user_id FROM organization_memberships)"), {"org": DEFAULT_ORG_ID})
+                for table, db_cols in rebuild:
+                    common = [c.name for c in table.columns if c.name in db_cols]
+                    added = [c.name for c in table.columns
+                             if c.name not in db_cols and c.name in _SQLITE_NEW_COLUMN_VALUES]
+                    old = f"_old_{table.name}"
+                    for idx in insp.get_indexes(table.name):
+                        conn.execute(text(f'DROP INDEX IF EXISTS "{idx["name"]}"'))
+                    conn.execute(text(f'ALTER TABLE "{table.name}" RENAME TO "{old}"'))
+                    table.create(conn)
+                    # identifiers and literals come from our own ORM metadata, never from user input
+                    cols = ", ".join(f'"{c}"' for c in common + added)
+                    values = ", ".join([f'"{c}"' for c in common] + [_SQLITE_NEW_COLUMN_VALUES[c] for c in added])
+                    conn.execute(text(f'INSERT INTO "{table.name}" ({cols}) SELECT {values} FROM "{old}"'))  # noqa: S608
+                    conn.execute(text(f'DROP TABLE "{old}"'))
+            problems = conn.exec_driver_sql("PRAGMA foreign_key_check").fetchall()
+            if problems:
+                log.warning("SQLite foreign key check after the organisation upgrade: %d problem(s), e.g. %s",
+                            len(problems), problems[:5])
+        finally:
+            conn.rollback()
+            conn.exec_driver_sql("PRAGMA legacy_alter_table=OFF")
+            conn.exec_driver_sql("PRAGMA foreign_keys=ON")
+            conn.commit()
+
+
+def get_session(org_id: str | None = None, *, unscoped: bool = False) -> Session:
+    """A new session. Pass the organisation to work in, or `unscoped=True` for
+    deliberate cross-organisation (platform / system) access. A session with
+    neither refuses to touch tenant tables (app/tenancy.py)."""
+    from . import tenancy
+
     assert SessionLocal is not None, "init_engine() not called"
-    return SessionLocal()
+    session = SessionLocal()
+    if unscoped:
+        tenancy.set_unscoped(session)
+    elif org_id is not None:
+        tenancy.set_org(session, org_id)
+    return session
 
 
 def get_db() -> Iterator[Session]:
-    """FastAPI dependency."""
+    """FastAPI dependency. The authentication dependency (user session, device
+    credential, ingest token) scopes it to the caller's organisation."""
     db = get_session()
     try:
         yield db

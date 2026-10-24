@@ -13,6 +13,7 @@ A cloud security platform MVP inspired by runtime-first CNAPPs such as Upwind. I
 - **Real cloud posture connectors (opt-in, read-only)**: Azure (azure-mgmt-* SDKs), AWS (boto3, SecurityAudit + ViewOnlyAccess, cross-account roles) and GCP (Google REST APIs via google-auth, Viewer + Security Reviewer). A "Run scan" button merges the results into the same model with `source="azure"`, `"aws"` or `"gcp"`; see [Cloud connectors](#cloud-connectors-read-only).
 - **Login, sessions and role-based access control**: every API endpoint and page requires sign-in (viewer, analyst or admin roles), with an admin Users page and an audit log. See [Authentication & access control](#authentication--access-control).
 - **IT asset lifecycle**: hardware records for every agent-enrolled device plus monitors, phones, docks and laptops without an agent; assignment and chain-of-custody history, offboarding with retrieval tracking and overdue reminders, warranties, disposal with wipe/destruction certificates, idle-device detection, CSV import/export. See **[docs/ASSET_MANAGEMENT.md](docs/ASSET_MANAGEMENT.md)**.
+- **Multi-tenant organisations**: one deployment serves many organisations with strict data isolation (enforced centrally in the ORM, composite keys for cloud resource ids, per-organisation agent, sensor and cloud credentials). Existing installations are migrated into a default organisation automatically. See **[docs/MULTI_TENANCY.md](docs/MULTI_TENANCY.md)**.
 - **Pluggable connectors** and a documented **runtime sensor ingest API** for the runtime sensor.
 
 ## Architecture
@@ -99,6 +100,7 @@ docs/NOTIFICATIONS.md    alert notifications: Teams, Slack, email, signed webhoo
 docs/ASSET_MANAGEMENT.md IT asset lifecycle: asset records, custody, offboarding, disposal, CSV, notifications
 docs/AUTH.md             MFA (TOTP) and Microsoft Entra ID sign-in, break-glass accounts
 docs/VULNERABILITIES.md  CVE matching: sources, CPE mapping table, limits, egress, adding mappings
+docs/MULTI_TENANCY.md    organisations: data model, isolation guarantees, machine credentials, platform owners
 scripts/smoke_test.py    end-to-end smoke test (CI and the deploy workflow)
 scripts/agent_e2e.py     endpoint agent <-> backend end-to-end test (CI on Windows and macOS runners)
 docker-compose.yml       local stack (SQLite); docker-compose.postgres.yml adds PostgreSQL
@@ -207,12 +209,14 @@ On first start, simulated mode seeds the database (`backend/cnapp.db`) and backf
 | `SIMULATOR_INTERVAL_SECONDS` | `15` | Seconds between simulator ticks |
 | `SIMULATOR_ATTACK_PROBABILITY` | `0.05` | Chance that a tick plays out an attack scenario |
 | `SEED` | `42` | Deterministic seed for generated data |
-| `INGEST_API_TOKEN` | *(empty)* | Bearer token required on `POST /api/runtime/events` (the sensor's `SENSOR_API_TOKEN`). Ingest is **fail-closed**: unset means 503. `RUNTIME_INGEST_TOKEN` is accepted as a legacy alias |
+| `INGEST_API_TOKEN` | *(empty)* | Bearer token required on `POST /api/runtime/events` (the sensor's `SENSOR_API_TOKEN`) for the **default organisation**; other organisations create their own ingest tokens (`/api/organization/ingest-tokens`). Ingest is **fail-closed**: with no token at all it returns 503. `RUNTIME_INGEST_TOKEN` is accepted as a legacy alias |
 | `INGEST_ALLOW_UNAUTHENTICATED` | `false` | Local development only: accept sensor events without a token |
 | `MAX_REQUEST_BYTES` | `1048576` | Request body limit for every endpoint (413 above it) |
 | `MAX_EVENTS_PER_REQUEST` | `1000` | Max events per ingest request |
 | `CORS_ORIGINS` | `http://localhost:5173` | Comma-separated allowed origins |
-| `ADMIN_EMAIL` / `ADMIN_PASSWORD` | | Create this admin on startup **only if no users exist**. Password must be 12+ characters. There is no default password |
+| `ADMIN_EMAIL` / `ADMIN_PASSWORD` | | Create this admin (of the default organisation) on startup **only if no users exist**. Password must be 12+ characters. There is no default password |
+| `DEFAULT_ORG_NAME` | `Default organisation` | Name given to the default organisation when it is created (existing data is migrated into it); rename it later in the console. See [docs/MULTI_TENANCY.md](docs/MULTI_TENANCY.md) |
+| `PLATFORM_ADMIN_EMAILS` | | Comma-separated platform owners (manage organisations), in addition to `python -m app.cli platform-admin EMAIL` |
 | `ADMIN_NAME` | `Administrator` | Display name for the bootstrap admin |
 | `COOKIE_SECURE` | `true` | Mark the session cookie `Secure`. Leave on for https and Codespaces; see [Cookies](#session-cookie-settings) |
 | `SESSION_MAX_AGE_HOURS` | `8` | Absolute session lifetime |

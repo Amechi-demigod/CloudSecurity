@@ -217,7 +217,7 @@ def test_token_limits_expiry_and_revocation(admin):
 
     r = download(admin)
     token3 = pkg_enroll_config(r.content)["token"]
-    s = db.get_session()
+    s = db.get_session("default")
     try:
         s.get(EnrollmentToken, r.headers["x-enrollment-token-id"]).expires_at = utcnow() - dt.timedelta(seconds=1)
         s.commit()

@@ -8,7 +8,7 @@ from __future__ import annotations
 import threading
 
 import pytest
-from sqlalchemy import inspect, text
+from sqlalchemy import inspect, select, text
 
 from app import db, locks
 from app.services.simulation import RuntimeSimulator
@@ -62,7 +62,7 @@ def test_migrations_match_models(tmp_path):
 MIGRATION_CHAIN = ["0001_baseline", "0002_device_management", "0003_notifications", "0004_mfa_sso",
                    "0005_agent_installers", "0006_agent_updates", "0007_it_asset_lifecycle",
                    "0008_agent_update_automation", "0009_device_approvals_scripts", "0010_scheduled_scans",
-                   "0011_vulnerability_matching"]
+                   "0011_vulnerability_matching", "0013_organizations"]
 
 
 def test_migration_history_is_linear():
@@ -161,26 +161,20 @@ def test_pre_alembic_postgres_database_is_stamped():
     reset_database()
     eng = db.create_db_engine(TEST_DATABASE_URL)
     try:
-        # How Phase 1/2 created schemas: only the baseline tables existed then (the
-        # MFA tables are created too, to exercise 0004_mfa_sso's has_table guards).
-        later = ("notification_", "device", "enrollment_tokens", "agent_", "it_asset", "scan_schedule", "vuln_",
-                 "asset_packages")
-        baseline = [t for t in db.Base.metadata.sorted_tables
-                    if not t.name.startswith(later) and t.name != "vulnerabilities"]
-        db.Base.metadata.create_all(eng, tables=baseline)
-        # vulnerabilities as it was then: without the CVE-matching columns (device_id -> devices)
-        from sqlalchemy import MetaData, Table
-
-        md = MetaData()
-        db.Base.metadata.tables["assets"].to_metadata(md)
-        new_cols = {"device_id", "kev", "epss", "match_key", "last_seen", "resolved_at", "evidence"}
-        old_vulns = Table("vulnerabilities", md, *[c._copy() for c in db.Base.metadata.tables["vulnerabilities"].columns
-                                                   if c.name not in new_cols])
-        md.create_all(eng, tables=[old_vulns])
+        # How Phase 1/2 created schemas: only the baseline tables existed then
+        # (the baseline migration's schema, without Alembic's version table). The
+        # MFA tables are created too, to exercise 0004_mfa_sso's has_table guards.
+        db.run_migrations(eng, "0001_baseline")
+        with eng.begin() as conn:
+            conn.execute(text("DROP TABLE alembic_version"))
+        mfa_tables = [db.Base.metadata.tables[t] for t in ("user_mfa", "mfa_recovery_codes", "mfa_challenges",
+                                                            "user_identities", "oidc_auth_requests")]
+        db.Base.metadata.create_all(eng, tables=mfa_tables)
         db.run_migrations(eng)  # stamped at the baseline, then upgraded
         with eng.connect() as conn:
             assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == _head()
         assert inspect(eng).has_table("notification_deliveries") and inspect(eng).has_table("devices")
+        assert _schema_diff(eng) == []
     finally:
         eng.dispose()
 
@@ -247,7 +241,7 @@ def test_only_one_simulator_emits_events(client):
     from app.models import RuntimeEvent
 
     def count():
-        with db.get_session() as s:
+        with db.get_session("default") as s:
             return s.query(RuntimeEvent).count()
 
     sims = [RuntimeSimulator(interval=3600, seed=i, attack_probability=0) for i in (1, 2)]
@@ -290,3 +284,137 @@ def test_leader_lock_lost_when_connection_dies(session):
         other = locks.LeaderLock("t-lost")
         assert other.try_acquire()  # the server released the advisory lock
         other.release()
+
+
+# --- multi-tenancy upgrade (0013_organizations) ---------------------------------------------
+
+def _fill(conn, table: str, **values):
+    """Insert one row at the 0011 schema, filling NOT NULL columns we do not care about."""
+    import datetime as dt
+
+    from sqlalchemy import JSON, Boolean, Date, DateTime, Float, Integer, LargeBinary, MetaData, Numeric, Table
+
+    t = Table(table, MetaData(), autoload_with=conn)
+    row = dict(values)
+    for c in t.columns:
+        if c.name in row or c.nullable or c.autoincrement is True:
+            continue
+        ty = c.type
+        row[c.name] = (dt.datetime(2026, 1, 1) if isinstance(ty, DateTime) else dt.date(2026, 1, 1)
+                       if isinstance(ty, Date) else False if isinstance(ty, Boolean) else 0
+                       if isinstance(ty, Integer | Float | Numeric) else {} if isinstance(ty, JSON) else b""
+                       if isinstance(ty, LargeBinary) else "x")
+    conn.execute(t.insert().values(**row))
+
+
+OLD_ROWS = [
+    ("users", {"id": "u1", "email": "admin@example.com", "role": "admin", "password_hash": "h"}),
+    ("users", {"id": "u2", "email": "viewer@example.com", "role": "viewer", "password_hash": "h"}),
+    ("user_sessions", {"id": "s1", "user_id": "u1"}),
+    ("assets", {"id": "/subscriptions/1/vm1", "name": "vm1", "type": "vm"}),
+    ("assets", {"id": "/subscriptions/1/nsg1", "name": "nsg1", "type": "nsg"}),
+    ("relationships", {"source_id": "/subscriptions/1/nsg1", "target_id": "/subscriptions/1/vm1", "type": "protects"}),
+    ("findings", {"id": "f1", "rule_id": "R1", "asset_id": "/subscriptions/1/vm1", "severity": "high"}),
+    ("vulnerabilities", {"id": "v1", "asset_id": "/subscriptions/1/vm1", "cve_id": "CVE-1", "cvss": 9.0}),
+    ("asset_packages", {"asset_id": "/subscriptions/1/vm1", "name": "openssl"}),
+    ("devices", {"id": "d1", "hostname": "laptop-1", "os_family": "windows"}),
+    ("device_credentials", {"id": "c1", "device_id": "d1", "secret_hash": "sh"}),
+    ("vulnerabilities", {"id": "v2", "device_id": "d1", "cve_id": "CVE-2", "cvss": 5.0}),
+    ("enrollment_tokens", {"id": "e1", "name": "t", "token_hash": "th"}),
+    ("runtime_events", {"id": "ev1", "event_type": "process_exec"}),
+    ("alerts", {"id": "al1", "rule_id": "D1", "severity": "high"}),
+    ("alert_events", {"alert_id": "al1", "event_id": "ev1"}),
+    ("scan_runs", {"id": "sr1", "connector": "azure"}),
+    ("scan_schedule_settings", {"id": 1, "interval_hours": 3.0}),
+    ("agent_update_settings", {"id": 1, "mode": "manual"}),
+    ("agent_update_rings", {"id": "r1", "name": "Pilot"}),
+    ("it_asset_settings", {"id": 1, "data": {"default_currency": "NGN"}}),
+    ("it_assets", {"id": "i1", "asset_tag": "WK-0001", "device_id": "d1"}),
+    ("notification_source_state", {"source": "attack_path", "state": {"seen": ["p1"]}}),
+    ("notification_channels", {"id": "n1", "name": "Teams", "type": "teams"}),
+    ("audit_log", {"action": "login_success", "actor_email": "admin@example.com"}),
+    ("vuln_match_state", {"target_type": "device", "target_id": "d1"}),
+]
+
+
+def _check_migrated(eng):
+    """Every pre-existing row belongs to the default organisation; roles became memberships."""
+    with eng.connect() as conn:
+        for table in sorted({t for t, _ in OLD_ROWS} - {"users"}):
+            orgs = conn.execute(text(f"SELECT organization_id FROM {table}")).scalars().all()  # noqa: S608
+            assert orgs and set(orgs) == {"default"}, table
+        assert conn.execute(text("SELECT id, slug, is_default, status FROM organizations")).all() == [
+            ("default", "default", True, "active")]
+        assert sorted(conn.execute(text("SELECT user_id, role, organization_id FROM organization_memberships"))
+                      .all()) == [("u1", "admin", "default"), ("u2", "viewer", "default")]
+        assert conn.execute(text("SELECT count(*) FROM users WHERE is_platform_admin")).scalar() == 0
+        assert conn.execute(text("SELECT interval_hours FROM scan_schedule_settings")).scalar() == 3.0
+        cols = {c["name"] for c in inspect(eng).get_columns("users")}
+        assert "role" not in cols and "is_platform_admin" in cols
+    # The application reads the migrated data through the organisation-scoped ORM.
+    from sqlalchemy.orm import Session
+
+    from app import tenancy
+    from app.models import Asset, Finding, Relationship, ScanScheduleSettings, get_asset
+
+    with Session(eng) as s:
+        tenancy.set_org(s, "default")
+        assert get_asset(s, "/subscriptions/1/vm1").name == "vm1"
+        assert s.scalar(select(Finding)).asset.name == "vm1"
+        assert s.scalar(select(Relationship)).target_id == "/subscriptions/1/vm1"
+        assert s.get(ScanScheduleSettings, "default").interval_hours == 3.0
+        tenancy.set_org(s, "other")
+        assert s.scalars(select(Asset)).all() == [] and get_asset(s, "/subscriptions/1/vm1") is None
+
+
+def _db_at_0011_with_data(tmp_path, name: str):
+    if IS_POSTGRES:
+        reset_database()
+        url = TEST_DATABASE_URL
+    else:
+        url = f"sqlite:///{tmp_path / name}"
+    eng = db.create_db_engine(url)
+    db.run_migrations(eng, "0011_vulnerability_matching")
+    with eng.begin() as conn:
+        for table, values in OLD_ROWS:
+            _fill(conn, table, **values)
+    return eng, url
+
+
+def test_upgrade_from_0011_with_data_migrates_into_default_org(tmp_path):
+    """Alembic path (PostgreSQL in production): existing data lands in the
+    default organisation with no manual step; downgrade restores the old shape."""
+    eng, _ = _db_at_0011_with_data(tmp_path, "upgrade.db")
+    try:
+        db.run_migrations(eng)
+        assert _schema_diff(eng) == []
+        _check_migrated(eng)
+
+        from alembic import command
+
+        command.downgrade(db.alembic_config(eng), "0011_vulnerability_matching")
+        with eng.connect() as conn:
+            assert conn.execute(text("SELECT role FROM users WHERE id = 'u1'")).scalar() == "admin"
+            assert conn.execute(text("SELECT count(*) FROM findings")).scalar() == 1
+            assert conn.execute(text("SELECT id FROM scan_schedule_settings")).scalar() == 1
+        db.run_migrations(eng)
+        assert _schema_diff(eng) == []
+        _check_migrated(eng)
+    finally:
+        eng.dispose()
+
+
+def test_sqlite_startup_upgrade_with_data(tmp_path):
+    """SQLite installations upgrade at startup (create_all path, no Alembic):
+    same result as the migration."""
+    if IS_POSTGRES:
+        pytest.skip("SQLite startup path")
+    eng, url = _db_at_0011_with_data(tmp_path, "startup-upgrade.db")
+    eng.dispose()
+    try:
+        eng = db.init_engine(url)
+        _check_migrated(eng)
+        db.init_engine(url)  # idempotent
+        _check_migrated(db.engine)
+    finally:
+        fresh_db()

@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from .. import config
 from ..auth import audit, client_ip, require_analyst
 from ..db import get_db
-from ..models import Alert, AlertEvent, Asset, RuntimeEvent, User
+from ..models import Alert, AlertEvent, Asset, RuntimeEvent, User, get_asset, get_runtime_event
 from ..notifications import builtin as notify
 from ..schemas import (
     AlertDetail,
@@ -91,7 +91,7 @@ def ingest_runtime_events(payload: Any = Body(...), db: Session = Depends(get_db
             alert_ids.update(a.id for a in alerts)
             continue
         event_id = e.event_id.replace("-", "").lower()[:32] if e.event_id else None
-        if event_id and (event_id in seen or db.get(RuntimeEvent, event_id) is not None):
+        if event_id and (event_id in seen or get_runtime_event(db, event_id) is not None):
             duplicates += 1
             continue
         if event_id:
@@ -211,7 +211,7 @@ def get_alert(alert_id: str, db: Session = Depends(get_db)):
         t = TimelineEntry.model_validate(e)
         t.triggered = e.id in linked_ids
         timeline.append(t)
-    asset = db.get(Asset, a.asset_id) if a.asset_id else None
+    asset = get_asset(db, a.asset_id) if a.asset_id else None
     base = AlertOut.model_validate(a).model_dump()
     if asset is not None:
         base.update(asset_name=asset.name, asset_type=asset.type)

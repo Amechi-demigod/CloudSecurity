@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import config
+from .. import config, tenancy
 from ..auth import (
     GENERIC_LOGIN_ERROR,
+    OrgAccessError,
+    active_admins,
+    attach_membership,
     audit,
     burn_verify_time,
     clear_session_cookie,
@@ -15,22 +18,27 @@ from ..auth import (
     current_session,
     current_user,
     hash_password,
+    is_platform_admin,
     login_limiter,
     needs_rehash,
     normalize_email,
+    org_user,
+    org_users,
     password_problem,
     require_admin,
     revoke_user_sessions,
+    set_membership,
     set_session_cookie,
     verify_password,
 )
 from ..db import get_db
-from ..models import AuditLog, User, UserSession, utcnow
+from ..models import AuditLog, Organization, User, UserSession, utcnow
 from ..schemas import (
     AuditLogOut,
     ChangePasswordRequest,
     LoginRequest,
     MfaChallengeOut,
+    OrganizationBrief,
     PasswordReset,
     SessionInfo,
     UserCreate,
@@ -43,9 +51,15 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 admin_router = APIRouter(prefix="/api", tags=["admin"], dependencies=[Depends(require_admin)])
 
 
-def _session_info(sess: UserSession) -> SessionInfo:
+def org_brief(db: Session, org_id: str) -> OrganizationBrief:
+    org = db.get(Organization, org_id)
+    return OrganizationBrief.model_validate(org)
+
+
+def _session_info(db: Session, sess: UserSession) -> SessionInfo:
     return SessionInfo(user=UserOut.model_validate(sess.user), csrf_token=sess.csrf_token,
-                       expires_at=sess.expires_at, idle_timeout_minutes=config.settings.session_idle_minutes)
+                       expires_at=sess.expires_at, idle_timeout_minutes=config.settings.session_idle_minutes,
+                       organization=org_brief(db, sess.organization_id), platform_admin=is_platform_admin(sess.user))
 
 
 def _check_password(password: str) -> None:
@@ -92,6 +106,14 @@ def login(body: LoginRequest, request: Request, response: Response, db: Session 
         audit(db, "login_password_disabled", actor=user, ip=ip)
         db.commit()
         raise HTTPException(403, "Password sign-in is disabled for this account. Use Sign in with Microsoft.")
+    try:
+        attach_membership(db, user)
+    except OrgAccessError as e:
+        audit(db, "login_denied", actor=user, ip=ip, reason=e.reason)
+        db.commit()
+        raise HTTPException(403, "Your organisation's access is suspended. Contact the platform administrator."
+                            if e.reason == "organization_suspended" else
+                            "This account is not a member of any organisation.") from None
 
     if needs_rehash(user.password_hash):
         user.password_hash = hash_password(body.password)
@@ -102,7 +124,7 @@ def login(body: LoginRequest, request: Request, response: Response, db: Session 
         return result
     token, sess = result
     set_session_cookie(response, token)
-    return _session_info(sess)
+    return _session_info(db, sess)
 
 
 @router.post("/logout", status_code=204)
@@ -115,8 +137,8 @@ def logout(request: Request, response: Response, sess: UserSession = Depends(cur
 
 
 @router.get("/me", response_model=SessionInfo)
-def me(sess: UserSession = Depends(current_session)):
-    return _session_info(sess)
+def me(sess: UserSession = Depends(current_session), db: Session = Depends(get_db)):
+    return _session_info(db, sess)
 
 
 @router.post("/change-password", status_code=204)
@@ -138,32 +160,30 @@ def change_password(body: ChangePasswordRequest, request: Request,
 # --- admin: users & audit log ---------------------------------------------------
 
 def _get_user(db: Session, user_id: str) -> User:
-    user = db.get(User, user_id)
+    user = org_user(db, user_id)
     if user is None:
         raise HTTPException(404, "user not found")
     return user
 
 
-def _active_admins(db: Session) -> int:
-    return db.scalar(select(func.count()).select_from(User).where(User.role == "admin", User.is_active.is_(True))) or 0
-
-
 @admin_router.get("/users", response_model=list[UserOut])
 def list_users(db: Session = Depends(get_db)):
-    return list(db.scalars(select(User).order_by(User.email)))
+    return org_users(db)
 
 
 @admin_router.post("/users", response_model=UserOut, status_code=201)
 def create_user(body: UserCreate, request: Request, admin: User = Depends(current_user),
                 db: Session = Depends(get_db)):
     email = normalize_email(body.email)
+    # Email addresses are unique on the whole platform (one organisation per user for now).
     if db.scalar(select(User).where(User.email == email)):
         raise HTTPException(409, "a user with this email already exists")
     _check_password(body.password)
-    user = User(email=email, name=body.name.strip(), role=body.role, password_hash=hash_password(body.password),
+    user = User(email=email, name=body.name.strip(), password_hash=hash_password(body.password),
                 password_changed_at=utcnow())
     db.add(user)
     db.flush()
+    set_membership(db, user, tenancy.require_org(db), body.role)
     audit(db, "user_created", actor=admin, target=email, ip=client_ip(request), role=body.role)
     db.commit()
     return user
@@ -175,14 +195,14 @@ def update_user(user_id: str, body: UserUpdate, request: Request, admin: User = 
     user = _get_user(db, user_id)
     changes: dict = {}
     loses_admin = (body.role is not None and body.role != "admin") or body.is_active is False
-    if loses_admin and user.role == "admin" and user.is_active and _active_admins(db) <= 1:
+    if loses_admin and user.role == "admin" and user.is_active and active_admins(db) <= 1:
         raise HTTPException(409, "cannot demote or deactivate the last active admin")
     if body.name is not None and body.name.strip() != user.name:
         changes["name"] = [user.name, body.name.strip()]
         user.name = body.name.strip()
     if body.role is not None and body.role != user.role:
         changes["role"] = [user.role, body.role]
-        user.role = body.role
+        set_membership(db, user, tenancy.require_org(db), body.role)
     if body.is_active is not None and body.is_active != user.is_active:
         changes["is_active"] = [user.is_active, body.is_active]
         user.is_active = body.is_active
