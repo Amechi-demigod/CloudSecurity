@@ -152,16 +152,19 @@ def migrate(args: argparse.Namespace) -> int:
 
 
 def rotate_notification_key(args: argparse.Namespace) -> int:
+    from .connectors import org_config
     from .notifications import crypto, dispatcher
 
-    with db.get_session(unscoped=True) as s:  # every organisation's channels
+    with db.get_session(unscoped=True) as s:  # every organisation's channels and connector settings
         try:
             n = dispatcher.rotate_channel_secrets(s)
+            c = org_config.rotate_secrets(s)
         except (crypto.DecryptionFailed, crypto.EncryptionUnavailable) as exc:
             raise SystemExit(f"error: {exc}") from None
-        auth.audit(s, "notification_key_rotated", actor_email="cli", channels=n)
+        auth.audit(s, "notification_key_rotated", actor_email="cli", channels=n, connector_configs=c)
         s.commit()
-    print(f"Re-encrypted the secrets of {n} notification channel(s) with the first NOTIFICATIONS_ENCRYPTION_KEY")
+    print(f"Re-encrypted the secrets of {n} notification channel(s) and {c} cloud connector setting(s) with the "
+          "first NOTIFICATIONS_ENCRYPTION_KEY")
     return 0
 
 

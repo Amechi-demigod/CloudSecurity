@@ -2162,6 +2162,21 @@ user_cli() { # user_cli create|reset ARGS
   return 0
 }
 
+# Platform owner ("super admin"): manages organisations in the console
+# (docs/MULTI_TENANCY.md). Not an organisation role.
+cmd_platform_admin() {
+  need_root platform-admin; require_installed
+  local email=${1:-}
+  [[ -n $email && $email != -* ]] || die "usage: cnapp-ctl platform-admin EMAIL [--revoke]"
+  shift
+  compose exec -T backend python -m app.cli platform-admin "$email" "$@"
+}
+
+cmd_orgs() {
+  need_root orgs; require_installed
+  compose exec -T backend python -m app.cli org-list
+}
+
 cmd_reset_mfa() {
   need_root reset-mfa; require_installed
   [[ ${1:-} == --email && -n ${2:-} ]] || die "usage: cnapp-ctl reset-mfa --email EMAIL"
@@ -2496,6 +2511,8 @@ Operations
   public-agent disable [--forget-hostname] | status
   create-admin --email E [--role admin|analyst|viewer] [--generate]
   reset-password --email E [--generate]   reset-mfa --email E
+  platform-admin EMAIL [--revoke]         make a user a platform owner (manages organisations)
+  orgs                                    list organisations with usage counts
   show-secret INGEST_API_TOKEN|...        print one generated secret (e.g. for the runtime sensor)
 
 Cloud connectors (read-only; docs/CONNECT_AWS.md, docs/CONNECT_GCP.md)
@@ -2543,6 +2560,8 @@ main() {
     create-admin) user_cli create "$@" ;;
     reset-password) user_cli reset "$@" ;;
     reset-mfa) cmd_reset_mfa "$@" ;;
+    platform-admin) cmd_platform_admin "$@" ;;
+    orgs) cmd_orgs "$@" ;;
     show-secret) cmd_show_secret "$@" ;;
     gcp-key) cmd_gcp_key "$@" ;;
     agent-release) cmd_agent_release "$@" ;;

@@ -557,3 +557,18 @@ def test_cli_reset_mfa_break_glass(admin):
     assert audit_rows("mfa_reset")[-1].actor_email == "cli"
     with pytest.raises(SystemExit):
         cli.reset_mfa(argparse.Namespace(email="nobody@example.com"))
+
+
+def test_entra_sso_only_reaches_default_organisation_members(admin, idp, monkeypatch):
+    """The ENTRA_* app belongs to the default organisation: an Entra account
+    asserting the email of another organisation's user must not sign in as them
+    (an Entra tenant controls its accounts' email claims), even with JIT on."""
+    from tests.test_tenancy import create_org
+
+    monkeypatch.setattr(config.settings, "entra_jit_provisioning", True)
+    create_org("acme", "alice@example.com", "acme-alice-password")
+    b = browser(admin)
+    assert error_of(sso_login(b, idp)) == "not_provisioned"
+    assert b.get("/api/auth/me").status_code == 401
+    with db.get_session(unscoped=True) as s:
+        assert s.scalars(select(UserIdentity)).all() == []

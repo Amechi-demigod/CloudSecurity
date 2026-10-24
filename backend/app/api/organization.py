@@ -1,0 +1,214 @@
+"""The signed-in user's organisation: profile, sensor ingest tokens and cloud
+connector settings (/api/organization/*). Everything here is scoped to the
+session's organisation by app/tenancy.py; reads need any role, writes admin."""
+from __future__ import annotations
+
+import secrets
+from datetime import datetime
+from typing import Annotated, Any, Literal
+
+from fastapi import APIRouter, Depends, HTTPException, Path, Request
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from .. import tenancy
+from ..auth import audit, client_ip, require_admin, require_viewer
+from ..connectors import org_config
+from ..db import get_db
+from ..models import IngestToken, Organization, User, utcnow
+from ..schemas import ORM, UTCDateTime
+from ..security import INGEST_TOKEN_PREFIX, hash_ingest_token
+from ..services import organizations as orgs
+
+router = APIRouter(prefix="/api/organization", tags=["organization"], dependencies=[Depends(require_viewer)])
+Provider = Literal["azure", "aws", "gcp"]
+
+
+class OrganizationOut(ORM):
+    id: str
+    name: str
+    slug: str
+    status: str
+    is_default: bool
+    contact_email: str | None = None
+    logo_url: str | None = None
+    plan: str | None = None
+    max_users: int | None = None
+    max_devices: int | None = None
+    created_at: UTCDateTime
+
+
+class OrganizationUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    name: Annotated[str, StringConstraints(min_length=1, max_length=128)] | None = None
+    contact_email: Annotated[str, StringConstraints(max_length=320, pattern=r"^$|^[^@\s]+@[^@\s]+\.[^@\s]+$")] | None = None
+    logo_url: Annotated[str, StringConstraints(max_length=1024, pattern=r"^$|^https://\S+$")] | None = None
+
+
+def _org(db: Session) -> Organization:
+    return db.get(Organization, tenancy.require_org(db))
+
+
+@router.get("", response_model=OrganizationOut)
+def get_organization(db: Session = Depends(get_db)):
+    return _org(db)
+
+
+@router.patch("", response_model=OrganizationOut)
+def update_organization(body: OrganizationUpdate, request: Request, admin: User = Depends(require_admin),
+                        db: Session = Depends(get_db)):
+    org = _org(db)
+    changes: dict[str, list] = {}
+    for f in ("name", "contact_email", "logo_url"):
+        v = getattr(body, f)
+        if v is None:
+            continue
+        v = v or None if f != "name" else v
+        if f == "contact_email" and v:
+            v = v.lower()
+        if v != getattr(org, f):
+            changes[f] = [getattr(org, f), v]
+            setattr(org, f, v)
+    if changes:
+        org.updated_at = utcnow()
+        audit(db, "organization_updated", actor=admin, target=f"organization:{org.slug}", ip=client_ip(request),
+              changes=changes)
+        db.commit()
+    return org
+
+
+@router.get("/usage")
+def get_usage(db: Session = Depends(get_db)):
+    oid = tenancy.require_org(db)
+    with tenancy.unscoped(db):
+        counts = orgs.usage(db).get(oid)
+    return counts or {"users": 0, "devices": 0, "assets": 0, "scans": 0}
+
+
+# ----------------------------------------------------------------------------- ingest tokens
+class IngestTokenOut(ORM):
+    id: str
+    name: str
+    token_prefix: str
+    created_by: str | None = None
+    created_at: UTCDateTime
+    last_used_at: UTCDateTime | None = None
+    revoked_at: UTCDateTime | None = None
+
+
+class IngestTokenCreated(IngestTokenOut):
+    token: str  # shown once
+
+
+class IngestTokenIn(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    name: Annotated[str, StringConstraints(min_length=1, max_length=128)]
+
+
+@router.get("/ingest-tokens", response_model=list[IngestTokenOut], dependencies=[Depends(require_admin)])
+def list_ingest_tokens(db: Session = Depends(get_db)):
+    return list(db.scalars(select(IngestToken).order_by(IngestToken.created_at.desc())))
+
+
+@router.post("/ingest-tokens", response_model=IngestTokenCreated, status_code=201)
+def create_ingest_token(body: IngestTokenIn, request: Request, admin: User = Depends(require_admin),
+                        db: Session = Depends(get_db)):
+    """A bearer token for this organisation's runtime sensors (SENSOR_API_TOKEN).
+    Shown once; only its SHA-256 is stored."""
+    raw = INGEST_TOKEN_PREFIX + secrets.token_urlsafe(32)
+    tok = IngestToken(name=body.name, token_hash=hash_ingest_token(raw), token_prefix=raw[:12],
+                      created_by=admin.email)
+    db.add(tok)
+    db.flush()
+    audit(db, "ingest_token_created", actor=admin, target=f"ingest-token:{tok.id}", ip=client_ip(request),
+          name=tok.name)
+    db.commit()
+    return IngestTokenCreated(**IngestTokenOut.model_validate(tok).model_dump(), token=raw)
+
+
+@router.delete("/ingest-tokens/{token_id}", response_model=IngestTokenOut)
+def revoke_ingest_token(request: Request, token_id: str = Path(pattern=r"^[0-9a-f]{32}$"),
+                        admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    tok = db.get(IngestToken, token_id)
+    if tok is None:
+        raise HTTPException(404, "ingest token not found")
+    if tok.revoked_at is None:
+        tok.revoked_at = utcnow()
+        audit(db, "ingest_token_revoked", actor=admin, target=f"ingest-token:{tok.id}", ip=client_ip(request),
+              name=tok.name)
+        db.commit()
+    return tok
+
+
+# ----------------------------------------------------------------------------- cloud connectors
+class ConnectorConfigOut(BaseModel):
+    provider: str
+    stored: bool
+    enabled: bool
+    config: dict[str, Any]
+    # Masked hints only ("key for scanner@project.iam..."), never the secrets.
+    secrets: dict[str, str | None]
+    updated_at: datetime | None = None
+    updated_by: str | None = None
+    # Default organisation only: true while the environment (AZURE_* / AWS_* /
+    # GCP_*) configures this provider and no console setting overrides it.
+    from_environment: bool = False
+
+
+class ConnectorConfigIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    config: dict[str, Any] = Field(default_factory=dict)
+    # Secret fields to set; omitted ones are kept, "" removes one.
+    secrets: dict[str, str] = Field(default_factory=dict)
+    reason: Annotated[str, StringConstraints(strip_whitespace=True, max_length=500)] = ""
+
+
+def _env_configured(provider: str) -> bool:
+    from .. import config
+    from ..connectors import build_registry
+
+    return build_registry(config.settings)[provider].is_configured()
+
+
+def _out(db: Session, provider: str) -> ConnectorConfigOut:
+    row = org_config.rows(db).get(provider)
+    view = org_config.public_view(row, provider)
+    env = row is None and tenancy.is_default(tenancy.org_id(db)) and _env_configured(provider)
+    return ConnectorConfigOut(**view, from_environment=env)
+
+
+@router.get("/connectors", response_model=list[ConnectorConfigOut], dependencies=[Depends(require_admin)])
+def list_connector_configs(db: Session = Depends(get_db)):
+    return [_out(db, p) for p in org_config.PROVIDERS]
+
+
+@router.put("/connectors/{provider}", response_model=ConnectorConfigOut)
+def put_connector_config(provider: Provider, body: ConnectorConfigIn, request: Request,
+                         admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    """Set this organisation's read-only credentials for a cloud provider
+    (docs/CONNECT_AZURE.md, CONNECT_AWS.md, CONNECT_GCP.md for the permissions)."""
+    try:
+        row = org_config.upsert(db, provider, config_in=body.config, secrets_in=body.secrets, enabled=body.enabled,
+                                actor=admin.email)
+    except org_config.ConnectorConfigError as e:
+        raise HTTPException(422, str(e)) from None
+    audit(db, "connector_config_updated", actor=admin, target=f"connector:{provider}", ip=client_ip(request),
+          enabled=row.enabled, config=row.config, secrets_set=sorted(row.secret_hints), reason=body.reason)
+    db.commit()
+    return _out(db, provider)
+
+
+@router.delete("/connectors/{provider}", response_model=ConnectorConfigOut)
+def delete_connector_config(provider: Provider, request: Request, admin: User = Depends(require_admin),
+                            db: Session = Depends(get_db)):
+    """Remove the stored settings (the default organisation falls back to the environment)."""
+    row = org_config.rows(db).get(provider)
+    if row is not None:
+        db.delete(row)
+        audit(db, "connector_config_deleted", actor=admin, target=f"connector:{provider}", ip=client_ip(request))
+        db.commit()
+    return _out(db, provider)

@@ -23,6 +23,7 @@ from .api import device_scripts as device_scripts_api
 from .api import devices, inventory, platform, runtime, vulns
 from .api import exposure as exposure_api
 from .api import mfa_sso as mfa_sso_api
+from .api import organization as organization_api
 from .asset_lifecycle import api as it_assets_api
 from .notifications import api as notifications_api
 from .notifications import settings as notification_settings
@@ -168,6 +169,7 @@ def create_app() -> FastAPI:
     app.include_router(agent_updates_api.router)  # /api/updates/*: viewer reads, admin writes (all audited)
     app.include_router(approvals_api.router)  # /api/approvals/*: admin only (two-person rule)
     app.include_router(device_scripts_api.router)  # /api/scripts/*: viewer reads, admin imports / runs
+    app.include_router(organization_api.router)  # /api/organization/*: the session's organisation
     if s.api_docs_enabled:
         _add_docs(app)
     return app

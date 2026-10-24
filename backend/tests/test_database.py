@@ -161,26 +161,20 @@ def test_pre_alembic_postgres_database_is_stamped():
     reset_database()
     eng = db.create_db_engine(TEST_DATABASE_URL)
     try:
-        # How Phase 1/2 created schemas: only the baseline tables existed then (the
-        # MFA tables are created too, to exercise 0004_mfa_sso's has_table guards).
-        later = ("notification_", "device", "enrollment_tokens", "agent_", "it_asset", "scan_schedule", "vuln_",
-                 "asset_packages")
-        baseline = [t for t in db.Base.metadata.sorted_tables
-                    if not t.name.startswith(later) and t.name != "vulnerabilities"]
-        db.Base.metadata.create_all(eng, tables=baseline)
-        # vulnerabilities as it was then: without the CVE-matching columns (device_id -> devices)
-        from sqlalchemy import MetaData, Table
-
-        md = MetaData()
-        db.Base.metadata.tables["assets"].to_metadata(md)
-        new_cols = {"device_id", "kev", "epss", "match_key", "last_seen", "resolved_at", "evidence"}
-        old_vulns = Table("vulnerabilities", md, *[c._copy() for c in db.Base.metadata.tables["vulnerabilities"].columns
-                                                   if c.name not in new_cols])
-        md.create_all(eng, tables=[old_vulns])
+        # How Phase 1/2 created schemas: only the baseline tables existed then
+        # (the baseline migration's schema, without Alembic's version table). The
+        # MFA tables are created too, to exercise 0004_mfa_sso's has_table guards.
+        db.run_migrations(eng, "0001_baseline")
+        with eng.begin() as conn:
+            conn.execute(text("DROP TABLE alembic_version"))
+        mfa_tables = [db.Base.metadata.tables[t] for t in ("user_mfa", "mfa_recovery_codes", "mfa_challenges",
+                                                            "user_identities", "oidc_auth_requests")]
+        db.Base.metadata.create_all(eng, tables=mfa_tables)
         db.run_migrations(eng)  # stamped at the baseline, then upgraded
         with eng.connect() as conn:
             assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == _head()
         assert inspect(eng).has_table("notification_deliveries") and inspect(eng).has_table("devices")
+        assert _schema_diff(eng) == []
     finally:
         eng.dispose()
 
