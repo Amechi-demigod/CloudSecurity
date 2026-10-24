@@ -28,6 +28,7 @@ environment-based settings (`AZURE_*`, `AWS_*`, `GCP_*`, `INGEST_API_TOKEN`,
 | `organizations` | platform | name, slug (unique), contact email, optional logo URL, status `active` / `suspended`, plan and limit fields for later (not enforced yet), `is_default` |
 | `users` | platform | an account; **email addresses are unique on the platform**; `is_platform_admin` |
 | `organization_memberships` | organisation | (organisation, user, role); version 1 allows one membership per user (enforced by the application), the table already supports several |
+| `organization_invitations` | organisation | email invitations (single-use, expiring token; only its SHA-256 is stored) |
 | `user_sessions` | platform | every login session acts in one organisation (`organization_id`) |
 | everything a customer owns | organisation | `organization_id` NOT NULL, indexed, foreign key to `organizations` |
 | CVE / KEV / EPSS caches and feed status, signed agent releases, signed device-script bundles, MFA secrets, SSO identities, OIDC requests | platform | global reference data |

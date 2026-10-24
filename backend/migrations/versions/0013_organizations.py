@@ -1,7 +1,7 @@
 """Multi-tenant organisations (docs/MULTI_TENANCY.md).
 
-* New tables: organizations, organization_memberships, ingest_tokens,
-  connector_configs.
+* New tables: organizations, organization_memberships,
+  organization_invitations, ingest_tokens, connector_configs.
 * Every tenant-owned table gets organization_id (NOT NULL, indexed, FK to
   organizations); all existing rows go to the default organisation (id
   "default", name from DEFAULT_ORG_NAME), so an upgraded installation keeps
@@ -192,6 +192,30 @@ def upgrade() -> None:
     with op.batch_alter_table('ingest_tokens', schema=None) as batch_op:
         batch_op.create_index(batch_op.f('ix_ingest_tokens_organization_id'), ['organization_id'], unique=False)
 
+    op.create_table('organization_invitations',
+    sa.Column('id', sa.String(length=32), nullable=False),
+    sa.Column('email', sa.String(length=320), nullable=False),
+    sa.Column('role', sa.String(length=16), nullable=False),
+    sa.Column('token_hash', sa.String(length=64), nullable=False),
+    sa.Column('invited_by', sa.String(length=320), nullable=True),
+    sa.Column('created_at', sa.DateTime(), nullable=False),
+    sa.Column('expires_at', sa.DateTime(), nullable=False),
+    sa.Column('last_sent_at', sa.DateTime(), nullable=True),
+    sa.Column('sent_count', sa.Integer(), nullable=False),
+    sa.Column('accepted_at', sa.DateTime(), nullable=True),
+    sa.Column('accepted_user_id', sa.String(length=32), nullable=True),
+    sa.Column('revoked_at', sa.DateTime(), nullable=True),
+    sa.Column('organization_id', sa.String(length=32), nullable=False),
+    sa.ForeignKeyConstraint(['organization_id'], ['organizations.id'],
+                            name='fk_organization_invitations_organization_id'),
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('token_hash')
+    )
+    with op.batch_alter_table('organization_invitations', schema=None) as batch_op:
+        batch_op.create_index(batch_op.f('ix_organization_invitations_email'), ['email'], unique=False)
+        batch_op.create_index(batch_op.f('ix_organization_invitations_organization_id'), ['organization_id'],
+                              unique=False)
+
     op.create_table('connector_configs',
     sa.Column('id', sa.String(length=32), nullable=False),
     sa.Column('provider', sa.String(length=16), nullable=False),
@@ -329,6 +353,10 @@ def downgrade() -> None:
     with op.batch_alter_table('connector_configs', schema=None) as batch_op:
         batch_op.drop_index(batch_op.f('ix_connector_configs_organization_id'))
     op.drop_table('connector_configs')
+    with op.batch_alter_table('organization_invitations', schema=None) as batch_op:
+        batch_op.drop_index(batch_op.f('ix_organization_invitations_organization_id'))
+        batch_op.drop_index(batch_op.f('ix_organization_invitations_email'))
+    op.drop_table('organization_invitations')
     with op.batch_alter_table('ingest_tokens', schema=None) as batch_op:
         batch_op.drop_index(batch_op.f('ix_ingest_tokens_organization_id'))
     op.drop_table('ingest_tokens')

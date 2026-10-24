@@ -84,6 +84,26 @@ class OrganizationMembership(TenantMixin, Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class OrganizationInvitation(TenantMixin, Base):
+    """Email invitation to join an organisation (invite-only sign-up). The link
+    carries a random single-use token; only its SHA-256 is stored."""
+
+    __tablename__ = "organization_invitations"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    email: Mapped[str] = mapped_column(String(320), index=True)  # normalized
+    role: Mapped[str] = mapped_column(String(16), default="viewer")
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    invited_by: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    last_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    sent_count: Mapped[int] = mapped_column(Integer, default=0)
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    accepted_user_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 class IngestToken(TenantMixin, Base):
     """Bearer token a runtime sensor sends to POST /api/runtime/*. Each token
     belongs to one organisation; only HMAC/SHA-256 of it is stored. The legacy
