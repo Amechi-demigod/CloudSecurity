@@ -210,6 +210,23 @@ class Settings:
     # console, in addition to users flagged with `python -m app.cli platform-admin`.
     platform_admin_emails: list[str] = field(
         default_factory=lambda: [e.lower() for e in _list("PLATFORM_ADMIN_EMAILS")])
+    # Invitations (invite-only sign-up): link lifetime, and the platform mail
+    # server for transactional email (invitations). Without one, the console
+    # shows the invitation link for the inviter to pass on.
+    invite_ttl_hours: float = field(default_factory=lambda: _checked_float("INVITE_TTL_HOURS", 72.0))
+    platform_smtp_host: str | None = field(default_factory=lambda: (os.getenv("PLATFORM_SMTP_HOST") or "").strip() or None)
+    platform_smtp_port: int = field(default_factory=lambda: int(os.getenv("PLATFORM_SMTP_PORT") or "587"))
+    # starttls (587) or tls (implicit, 465)
+    platform_smtp_security: str = field(
+        default_factory=lambda: (os.getenv("PLATFORM_SMTP_SECURITY") or "starttls").strip().lower())
+    platform_smtp_username: str | None = field(default_factory=lambda: os.getenv("PLATFORM_SMTP_USERNAME") or None)
+    platform_smtp_password: str | None = field(default_factory=lambda: os.getenv("PLATFORM_SMTP_PASSWORD") or None,
+                                               repr=False)
+    platform_smtp_from: str | None = field(default_factory=lambda: (os.getenv("PLATFORM_SMTP_FROM") or "").strip() or None)
+    # Alternative: Azure Communication Services Email (connection string + verified sender).
+    platform_acs_connection_string: str | None = field(
+        default_factory=lambda: os.getenv("PLATFORM_ACS_CONNECTION_STRING") or None, repr=False)
+    platform_acs_sender: str | None = field(default_factory=lambda: (os.getenv("PLATFORM_ACS_SENDER") or "").strip() or None)
 
     # --- User authentication ------------------------------------------------
     # First admin, created on startup only when the users table is empty.
@@ -558,6 +575,12 @@ class Settings:
         if not 5 <= self.device_wipe_command_ttl_minutes <= 1440:
             problems.append("DEVICE_WIPE_COMMAND_TTL_MINUTES must be between 5 and 1440")
         problems.extend(self.scan_schedule_problems())
+        if not 1 <= self.invite_ttl_hours <= 24 * 30:
+            problems.append("INVITE_TTL_HOURS must be between 1 and 720")
+        if self.platform_smtp_security not in ("starttls", "tls"):
+            problems.append("PLATFORM_SMTP_SECURITY must be starttls or tls")
+        if self.platform_smtp_host and not self.platform_smtp_from:
+            problems.append("PLATFORM_SMTP_FROM is required with PLATFORM_SMTP_HOST")
         problems.extend(self.vuln_matching_problems())
         if self.entra_client_auth not in {"auto", "certificate", "secret", "managed_identity"}:
             problems.append("ENTRA_CLIENT_AUTH must be auto, certificate, secret or managed_identity")
