@@ -134,6 +134,7 @@ def apply_checkin(db: Session, device: Device, body: CheckinRequest, ip: str | N
     device.last_seen_at = device.last_checkin_at = now
     device.last_ip = ip
     _reconcile_lost_mode(device, posture, now)
+    _reconcile_isolation(device, posture, now)
     pending = _pending_updates(posture)
     if pending:
         device.updates_pending_since = device.updates_pending_since or now
@@ -190,6 +191,19 @@ def _reconcile_lost_mode(device: Device, posture: dict[str, Any], now: datetime)
         device.lost_mode_status = None
 
 
+def _reconcile_isolation(device: Device, posture: dict[str, Any], now: datetime) -> None:
+    """The agent reports whether host isolation is active (posture check `isolation`).
+    While an isolate/restore command is in flight the server state wins."""
+    data = (posture.get("isolation") or {}).get("data") or {}
+    active = data.get("isolated")
+    if not isinstance(active, bool) or device.isolation_status in ("isolating", "restoring"):
+        return
+    if active and device.isolation_status is None:
+        device.isolation_status, device.isolation_since = "isolated", device.isolation_since or now
+    elif not active and device.isolation_status == "isolated":
+        device.isolation_status = None
+
+
 def _prune_history(db: Session, device_id: str, keep: int) -> None:
     cutoff = db.scalar(select(DevicePostureSnapshot.id).where(DevicePostureSnapshot.device_id == device_id)
                        .order_by(DevicePostureSnapshot.id.desc()).offset(keep).limit(1))
@@ -238,6 +252,7 @@ ISSUE_DEFS: dict[str, tuple[str, str]] = {
 }
 
 LOST_STATES = ("enabling", "active", "disabling")
+ISOLATION_STATES = ("isolating", "isolated", "restoring")
 WIPE_PENDING_STATES = ("queued", "acknowledged", "started")
 # Remote actions that are never queued directly: they need a two-person approval
 # (app/services/approvals.py), or for low-risk scripts go through /api/scripts/run.
@@ -314,12 +329,23 @@ def summarize(device: Device, now: datetime | None = None) -> dict[str, Any]:
 
 
 def device_state(device: Device) -> str:
-    """Lifecycle-ish state for the UI / asset views: wipe_pending > lost > revoked > active."""
+    """Lifecycle-ish state for the UI / asset views: wipe_pending > lost > isolated > revoked > active."""
     if device.wipe_status in WIPE_PENDING_STATES:
         return "wipe_pending"
     if device.lost_mode_status in LOST_STATES:
         return "lost"
+    if device.isolation_status in ISOLATION_STATES:
+        return "isolated"
     return "revoked" if device.status == "revoked" else "active"
+
+
+def isolation_info(device: Device) -> dict[str, Any]:
+    rep = ((device.posture or {}).get("isolation") or {}).get("data") or {}
+    features = set(filter(None, (device.agent_features or "").split(",")))
+    return {"supported": "host_isolation" in features,
+            "status": device.isolation_status, "since": device.isolation_since,
+            "requested_by": device.isolation_by,
+            "reported_isolated": rep.get("isolated") if isinstance(rep.get("isolated"), bool) else None}
 
 
 def lost_mode_info(device: Device) -> dict[str, Any]:
@@ -407,8 +433,8 @@ def validate_params(cmd_type: str, params: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
-# Command types whose outcome changes device state (lost mode, wipe).
-STATEFUL_COMMANDS = ("enable_lost_mode", "disable_lost_mode", "wipe_device")
+# Command types whose outcome changes device state (lost mode, wipe, isolation).
+STATEFUL_COMMANDS = ("enable_lost_mode", "disable_lost_mode", "wipe_device", "isolate_host", "restore_host")
 
 
 def expire_commands(db: Session, device_id: str | None = None) -> None:
@@ -451,6 +477,11 @@ def new_command(db: Session, device: Device, cmd_type: str, params: dict[str, An
         device.lost_mode_status = "disabling"
     elif cmd_type == "wipe_device":
         device.wipe_status, device.wipe_status_at, device.wipe_command_id = "queued", now, cmd.id
+    elif cmd_type == "isolate_host":
+        device.isolation_status = "isolating"
+        device.isolation_since, device.isolation_by = now, requested_by_email
+    elif cmd_type == "restore_host":
+        device.isolation_status = "restoring"
     return cmd
 
 
@@ -473,6 +504,16 @@ def command_finished(device: Device, cmd: DeviceCommand) -> None:
             # Acknowledged but never reported back: the device is most likely wiping.
             device.wipe_status = "acknowledged"
         device.wipe_status_at = now
+    elif cmd.type == "isolate_host" and device.isolation_status == "isolating":
+        if ok:
+            device.isolation_status = "isolated"
+        else:
+            device.isolation_status = device.isolation_since = device.isolation_by = None
+    elif cmd.type == "restore_host" and device.isolation_status == "restoring":
+        if ok:
+            device.isolation_status = device.isolation_since = device.isolation_by = None
+        else:
+            device.isolation_status = "isolated"
 
 
 def deliver_pending(db: Session, device: Device) -> list[DeviceCommand]:

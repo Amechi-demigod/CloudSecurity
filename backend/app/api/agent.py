@@ -20,7 +20,7 @@ from .. import config, tenancy
 from ..auth import RateLimiter, audit, client_ip
 from ..db import get_db
 from ..models import Device, DeviceCommand, DeviceCredential, DeviceLogBundle, EnrollmentToken, utcnow
-from ..notifications import agent_security, approval_source, device_source
+from ..notifications import agent_security, approval_source, device_source, host_isolation_source
 from ..schemas_devices import (
     AgentCommand,
     AgentCommandList,
@@ -208,6 +208,22 @@ def command_result(body: CommandResultIn, command_id: str = CommandId, device: D
     audit(db, "device_command_completed", actor_email=f"device:{device.hostname}"[:320],
           target=f"device:{device.id}", command_id=cmd.id, type=cmd.type, status=body.status,
           exit_code=cmd.exit_code)
+    if cmd.type == "isolate_host":
+        audit(db, "host_isolated" if body.status == "succeeded" else "host_isolation_failed",
+              actor_email=f"device:{device.hostname}"[:320], target=f"device:{device.id}",
+              command_id=cmd.id, status=body.status)
+        host_isolation_source.notify(
+            db, device, "host_isolated" if body.status == "succeeded" else "isolation_failed",
+            actor=cmd.requested_by_email, detail=body.output,
+        )
+    elif cmd.type == "restore_host":
+        audit(db, "host_restored" if body.status == "succeeded" else "host_restore_failed",
+              actor_email=f"device:{device.hostname}"[:320], target=f"device:{device.id}",
+              command_id=cmd.id, status=body.status)
+        host_isolation_source.notify(
+            db, device, "host_restored" if body.status == "succeeded" else "restore_failed",
+            actor=cmd.requested_by_email, detail=body.output,
+        )
     device_source.command_completed(db, device, cmd)
     db.commit()
 

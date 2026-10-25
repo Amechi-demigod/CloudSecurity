@@ -35,6 +35,7 @@ from ..models import (
     Vulnerability,
     utcnow,
 )
+from ..notifications import host_isolation_source
 from ..schemas_devices import (
     COMMAND_ROLES,
     CommandCreate,
@@ -248,7 +249,7 @@ def device_detail(device_id: str = DeviceId, db: Session = Depends(get_db)):
             "check_in_interval_seconds": d.check_in_interval_seconds, "software_count": d.software_count,
             "updates_pending_since": d.updates_pending_since, "revoked_at": d.revoked_at,
             "inventory": d.inventory or {}, "posture": d.posture or {}, "collection_errors": d.collection_errors or {},
-            "lost_mode": svc.lost_mode_info(d), "wipe": svc.wipe_info(d)}
+            "lost_mode": svc.lost_mode_info(d), "wipe": svc.wipe_info(d), "isolation": svc.isolation_info(d)}
 
 
 @router.get("/{device_id}/software", response_model=list[SoftwareOut])
@@ -329,11 +330,26 @@ def create_command(body: CommandCreate, request: Request, device_id: str = Devic
                                  "the pending command")
     if body.type == "disable_lost_mode" and device.lost_mode_status is None:
         raise HTTPException(409, "the device is not in lost mode")
+    if body.type in ("isolate_host", "restore_host") and device.isolation_status in ("isolating", "restoring"):
+        raise HTTPException(409, f"host isolation is already {device.isolation_status}; wait for the device or cancel "
+                                 "the pending command")
+    if body.type == "isolate_host" and device.isolation_status == "isolated":
+        raise HTTPException(409, "the device is already isolated")
+    if body.type == "restore_host" and device.isolation_status is None:
+        raise HTTPException(409, "the device is not isolated")
     ttl = body.expires_in_hours or config.settings.device_command_ttl_hours
     cmd = svc.new_command(db, device, body.type, params, body.reason, requested_by_id=user.id,
                           requested_by_email=user.email, ttl=timedelta(hours=ttl))
     audit(db, "device_command_created", actor=user, target=f"device:{device.id}", ip=client_ip(request),
           hostname=device.hostname, command_id=cmd.id, type=cmd.type, params=params, reason=body.reason)
+    if body.type == "isolate_host":
+        audit(db, "host_isolation_requested", actor=user, target=f"device:{device.id}", ip=client_ip(request),
+              hostname=device.hostname, command_id=cmd.id, reason=body.reason)
+        host_isolation_source.notify(db, device, "isolation_requested", actor=user.email, reason=body.reason)
+    elif body.type == "restore_host":
+        audit(db, "host_restore_requested", actor=user, target=f"device:{device.id}", ip=client_ip(request),
+              hostname=device.hostname, command_id=cmd.id, reason=body.reason)
+        host_isolation_source.notify(db, device, "restore_requested", actor=user.email, reason=body.reason)
     db.commit()
     return cmd
 
