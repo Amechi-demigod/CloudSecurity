@@ -505,7 +505,10 @@ def command_finished(device: Device, cmd: DeviceCommand) -> None:
             device.wipe_status = "acknowledged"
         device.wipe_status_at = now
     elif cmd.type == "isolate_host" and device.isolation_status == "isolating":
-        device.isolation_status = "isolated" if ok else None
+        if ok:
+            device.isolation_status = "isolated"
+        else:
+            device.isolation_status = device.isolation_since = device.isolation_by = None
     elif cmd.type == "restore_host" and device.isolation_status == "restoring":
         if ok:
             device.isolation_status = device.isolation_since = device.isolation_by = None

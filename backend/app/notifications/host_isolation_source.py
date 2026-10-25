@@ -2,9 +2,9 @@
 
 Events:
   * isolation_requested: an analyst or admin queued host isolation
-  * host_isolated: the agent successfully isolated the host from network
-  * restore_requested: an admin queued host network restoration
-  * host_restored: the agent successfully restored network connectivity
+  * host_isolated: the agent successfully suspended interactive sign-in on the host
+  * restore_requested: an admin queued restoration of interactive sign-in
+  * host_restored: the agent successfully restored interactive sign-in
   * isolation_failed: host isolation failed on the agent
   * restore_failed: host restoration failed on the agent
 """
@@ -92,5 +92,5 @@ register_source(EventSource(
     "Host isolation",
     EVENT_TYPES,
     "Host isolation lifecycle events: isolation requested, host isolated, restoration requested, "
-    "and network connectivity restored.",
+    "and interactive sign-in restored.",
 ))
