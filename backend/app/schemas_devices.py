@@ -22,13 +22,15 @@ COMMAND_ROLES: dict[str, str] = {
     "disable_lost_mode": "admin",
     # Check in now and start an offered (signed) update without the random delay.
     "check_for_update": "analyst",
+    "isolate_host": "analyst",
+    "restore_host": "admin",
     # Never queued through POST /commands: wipe needs a two-person approval,
     # scripts go through /api/scripts/run (approval unless the signed risk is low).
     "wipe_device": "admin",
     "run_script": "admin",
 }
 CommandType = Literal["recheck_posture", "collect_logs", "lock_device", "restart_agent", "update_check_in_interval",
-                      "enable_lost_mode", "disable_lost_mode", "check_for_update"]
+                      "enable_lost_mode", "disable_lost_mode", "check_for_update", "isolate_host", "restore_host"]
 CommandStatus = Literal["pending", "delivered", "succeeded", "failed", "rejected", "expired", "cancelled"]
 OsFamily = Literal["windows", "macos", "linux"]
 MIN_INTERVAL_SECONDS = 300
@@ -224,6 +226,7 @@ class DeviceDetailOut(DeviceSummaryOut):
     collection_errors: dict[str, Any]
     lost_mode: dict[str, Any] = {}
     wipe: dict[str, Any] = {}
+    isolation: dict[str, Any] = {}
 
 
 class SoftwareOut(ORM):

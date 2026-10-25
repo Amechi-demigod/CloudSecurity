@@ -624,6 +624,12 @@ class Device(TenantMixin, Base):
     wipe_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
     wipe_status_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     wipe_command_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Host isolation: isolating | isolated | restoring | None.
+    # Set when an analyst or admin queues isolate_host / restore_host and
+    # confirmed by the command result and by the state the agent reports.
+    isolation_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    isolation_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    isolation_by: Mapped[str | None] = mapped_column(String(320), nullable=True)
     # When the server last offered which release (and the jitter it allowed),
     # so the console can say "offered at ..., starts within ...".
     update_offered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
