@@ -24,7 +24,7 @@ import (
 	"time"
 
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/model"
-	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/version"
+	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/commands"
 )
 
 // Options select what to collect.
@@ -138,6 +138,7 @@ func Collect(ctx context.Context, o Options) *model.Report {
 	c.guard("common", func() error { return collectCommon(r) })
 	platformCollect(ctx, c, o)
 	r.Normalize()
+	c.r.Posture["host_isolation"] = model.PostureCheck{Status: "succeeded", Data: map[string]any{"isolated": commands.Isolated()}}
 	return r
 }
 
@@ -163,7 +164,8 @@ func osFamily() string {
 	case "darwin":
 		return "macos"
 	default:
-		return runtime.GOOS
+		c.r.Posture["host_isolation"] = model.PostureCheck{Status: "succeeded", Data: map[string]any{"isolated": commands.Isolated()}}
+	return runtime.GOOS
 	}
 }
 

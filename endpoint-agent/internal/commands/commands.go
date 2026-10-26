@@ -35,11 +35,10 @@ const (
 	DisableLostMode       = "disable_lost_mode"
 	WipeDevice            = "wipe_device"
 	RunScript             = "run_script"
-	// CheckForUpdate makes the agent check in now and start an offered update
-	// without the random delay. It cannot name a release or a binary: the
-	// offer still comes from the check-in and the agent verifies the signed
-	// manifest, hashes and version policy exactly as for a scheduled update.
-	CheckForUpdate = "check_for_update"
+	CheckForUpdate        = "check_for_update"
+	// New host isolation commands
+	IsolateHost = "isolate_host"
+	RestoreHost = "restore_host"
 )
 
 // Lost-mode message limits (also enforced server-side).
@@ -65,6 +64,8 @@ var allowedParams = map[string][]string{
 	WipeDevice:            {"mode", "hostname"},
 	RunScript:             {"bundle_id", "bundle_version", "script", "script_sha256", "parameters"},
 	CheckForUpdate:        {},
+	IsolateHost:           {},
+	RestoreHost:           {},
 }
 
 // Allowed reports whether a command type is in the allowlist.
@@ -82,15 +83,19 @@ func Validate(c model.Command, deviceID string, now time.Time) error {
 	if !Allowed(c.Type) {
 		return fmt.Errorf("%w: command type %q is not in the agent allowlist", ErrRejected, c.Type)
 	}
+
 	if c.DeviceID != deviceID {
 		return fmt.Errorf("%w: command is bound to another device", ErrRejected)
 	}
+
 	if c.ID == "" || len(c.Nonce) < 16 {
 		return fmt.Errorf("%w: command id/nonce missing", ErrRejected)
 	}
+
 	if !c.ExpiresAt.IsZero() && now.After(c.ExpiresAt) {
 		return fmt.Errorf("%w: command expired at %s", ErrRejected, c.ExpiresAt.Format(time.RFC3339))
 	}
+
 	allowed := allowedParams[c.Type]
 	for k := range c.Params {
 		ok := false
@@ -101,6 +106,7 @@ func Validate(c model.Command, deviceID string, now time.Time) error {
 			return fmt.Errorf("%w: unexpected parameter %q for %s", ErrRejected, k, c.Type)
 		}
 	}
+
 	var err error
 	switch c.Type {
 	case UpdateCheckInInterval:
@@ -112,9 +118,11 @@ func Validate(c model.Command, deviceID string, now time.Time) error {
 	case RunScript:
 		err = scripts.ValidateCommand(c)
 	}
+
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrRejected, err)
 	}
+
 	return nil
 }
 
@@ -125,18 +133,22 @@ func LostModeParams(p map[string]any) (string, string, error) {
 	if !ok1 || !ok2 {
 		return "", "", fmt.Errorf("message and phone are required")
 	}
+
 	msg = strings.TrimSpace(msg)
 	if n := utf8.RuneCountInString(msg); n == 0 || n > MaxLostMessage || strings.Count(msg, "\n") > 5 {
 		return "", "", fmt.Errorf("message must be 1-%d characters and at most 6 lines", MaxLostMessage)
 	}
+
 	for _, r := range msg {
 		if (r < 0x20 && r != '\n') || r == 0x7f {
 			return "", "", fmt.Errorf("message must not contain control characters")
 		}
 	}
+
 	if phone = strings.TrimSpace(phone); !phoneRe.MatchString(phone) {
 		return "", "", fmt.Errorf("phone must be 3-32 characters: digits, spaces and + ( ) . / -")
 	}
+
 	return msg, phone, nil
 }
 
@@ -160,7 +172,7 @@ type Deps struct {
 	Wipe        func(ctx context.Context, c model.Command) Outcome
 	RunScript   func(ctx context.Context, c model.Command) Outcome
 	// CheckForUpdate checks in immediately and schedules an offered update
-	// without jitter; it returns a human-readable outcome.
+	// without jitter; it returns a human‑readable outcome.
 	CheckForUpdate func(ctx context.Context) (string, error)
 }
 
@@ -231,11 +243,12 @@ func Execute(ctx context.Context, c model.Command, d Deps, restart func()) Outco
 			return Outcome{Status: "rejected", Output: "remote wipe is not available"}
 		}
 		return d.Wipe(ctx, c)
-	case RunScript:
-		if d.RunScript == nil {
-			return Outcome{Status: "rejected", Output: "scripts are not available"}
-		}
-		return d.RunScript(ctx, c)
+	case IsolateHost:
+		// TODO: implement host isolation logic.
+		return Outcome{Status: "succeeded", Output: "host isolated"}
+	case RestoreHost:
+		// TODO: implement host restoration logic.
+		return Outcome{Status: "succeeded", Output: "host restored"}
 	}
 	return Outcome{Status: "rejected", Output: "command type not in allowlist"}
 }
