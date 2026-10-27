@@ -1140,6 +1140,7 @@ export const api = {
       alerts: Alert[];
     }>(`/api/assets/detail${qs({ id })}`),
   findings: (f: Record<string, string | undefined> = {}) => request<Finding[]>(`/api/findings${qs(f)}`),
+  finding: (id: string) => request<Finding>(`/api/findings/${encodeURIComponent(id)}`),
   updateFinding: (id: string, status: Finding["status"]) =>
     request<Finding>(`/api/findings/${id}`, { method: "PATCH", body: JSON.stringify({ status }) }),
   vulnerabilities: (f: Record<string, string | boolean | undefined> = {}) =>

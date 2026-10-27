@@ -250,6 +250,7 @@ def test_objects_of_another_organisation_are_not_found(tenants):
     not_found = [
         a.get(f"/api/alerts/{alert['id']}"),
         a.patch(f"/api/alerts/{alert['id']}", json={"status": "resolved"}),
+        a.get(f"/api/findings/{finding['id']}"),
         a.patch(f"/api/findings/{finding['id']}", json={"status": "suppressed"}),
         a.get("/api/assets/detail", params={"id": asset["id"]}),
         a.get(f"/api/scans/{scan['id']}"),

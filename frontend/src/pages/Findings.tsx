@@ -1,6 +1,6 @@
-import { ShieldCheck } from "lucide-react";
+import { ChevronRight, ShieldCheck } from "lucide-react";
 import { Fragment, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, Navigate, useSearchParams } from "react-router-dom";
 import { api, type Finding } from "../api";
 import { useAuth } from "../auth/context";
 import AssetDrawer from "../components/AssetDrawer";
@@ -11,15 +11,15 @@ import { SEV_RANK, useSort } from "../lib/useSort";
 import { useUrlState } from "../lib/useUrlState";
 
 export default function Findings() {
-  // Deep links: /findings?finding=<id> (notifications), ?severity=, ?status=, ?provider=, ?compliance= (dashboard)
+  // Deep links: ?severity=, ?status=, ?provider=, ?compliance= (dashboard); ?finding=<id> redirects below
   const [params] = useSearchParams();
   const linked = params.get("finding");
   const [severity, setSeverity] = useUrlState("severity");
-  const [status, setStatus] = useUrlState("status", linked ? "all" : "open");
+  const [status, setStatus] = useUrlState("status", "open");
   const [source, setSource] = useUrlState("source");
   const [provider, setProvider] = useUrlState("provider");
   const [compliance, setCompliance] = useUrlState("compliance");
-  const [expanded, setExpanded] = useState<string | null>(linked);
+  const [expanded, setExpanded] = useState<string | null>(null);
   const [asset, setAsset] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const canTriage = useAuth().can("analyst");
@@ -57,6 +57,9 @@ export default function Findings() {
       setActionError(e instanceof Error ? e.message : String(e));
     }
   }
+
+  // Old deep links (notifications): /findings?finding=<id> now opens the finding's own page.
+  if (linked) return <Navigate to={`/findings/${encodeURIComponent(linked)}`} replace />;
 
   return (
     <div>
@@ -111,7 +114,9 @@ export default function Findings() {
                     <SeverityBadge severity={f.severity} />
                   </td>
                   <td className="px-3 py-2">
-                    <div>{f.title}</div>
+                    <Link to={`/findings/${f.id}`} className="hover:text-accent" onClick={(e) => e.stopPropagation()}>
+                      {f.title}
+                    </Link>
                     <div className="font-mono text-[11px] text-ink-3">{f.rule_id}</div>
                   </td>
                   <td className="px-3 py-2">
@@ -146,6 +151,10 @@ export default function Findings() {
                         {f.remediation}
                       </p>
                       <p className="mt-2 font-mono text-xs text-ink-3">Evidence: {JSON.stringify(f.evidence)}</p>
+                      <Link to={`/findings/${f.id}`} className="mt-2 inline-flex items-center gap-0.5 text-xs font-medium text-accent hover:underline">
+                        Open full details, affected resources and history
+                        <ChevronRight aria-hidden className="h-3.5 w-3.5" />
+                      </Link>
                       {canTriage ? (
                       <div className="mt-3 flex gap-2">
                         {f.status !== "suppressed" && <Button onClick={() => setFindingStatus(f, "suppressed")}>Suppress</Button>}

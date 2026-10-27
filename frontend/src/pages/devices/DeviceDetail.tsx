@@ -5,10 +5,11 @@ import { useAuth } from "../../auth/context";
 import { CheckBadge, ConnectivityTag, HealthBadge, IssueList } from "../../components/devices";
 import { ApprovalList } from "../../components/approvals";
 import { VulnTable } from "../../components/vulns";
-import { Button, Card, Empty, ErrorNote, Field, Modal, PageHeader, Table, Tag } from "../../components/ui";
+import { Breadcrumbs, Button, Card, Empty, ErrorNote, Field, Modal, PageHeader, Table, Tag } from "../../components/ui";
 import { CHECK_LABEL, OS_LABEL, fmtBytes, fmtDuration } from "../../lib/devices";
 import { fmtAgo, fmtTime } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
+import { useUrlState } from "../../lib/useUrlState";
 import { AssetRecordLink } from "../assets/AssetRecordLink";
 import { LostModeDialog, LostWipeCard, WipeDialog } from "./LostWipe";
 import { RunScriptDialog } from "./RunScriptDialog";
@@ -50,6 +51,16 @@ const STATUS_TONE: Record<DeviceCommand["status"], "default" | "warn" | "good" |
 
 function errMsg(e: unknown) {
   return e instanceof ApiError ? e.message : String(e);
+}
+
+/** One cell of the key-facts strip under the device title. */
+function Fact({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="min-w-0 bg-surface-1 px-4 py-2.5">
+      <dt className="text-[11px] font-medium uppercase tracking-wide text-ink-3">{label}</dt>
+      <dd className="mt-0.5 truncate text-sm text-ink">{children}</dd>
+    </div>
+  );
 }
 
 function Row({ label, children }: { label: string; children: ReactNode }) {
@@ -666,7 +677,9 @@ export default function DeviceDetail() {
   const { id = "" } = useParams();
   const navigate = useNavigate();
   const { can } = useAuth();
-  const [tab, setTab] = useState<TabName>("Overview");
+  const [tabParam, setTabParam] = useUrlState("tab", "Overview");
+  const tab: TabName = (TABS as readonly string[]).includes(tabParam) ? (tabParam as TabName) : "Overview";
+  const setTab = (t: TabName) => setTabParam(t);
   const [action, setAction] = useState<(typeof ACTIONS)[number] | null>(null);
   const [revokeOpen, setRevokeOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -686,12 +699,7 @@ export default function DeviceDetail() {
 
   return (
     <div>
-      <div className="mb-2 text-xs text-ink-3">
-        <Link to="/devices" className="hover:text-ink">
-          Devices
-        </Link>{" "}
-        / {device.hostname}
-      </div>
+      <Breadcrumbs items={[{ label: "Devices", to: "/devices" }, { label: device.hostname }]} />
       <PageHeader
         title={device.hostname}
         subtitle={`${OS_LABEL[device.os_family] ?? device.os_family} · ${[device.manufacturer, device.model].filter(Boolean).join(" ")}${device.serial_number ? ` · S/N ${device.serial_number}` : ""}`}
@@ -706,15 +714,47 @@ export default function DeviceDetail() {
         }
       />
       <ErrorNote error={error} />
+      <dl className="mb-4 grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-line bg-line sm:grid-cols-3 xl:grid-cols-6">
+        <Fact label="Last check-in">{device.last_checkin_at ? fmtAgo(device.last_checkin_at) : "never"}</Fact>
+        <Fact label="Signed-in user">{(device.inventory.logged_in_users ?? []).join(", ") || "—"}</Fact>
+        <Fact label="Issues">
+          {device.issues.length === 0 ? (
+            "None"
+          ) : (
+            <button className="font-semibold text-accent hover:underline" onClick={() => setTab("Posture")}>
+              {device.issues.length} to review
+            </button>
+          )}
+        </Fact>
+        <Fact label="Software">
+          <button className="text-accent hover:underline" onClick={() => setTab("Software")}>
+            {device.software_count} apps
+          </button>
+        </Fact>
+        <Fact label="Agent">{device.agent_version || "—"}</Fact>
+        <Fact label="Last public IP">{device.last_ip || "—"}</Fact>
+      </dl>
       {active && can("analyst") && (
-        <div className="mb-4 flex flex-wrap gap-2" role="toolbar" aria-label="Remote actions">
-          {ACTIONS.filter((a) => can(a.role)).map((a) => (
-            <Button key={a.type} variant={a.danger ? "danger" : "default"} onClick={() => setAction(a)} title={a.help}>
+        <div className="mb-4 flex flex-wrap items-center gap-2" role="toolbar" aria-label="Remote actions">
+          {ACTIONS.filter((a) => can(a.role) && !a.danger).map((a) => (
+            <Button key={a.type} onClick={() => setAction(a)} title={a.help}>
               {a.label}
             </Button>
           ))}
           {can("admin") && (
+            <Button onClick={() => setScriptOpen(true)} title="Run a script from the signed library">
+              Run script
+            </Button>
+          )}
+          {can("admin") && (
             <>
+              <span aria-hidden className="mx-1 hidden h-6 w-px bg-line sm:block" />
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">Security</span>
+              {ACTIONS.filter((a) => can(a.role) && a.danger).map((a) => (
+                <Button key={a.type} variant="danger" onClick={() => setAction(a)} title={a.help}>
+                  {a.label}
+                </Button>
+              ))}
               <Button
                 variant={device.lost_mode.status ? "default" : "danger"}
                 onClick={() => setLostOpen(true)}
@@ -734,15 +774,10 @@ export default function DeviceDetail() {
                   </Button>
                 </span>
               )}
-              <Button onClick={() => setScriptOpen(true)} title="Run a script from the signed library">
-                Run script
+              <Button variant="danger" onClick={() => setRevokeOpen(true)} title="Invalidate the device credential">
+                Revoke
               </Button>
             </>
-          )}
-          {can("admin") && (
-            <Button variant="danger" onClick={() => setRevokeOpen(true)} title="Invalidate the device credential">
-              Revoke
-            </Button>
           )}
         </div>
       )}
@@ -759,23 +794,50 @@ export default function DeviceDetail() {
           </Button>
         </div>
       )}
-      <div role="tablist" aria-label="Device sections" className="mb-4 flex gap-1 border-b border-line">
-        {TABS.map((t) => (
-          <button
-            key={t}
-            role="tab"
-            aria-selected={tab === t}
-            onClick={() => setTab(t)}
-            className={`-mb-px border-b-2 px-3 py-2 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
-              tab === t ? "border-accent text-ink" : "border-transparent text-ink-3 hover:text-ink"
-            }`}
-          >
-            {t}
-            {t === "Software" && ` (${device.software_count})`}
-            {t === "Commands" && cmds.data && cmds.data.some((c) => c.status === "pending" || c.status === "delivered") && " •"}
-          </button>
-        ))}
+      <div
+        role="tablist"
+        aria-label="Device sections"
+        className="mb-4 flex gap-1 overflow-x-auto border-b border-line"
+        onKeyDown={(e) => {
+          // WAI-ARIA tabs: arrows move between tabs, Home / End jump to the ends
+          const i = TABS.indexOf(tab);
+          const next = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: TABS.length - 1 }[e.key];
+          if (next === undefined) return;
+          e.preventDefault();
+          const t = TABS[(next + TABS.length) % TABS.length];
+          setTab(t);
+          document.getElementById(`device-tab-${t}`)?.focus();
+        }}
+      >
+        {TABS.map((t) => {
+          const count = t === "Software" ? device.software_count : t === "Posture" ? device.issues.length : null;
+          return (
+            <button
+              key={t}
+              id={`device-tab-${t}`}
+              role="tab"
+              aria-selected={tab === t}
+              aria-controls="device-tabpanel"
+              tabIndex={tab === t ? 0 : -1}
+              onClick={() => setTab(t)}
+              className={`-mb-px inline-flex shrink-0 items-center gap-1.5 border-b-2 px-3 py-2 text-sm transition focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+                tab === t ? "border-accent font-medium text-ink" : "border-transparent text-ink-3 hover:text-ink"
+              }`}
+            >
+              {t}
+              {!!count && (
+                <span className={`rounded-full px-1.5 text-[11px] leading-5 ${t === "Posture" ? "bg-sev-high/15 text-sev-high" : "bg-surface-2 text-ink-2"}`}>
+                  {count}
+                </span>
+              )}
+              {t === "Commands" && cmds.data && cmds.data.some((c) => c.status === "pending" || c.status === "delivered") && (
+                <span aria-label="actions in progress" className="h-2 w-2 rounded-full bg-accent" />
+              )}
+            </button>
+          );
+        })}
       </div>
+      <div role="tabpanel" id="device-tabpanel" aria-labelledby={`device-tab-${tab}`}>
       {tab === "Overview" && <Overview device={device} />}
       {tab === "Posture" && <PostureCards device={device} />}
       {tab === "Software" && <SoftwareTab id={device.id} />}
@@ -784,6 +846,7 @@ export default function DeviceDetail() {
       {tab === "Updates" && <UpdatesTab id={device.id} admin={can("admin") && active} analyst={can("analyst") && active} />}
       {tab === "Commands" && <CommandsTab device={device} commands={cmds.data} error={cmds.error} reload={cmds.reload} />}
       {tab === "Commands" && can("admin") && <DeviceApprovals id={device.id} onChanged={() => { cmds.reload(); reload(); }} />}
+      </div>
 
       <ActionDialog device={device} action={action} onClose={() => setAction(null)} onDone={() => {
         cmds.reload();

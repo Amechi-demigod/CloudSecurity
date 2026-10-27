@@ -161,6 +161,14 @@ def list_findings(
     return [finding_out(f) for f in rows[:limit]]
 
 
+@router.get("/findings/{finding_id}", response_model=FindingOut)
+def get_finding(finding_id: str, db: Session = Depends(get_db)):
+    f = db.get(Finding, finding_id)
+    if f is None:
+        raise HTTPException(404, "finding not found")
+    return finding_out(f)
+
+
 @router.patch("/findings/{finding_id}", response_model=FindingOut)
 def update_finding(finding_id: str, body: FindingUpdate, request: Request, user: User = Depends(require_analyst),
                    db: Session = Depends(get_db)):

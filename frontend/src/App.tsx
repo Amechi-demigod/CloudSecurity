@@ -40,6 +40,7 @@ import Enrollment from "./pages/devices/Enrollment";
 import Scripts from "./pages/devices/Scripts";
 import DashboardPage from "./pages/Dashboard";
 import Exposure from "./pages/Exposure";
+import FindingDetail from "./pages/FindingDetail";
 import Findings from "./pages/Findings";
 import Inventory from "./pages/Inventory";
 import Notifications from "./pages/Notifications";
@@ -285,6 +286,7 @@ function Shell() {
             <Route path="/" element={<DashboardPage />} />
             <Route path="/inventory" element={<Inventory />} />
             <Route path="/findings" element={<Findings />} />
+            <Route path="/findings/:id" element={<FindingDetail />} />
             <Route path="/vulnerabilities" element={<Vulnerabilities />} />
             <Route path="/threats" element={<Threats />} />
             <Route path="/exposure" element={<Exposure />} />
