@@ -24,6 +24,7 @@ import { NavLink, Navigate, Route, Routes, useLocation } from "react-router-dom"
 import { api, type Role } from "./api";
 import { useAuth } from "./auth/context";
 import UserMenu from "./components/UserMenu";
+import { useBrand } from "./lib/brand";
 import { useTheme } from "./lib/theme";
 import { useApi } from "./lib/useApi";
 import Approvals from "./pages/Approvals";
@@ -174,6 +175,7 @@ function OrgIndicator() {
 
 function Shell() {
   const { can, forbidden, dismissForbidden, platformAdmin } = useAuth();
+  const brand = useBrand();
   const { data: health, error } = useApi(api.health, [], 15000);
   const admin = can("admin");
   const { data: approvals } = useApi(() => (admin ? api.approvalSummary() : Promise.resolve(null)), [admin], admin ? 30000 : undefined);
@@ -183,8 +185,8 @@ function Shell() {
         <div className="flex items-center gap-2.5 px-5 py-4">
           <img src="/shield.svg" alt="" className="h-7 w-7" />
           <div>
-            <div className="text-sm font-bold leading-tight tracking-tight">CloudSecurity</div>
-            <div className="text-[11px] text-ink-3">Runtime-first CNAPP</div>
+            <div className="text-sm font-bold leading-tight tracking-tight">{brand.name}</div>
+            <div className="text-[11px] text-ink-3">{brand.tagline}</div>
           </div>
         </div>
         <ul className="flex-1 space-y-0.5 overflow-y-auto px-2 pb-3">

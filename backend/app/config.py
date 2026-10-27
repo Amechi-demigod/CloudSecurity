@@ -210,6 +210,11 @@ class Settings:
     # console, in addition to users flagged with `python -m app.cli platform-admin`.
     platform_admin_emails: list[str] = field(
         default_factory=lambda: [e.lower() for e in _list("PLATFORM_ADMIN_EMAILS")])
+    # Product branding shown on the sign-in page, in the console, in emails and
+    # notifications (public: GET /api/health returns it before sign-in).
+    brand_name: str = field(default_factory=lambda: (os.getenv("BRAND_NAME") or "").strip()[:64] or "CloudSecurity")
+    brand_tagline: str = field(
+        default_factory=lambda: (os.getenv("BRAND_TAGLINE") or "").strip()[:120] or "Runtime-first CNAPP")
     # Invitations (invite-only sign-up): link lifetime, and the platform mail
     # server for transactional email (invitations). Without one, the console
     # shows the invitation link for the inviter to pass on.
@@ -403,7 +408,9 @@ class Settings:
     # have not enrolled are taken through enrolment at their next password login.
     mfa_required_roles: list[str] = field(
         default_factory=lambda: [r.lower() for r in _list("MFA_REQUIRED_ROLES")])
-    mfa_issuer: str = field(default_factory=lambda: os.getenv("MFA_ISSUER") or "CloudSecurity CNAPP")
+    # Name shown in authenticator apps; defaults to the brand ("CloudSecurity CNAPP" unless BRAND_NAME is set).
+    mfa_issuer: str = field(default_factory=lambda: os.getenv("MFA_ISSUER")
+                            or f"{(os.getenv('BRAND_NAME') or '').strip()[:64] or 'CloudSecurity'} CNAPP")
     # Lifetime of the token between the password step and the code step.
     mfa_challenge_ttl_seconds: int = field(default_factory=lambda: int(os.getenv("MFA_CHALLENGE_TTL_SECONDS", "300")))
     # Wrong codes allowed per challenge (the account lockout counter also applies).

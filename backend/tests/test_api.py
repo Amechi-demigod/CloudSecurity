@@ -6,6 +6,7 @@ from tests.conftest import AUTH
 def test_health_and_dashboard(client):
     h = client.get("/api/health").json()
     assert h["status"] == "ok" and h["simulation_mode"] is True and h["azure_configured"] is False
+    assert h["brand"] == {"name": "CloudSecurity", "tagline": "Runtime-first CNAPP"}  # defaults (BRAND_NAME unset)
     d = client.get("/api/dashboard").json()
     assert 0 < d["risk_score"] <= 100
     assert d["assets"]["total"] > 50

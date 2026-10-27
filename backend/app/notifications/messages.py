@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+from .. import config
 from . import settings as nsettings
 from .events import get_source
 
@@ -95,7 +96,7 @@ def digest_message(rule_name: str, items: list[dict[str, Any]], total: int, now:
 def test_message(channel_name: str, actor: str | None, now: datetime) -> dict[str, Any]:
     return {
         "kind": "test",
-        "title": "Test notification from CloudSecurity CNAPP",
+        "title": f"Test notification from {config.settings.brand_name}",
         "summary": f"If you can read this, the channel \"{channel_name}\" is configured correctly."
         + (f" Sent by {actor}." if actor else ""),
         "severity": "info",

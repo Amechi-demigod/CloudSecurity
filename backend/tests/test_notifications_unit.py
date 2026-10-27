@@ -114,6 +114,19 @@ def test_email_rendering_is_escaped_and_header_safe():
     assert "https://cnapp.example.com/threats?alert=a1" in body and "Open in CloudSecurity" in text
 
 
+def test_brand_name_in_notifications(monkeypatch):
+    monkeypatch.setenv("BRAND_NAME", "Acme Shield")
+    config.reload_settings()
+    try:
+        _, text, body = ch.render_email(messages.event_message(sample_event(), ASSET))
+        assert "Open in Acme Shield" in text and "Sent by Acme Shield notifications." in body
+        assert "Open in Acme Shield" in json.dumps(ch.render_teams(messages.event_message(sample_event(), ASSET)))
+        assert config.settings.mfa_issuer == "Acme Shield CNAPP"
+    finally:
+        monkeypatch.delenv("BRAND_NAME")
+        config.reload_settings()
+
+
 def test_webhook_payload_and_digest():
     p = ch.render_webhook(messages.event_message(sample_event(), ASSET, suppressed=2), "d1")
     assert p["id"] == "d1" and p["type"] == "cnapp.notification.event" and p["suppressed_since_last"] == 2

@@ -28,7 +28,8 @@ def health(request: Request):
     sim = getattr(request.app.state, "simulator", None)
     s = config.settings
     reg = build_registry(s)
-    return {"status": "ok", "simulation_mode": s.simulation_mode, "simulator_running": bool(sim and sim.running),
+    return {"status": "ok", "brand": {"name": s.brand_name, "tagline": s.brand_tagline},
+            "simulation_mode": s.simulation_mode, "simulator_running": bool(sim and sim.running),
             "simulator_leader": bool(sim and sim.is_leader),
             # azure_configured / aws_configured / gcp_configured
             **{f"{n}_configured": bool(n in reg and reg[n].is_configured()) for n in CLOUD_CONNECTORS}}

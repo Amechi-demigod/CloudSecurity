@@ -3,6 +3,7 @@ import { Navigate, useLocation, useNavigate } from "react-router-dom";
 import { ApiError, api, isMfaChallenge, type AuthProviders, type LoginComplete, type MfaSetup } from "../api";
 import { useAuth } from "../auth/context";
 import { RecoveryCodes, TotpSetupDetails, VerifyCodeForm } from "../components/mfa";
+import { AuthLayout } from "../components/AuthLayout";
 import { Button } from "../components/ui";
 
 interface FromState {
@@ -25,8 +26,8 @@ type Step =
   | { kind: "codes"; session: LoginComplete };
 
 const SSO_ERRORS: Record<string, string> = {
-  not_provisioned: "Your Microsoft account has no access to CloudSecurity yet. Ask an administrator to add you.",
-  no_role_assigned: "Your Microsoft account is not assigned a CloudSecurity role. Ask your Entra ID administrator.",
+  not_provisioned: "Your Microsoft account has no access to this console yet. Ask an administrator to add you.",
+  no_role_assigned: "Your Microsoft account is not assigned a role for this console. Ask your Entra ID administrator.",
   inactive: "This account is deactivated. Contact an administrator.",
   idp_error: "Microsoft sign-in was cancelled or refused.",
   rate_limited: "Too many sign-in attempts. Please wait a few minutes and try again.",
@@ -174,34 +175,8 @@ export default function Login() {
   const describedBy = [error ? errorId : null, sessionExpired ? noticeId : null].filter(Boolean).join(" ") || undefined;
 
   return (
-    <div className="relative flex min-h-full items-center justify-center overflow-hidden bg-surface-0 px-4 py-10">
-      {/* Subtle grid + glow backdrop */}
-      <div
-        aria-hidden
-        className="pointer-events-none absolute inset-0 opacity-[0.35]"
-        style={{
-          backgroundImage:
-            "linear-gradient(var(--color-line) 1px, transparent 1px), linear-gradient(90deg, var(--color-line) 1px, transparent 1px)",
-          backgroundSize: "48px 48px",
-          maskImage: "radial-gradient(ellipse at center, black 20%, transparent 70%)",
-          WebkitMaskImage: "radial-gradient(ellipse at center, black 20%, transparent 70%)",
-        }}
-      />
-      <div
-        aria-hidden
-        className="pointer-events-none absolute left-1/2 top-1/3 h-72 w-72 -translate-x-1/2 -translate-y-1/2 rounded-full bg-accent/20 blur-3xl"
-      />
-
-      <main className="relative w-full max-w-sm">
-        <div className="mb-6 flex flex-col items-center text-center">
-          <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-xl border border-line bg-surface-1 shadow-lg">
-            <img src="/shield.svg" alt="" className="h-7 w-7" />
-          </div>
-          <h1 className="text-xl font-semibold text-ink">CloudSecurity</h1>
-          <p className="mt-1 text-sm text-ink-3">Runtime-first CNAPP</p>
-        </div>
-
-        <div className="rounded-xl border border-line bg-surface-1/95 p-6 shadow-2xl backdrop-blur">
+    <AuthLayout footer="Access is restricted to authorized users. Sign-in activity is audited.">
+      <div>
           {step.kind === "password" && (
             <>
               <h2 className="text-base font-semibold text-ink">Sign in to your account</h2>
@@ -396,12 +371,7 @@ export default function Login() {
               </button>
             </form>
           )}
-        </div>
-
-        <p className="mt-6 text-center text-xs text-ink-3">
-          Access is restricted to authorized users. Sign-in activity is audited.
-        </p>
-      </main>
-    </div>
+      </div>
+    </AuthLayout>
   );
 }

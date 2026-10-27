@@ -26,6 +26,7 @@ from email.utils import formatdate, make_msgid, parseaddr
 from typing import Any
 from urllib.parse import urlsplit
 
+from .. import config
 from . import settings as nsettings
 from . import signing, ssrf
 
@@ -278,7 +279,7 @@ def render_teams(msg: dict[str, Any]) -> dict[str, Any]:
     card: dict[str, Any] = {"$schema": "http://adaptivecards.io/schemas/adaptive-card.json", "type": "AdaptiveCard",
                             "version": "1.4", "body": body, "msteams": {"width": "Full"}}
     if msg.get("link"):
-        card["actions"] = [{"type": "Action.OpenUrl", "title": "Open in CloudSecurity", "url": msg["link"]}]
+        card["actions"] = [{"type": "Action.OpenUrl", "title": f"Open in {config.settings.brand_name}", "url": msg["link"]}]
     return {"type": "message", "attachments": [
         {"contentType": "application/vnd.microsoft.card.adaptive", "contentUrl": None, "content": card}]}
 
@@ -314,7 +315,8 @@ def render_slack(msg: dict[str, Any]) -> dict[str, Any]:
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": _clip("\n".join(lines), 2900)}})
     if msg.get("link"):
         blocks.append({"type": "actions", "elements": [
-            {"type": "button", "text": {"type": "plain_text", "text": "Open in CloudSecurity"}, "url": msg["link"],
+            {"type": "button", "text": {"type": "plain_text", "text": f"Open in {config.settings.brand_name}"},
+             "url": msg["link"],
              **({"style": "danger"} if sev in ("critical", "high") else {})}]})
     # `text` is the notification / fallback text; escaped so it cannot @-mention.
     return {"text": _slack_escape(f"[{sev.upper()}] {title}"), "blocks": blocks, "unfurl_links": False}
@@ -346,7 +348,7 @@ def render_email(msg: dict[str, Any]) -> tuple[str, str, str]:
     for it in msg.get("items") or []:
         lines.append(f"- [{it['severity'].upper()}] {it['title']}" + (f"  {it['link']}" if it.get("link") else ""))
     if msg.get("link"):
-        lines += ["", f"Open in CloudSecurity: {msg['link']}"]
+        lines += ["", f"Open in {config.settings.brand_name}: {msg['link']}"]
     text = "\n".join(lines).strip() + "\n"
     e = html.escape
     color = EMAIL_COLOR.get(sev, "#6b7280")
@@ -357,7 +359,8 @@ def render_email(msg: dict[str, Any]) -> tuple[str, str, str]:
         + (f"<a href=\"{e(it['link'], quote=True)}\">{e(it['title'])}</a>" if it.get("link") else e(it["title"]))
         + "</li>" for it in msg.get("items") or [])
     button = (f"<p><a href=\"{e(msg['link'], quote=True)}\" style=\"display:inline-block;background:#2563eb;"
-              f"color:#fff;padding:8px 14px;border-radius:4px;text-decoration:none\">Open in CloudSecurity</a></p>"
+              f"color:#fff;padding:8px 14px;border-radius:4px;text-decoration:none\">"
+              f"Open in {e(config.settings.brand_name)}</a></p>"
               if msg.get("link") else "")
     body_html = (
         "<!doctype html><html><body style=\"font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#111\">"
@@ -367,7 +370,7 @@ def render_email(msg: dict[str, Any]) -> tuple[str, str, str]:
         f"<p style=\"white-space:pre-wrap\">{e(msg.get('summary', ''))}</p>"
         f"<table style=\"border-collapse:collapse;font-size:13px\">{facts}</table>"
         + (f"<ul>{items}</ul>" if items else "") + button +
-        "</div><p style=\"color:#9ca3af;font-size:12px\">Sent by CloudSecurity CNAPP notifications.</p>"
+        f"</div><p style=\"color:#9ca3af;font-size:12px\">Sent by {e(config.settings.brand_name)} notifications.</p>"
         "</body></html>")
     return subject, text, body_html
 
