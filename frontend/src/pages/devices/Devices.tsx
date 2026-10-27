@@ -7,16 +7,18 @@ import { Card, Empty, ErrorNote, PageHeader, Select, Stat, Table, Tag } from "..
 import { OS_LABEL } from "../../lib/devices";
 import { fmtAgo } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
+import { useUrlState } from "../../lib/useUrlState";
 
 export default function Devices() {
   const navigate = useNavigate();
   const { can } = useAuth();
   const [q, setQ] = useState("");
-  const [os, setOs] = useState("");
-  const [health, setHealth] = useState("");
-  const [issue, setIssue] = useState("");
-  const [connectivity, setConnectivity] = useState("");
-  const [status, setStatus] = useState("active");
+  // Filters live in the URL (?health=critical, ?issue=firewall_off, ?connectivity=stale ...) for dashboard links.
+  const [os, setOs] = useUrlState("os");
+  const [health, setHealth] = useUrlState("health");
+  const [issue, setIssue] = useUrlState("issue");
+  const [connectivity, setConnectivity] = useUrlState("connectivity");
+  const [status, setStatus] = useUrlState("status", "active");
   const filters = { q: q.trim() || undefined, os, health, issue, connectivity, status };
   const { data, error, loading } = useApi(() => api.devices(filters), [q, os, health, issue, connectivity, status], 30000);
   const { data: summary } = useApi(api.deviceSummary, [], 30000);
@@ -89,7 +91,8 @@ export default function Devices() {
             options={[
               { value: "", label: "Any" },
               { value: "active", label: "Online (< 24h)" },
-              { value: "stale", label: "Stale (> 24h)" },
+              { value: "offline", label: "Offline (> 24h)" },
+              { value: "stale", label: "Stale (24h - 7d)" },
               { value: "inactive", label: "Inactive (> 7d)" },
               { value: "never", label: "Never checked in" },
             ]}

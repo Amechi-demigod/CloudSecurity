@@ -1,4 +1,6 @@
+import { ChevronRight } from "lucide-react";
 import { useEffect, useRef, type InputHTMLAttributes, type ReactNode } from "react";
+import { Link } from "react-router-dom";
 import { SEV_COLOR } from "../lib/format";
 
 const SEV_ICON: Record<string, string> = { critical: "!!", high: "!", medium: "~", low: "-", info: "i" };
@@ -32,7 +34,7 @@ export function Tag({ children, tone = "default" }: { children: ReactNode; tone?
 
 export function Card({ title, actions, children, className = "" }: { title?: ReactNode; actions?: ReactNode; children: ReactNode; className?: string }) {
   return (
-    <section className={`rounded-lg border border-line bg-surface-1 ${className}`}>
+    <section className={`rounded-xl border border-line bg-surface-1 shadow-sm shadow-black/10 ${className}`}>
       {(title || actions) && (
         <header className="flex items-center justify-between border-b border-line px-4 py-2.5">
           <h2 className="text-sm font-semibold text-ink">{title}</h2>
@@ -44,13 +46,33 @@ export function Card({ title, actions, children, className = "" }: { title?: Rea
   );
 }
 
-export function Stat({ label, value, sub }: { label: string; value: ReactNode; sub?: ReactNode }) {
-  return (
-    <div className="rounded-lg border border-line bg-surface-1 px-4 py-3">
-      <div className="text-xs uppercase tracking-wide text-ink-3">{label}</div>
-      <div className="mt-1 text-2xl font-semibold text-ink">{value}</div>
+/**
+ * A number with a label. With `to`, the whole tile links to the records behind the number
+ * (usually a filtered list), with a hover state, a focus ring and a chevron as the cue.
+ */
+export function Stat({ label, value, sub, to, hint }: { label: string; value: ReactNode; sub?: ReactNode; to?: string; hint?: string }) {
+  const body = (
+    <>
+      <div className="flex items-start justify-between gap-2">
+        <div className="text-xs font-medium uppercase tracking-wide text-ink-3">{label}</div>
+        {to && (
+          <ChevronRight aria-hidden className="h-4 w-4 shrink-0 text-ink-3 transition group-hover:translate-x-0.5 group-hover:text-accent" />
+        )}
+      </div>
+      <div className="mt-1 text-2xl font-semibold tracking-tight text-ink">{value}</div>
       {sub && <div className="mt-0.5 text-xs text-ink-2">{sub}</div>}
-    </div>
+    </>
+  );
+  const base = "block rounded-xl border border-line bg-surface-1 px-4 py-3";
+  if (!to) return <div className={base}>{body}</div>;
+  return (
+    <Link
+      to={to}
+      title={hint ?? `Show ${label.toLowerCase()}`}
+      className={`group ${base} transition hover:border-accent/60 hover:bg-surface-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent`}
+    >
+      {body}
+    </Link>
   );
 }
 
@@ -58,7 +80,7 @@ export function PageHeader({ title, subtitle, actions }: { title: string; subtit
   return (
     <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
       <div>
-        <h1 className="text-xl font-semibold">{title}</h1>
+        <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
         {subtitle && <p className="mt-1 text-sm text-ink-2">{subtitle}</p>}
       </div>
       {actions && <div className="flex items-center gap-2">{actions}</div>}

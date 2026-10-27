@@ -1,21 +1,46 @@
 @import "tailwindcss";
+@import "@fontsource-variable/plus-jakarta-sans";
 
 /* Theme tokens. Severity colors come from a fixed status palette and are always
-   paired with a text label, never used as the only signal. */
+   paired with a text label, never used as the only signal. Dark is the default;
+   lib/theme.ts sets data-theme="light" on <html> for the light palette below. */
 @theme {
-  --color-surface-0: #0f1115;
-  --color-surface-1: #171a20;
-  --color-surface-2: #1f232b;
-  --color-line: #2a2f39;
-  --color-ink: #eceae6;
-  --color-ink-2: #b9b8b0;
-  --color-ink-3: #8a8a84;
-  --color-accent: #3987e5;
-  --color-sev-critical: #d03b3b;
-  --color-sev-high: #ec835a;
-  --color-sev-medium: #fab219;
-  --color-sev-low: #6da7ec;
-  --color-good: #0ca30c;
+  --color-surface-0: #0b0f17;
+  --color-surface-1: #121826;
+  --color-surface-2: #1b2232;
+  --color-line: #273044;
+  --color-ink: #e8ecf3;
+  --color-ink-2: #b4bdcc;
+  --color-ink-3: #8691a5;
+  --color-accent: #4c8dff;
+  --color-sev-critical: #e5484d;
+  --color-sev-high: #f0844c;
+  --color-sev-medium: #f5b324;
+  --color-sev-low: #6aa7f8;
+  --color-good: #2fb36b;
+}
+
+/* Light palette: text tokens meet WCAG AA (4.5:1) on every surface; severity colors are
+   darkened because they are also used as text (tags, badges). */
+:root[data-theme="light"] {
+  --color-surface-0: #f4f6fa;
+  --color-surface-1: #ffffff;
+  --color-surface-2: #eef1f6;
+  --color-line: #dbe1ea;
+  --color-ink: #0f172a;
+  --color-ink-2: #3f4b5f;
+  --color-ink-3: #5b6678;
+  --color-accent: #2563eb;
+  --color-sev-critical: #c81e1e;
+  --color-sev-high: #c2410c;
+  --color-sev-medium: #a16207;
+  --color-sev-low: #1d5fd1;
+  --color-good: #15803d;
+  color-scheme: light;
+}
+
+:root {
+  color-scheme: dark;
 }
 
 html,
@@ -27,13 +52,29 @@ body,
 body {
   background: var(--color-surface-0);
   color: var(--color-ink);
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-family: "Plus Jakarta Sans Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Thin, theme-aware scrollbars for the sidebar, tables and drawers */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line) transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
 }
 
 /* Recharts tooltip polish */
 .recharts-default-tooltip {
   background: var(--color-surface-2) !important;
   border: 1px solid var(--color-line) !important;
-  border-radius: 6px;
+  border-radius: 8px;
 }
