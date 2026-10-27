@@ -6,16 +6,17 @@ import AssetDrawer from "../components/AssetDrawer";
 import { Button, Card, Empty, ErrorNote, PageHeader, Select, SeverityBadge, Table, Tag } from "../components/ui";
 import { PROVIDER_LABEL, TYPE_LABEL, fmtAgo } from "../lib/format";
 import { useApi } from "../lib/useApi";
+import { useUrlState } from "../lib/useUrlState";
 
 export default function Findings() {
-  const [severity, setSeverity] = useState("");
-  // Deep link from notifications: /findings?finding=<id>
+  // Deep links: /findings?finding=<id> (notifications), ?severity=, ?status=, ?provider=, ?compliance= (dashboard)
   const [params] = useSearchParams();
   const linked = params.get("finding");
-  const [status, setStatus] = useState(linked ? "all" : "open");
-  const [source, setSource] = useState("");
-  const [provider, setProvider] = useState("");
-  const [compliance, setCompliance] = useState("");
+  const [severity, setSeverity] = useUrlState("severity");
+  const [status, setStatus] = useUrlState("status", linked ? "all" : "open");
+  const [source, setSource] = useUrlState("source");
+  const [provider, setProvider] = useUrlState("provider");
+  const [compliance, setCompliance] = useUrlState("compliance");
   const [expanded, setExpanded] = useState<string | null>(linked);
   const [asset, setAsset] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);

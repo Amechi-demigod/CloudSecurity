@@ -317,6 +317,9 @@ def test_stale_and_inactive(admin, device, age, expected):
     codes = {i["code"] for i in d["issues"]}
     assert (expected in codes) == (expected != "active")
     assert admin.get("/api/devices/summary").json()["connectivity"][expected] == 1
+    # The dashboard's "stale devices" link: offline = stale or inactive
+    listed = [x["id"] for x in admin.get("/api/devices", params={"connectivity": "offline"}).json()]
+    assert (device_id in listed) == (expected != "active")
 
 
 # --------------------------------------------------------------------------- commands

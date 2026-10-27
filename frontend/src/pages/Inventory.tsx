@@ -4,13 +4,15 @@ import AssetDrawer from "../components/AssetDrawer";
 import { Card, Empty, ErrorNote, PageHeader, RiskBar, Select, Table, Tag } from "../components/ui";
 import { PROVIDER_LABEL, SCOPE_LABEL, TYPE_LABEL } from "../lib/format";
 import { useApi } from "../lib/useApi";
+import { useUrlState } from "../lib/useUrlState";
 
 export default function Inventory() {
-  const [type, setType] = useState("");
-  const [provider, setProvider] = useState("");
-  const [sub, setSub] = useState("");
-  const [exposed, setExposed] = useState("");
-  const [source, setSource] = useState("");
+  // Filters live in the URL (?type=, ?provider=, ?exposed=yes ...) so the dashboard can link to them.
+  const [type, setType] = useUrlState("type");
+  const [provider, setProvider] = useUrlState("provider");
+  const [sub, setSub] = useUrlState("subscription");
+  const [exposed, setExposed] = useUrlState("exposed");
+  const [source, setSource] = useUrlState("source");
   const [q, setQ] = useState("");
   const [selected, setSelected] = useState<string | null>(null);
 

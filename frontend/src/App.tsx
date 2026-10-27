@@ -1,8 +1,30 @@
-import type { ReactNode } from "react";
+import {
+  Bell,
+  Boxes,
+  Bug,
+  Building2,
+  CheckCheck,
+  ClipboardCheck,
+  Globe,
+  Laptop,
+  LayoutDashboard,
+  Moon,
+  Network,
+  Package,
+  PlugZap,
+  Route as RouteIcon,
+  ScrollText,
+  Siren,
+  Sun,
+  Users2,
+  type LucideIcon,
+} from "lucide-react";
+import { Fragment, type ReactNode } from "react";
 import { NavLink, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { api, type Role } from "./api";
 import { useAuth } from "./auth/context";
 import UserMenu from "./components/UserMenu";
+import { useTheme } from "./lib/theme";
 import { useApi } from "./lib/useApi";
 import Approvals from "./pages/Approvals";
 import AssetDetail from "./pages/assets/AssetDetail";
@@ -31,31 +53,70 @@ import Users from "./pages/admin/Users";
 import Invite from "./pages/Invite";
 import Organizations from "./pages/platform/Organizations";
 
-const NAV: { to: string; label: string; role?: Role }[] = [
-  { to: "/", label: "Dashboard" },
-  { to: "/inventory", label: "Inventory" },
-  { to: "/devices", label: "Devices" },
-  { to: "/it-assets", label: "IT assets" },
-  { to: "/findings", label: "Posture findings" },
-  { to: "/vulnerabilities", label: "Vulnerabilities" },
-  { to: "/threats", label: "Runtime threats" },
-  { to: "/exposure", label: "Exposure" },
-  { to: "/attack-paths", label: "Attack paths" },
-  { to: "/connectors", label: "Connectors & scans" },
-  { to: "/notifications", label: "Notifications", role: "analyst" },
+type NavItem = { to: string; label: string; icon: LucideIcon; role?: Role; badge?: "approvals" };
+
+// Grouped by what the user is looking after; the order inside a group follows a typical triage.
+const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
+  { title: "", items: [{ to: "/", label: "Dashboard", icon: LayoutDashboard }] },
+  {
+    title: "Cloud security",
+    items: [
+      { to: "/inventory", label: "Inventory", icon: Boxes },
+      { to: "/exposure", label: "Exposure", icon: Globe },
+      { to: "/findings", label: "Posture findings", icon: ClipboardCheck },
+      { to: "/vulnerabilities", label: "Vulnerabilities", icon: Bug },
+      { to: "/attack-paths", label: "Attack paths", icon: RouteIcon },
+      { to: "/threats", label: "Runtime threats", icon: Siren },
+    ],
+  },
+  {
+    title: "Endpoints & assets",
+    items: [
+      { to: "/devices", label: "Devices", icon: Laptop },
+      { to: "/it-assets", label: "IT assets", icon: Package },
+    ],
+  },
+  {
+    title: "Configuration",
+    items: [
+      { to: "/connectors", label: "Connectors & scans", icon: PlugZap },
+      { to: "/notifications", label: "Notifications", icon: Bell, role: "analyst" },
+    ],
+  },
 ];
 
-const ADMIN_NAV: { to: string; label: string; badge?: "approvals" }[] = [
-  { to: "/approvals", label: "Approvals", badge: "approvals" },
-  { to: "/admin/organization", label: "Organisation" },
-  { to: "/admin/users", label: "Users" },
-  { to: "/admin/audit-log", label: "Audit log" },
+const ADMIN_NAV: NavItem[] = [
+  { to: "/approvals", label: "Approvals", icon: CheckCheck, badge: "approvals" },
+  { to: "/admin/organization", label: "Organisation", icon: Building2 },
+  { to: "/admin/users", label: "Users", icon: Users2 },
+  { to: "/admin/audit-log", label: "Audit log", icon: ScrollText },
 ];
 
 function navClass({ isActive }: { isActive: boolean }) {
-  return `block rounded px-3 py-2 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
-    isActive ? "bg-surface-2 text-ink" : "text-ink-2 hover:bg-surface-2 hover:text-ink"
+  return `flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+    isActive ? "bg-accent/15 font-medium text-ink" : "text-ink-2 hover:bg-surface-2 hover:text-ink"
   }`;
+}
+
+function NavSection({ title }: { title: string }) {
+  return <li className="px-3 pb-1 pt-4 text-[11px] font-semibold uppercase tracking-wider text-ink-3">{title}</li>;
+}
+
+function ThemeToggle() {
+  const [theme, toggle] = useTheme();
+  const next = theme === "dark" ? "light" : "dark";
+  const Icon = theme === "dark" ? Sun : Moon;
+  return (
+    <button
+      type="button"
+      onClick={toggle}
+      title={`Switch to ${next} theme`}
+      aria-label={`Switch to ${next} theme`}
+      className="flex h-9 w-9 items-center justify-center rounded-lg text-ink-2 transition hover:bg-surface-2 hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+    >
+      <Icon aria-hidden className="h-4 w-4" />
+    </button>
+  );
 }
 
 function FullPageSpinner() {
@@ -117,39 +178,48 @@ function Shell() {
   const { data: approvals } = useApi(() => (admin ? api.approvalSummary() : Promise.resolve(null)), [admin], admin ? 30000 : undefined);
   return (
     <div className="flex h-full">
-      <nav aria-label="Main" className="flex w-56 shrink-0 flex-col border-r border-line bg-surface-1">
-        <div className="flex items-center gap-2 px-4 py-4">
-          <img src="/shield.svg" alt="" className="h-6 w-6" />
+      <nav aria-label="Main" className="flex w-60 shrink-0 flex-col border-r border-line bg-surface-1">
+        <div className="flex items-center gap-2.5 px-5 py-4">
+          <img src="/shield.svg" alt="" className="h-7 w-7" />
           <div>
-            <div className="text-sm font-semibold leading-tight">CloudSecurity</div>
+            <div className="text-sm font-bold leading-tight tracking-tight">CloudSecurity</div>
             <div className="text-[11px] text-ink-3">Runtime-first CNAPP</div>
           </div>
         </div>
-        <ul className="flex-1 space-y-0.5 overflow-y-auto px-2">
-          {NAV.filter((n) => !n.role || can(n.role)).map((n) => (
-            <li key={n.to}>
-              <NavLink to={n.to} end={n.to === "/"} className={navClass}>
-                {n.label}
-              </NavLink>
-            </li>
-          ))}
-          {can("admin") && (
+        <ul className="flex-1 space-y-0.5 overflow-y-auto px-2 pb-3">
+          {NAV_GROUPS.map((g) => {
+            const items = g.items.filter((n) => !n.role || can(n.role));
+            if (items.length === 0) return null;
+            return (
+              <Fragment key={g.title || "home"}>
+                {g.title && <NavSection title={g.title} />}
+                {items.map((n) => (
+                  <li key={n.to}>
+                    <NavLink to={n.to} end={n.to === "/"} className={navClass}>
+                      <n.icon aria-hidden className="h-4 w-4 shrink-0" />
+                      {n.label}
+                    </NavLink>
+                  </li>
+                ))}
+              </Fragment>
+            );
+          })}
+          {admin && (
             <>
-              <li className="px-3 pb-1 pt-4 text-[11px] font-semibold uppercase tracking-wide text-ink-3">Administration</li>
+              <NavSection title="Administration" />
               {ADMIN_NAV.map((n) => (
                 <li key={n.to}>
                   <NavLink to={n.to} className={navClass}>
-                    <span className="flex items-center justify-between gap-2">
-                      {n.label}
-                      {n.badge === "approvals" && !!approvals?.actionable && (
-                        <span
-                          className="rounded-full bg-sev-high px-1.5 text-[11px] font-semibold leading-5 text-black"
-                          aria-label={`${approvals.actionable} waiting for your approval`}
-                        >
-                          {approvals.actionable}
-                        </span>
-                      )}
-                    </span>
+                    <n.icon aria-hidden className="h-4 w-4 shrink-0" />
+                    <span className="flex-1">{n.label}</span>
+                    {n.badge === "approvals" && !!approvals?.actionable && (
+                      <span
+                        className="rounded-full bg-sev-high px-1.5 text-[11px] font-semibold leading-5 text-black"
+                        aria-label={`${approvals.actionable} waiting for your approval`}
+                      >
+                        {approvals.actionable}
+                      </span>
+                    )}
                   </NavLink>
                 </li>
               ))}
@@ -157,9 +227,10 @@ function Shell() {
           )}
           {platformAdmin && (
             <>
-              <li className="px-3 pb-1 pt-4 text-[11px] font-semibold uppercase tracking-wide text-ink-3">Platform</li>
+              <NavSection title="Platform" />
               <li>
                 <NavLink to="/platform/organizations" className={navClass}>
+                  <Network aria-hidden className="h-4 w-4 shrink-0" />
                   Organisations
                 </NavLink>
               </li>
@@ -196,8 +267,9 @@ function Shell() {
         </div>
       </nav>
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex items-center justify-end gap-3 border-b border-line bg-surface-1 px-6 py-2">
+        <header className="flex items-center justify-end gap-2 border-b border-line bg-surface-1 px-6 py-2">
           <OrgIndicator />
+          <ThemeToggle />
           <UserMenu />
         </header>
         <main className="min-w-0 flex-1 overflow-y-auto px-6 py-5">

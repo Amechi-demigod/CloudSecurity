@@ -6,6 +6,7 @@ import AssetDrawer from "../components/AssetDrawer";
 import { Button, Card, Empty, ErrorNote, PageHeader, Select, SeverityBadge, Tag } from "../components/ui";
 import { TYPE_LABEL, fmtAgo, fmtTime } from "../lib/format";
 import { useApi } from "../lib/useApi";
+import { useUrlState } from "../lib/useUrlState";
 
 const EVENT_LABEL: Record<string, string> = {
   process_exec: "exec",
@@ -110,8 +111,8 @@ export default function Threats() {
   // Deep link from notifications: /threats?alert=<id>
   const [params] = useSearchParams();
   const linked = params.get("alert");
-  const [status, setStatus] = useState(linked ? "all" : "");
-  const [severity, setSeverity] = useState("");
+  const [status, setStatus] = useUrlState("status", linked ? "all" : "");
+  const [severity, setSeverity] = useUrlState("severity");
   const [selected, setSelected] = useState<string | null>(linked);
   const [asset, setAsset] = useState<string | null>(null);
   const alerts = useApi(() => api.alerts({ status: status || undefined, severity: severity || undefined }), [status, severity], 5000);

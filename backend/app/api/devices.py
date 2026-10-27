@@ -80,7 +80,8 @@ def list_devices(db: Session = Depends(get_db),
                  os: str | None = Query(None, pattern="^(windows|macos|linux)$"),
                  health: str | None = Query(None, pattern="^(healthy|warning|critical|unknown)$"),
                  issue: str | None = Query(None, max_length=64),
-                 connectivity: str | None = Query(None, pattern="^(active|stale|inactive|never)$"),
+                 connectivity: str | None = Query(None, pattern="^(active|stale|inactive|never|offline)$",
+                                                   description="offline = stale or inactive (no check-in for 24 h+)"),
                  status: str = Query("active", pattern="^(active|revoked|all)$"),
                  group: str | None = Query(None, max_length=64),
                  limit: int = Query(500, ge=1, le=5000)):
@@ -101,7 +102,7 @@ def list_devices(db: Session = Depends(get_db),
         sm = svc.summarize(d, now)
         if health and sm["health"] != health:
             continue
-        if connectivity and sm["connectivity"] != connectivity:
+        if connectivity and sm["connectivity"] not in (("stale", "inactive") if connectivity == "offline" else (connectivity,)):
             continue
         if issue and issue not in {i["code"] for i in sm["issues"]}:
             continue

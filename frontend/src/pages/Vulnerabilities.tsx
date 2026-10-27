@@ -6,6 +6,7 @@ import AssetDrawer from "../components/AssetDrawer";
 import { Button, Card, Empty, ErrorNote, PageHeader, RiskBar, Select, SeverityBadge, Stat, Table, Tag } from "../components/ui";
 import { FeedStatus, VulnTable } from "../components/vulns";
 import { useApi } from "../lib/useApi";
+import { useUrlState } from "../lib/useUrlState";
 
 const VIEWS = ["Vulnerabilities", "By CVE", "By software", "Coverage"] as const;
 type View = (typeof VIEWS)[number];
@@ -16,9 +17,9 @@ export default function Vulnerabilities() {
   const [params] = useSearchParams(); // deep links: ?asset=<id> opens the resource, ?cve=<id>, ?device=<id>
   const [view, setView] = useState<View>("Vulnerabilities");
   const [target, setTarget] = useState(params.get("device") ? "device" : params.get("scope") ?? "");
-  const [runtime, setRuntime] = useState("all");
-  const [severity, setSeverity] = useState("");
-  const [priority, setPriority] = useState("");
+  const [runtime, setRuntime] = useUrlState("runtime", "all");
+  const [severity, setSeverity] = useUrlState("severity");
+  const [priority, setPriority] = useUrlState("priority");
   const [kevOnly, setKevOnly] = useState(false);
   const [software, setSoftware] = useState("");
   const [status, setStatus] = useState("open");
