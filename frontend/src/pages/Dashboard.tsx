@@ -141,7 +141,7 @@ function SeverityRows({ counts }: { counts: Record<string, number> }) {
 
 function riskLink(r: Dashboard["top_risks"][number]): string {
   if (r.kind === "attack_path") return q("/attack-paths", { path: r.id });
-  if (r.kind === "finding") return q("/findings", { finding: r.id });
+  if (r.kind === "finding") return `/findings/${encodeURIComponent(r.id)}`;
   const cve = r.title.split(" ")[0]; // "<CVE id> in <package> on <asset>"
   return q("/vulnerabilities", { cve, asset: r.asset_id });
 }

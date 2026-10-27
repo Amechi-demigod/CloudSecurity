@@ -77,6 +77,30 @@ export function Stat({ label, value, sub, to, hint }: { label: string; value: Re
   );
 }
 
+/** "Section / Item" trail above a detail page's title; the last item is the current page. */
+export function Breadcrumbs({ items }: { items: { label: ReactNode; to?: string }[] }) {
+  return (
+    <nav aria-label="Breadcrumb" className="mb-2">
+      <ol className="flex min-w-0 items-center gap-1 text-xs text-ink-3">
+        {items.map((it, i) => (
+          <li key={i} className="flex min-w-0 items-center gap-1">
+            {i > 0 && <ChevronRight aria-hidden className="h-3.5 w-3.5 shrink-0" />}
+            {it.to ? (
+              <Link to={it.to} className="hover:text-ink">
+                {it.label}
+              </Link>
+            ) : (
+              <span aria-current="page" className="truncate text-ink-2">
+                {it.label}
+              </span>
+            )}
+          </li>
+        ))}
+      </ol>
+    </nav>
+  );
+}
+
 export function PageHeader({ title, subtitle, actions }: { title: string; subtitle?: string; actions?: ReactNode }) {
   return (
     <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
