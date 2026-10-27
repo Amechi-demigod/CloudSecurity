@@ -71,8 +71,8 @@ def _issue_token(inv: OrganizationInvitation, now: datetime) -> str:
 def _send(org: Organization, inv: OrganizationInvitation, url: str, inviter: str | None, now: datetime) -> Issued:
     hours = config.settings.invite_ttl_hours
     msg = {"severity": "info", "source_label": "Invitation",
-           "title": f"You are invited to {org.name} on CloudSecurity",
-           "summary": (f"{inviter or 'An administrator'} invited you to join {org.name} on the CloudSecurity "
+           "title": f"You are invited to {org.name} on {config.settings.brand_name}",
+           "summary": (f"{inviter or 'An administrator'} invited you to join {org.name} on the {config.settings.brand_name} "
                        f"platform as {inv.role}. Open the link to choose your password. It can be used once and "
                        f"expires in {hours:g} hours. If you did not expect this invitation, ignore this email."),
            "facts": [("Organisation", org.name), ("Role", inv.role), ("Email", inv.email)],

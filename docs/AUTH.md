@@ -285,7 +285,7 @@ sign in with Microsoft):
 |---|---|---|
 | `MFA_ENCRYPTION_KEY` | dev key (warning) | 32+ chars; comma-separated for rotation. **Required in production** |
 | `MFA_REQUIRED_ROLES` | | e.g. `admin,analyst` |
-| `MFA_ISSUER` | `CloudSecurity CNAPP` | Name shown in authenticator apps |
+| `MFA_ISSUER` | `<BRAND_NAME> CNAPP` (`CloudSecurity CNAPP`) | Name shown in authenticator apps. Changing it only affects new enrolments |
 | `MFA_CHALLENGE_TTL_SECONDS` | `300` | Lifetime of the password → code step |
 | `MFA_CHALLENGE_MAX_ATTEMPTS` | `5` | Wrong codes per challenge |
 | `ENTRA_TENANT_ID` | | Directory (tenant) id. Multi-tenant aliases (`common`, `organizations`) are rejected |

@@ -1,5 +1,6 @@
 import { useId, useState, type FormEvent } from "react";
 import type { MfaSetup } from "../api";
+import { currentBrand } from "../lib/brand";
 import { Button } from "./ui";
 
 const inputCls =
@@ -104,7 +105,7 @@ export function RecoveryCodes({ codes, email }: { codes: string[]; email?: strin
   }
 
   function download() {
-    const header = `CloudSecurity CNAPP recovery codes${email ? ` for ${email}` : ""}\nGenerated ${new Date().toISOString()}\nEach code works once.\n\n`;
+    const header = `${currentBrand().name} recovery codes${email ? ` for ${email}` : ""}\nGenerated ${new Date().toISOString()}\nEach code works once.\n\n`;
     const url = URL.createObjectURL(new Blob([header + text + "\n"], { type: "text/plain" }));
     const a = document.createElement("a");
     a.href = url;

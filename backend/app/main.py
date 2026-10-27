@@ -116,7 +116,7 @@ def create_app() -> FastAPI:
     agent_api.enroll_limiter.reset()
     app = FastAPI(
         debug=s.debug and not s.is_production,
-        title="CloudSecurity CNAPP",
+        title=f"{s.brand_name} CNAPP",
         version="0.1.0",
         description="Runtime-first cloud security platform MVP: inventory, CSPM, runtime-aware "
         "vulnerability prioritization, CDR and attack paths.",

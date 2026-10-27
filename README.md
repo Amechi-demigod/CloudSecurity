@@ -217,6 +217,7 @@ On first start, simulated mode seeds the database (`backend/cnapp.db`) and backf
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | | Create this admin (of the default organisation) on startup **only if no users exist**. Password must be 12+ characters. There is no default password |
 | `DEFAULT_ORG_NAME` | `Default organisation` | Name given to the default organisation when it is created (existing data is migrated into it); rename it later in the console. See [docs/MULTI_TENANCY.md](docs/MULTI_TENANCY.md) |
 | `PLATFORM_ADMIN_EMAILS` | | Comma-separated platform owners (manage organisations), in addition to `python -m app.cli platform-admin EMAIL` |
+| `BRAND_NAME` / `BRAND_TAGLINE` | `CloudSecurity` / `Runtime-first CNAPP` | Product name and tagline on the sign-in and invitation pages, in the console, the browser tab, invitation emails, notifications and (unless `MFA_ISSUER` is set) authenticator apps |
 | `PLATFORM_SMTP_HOST` / `PLATFORM_SMTP_FROM` (+ `_PORT`, `_SECURITY`, `_USERNAME`, `_PASSWORD`) | | Mail server for invitation emails; without one the console shows the invitation link to copy. See [docs/MULTI_TENANCY.md](docs/MULTI_TENANCY.md#email-for-invitations) |
 | `ADMIN_NAME` | `Administrator` | Display name for the bootstrap admin |
 | `COOKIE_SECURE` | `true` | Mark the session cookie `Secure`. Leave on for https and Codespaces; see [Cookies](#session-cookie-settings) |

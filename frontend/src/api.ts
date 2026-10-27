@@ -326,6 +326,8 @@ export interface ScanSchedule {
 
 export interface Health {
   status: string;
+  /** Product branding (BRAND_NAME / BRAND_TAGLINE); absent on servers older than this console. */
+  brand?: { name: string; tagline: string };
   simulation_mode: boolean;
   simulator_running: boolean;
   azure_configured: boolean;

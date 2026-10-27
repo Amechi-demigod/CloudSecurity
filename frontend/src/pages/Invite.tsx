@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { ApiError } from "../api";
 import { ROLE_LABEL, useAuth } from "../auth/context";
+import { AuthLayout } from "../components/AuthLayout";
 import { Button, Field } from "../components/ui";
 import { isSignInRequired, orgApi, type InvitationInfo } from "../orgApi";
 
@@ -54,13 +55,8 @@ export default function Invite() {
   }
 
   return (
-    <div className="flex min-h-full items-center justify-center bg-surface-0 px-4 py-10">
-      <main className="w-full max-w-sm">
-        <div className="mb-6 flex flex-col items-center text-center">
-          <img src="/shield.svg" alt="" className="mb-3 h-8 w-8" />
-          <h1 className="text-xl font-semibold text-ink">CloudSecurity</h1>
-        </div>
-        <div className="rounded-xl border border-line bg-surface-1 p-6 shadow-2xl">
+    <AuthLayout>
+        <div>
           {loadError && (
             <div className="space-y-3">
               <h2 className="text-base font-semibold text-ink">Invitation unavailable</h2>
@@ -99,7 +95,6 @@ export default function Invite() {
             </form>
           )}
         </div>
-      </main>
-    </div>
+    </AuthLayout>
   );
 }
