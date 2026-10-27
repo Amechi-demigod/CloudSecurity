@@ -1,3 +1,4 @@
+import { Laptop } from "lucide-react";
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api } from "../../api";
@@ -7,6 +8,7 @@ import { Card, Empty, ErrorNote, PageHeader, Select, Stat, Table, Tag } from "..
 import { OS_LABEL } from "../../lib/devices";
 import { fmtAgo } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
+import { useSort } from "../../lib/useSort";
 import { useUrlState } from "../../lib/useUrlState";
 
 export default function Devices() {
@@ -22,6 +24,22 @@ export default function Devices() {
   const filters = { q: q.trim() || undefined, os, health, issue, connectivity, status };
   const { data, error, loading } = useApi(() => api.devices(filters), [q, os, health, issue, connectivity, status], 30000);
   const { data: summary } = useApi(api.deviceSummary, [], 30000);
+  const filtered = !!(q || os || health || issue || connectivity) || status !== "active";
+  const HEALTH_RANK: Record<string, number> = { critical: 3, warning: 2, unknown: 1, healthy: 0 };
+  const sorted = useSort(
+    data,
+    {
+      name: (d) => d.hostname,
+      os: (d) => `${OS_LABEL[d.os_family] ?? d.os_family} ${d.os_version ?? ""}`,
+      user: (d) => d.logged_in_users.join(", "),
+      health: (d) => (d.status === "revoked" ? -1 : HEALTH_RANK[d.health] ?? 0),
+      issues: (d) => d.issues.length,
+      seen: (d) => (d.last_seen_at ? Date.parse(d.last_seen_at) : null),
+      agent: (d) => d.agent_version,
+    },
+    { key: "name", dir: "asc" },
+    { health: "desc", issues: "desc", seen: "desc" },
+  );
   const { data: issueTypes } = useApi(api.deviceIssueTypes, []);
 
   return (
@@ -109,18 +127,39 @@ export default function Devices() {
           />
         </div>
         <ErrorNote error={error} />
-        {data && data.length === 0 ? (
-          <Empty>
-            {loading ? "Loading…" : "No devices match."}{" "}
-            {can("admin") && !loading && (
-              <Link className="text-accent" to="/devices/enrollment">
-                Enroll a device
-              </Link>
-            )}
-          </Empty>
-        ) : (
-          <Table head={["Device", "OS", "User", "Health", "Issues", "Last seen", "Agent"]}>
-            {(data ?? []).map((d) => (
+          <Table
+            head={[
+              { label: "Device", sort: "name" },
+              { label: "OS", sort: "os" },
+              { label: "User", sort: "user" },
+              { label: "Health", sort: "health" },
+              { label: "Issues", sort: "issues" },
+              { label: "Last seen", sort: "seen" },
+              { label: "Agent", sort: "agent" },
+            ]}
+            sort={sorted.sort}
+            onSort={sorted.onSort}
+            loading={loading}
+            rowCount={data?.length ?? 0}
+            empty={
+              <Empty
+                icon={Laptop}
+                title={filtered ? "No devices match these filters" : "No devices enrolled yet"}
+                action={
+                  can("admin") && !filtered ? (
+                    <Link className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-white hover:brightness-110" to="/devices/enrollment">
+                      Enroll devices
+                    </Link>
+                  ) : undefined
+                }
+              >
+                {filtered
+                  ? "Clear a filter to see more devices."
+                  : "Install the agent on Windows and macOS laptops to track their inventory and security posture."}
+              </Empty>
+            }
+          >
+            {sorted.rows.map((d) => (
               <tr
                 key={d.id}
                 className="cursor-pointer hover:bg-surface-2"
@@ -158,7 +197,6 @@ export default function Devices() {
               </tr>
             ))}
           </Table>
-        )}
       </Card>
     </div>
   );

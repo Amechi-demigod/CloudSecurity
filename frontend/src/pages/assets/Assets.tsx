@@ -1,3 +1,4 @@
+import { Package } from "lucide-react";
 import { useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { assetsApi, type AssetBrief, type ImportResult } from "../../assetsApi";
@@ -7,6 +8,7 @@ import { Button, Card, Empty, ErrorNote, Modal, PageHeader, Select, Stat, Table,
 import { STATUS_LABEL, STATUS_ORDER, TYPE_LABEL, errMsg, fmtDate, fmtMoney } from "../../lib/assets";
 import { fmtAgo } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
+import { useSort } from "../../lib/useSort";
 
 function BriefList({ items, render, empty }: { items: AssetBrief[]; render: (a: AssetBrief) => string; empty: string }) {
   if (items.length === 0) return <p className="text-sm text-ink-3">{empty}</p>;
@@ -123,6 +125,18 @@ export default function Assets() {
   const filters = { q: q.trim() || undefined, status, type, location, agent, flag };
   const list = useApi(() => assetsApi.list(filters), [q, status, type, location, agent, flag], 60000);
   const summary = useApi(assetsApi.summary, [], 60000);
+  const sorted = useSort(
+    list.data,
+    {
+      tag: (a) => a.asset_tag,
+      type: (a) => TYPE_LABEL[a.asset_type] ?? a.asset_type,
+      status: (a) => STATUS_LABEL[a.status] ?? a.status,
+      owner: (a) => a.assignee_name || a.assignee_email,
+      site: (a) => a.location,
+      warranty: (a) => (a.warranty_end ? Date.parse(a.warranty_end) : null),
+    },
+    { key: "tag", dir: "asc" },
+  );
   const { data: settings } = useApi(assetsApi.settings, []);
   const s = summary.data;
   const reload = () => {
@@ -234,11 +248,27 @@ export default function Assets() {
           />
         </div>
         <ErrorNote error={list.error} />
-        {list.data && list.data.length === 0 ? (
-          <Empty>{list.loading ? "Loading…" : "No assets match."}</Empty>
-        ) : (
-          <Table head={["Asset", "Type", "Status", "Owner", "Site", "Warranty", "Agent"]}>
-            {(list.data ?? []).map((a) => (
+          <Table
+            head={[
+              { label: "Asset", sort: "tag" },
+              { label: "Type", sort: "type" },
+              { label: "Status", sort: "status" },
+              { label: "Owner", sort: "owner" },
+              { label: "Site", sort: "site" },
+              { label: "Warranty", sort: "warranty" },
+              "Agent",
+            ]}
+            sort={sorted.sort}
+            onSort={sorted.onSort}
+            loading={list.loading}
+            rowCount={list.data?.length ?? 0}
+            empty={
+              <Empty icon={Package} title="No assets match">
+                Clear a filter, or add assets by hand or by CSV import. Devices with the agent appear here automatically.
+              </Empty>
+            }
+          >
+            {sorted.rows.map((a) => (
               <tr key={a.id} className="cursor-pointer hover:bg-surface-2" onClick={() => navigate(`/it-assets/${a.id}`)}>
                 <td className="px-3 py-2">
                   <Link to={`/it-assets/${a.id}`} className="font-medium hover:text-accent" onClick={(e) => e.stopPropagation()}>
@@ -287,7 +317,6 @@ export default function Assets() {
               </tr>
             ))}
           </Table>
-        )}
       </Card>
       {adding && (
         <AssetFormModal open asset={null} settings={settings} onClose={() => setAdding(false)} onSaved={(a) => navigate(`/it-assets/${a.id}`)} />

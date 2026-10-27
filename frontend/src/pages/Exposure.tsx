@@ -1,3 +1,4 @@
+import { Globe } from "lucide-react";
 import { Fragment, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api, type ExposureItem } from "../api";
@@ -5,6 +6,7 @@ import AssetDrawer from "../components/AssetDrawer";
 import { Card, Empty, ErrorNote, PageHeader, Select, SeverityBadge, Stat, Table, Tag } from "../components/ui";
 import { PROVIDER_LABEL, TYPE_LABEL } from "../lib/format";
 import { useApi } from "../lib/useApi";
+import { useSort } from "../lib/useSort";
 
 const PORT_NAME: Record<string, string> = {
   "22": "SSH",
@@ -129,7 +131,7 @@ export default function Exposure() {
   };
   const [expanded, setExpanded] = useState<string | null>(null);
   const [asset, setAsset] = useState<string | null>(null);
-  const { data, error } = useApi(
+  const { data, error, loading } = useApi(
     () =>
       api.exposure({
         provider: f.provider || undefined,
@@ -139,6 +141,19 @@ export default function Exposure() {
         level: f.level || undefined,
       }),
     [f.provider, f.subscription, f.type, f.port, f.level],
+  );
+  // Risk: confirmed attack paths weigh most, then prioritized vulnerabilities, then findings.
+  const sorted = useSort(
+    data?.items,
+    {
+      level: (i) => (i.level === "open" ? 2 : 1) + (i.sensitive_data ? 0.5 : 0),
+      name: (i) => i.name,
+      ports: (i) => i.effective_ports.length,
+      risk: (i) =>
+        i.attack_paths.filter((p) => p.confirmed).length * 1000 + i.attack_paths.length * 100 + i.vulnerabilities.prioritized * 10 + i.findings.count,
+    },
+    { key: "risk", dir: "desc" },
+    { level: "desc", ports: "desc", risk: "desc" },
   );
   const s = data?.summary;
   const facets = data?.facets;
@@ -201,11 +216,27 @@ export default function Exposure() {
         <span className="text-xs text-ink-3">{data ? `${data.items.length} assets` : ""}</span>
       </div>
       <Card>
-        {data && data.items.length === 0 ? (
-          <Empty>No internet-exposed assets match these filters.</Empty>
-        ) : (
-          <Table head={["Exposure", "Asset", "How", "Ports", "Controls", "Risk", ""]}>
-            {data?.items.map((i) => (
+          <Table
+            head={[
+              { label: "Exposure", sort: "level" },
+              { label: "Asset", sort: "name" },
+              "How",
+              { label: "Ports", sort: "ports" },
+              "Controls",
+              { label: "Risk", sort: "risk" },
+              { label: "Details", srOnly: true },
+            ]}
+            sort={sorted.sort}
+            onSort={sorted.onSort}
+            loading={loading}
+            rowCount={data?.items.length ?? 0}
+            empty={
+              <Empty icon={Globe} title="No internet-exposed assets match these filters">
+                Nothing reachable from the Internet with these filters. Clear a filter to see all exposed assets.
+              </Empty>
+            }
+          >
+            {sorted.rows.map((i) => (
               <Fragment key={i.id}>
                 <tr className="cursor-pointer align-top hover:bg-surface-2" onClick={() => setExpanded(expanded === i.id ? null : i.id)}>
                   <td className="px-3 py-2">
@@ -270,7 +301,6 @@ export default function Exposure() {
               </Fragment>
             ))}
           </Table>
-        )}
       </Card>
       <AssetDrawer assetId={asset} onClose={() => setAsset(null)} onNavigate={setAsset} />
     </div>
