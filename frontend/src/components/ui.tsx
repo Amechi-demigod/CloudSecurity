@@ -1,7 +1,8 @@
-import { ChevronRight } from "lucide-react";
-import { useEffect, useRef, type InputHTMLAttributes, type ReactNode } from "react";
+import { ArrowDown, ArrowUp, ArrowUpDown, ChevronRight, Inbox, type LucideIcon } from "lucide-react";
+import { isValidElement, useEffect, useRef, type InputHTMLAttributes, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { SEV_COLOR } from "../lib/format";
+import type { SortState } from "../lib/useSort";
 
 const SEV_ICON: Record<string, string> = { critical: "!!", high: "!", medium: "~", low: "-", info: "i" };
 
@@ -158,8 +159,22 @@ export function RiskBar({ value }: { value: number }) {
   );
 }
 
-export function Empty({ children }: { children: ReactNode }) {
-  return <div className="py-8 text-center text-sm text-ink-3">{children}</div>;
+/**
+ * Empty state: what is missing and, when useful, what to do about it. With only children it keeps
+ * the old one-line look; `title` / `action` / `icon` give the fuller version.
+ */
+export function Empty({ children, title, action, icon: Icon = Inbox }: { children?: ReactNode; title?: ReactNode; action?: ReactNode; icon?: LucideIcon }) {
+  if (!title && !action) return <div className="py-8 text-center text-sm text-ink-3">{children}</div>;
+  return (
+    <div className="flex flex-col items-center px-4 py-10 text-center">
+      <span className="flex h-11 w-11 items-center justify-center rounded-full bg-surface-2 text-ink-3">
+        <Icon aria-hidden className="h-5 w-5" />
+      </span>
+      {title && <p className="mt-3 text-sm font-semibold text-ink">{title}</p>}
+      {children && <p className="mt-1 max-w-md text-sm text-ink-3">{children}</p>}
+      {action && <div className="mt-4">{action}</div>}
+    </div>
+  );
 }
 
 export function ErrorNote({ error }: { error: string | null }) {
@@ -192,23 +207,99 @@ export function Drawer({ open, onClose, title, children }: { open: boolean; onCl
   );
 }
 
-/** Simple sortable-free table shell with consistent styling. */
-export function Table({ head, children }: { head: ReactNode[]; children: ReactNode }) {
+export type Column = ReactNode | { label: ReactNode; sort?: string; align?: "left" | "right"; srOnly?: boolean };
+
+const isColumnObject = (c: Column): c is { label: ReactNode; sort?: string; align?: "left" | "right"; srOnly?: boolean } =>
+  typeof c === "object" && c !== null && !isValidElement(c) && "label" in c;
+
+/**
+ * Table shell with consistent styling. The header stays visible while the rows scroll (the table
+ * scrolls inside its card once it is taller than the window). Columns given as
+ * { label, sort: "key" } are sortable when `sort` / `onSort` are passed (see lib/useSort.ts).
+ * `loading` with no rows shows placeholder rows; `empty` is shown when there are no rows.
+ */
+export function Table({
+  head,
+  children,
+  sort,
+  onSort,
+  loading,
+  empty,
+  rowCount,
+}: {
+  head: Column[];
+  children: ReactNode;
+  sort?: SortState;
+  onSort?: (key: string) => void;
+  loading?: boolean;
+  empty?: ReactNode;
+  rowCount?: number;
+}) {
+  const noRows = rowCount === 0;
+  if (noRows && !loading && empty) return <>{empty}</>;
   return (
-    <div className="overflow-x-auto">
+    <div className="max-h-[calc(100vh-13rem)] overflow-auto rounded-lg">
       <table className="w-full text-left text-sm">
-        <thead>
-          <tr className="border-b border-line text-xs uppercase tracking-wide text-ink-3">
-            {head.map((h, i) => (
-              <th key={i} className="px-3 py-2 font-medium">
-                {h}
-              </th>
-            ))}
+        <thead className="sticky top-0 z-10 bg-surface-1 shadow-[inset_0_-1px_0_var(--color-line)]">
+          <tr className="text-xs uppercase tracking-wide text-ink-3">
+            {head.map((h, i) => {
+              const col = isColumnObject(h) ? h : { label: h };
+              const active = !!sort && !!col.sort && sort.key === col.sort;
+              const align = col.align === "right" ? "text-right" : "";
+              return (
+                <th
+                  key={i}
+                  scope="col"
+                  aria-sort={active ? (sort.dir === "asc" ? "ascending" : "descending") : undefined}
+                  className={`px-3 py-2.5 font-medium ${align}`}
+                >
+                  {col.sort && onSort ? (
+                    <button
+                      type="button"
+                      onClick={() => onSort(col.sort!)}
+                      className={`group inline-flex items-center gap-1 rounded uppercase tracking-wide transition hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${active ? "text-ink" : ""}`}
+                    >
+                      {col.label}
+                      {active ? (
+                        sort.dir === "asc" ? <ArrowUp aria-hidden className="h-3.5 w-3.5" /> : <ArrowDown aria-hidden className="h-3.5 w-3.5" />
+                      ) : (
+                        <ArrowUpDown aria-hidden className="h-3.5 w-3.5 opacity-0 transition group-hover:opacity-60 group-focus-visible:opacity-60" />
+                      )}
+                    </button>
+                  ) : col.srOnly ? (
+                    <span className="sr-only">{col.label}</span>
+                  ) : (
+                    col.label
+                  )}
+                </th>
+              );
+            })}
           </tr>
         </thead>
-        <tbody className="divide-y divide-line/60">{children}</tbody>
+        <tbody className="divide-y divide-line/60">
+          {loading && noRows ? <SkeletonRows cols={head.length} /> : children}
+        </tbody>
       </table>
     </div>
+  );
+}
+
+function SkeletonRows({ cols, rows = 6 }: { cols: number; rows?: number }) {
+  return (
+    <>
+      {Array.from({ length: rows }, (_, r) => (
+        <tr key={r} aria-hidden>
+          {Array.from({ length: cols }, (_, c) => (
+            <td key={c} className="px-3 py-3">
+              <div className="h-3 animate-pulse rounded bg-surface-2" style={{ width: `${45 + ((r * 7 + c * 13) % 45)}%` }} />
+            </td>
+          ))}
+        </tr>
+      ))}
+      <tr className="sr-only">
+        <td role="status">Loading…</td>
+      </tr>
+    </>
   );
 }
 

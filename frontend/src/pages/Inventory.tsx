@@ -1,9 +1,11 @@
+import { SearchX } from "lucide-react";
 import { useState } from "react";
 import { api } from "../api";
 import AssetDrawer from "../components/AssetDrawer";
 import { Card, Empty, ErrorNote, PageHeader, RiskBar, Select, Table, Tag } from "../components/ui";
 import { PROVIDER_LABEL, SCOPE_LABEL, TYPE_LABEL } from "../lib/format";
 import { useApi } from "../lib/useApi";
+import { useSort } from "../lib/useSort";
 import { useUrlState } from "../lib/useUrlState";
 
 export default function Inventory() {
@@ -28,6 +30,21 @@ export default function Inventory() {
         q: q || undefined,
       }),
     [type, provider, sub, exposed, source, q],
+  );
+  const sorted = useSort(
+    data,
+    {
+      name: (a) => a.name,
+      type: (a) => TYPE_LABEL[a.type] ?? a.type,
+      subscription: (a) => a.subscription_name,
+      region: (a) => a.region,
+      findings: (a) => a.open_findings,
+      vulns: (a) => a.vulnerabilities,
+      risk: (a) => (a.vulnerabilities ? a.max_risk : null),
+      alerts: (a) => a.open_alerts,
+    },
+    { key: "name", dir: "asc" },
+    { findings: "desc", vulns: "desc", risk: "desc", alerts: "desc" },
   );
 
   return (
@@ -81,13 +98,29 @@ export default function Inventory() {
         <span className="text-xs text-ink-3">{data ? `${data.length} assets` : ""}</span>
       </div>
       <Card>
-        {loading && !data ? (
-          <Empty>Loading…</Empty>
-        ) : data && data.length === 0 ? (
-          <Empty>No assets match these filters.</Empty>
-        ) : (
-          <Table head={["Name", "Type", "Subscription / account / project", "Region", "Context", "Findings", "Vulns", "Max vuln risk", "Alerts"]}>
-            {data?.map((a) => (
+          <Table
+            head={[
+              { label: "Name", sort: "name" },
+              { label: "Type", sort: "type" },
+              { label: "Subscription / account / project", sort: "subscription" },
+              { label: "Region", sort: "region" },
+              "Context",
+              { label: "Findings", sort: "findings" },
+              { label: "Vulns", sort: "vulns" },
+              { label: "Max vuln risk", sort: "risk" },
+              { label: "Alerts", sort: "alerts" },
+            ]}
+            sort={sorted.sort}
+            onSort={sorted.onSort}
+            loading={loading}
+            rowCount={data?.length ?? 0}
+            empty={
+              <Empty icon={SearchX} title="No assets match these filters">
+                Clear a filter, or connect a cloud account under Connectors & scans.
+              </Empty>
+            }
+          >
+            {sorted.rows.map((a) => (
               <tr key={a.id} className="cursor-pointer hover:bg-surface-2" onClick={() => setSelected(a.id)}>
                 <td className="px-3 py-2 font-medium">{a.name}</td>
                 <td className="px-3 py-2 text-ink-2">{TYPE_LABEL[a.type] ?? a.type}</td>
@@ -109,7 +142,6 @@ export default function Inventory() {
               </tr>
             ))}
           </Table>
-        )}
       </Card>
       <AssetDrawer assetId={selected} onClose={() => setSelected(null)} onNavigate={setSelected} />
     </div>
