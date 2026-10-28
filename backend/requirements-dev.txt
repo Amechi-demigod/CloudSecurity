@@ -3,4 +3,4 @@ pytest>=9.1.1
 httpx>=0.27
 ruff==0.17.0
 # In-memory AWS for the AWS connector tests (no real AWS calls)
-moto[ec2,s3,iam,rds,eks,kms,cloudtrail,sts]>=5.0
+moto[ec2,s3,iam,rds,eks,kms,cloudtrail,sts]>=5.2.4
