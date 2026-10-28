@@ -8,17 +8,17 @@ argon2-cffi>=23.1
 # Azure read-only posture connector (only imported when a scan runs)
 azure-identity>=1.26.0
 azure-mgmt-resource>=26.0.0
-azure-mgmt-compute>=38.4.0
+azure-mgmt-compute>=39.0.0
 azure-mgmt-network>=33.1.0
 azure-mgmt-storage>=25.3.0
 azure-mgmt-sql>=4.0.0
 azure-mgmt-keyvault>=14.1.0
 azure-mgmt-containerservice>=41.8.0
 azure-mgmt-authorization>=4.0
-azure-mgmt-web>=8.0
-azure-mgmt-cosmosdb>=9.6
-azure-mgmt-redis>=14.4
-azure-mgmt-postgresqlflexibleservers>=1.1
+azure-mgmt-web>=11.0.1
+azure-mgmt-cosmosdb>=10.0.0
+azure-mgmt-redis>=14.5.0
+azure-mgmt-postgresqlflexibleservers>=2.0.0
 azure-mgmt-mysqlflexibleservers>=1.0
 
 # AWS read-only posture connector (only imported when a scan runs; ~26 MB)
