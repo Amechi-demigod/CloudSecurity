@@ -12,6 +12,41 @@ import (
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/model"
 )
 
+// TestResponseReadIsCapped confirms do() never buffers more than maxResponse
+// bytes of a response body. The handler streams a well-formed JSON commands
+// list padded well past the cap with filler entries; if it were read in full
+// it would unmarshal successfully, so a truncated-JSON error here proves the
+// client stopped reading at the cap rather than buffering the whole body.
+func TestResponseReadIsCapped(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/agent/commands" {
+			return
+		}
+		// Each filler command is a bit over 100 bytes; this comfortably
+		// exceeds maxResponse (1 MiB) while remaining valid JSON overall.
+		var b strings.Builder
+		b.WriteString(`{"server_time":"2026-10-15T10:00:00Z","commands":[`)
+		for i := 0; i < 20000; i++ {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteString(`{"id":"c","device_id":"d","type":"recheck_posture","params":{},` +
+				`"nonce":"0123456789abcdef","issued_at":"2026-10-15T10:00:00Z","expires_at":"2026-10-16T10:00:00Z"}`)
+		}
+		b.WriteString(`]}`)
+		if b.Len() <= maxResponse {
+			t.Fatalf("test fixture too small to exceed maxResponse: %d bytes", b.Len())
+		}
+		_, _ = io.WriteString(w, b.String())
+	}))
+	defer srv.Close()
+
+	c, _ := New(srv.URL, "cnd_s", Options{InsecureDev: true})
+	if _, err := c.Commands(context.Background()); err == nil {
+		t.Fatal("expected the oversized response to fail to unmarshal once truncated at the cap")
+	}
+}
+
 func TestRefusesPlainHTTPWithoutInsecureDev(t *testing.T) {
 	if _, err := New("http://example.com", "", Options{}); err == nil {
 		t.Fatal("expected http to be refused")
