@@ -32,7 +32,7 @@ requests>=2.32
 
 # PostgreSQL (Azure Database for PostgreSQL Flexible Server) + schema migrations
 psycopg[binary]>=3.2
-alembic>=1.13
+alembic>=1.20.1
 
 # Production server: gunicorn process manager with uvicorn workers
 gunicorn>=23.0
