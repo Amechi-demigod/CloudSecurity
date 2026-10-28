@@ -22,7 +22,7 @@ azure-mgmt-postgresqlflexibleservers>=1.1
 azure-mgmt-mysqlflexibleservers>=1.0
 
 # AWS read-only posture connector (only imported when a scan runs; ~26 MB)
-boto3>=1.35
+boto3>=1.43.118
 
 # GCP read-only posture connector: google-auth credentials + its authorized
 # requests session against the REST APIs (no google-api-python-client discovery
