@@ -243,6 +243,61 @@ func TestRestoreMatchesSnapshotExactly(t *testing.T) {
 	}
 }
 
+func TestRepeatSuspendFailedApplyDoesNotRollBack(t *testing.T) {
+	b := goodBackend()
+	m, _ := manager(t, b, []string{"Administrator"})
+	ctx := context.Background()
+	if _, err := m.Suspend(ctx, "INC-1", "cmd1"); err != nil {
+		t.Fatal(err)
+	}
+	b.calls = nil
+	b.applyErr = errors.New("transient LSA error")
+	_, err := m.Suspend(ctx, "INC-2", "cmd2")
+	if err == nil || !strings.Contains(err.Error(), "existing suspension was left unchanged") {
+		t.Fatalf("expected a left-unchanged error, got %v", err)
+	}
+	for _, c := range b.calls {
+		if c == "restore" {
+			t.Fatalf("a failed re-suspend apply must never roll back to Previous, got calls %v", b.calls)
+		}
+	}
+	if b.cur != "restricted" {
+		t.Fatalf("expected the existing suspension to remain in place, got %q", b.cur)
+	}
+	rec, lerr := m.Load()
+	if lerr != nil || rec == nil || !rec.Active {
+		t.Fatalf("expected the record to remain active, got %+v %v", rec, lerr)
+	}
+}
+
+func TestRepeatSuspendFailedVerifyDoesNotRollBack(t *testing.T) {
+	b := goodBackend()
+	m, _ := manager(t, b, []string{"Administrator"})
+	ctx := context.Background()
+	if _, err := m.Suspend(ctx, "INC-1", "cmd1"); err != nil {
+		t.Fatal(err)
+	}
+	b.calls = nil
+	b.verifyBlockOK = false
+	b.verifyBlockMsg = "transient check failure"
+	_, err := m.Suspend(ctx, "INC-2", "cmd2")
+	if err == nil || !strings.Contains(err.Error(), "existing suspension was left unchanged") {
+		t.Fatalf("expected a left-unchanged error, got %v", err)
+	}
+	for _, c := range b.calls {
+		if c == "restore" {
+			t.Fatalf("a failed re-suspend verify must never roll back to Previous, got calls %v", b.calls)
+		}
+	}
+	if b.cur != "restricted" {
+		t.Fatalf("expected the existing suspension to remain in place, got %q", b.cur)
+	}
+	rec, lerr := m.Load()
+	if lerr != nil || rec == nil || !rec.Active {
+		t.Fatalf("expected the record to remain active, got %+v %v", rec, lerr)
+	}
+}
+
 func TestIdempotentRepeatSuspendKeepsOriginalPrevious(t *testing.T) {
 	b := goodBackend()
 	m, _ := manager(t, b, []string{"Administrator"})

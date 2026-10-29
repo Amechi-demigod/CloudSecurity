@@ -181,8 +181,9 @@ func (m *Manager) Suspend(ctx context.Context, incidentID, commandID string) (st
 		return "", err
 	}
 
+	alreadyActive := rec != nil
 	var out []string
-	if rec != nil {
+	if alreadyActive {
 		out = append(out, "sign-in was already suspended; incident reference and admin list updated")
 		rec.IncidentID, rec.CommandID = incidentID, commandID
 		rec.AdminsAtTime = pre.EnabledLocalAdmins
@@ -220,6 +221,19 @@ func (m *Manager) Suspend(ctx context.Context, incidentID, commandID string) (st
 	// apply must leave every session exactly as it was.
 	detail, err := m.Deps.Backend.ApplyLogonRestriction(ctx, pre.EnabledLocalAdmins, rec.Previous.LogonRestriction)
 	if err != nil {
+		if alreadyActive {
+			// This is a repeat suspend: sign-in was already validly
+			// suspended before this attempt. A failed re-apply must leave
+			// that existing suspension and its record exactly as they were -
+			// never roll back toward Previous, which would incorrectly
+			// un-suspend a device that's supposed to stay suspended.
+			rec.Pending.Phase = PhaseApplied
+			rec.Pending.LastError = err.Error()
+			if serr := m.save(rec); serr != nil {
+				return "", fmt.Errorf("re-suspending sign-in failed: %w (and the record could not be updated: %v)", err, serr)
+			}
+			return "", fmt.Errorf("re-suspending sign-in failed: %w; the existing suspension was left unchanged", err)
+		}
 		var rb *RolledBackError
 		if errors.As(err, &rb) {
 			// The backend confirmed it undid everything it had changed:
@@ -238,6 +252,22 @@ func (m *Manager) Suspend(ctx context.Context, incidentID, commandID string) (st
 
 	ok, verifyDetail, err := m.Deps.Backend.VerifyStandardSignInBlocked(ctx, pre.EnabledLocalAdmins)
 	if err != nil || !ok {
+		if alreadyActive {
+			// Same reasoning as the apply-failure branch above: a repeat
+			// suspend's failed verification must not roll back to Previous.
+			rec.Pending.Phase = PhaseApplied
+			rec.Pending.LastError = fmt.Sprintf("re-suspend verification: ok=%v err=%v detail=%s", ok, err, verifyDetail)
+			if serr := m.save(rec); serr != nil {
+				return "", fmt.Errorf("re-suspending sign-in: verification failed (and the record could not be "+
+					"updated: %v)", serr)
+			}
+			if err != nil {
+				return "", fmt.Errorf("re-suspending sign-in: could not verify the restriction: %w; the existing "+
+					"suspension was left unchanged", err)
+			}
+			return "", fmt.Errorf("re-suspending sign-in: safety check failed (%s); the existing suspension was "+
+				"left unchanged", verifyDetail)
+		}
 		rerr := m.Deps.Backend.RestoreLogonRestriction(ctx, rec.Previous.LogonRestriction)
 		if rerr != nil {
 			rec.Pending.LastError = fmt.Sprintf("safety check (ok=%v err=%v detail=%s); rollback failed: %v", ok, err, verifyDetail, rerr)

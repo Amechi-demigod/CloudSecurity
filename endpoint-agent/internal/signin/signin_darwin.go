@@ -232,7 +232,25 @@ func (macBackend) ApplyLogonRestriction(ctx context.Context, adminNames []string
 	if err := json.Unmarshal(previous, &snap); err != nil {
 		return "", fmt.Errorf("corrupt logon-restriction snapshot: %w", err)
 	}
-	return applyAccessLoginwindow(ctx, snap)
+	detail, applyErr := applyAccessLoginwindow(ctx, snap)
+	if applyErr == nil {
+		return detail, nil
+	}
+	// Attempt to put com.apple.access_loginwindow back exactly, then RE-READ
+	// it and confirm the restore actually matches the snapshot (not just that
+	// the dseditgroup calls didn't error) before telling the caller it's safe
+	// to treat this as a clean rollback.
+	if rerr := restoreAccessLoginwindow(ctx, snap); rerr != nil {
+		return "", fmt.Errorf("%w (rollback also failed: %v)", applyErr, rerr)
+	}
+	cur, verr := captureAccessLoginwindow(ctx)
+	if verr != nil {
+		return "", fmt.Errorf("%w (rollback verification failed: %v)", applyErr, verr)
+	}
+	if cur.GroupExisted != snap.GroupExisted || !sameStringSet(cur.UserMembers, snap.UserMembers) || !sameMemberSet(cur.Members, snap.Members) {
+		return "", fmt.Errorf("%w (rollback did not restore the exact pre-suspend state)", applyErr)
+	}
+	return "", &RolledBackError{Err: applyErr}
 }
 
 func (macBackend) RestoreLogonRestriction(ctx context.Context, previous json.RawMessage) error {
