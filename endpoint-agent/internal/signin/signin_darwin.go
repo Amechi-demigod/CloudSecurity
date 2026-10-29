@@ -72,18 +72,40 @@ func parseDSCLAttr(out, attr string) []string {
 
 // resolveGUID resolves an Open Directory GeneratedUID to a record name,
 // trying /Groups then /Users, since GroupMembers stores GUIDs for both.
+//
+// Uses `dscl -list <path> GeneratedUID` (every record's name + GUID, one
+// per line) and an exact Go-side string comparison, rather than
+// `dscl -search`, whose default match semantics (substring vs. exact,
+// case sensitivity) are not reliably documented and proved unreliable here
+// for comparing OD-stored GUIDs.
 func resolveGUID(ctx context.Context, guid string) (macMember, bool) {
-	if out, err := exec.CommandContext(ctx, dsclBin, ".", "-search", "/Groups", "GeneratedUID", guid).CombinedOutput(); err == nil {
-		if f := strings.Fields(string(out)); len(f) > 0 {
-			return macMember{Name: f[0], IsGroup: true}, true
-		}
+	if name, ok := lookupGeneratedUID(ctx, "/Groups", guid); ok {
+		return macMember{Name: name, IsGroup: true}, true
 	}
-	if out, err := exec.CommandContext(ctx, dsclBin, ".", "-search", "/Users", "GeneratedUID", guid).CombinedOutput(); err == nil {
-		if f := strings.Fields(string(out)); len(f) > 0 {
-			return macMember{Name: f[0], IsGroup: false}, true
-		}
+	if name, ok := lookupGeneratedUID(ctx, "/Users", guid); ok {
+		return macMember{Name: name, IsGroup: false}, true
 	}
 	return macMember{}, false
+}
+
+func lookupGeneratedUID(ctx context.Context, path, guid string) (string, bool) {
+	out, err := exec.CommandContext(ctx, dsclBin, ".", "-list", path, "GeneratedUID").CombinedOutput()
+	if err != nil {
+		return "", false
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		f := strings.Fields(line)
+		if len(f) < 2 {
+			continue
+		}
+		// "<recordname> <GUID>" - the record name is everything before the
+		// last field (names are typically a single token, but this is
+		// robust either way since the GUID itself never contains spaces).
+		if f[len(f)-1] == guid {
+			return strings.Join(f[:len(f)-1], " "), true
+		}
+	}
+	return "", false
 }
 
 func captureAccessLoginwindow(ctx context.Context) (macLogonSnapshot, error) {
@@ -99,7 +121,15 @@ func captureAccessLoginwindow(ctx context.Context) (macLogonSnapshot, error) {
 	for _, guid := range parseDSCLAttr(string(out), "GroupMembers") {
 		if m, ok := resolveGUID(ctx, guid); ok {
 			members = append(members, m)
+			continue
 		}
+		// Never silently drop an unresolved GUID: dseditgroup accepts a GUID
+		// directly as a member identifier (per its own documentation), so
+		// this is still usable for apply/restore even without a resolved
+		// name, and keeping it visible here surfaces a resolution bug
+		// immediately (as an unexpected member) instead of hiding it as a
+		// phantom "0 members" state.
+		members = append(members, macMember{Name: guid, IsGroup: true})
 	}
 	return macLogonSnapshot{GroupExisted: true, UserMembers: users, Members: members}, nil
 }
@@ -298,7 +328,8 @@ func (macBackend) VerifyStandardSignInBlocked(ctx context.Context, adminNames []
 		return false, fmt.Sprintf("com.apple.access_loginwindow has unexpected user member(s): %s", strings.Join(cur.UserMembers, ", ")), nil
 	}
 	if len(cur.Members) != 1 || !cur.Members[0].IsGroup || cur.Members[0].Name != localAdminGroup {
-		return false, "com.apple.access_loginwindow's sole member is not the local admin group", nil
+		return false, fmt.Sprintf("com.apple.access_loginwindow's sole member is not the local admin group "+
+			"(found %d member(s): %+v)", len(cur.Members), cur.Members), nil
 	}
 	return true, fmt.Sprintf("com.apple.access_loginwindow restricts console sign-in to the local %s group", localAdminGroup), nil
 }
