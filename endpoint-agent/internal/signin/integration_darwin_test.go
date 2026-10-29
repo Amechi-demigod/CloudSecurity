@@ -45,8 +45,10 @@ func TestSuspendSignInIntegrationMacOS(t *testing.T) {
 		}
 	})
 
-	// Assert the group now exists with the local admin group as its sole
-	// member - never check PAM or authorizationdb here, neither is touched.
+	// Assert the group now exists with the local admin group nested as its
+	// sole member - never check PAM or authorizationdb here, neither is
+	// touched. dseditgroup -t group stores a nested group in the
+	// NestedGroups attribute, NOT GroupMembers, so that's what's checked.
 	suspended, err := captureAccessLoginwindow(ctx)
 	if err != nil {
 		t.Fatalf("capturing the suspended state: %v", err)
@@ -57,8 +59,11 @@ func TestSuspendSignInIntegrationMacOS(t *testing.T) {
 	if len(suspended.UserMembers) != 0 {
 		t.Fatalf("expected no direct user members, got %v", suspended.UserMembers)
 	}
-	if len(suspended.Members) != 1 || !suspended.Members[0].IsGroup || suspended.Members[0].Name != localAdminGroup {
-		t.Fatalf("expected the sole member to be the local %s group, got %+v", localAdminGroup, suspended.Members)
+	if len(suspended.Members) != 0 {
+		t.Fatalf("expected no GroupMembers entries, got %+v", suspended.Members)
+	}
+	if len(suspended.NestedGroups) != 1 || suspended.NestedGroups[0] != localAdminGroup {
+		t.Fatalf("expected the sole nested group to be the local %s group, got %v", localAdminGroup, suspended.NestedGroups)
 	}
 
 	if _, err := m.Restore(ctx); err != nil {
@@ -76,7 +81,8 @@ func TestSuspendSignInIntegrationMacOS(t *testing.T) {
 			baseline.GroupExisted, restored.GroupExisted)
 	}
 	if baseline.GroupExisted {
-		if !sameStringSet(restored.UserMembers, baseline.UserMembers) || !sameMemberSet(restored.Members, baseline.Members) {
+		if !sameStringSet(restored.UserMembers, baseline.UserMembers) || !sameMemberSet(restored.Members, baseline.Members) ||
+			!sameStringSet(restored.NestedGroups, baseline.NestedGroups) {
 			t.Fatalf("expected membership to match the baseline exactly, got baseline=%+v restored=%+v", baseline, restored)
 		}
 	}

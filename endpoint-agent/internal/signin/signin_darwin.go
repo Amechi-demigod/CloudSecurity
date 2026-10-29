@@ -38,8 +38,9 @@ type macMember struct {
 // never touched by this backend - only this one group.
 type macLogonSnapshot struct {
 	GroupExisted bool        `json:"group_existed"`
-	UserMembers  []string    `json:"user_members"` // GroupMembership attribute: legacy short usernames
-	Members      []macMember `json:"members"`      // GroupMembers attribute (GUIDs), resolved to name+type
+	UserMembers  []string    `json:"user_members"`  // GroupMembership attribute: legacy short usernames
+	Members      []macMember `json:"members"`       // GroupMembers attribute (GUIDs), resolved to name+type
+	NestedGroups []string    `json:"nested_groups"` // NestedGroups attribute (GUIDs), resolved to group names - this is where dseditgroup -t group actually stores a nested group, NOT GroupMembers
 }
 
 func groupNotFound(output string) bool {
@@ -108,8 +109,17 @@ func lookupGeneratedUID(ctx context.Context, path, guid string) (string, bool) {
 	return "", false
 }
 
+// captureAccessLoginwindow reads com.apple.access_loginwindow's full
+// membership: GroupMembership (legacy plain usernames), GroupMembers
+// (GUID-based user/group members added via dseditgroup -t user, or in
+// principle -t group though in practice group nesting lands in
+// NestedGroups instead), and NestedGroups (GUIDs of groups nested via
+// dseditgroup -t group - confirmed against a real CI run: this is where
+// `dseditgroup -o edit -a <group> -t group <target>` actually stores the
+// nested group, NOT GroupMembers).
 func captureAccessLoginwindow(ctx context.Context) (macLogonSnapshot, error) {
-	out, err := exec.CommandContext(ctx, dsclBin, ".", "-read", accessLoginwindowRecord, "GroupMembership", "GroupMembers").CombinedOutput()
+	out, err := exec.CommandContext(ctx, dsclBin, ".", "-read", accessLoginwindowRecord,
+		"GroupMembership", "GroupMembers", "NestedGroups").CombinedOutput()
 	if err != nil {
 		if groupNotFound(string(out)) {
 			return macLogonSnapshot{GroupExisted: false}, nil
@@ -131,7 +141,15 @@ func captureAccessLoginwindow(ctx context.Context) (macLogonSnapshot, error) {
 		// phantom "0 members" state.
 		members = append(members, macMember{Name: guid, IsGroup: true})
 	}
-	return macLogonSnapshot{GroupExisted: true, UserMembers: users, Members: members}, nil
+	var nestedGroups []string
+	for _, guid := range parseDSCLAttr(string(out), "NestedGroups") {
+		if name, ok := lookupGeneratedUID(ctx, "/Groups", guid); ok {
+			nestedGroups = append(nestedGroups, name)
+			continue
+		}
+		nestedGroups = append(nestedGroups, guid) // unresolved: keep the raw GUID visible; still usable by dseditgroup
+	}
+	return macLogonSnapshot{GroupExisted: true, UserMembers: users, Members: members, NestedGroups: nestedGroups}, nil
 }
 
 func editMember(ctx context.Context, action, name, memberType string) error {
@@ -176,14 +194,19 @@ func applyAccessLoginwindow(ctx context.Context) (string, error) {
 			}
 		}
 		for _, m := range cur.Members {
-			if m.IsGroup && m.Name == localAdminGroup {
-				continue // already the only member we want; nothing to remove
-			}
 			t := "user"
 			if m.IsGroup {
 				t = "group"
 			}
 			if err := removeMember(ctx, m.Name, t); err != nil {
+				return "", err
+			}
+		}
+		for _, g := range cur.NestedGroups {
+			if g == localAdminGroup {
+				continue // already the only nested group we want; nothing to remove
+			}
+			if err := removeMember(ctx, g, "group"); err != nil {
 				return "", err
 			}
 		}
@@ -218,6 +241,11 @@ func restoreAccessLoginwindow(ctx context.Context, previous macLogonSnapshot) er
 			t = "group"
 		}
 		if err := addMember(ctx, m.Name, t); err != nil {
+			return err
+		}
+	}
+	for _, g := range previous.NestedGroups {
+		if err := addMember(ctx, g, "group"); err != nil {
 			return err
 		}
 	}
@@ -294,7 +322,8 @@ func (macBackend) ApplyLogonRestriction(ctx context.Context, adminNames []string
 	if verr != nil {
 		return "", fmt.Errorf("%w (rollback verification failed: %v)", applyErr, verr)
 	}
-	if cur.GroupExisted != snap.GroupExisted || !sameStringSet(cur.UserMembers, snap.UserMembers) || !sameMemberSet(cur.Members, snap.Members) {
+	if cur.GroupExisted != snap.GroupExisted || !sameStringSet(cur.UserMembers, snap.UserMembers) ||
+		!sameMemberSet(cur.Members, snap.Members) || !sameStringSet(cur.NestedGroups, snap.NestedGroups) {
 		return "", fmt.Errorf("%w (rollback did not restore the exact pre-suspend state)", applyErr)
 	}
 	return "", &RolledBackError{Err: applyErr}
@@ -327,9 +356,12 @@ func (macBackend) VerifyStandardSignInBlocked(ctx context.Context, adminNames []
 	if len(cur.UserMembers) != 0 {
 		return false, fmt.Sprintf("com.apple.access_loginwindow has unexpected user member(s): %s", strings.Join(cur.UserMembers, ", ")), nil
 	}
-	if len(cur.Members) != 1 || !cur.Members[0].IsGroup || cur.Members[0].Name != localAdminGroup {
-		return false, fmt.Sprintf("com.apple.access_loginwindow's sole member is not the local admin group "+
-			"(found %d member(s): %+v)", len(cur.Members), cur.Members), nil
+	if len(cur.Members) != 0 {
+		return false, fmt.Sprintf("com.apple.access_loginwindow has unexpected GroupMembers entries: %+v", cur.Members), nil
+	}
+	if len(cur.NestedGroups) != 1 || cur.NestedGroups[0] != localAdminGroup {
+		return false, fmt.Sprintf("com.apple.access_loginwindow's nested groups are not exactly the local admin "+
+			"group (found: %v)", cur.NestedGroups), nil
 	}
 	return true, fmt.Sprintf("com.apple.access_loginwindow restricts console sign-in to the local %s group", localAdminGroup), nil
 }
@@ -349,7 +381,8 @@ func (macBackend) VerifyStandardSignInWorks(ctx context.Context, previous json.R
 	if !want.GroupExisted {
 		return true, "com.apple.access_loginwindow did not exist before suspending and does not exist now", nil
 	}
-	if !sameStringSet(got.UserMembers, want.UserMembers) || !sameMemberSet(got.Members, want.Members) {
+	if !sameStringSet(got.UserMembers, want.UserMembers) || !sameMemberSet(got.Members, want.Members) ||
+		!sameStringSet(got.NestedGroups, want.NestedGroups) {
 		return false, "com.apple.access_loginwindow's membership does not match the pre-suspend snapshot", nil
 	}
 	return true, "com.apple.access_loginwindow matches the pre-suspend snapshot", nil
