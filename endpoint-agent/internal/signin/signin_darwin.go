@@ -302,39 +302,42 @@ func (macBackend) CaptureLogonRestriction(ctx context.Context) (json.RawMessage,
 // restore com.apple.access_loginwindow to the pre-suspend snapshot and only
 // reports success (via RolledBackError) once that restore is confirmed by a
 // fresh read-back.
-func (macBackend) ApplyLogonRestriction(ctx context.Context, adminNames []string, previous json.RawMessage) (string, error) {
+func (macBackend) ApplyLogonRestriction(ctx context.Context, adminNames []string, previous json.RawMessage) (string, []string, error) {
 	var snap macLogonSnapshot
 	if err := json.Unmarshal(previous, &snap); err != nil {
-		return "", fmt.Errorf("corrupt logon-restriction snapshot: %w", err)
+		return "", nil, fmt.Errorf("corrupt logon-restriction snapshot: %w", err)
 	}
 	detail, applyErr := applyAccessLoginwindow(ctx)
 	if applyErr == nil {
-		return detail, nil
+		return detail, nil, nil
 	}
 	// Attempt to put com.apple.access_loginwindow back exactly, then RE-READ
 	// it and confirm the restore actually matches the snapshot (not just that
 	// the dseditgroup calls didn't error) before telling the caller it's safe
 	// to treat this as a clean rollback.
 	if rerr := restoreAccessLoginwindow(ctx, snap); rerr != nil {
-		return "", fmt.Errorf("%w (rollback also failed: %v)", applyErr, rerr)
+		return "", nil, fmt.Errorf("%w (rollback also failed: %v)", applyErr, rerr)
 	}
 	cur, verr := captureAccessLoginwindow(ctx)
 	if verr != nil {
-		return "", fmt.Errorf("%w (rollback verification failed: %v)", applyErr, verr)
+		return "", nil, fmt.Errorf("%w (rollback verification failed: %v)", applyErr, verr)
 	}
 	if cur.GroupExisted != snap.GroupExisted || !sameStringSet(cur.UserMembers, snap.UserMembers) ||
 		!sameMemberSet(cur.Members, snap.Members) || !sameStringSet(cur.NestedGroups, snap.NestedGroups) {
-		return "", fmt.Errorf("%w (rollback did not restore the exact pre-suspend state)", applyErr)
+		return "", nil, fmt.Errorf("%w (rollback did not restore the exact pre-suspend state)", applyErr)
 	}
-	return "", &RolledBackError{Err: applyErr}
+	return "", nil, &RolledBackError{Err: applyErr}
 }
 
 // ReapplyLogonRestriction is used for a REPEAT Suspend or periodic Reenforce:
 // it only reconciles toward the suspended target (applyAccessLoginwindow is
 // itself idempotent, driven by current state) and NEVER restores the
-// pre-suspend state on failure - the device must stay suspended.
-func (macBackend) ReapplyLogonRestriction(ctx context.Context, adminNames []string, previous json.RawMessage) (string, error) {
-	return applyAccessLoginwindow(ctx)
+// pre-suspend state on failure - the device must stay suspended. macOS has no
+// concept of kept built-in service/virtual accounts (that's Windows-only), so
+// kept is always nil.
+func (macBackend) ReapplyLogonRestriction(ctx context.Context, adminNames []string, previous json.RawMessage) (string, []string, error) {
+	detail, err := applyAccessLoginwindow(ctx)
+	return detail, nil, err
 }
 
 func (macBackend) RestoreLogonRestriction(ctx context.Context, previous json.RawMessage) error {

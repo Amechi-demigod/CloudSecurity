@@ -43,14 +43,16 @@ type Backend interface {
 	// ApplyLogonRestriction is the FIRST-TIME apply: it blocks standard/domain
 	// users, keeping previous (the just-captured snapshot) available so a
 	// failed/unsafe apply can be reverted immediately. Returns a
-	// human-readable detail string.
-	ApplyLogonRestriction(ctx context.Context, adminNames []string, previous json.RawMessage) (detail string, err error)
+	// human-readable detail string and the built-in service/virtual-account
+	// SIDs deliberately left untouched (Windows only; nil elsewhere) - the
+	// caller persists these as Record.KeptServiceAccounts for the console.
+	ApplyLogonRestriction(ctx context.Context, adminNames []string, previous json.RawMessage) (detail string, kept []string, err error)
 	// ReapplyLogonRestriction is used for a REPEAT Suspend or periodic
 	// Reenforce: it only reconciles toward the already-suspended target and
 	// NEVER restores the pre-suspend state on failure - the device must stay
 	// suspended. previous is still needed (e.g. to recompute which built-in
 	// service/virtual accounts to keep on Windows).
-	ReapplyLogonRestriction(ctx context.Context, adminNames []string, previous json.RawMessage) (detail string, err error)
+	ReapplyLogonRestriction(ctx context.Context, adminNames []string, previous json.RawMessage) (detail string, kept []string, err error)
 	// RestoreLogonRestriction writes back exactly what CaptureLogonRestriction read.
 	RestoreLogonRestriction(ctx context.Context, previous json.RawMessage) error
 	// VerifyStandardSignInBlocked re-reads effective state and confirms only

@@ -211,6 +211,12 @@ type Outcome struct {
 	Output   string
 	After    func()
 	ExitCode *int // run_script
+	// ResultData is isolate_host/restore_host only: pre-flight findings and
+	// crash-recovery outcomes, sent as result_data on the result POST and
+	// strictly validated server-side against schemas_devices.
+	// IsolateHostResultData/RestoreHostResultData. Left nil/empty for every
+	// other command type - never POSTed then.
+	ResultData map[string]any
 }
 
 // Execute runs an already validated command.

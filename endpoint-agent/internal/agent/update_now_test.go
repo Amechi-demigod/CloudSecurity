@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/update"
+	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/version"
 )
 
 const testOffer = `{"release_id":"r1","version":"1.1.0","manifest_path":"/api/agent/updates/releases/r1/manifest",` +
@@ -79,7 +80,7 @@ func TestCheckForUpdateCommandSkipsJitter(t *testing.T) {
 	if err := a.CheckIn(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if f.features != "check_for_update" {
+	if f.features != version.Features {
 		t.Errorf("features header %q", f.features)
 	}
 	// The remote command checks in again and starts the same release now.

@@ -36,9 +36,10 @@ type fakeServer struct {
 	revoked  bool
 	acks     int
 	ackFail  bool
-	files    map[string][]byte // /api/agent/scripts/... downloads
-	exitCode map[string]any
-	checkin  *model.Report
+	files      map[string][]byte // /api/agent/scripts/... downloads
+	exitCode   map[string]any
+	resultData map[string]map[string]any // result_data sent with each command's result, by command id
+	checkin    *model.Report
 	offer    string // JSON of the "update" field of check-in responses ("" = none)
 	features string // X-CNAPP-Agent-Features of the last check-in
 }
@@ -89,6 +90,12 @@ func (f *fakeServer) handler(t *testing.T) http.Handler {
 				f.exitCode = map[string]any{}
 			}
 			f.exitCode[id] = body["exit_code"]
+			if rd, ok := body["result_data"].(map[string]any); ok {
+				if f.resultData == nil {
+					f.resultData = map[string]map[string]any{}
+				}
+				f.resultData[id] = rd
+			}
 			w.WriteHeader(204)
 		case strings.HasSuffix(r.URL.Path, "/ack"):
 			f.acks++

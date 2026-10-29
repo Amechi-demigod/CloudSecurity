@@ -7,6 +7,9 @@ import { fmtAgo, fmtTime } from "../../lib/format";
 
 const PHONE_RE = /^[0-9+][0-9 ()./+-]{2,31}$/;
 const MESSAGE_MAX = 300;
+// Mirrors the backend's INCIDENT_ID_RE (app/services/devices.py) and the
+// agent's incidentIDRe (endpoint-agent/internal/commands/commands.go).
+const INCIDENT_ID_RE = /^[A-Za-z0-9_.:-]{1,64}$/;
 
 function errMsg(e: unknown) {
   return e instanceof ApiError ? e.message : String(e);
@@ -334,17 +337,20 @@ export function SuspendSignInDialog({ device, open, onClose, onDone }: { device:
   const suspending = device.isolation.status === null;
   const [reason, setReason] = useState("");
   const [confirm, setConfirm] = useState("");
+  const [incidentId, setIncidentId] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   function close() {
     setReason("");
     setConfirm("");
+    setIncidentId("");
     setError(null);
     onClose();
   }
 
-  const valid = reason.trim().length >= 3 && (!suspending || nameMatches(device, confirm));
+  const incidentIdOk = incidentId.trim() === "" || INCIDENT_ID_RE.test(incidentId.trim());
+  const valid = reason.trim().length >= 3 && (!suspending || (nameMatches(device, confirm) && incidentIdOk));
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -352,10 +358,12 @@ export function SuspendSignInDialog({ device, open, onClose, onDone }: { device:
     setError(null);
     try {
       if (suspending) {
+        const trimmedIncidentId = incidentId.trim();
         await api.queueCommand(device.id, {
           type: "isolate_host",
           reason: reason.trim(),
           confirm_hostname: confirm.trim(),
+          ...(trimmedIncidentId ? { params: { incident_id: trimmedIncidentId } } : {}),
         });
       } else {
         await api.queueCommand(device.id, { type: "restore_host", reason: reason.trim() });
@@ -395,8 +403,13 @@ export function SuspendSignInDialog({ device, open, onClose, onDone }: { device:
         <Field label="Reason (recorded in the audit log)" id="si-reason" required minLength={3} maxLength={500} value={reason}
           onChange={(e) => setReason(e.target.value)} placeholder="e.g. ticket INC-1234, suspected compromise" />
         {suspending && (
-          <Field label={`Type the device name "${device.hostname}" to confirm`} id="si-confirm" autoComplete="off" value={confirm}
-            onChange={(e) => setConfirm(e.target.value)} />
+          <>
+            <Field label="Incident reference (optional, shown on the device's sign-in banner)" id="si-incident"
+              maxLength={64} value={incidentId} onChange={(e) => setIncidentId(e.target.value)} placeholder="e.g. INC-1234"
+              hint="1-64 characters: letters, digits, '.', '_', ':', '-'" />
+            <Field label={`Type the device name "${device.hostname}" to confirm`} id="si-confirm" autoComplete="off" value={confirm}
+              onChange={(e) => setConfirm(e.target.value)} />
+          </>
         )}
         <div className="flex justify-end gap-2 pt-2">
           <Button onClick={close}>Cancel</Button>

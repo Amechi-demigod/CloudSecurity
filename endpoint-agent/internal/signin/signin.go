@@ -244,10 +244,11 @@ func (m *Manager) Suspend(ctx context.Context, incidentID, commandID string) (st
 	// ReapplyLogonRestriction, which never rolls back on failure - only a
 	// FIRST-time apply may roll back to Previous.
 	var detail string
+	var kept []string
 	if alreadyActive {
-		detail, err = m.Deps.Backend.ReapplyLogonRestriction(ctx, pre.EnabledLocalAdmins, rec.Previous.LogonRestriction)
+		detail, kept, err = m.Deps.Backend.ReapplyLogonRestriction(ctx, pre.EnabledLocalAdmins, rec.Previous.LogonRestriction)
 	} else {
-		detail, err = m.Deps.Backend.ApplyLogonRestriction(ctx, pre.EnabledLocalAdmins, rec.Previous.LogonRestriction)
+		detail, kept, err = m.Deps.Backend.ApplyLogonRestriction(ctx, pre.EnabledLocalAdmins, rec.Previous.LogonRestriction)
 	}
 	if err != nil {
 		if alreadyActive {
@@ -282,6 +283,7 @@ func (m *Manager) Suspend(ctx context.Context, incidentID, commandID string) (st
 			"left partially restricted - manual recovery may be required", err)
 	}
 	out = append(out, detail)
+	rec.KeptServiceAccounts = kept
 
 	ok, verifyDetail, err := m.Deps.Backend.VerifyStandardSignInBlocked(ctx, pre.EnabledLocalAdmins)
 	if err != nil || !ok {
@@ -490,12 +492,13 @@ func (m *Manager) OnStart(ctx context.Context) bool {
 		// is used here since this function manages its own explicit rollback
 		// below if finishing forward doesn't pan out.
 		adminNames := rec.AdminsAtTime
-		_, aerr := m.Deps.Backend.ReapplyLogonRestriction(ctx, adminNames, rec.Previous.LogonRestriction)
+		_, kept, aerr := m.Deps.Backend.ReapplyLogonRestriction(ctx, adminNames, rec.Previous.LogonRestriction)
 		if aerr == nil {
 			if ok, _, verr := m.Deps.Backend.VerifyStandardSignInBlocked(ctx, adminNames); verr == nil && ok {
 				_, _ = m.Deps.SessionTerminator.SignOutNonAdmins(ctx, adminNames)
 				_ = m.Deps.Banner.Set(ctx, composeBanner(rec.IncidentID))
 				rec.Pending.Phase, rec.Pending.LastError = PhaseApplied, ""
+				rec.KeptServiceAccounts = kept
 				_ = m.save(rec)
 				m.recordRecoveryOutcome("completed")
 				return true
@@ -580,12 +583,14 @@ func (m *Manager) Reenforce(ctx context.Context) (bool, string) {
 		return true, "sign-in suspension verified: " + detail
 	}
 	// Never roll back here: Reenforce only reconciles toward the suspended target.
-	detail, aerr := m.Deps.Backend.ReapplyLogonRestriction(ctx, rec.AdminsAtTime, rec.Previous.LogonRestriction)
+	detail, kept, aerr := m.Deps.Backend.ReapplyLogonRestriction(ctx, rec.AdminsAtTime, rec.Previous.LogonRestriction)
 	if aerr != nil {
 		rec.Pending.LastError = "re-enforcement: " + aerr.Error()
 		_ = m.save(rec)
 		return true, "re-enforcement failed: " + aerr.Error()
 	}
+	rec.KeptServiceAccounts = kept
 	_ = m.Deps.Banner.Set(ctx, composeBanner(rec.IncidentID))
+	_ = m.save(rec)
 	return true, "re-applied a drifted restriction: " + detail
 }

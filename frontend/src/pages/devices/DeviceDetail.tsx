@@ -700,6 +700,11 @@ export default function DeviceDetail() {
     setTab("Commands");
   }
   const active = device.status === "active";
+  const suspendSignInBlockedReason = !device.isolation.supported
+    ? "Not supported by this agent version"
+    : device.lost_mode.status
+      ? "Cannot suspend sign-in while lost mode is active"
+      : null;
 
   return (
     <div>
@@ -759,8 +764,9 @@ export default function DeviceDetail() {
             </Button>
           ))}
           {device.isolation.status === null && (
-            <Button variant="danger" onClick={() => setSignInOpen(true)}
-              title="Sign out standard users and block interactive sign-in; local admin access keeps working">
+            <Button variant="danger" onClick={() => setSignInOpen(true)} disabled={!!suspendSignInBlockedReason}
+              title={suspendSignInBlockedReason ??
+                "Sign out standard users and block interactive sign-in; local admin access keeps working"}>
               Suspend sign-in
             </Button>
           )}

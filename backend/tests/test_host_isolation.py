@@ -165,8 +165,10 @@ def test_host_isolation_lifecycle(admin):
     assert admin.post(f"/api/devices/{dev}/commands",
                       json={"type": "isolate_host", "reason": "again"}).status_code == 409
 
-    # Agent reports isolation in check-in posture
-    rep = {"isolation": {"status": "info", "detail": "host isolated", "data": {"isolated": True}}}
+    # Agent reports isolation in check-in posture (real agent payload shape:
+    # signin.Manager.Status()/PostureData() - active/since/incident_id)
+    rep = {"isolation": {"status": "info", "detail": "host isolated",
+                        "data": {"active": True, "since": "2026-10-29T10:00:00Z", "incident_id": "INC-101"}}}
     agent.post("/api/agent/checkin", json=checkin_body(rep))
     d = admin.get(f"/api/devices/{dev}").json()
     assert d["isolation"]["status"] == "isolated"
@@ -367,7 +369,10 @@ def test_isolate_host_preflight_blocked_no_local_admin(admin):
     agent, dev = enrolled(admin)
     admin.post(f"/api/devices/{dev}/commands", json={"type": "isolate_host", "reason": "containment INC-5"})
     (cmd,) = poll(agent)
-    r = result(agent, cmd, status="failed", output="aborted: no local admin would remain",
+    # The real agent reports this as "rejected" (local validation refused the
+    # command before touching anything), not "failed" - see
+    # endpoint-agent/internal/agent/protect.go's isolateHost.
+    r = result(agent, cmd, status="rejected", output="aborted: no local admin would remain",
               result_data={"error_code": "ERR_NO_LOCAL_ADMIN_PRESENT"})
     assert r.status_code == 204, r.text
 
@@ -408,7 +413,7 @@ def test_isolation_crash_recovery_reported_on_checkin(admin):
     result(agent, cmd, status="succeeded", output="suspended")
 
     rep = {"isolation": {"status": "info", "detail": "recovered after restart",
-                         "data": {"isolated": True, "recovered_at_boot": True, "recovery_outcome": "rolled_back"}}}
+                         "data": {"active": True, "recovered_at_boot": True, "recovery_outcome": "rolled_back"}}}
     r = agent.post("/api/agent/checkin", json=checkin_body(rep))
     assert r.status_code == 200, r.text
 
@@ -424,7 +429,7 @@ def test_isolation_crash_recovery_reported_on_checkin(admin):
     # A later, ordinary check-in (the agent clears the outcome after reporting
     # it once) must not raise another event.
     before = len(events("host_isolation"))
-    rep2 = {"isolation": {"status": "info", "detail": "suspended", "data": {"isolated": True}}}
+    rep2 = {"isolation": {"status": "info", "detail": "suspended", "data": {"active": True}}}
     agent.post("/api/agent/checkin", json=checkin_body(rep2))
     assert len(events("host_isolation")) == before
 
@@ -437,3 +442,68 @@ def test_isolation_crash_recovery_malformed_data_ignored(admin):
     assert r.status_code == 200, r.text
     assert "host_isolation_rolled_back_after_crash" not in actions()
     assert "host_isolation_completed_after_crash" not in actions()
+
+
+def test_posture_isolated_key_still_accepted_as_fallback(admin):
+    """Older agents (pre-rename) reported `isolated`, not `active`; accept both."""
+    agent, dev = enrolled(admin)
+    rep = {"isolation": {"status": "info", "detail": "", "data": {"isolated": True}}}
+    agent.post("/api/agent/checkin", json=checkin_body(rep))
+    d = admin.get(f"/api/devices/{dev}").json()
+    assert d["isolation"]["status"] == "isolated"
+    assert d["isolation"]["reported_isolated"] is True
+
+
+# --------------------------------------------------------------------------- stuck isolate_host after a crash
+def test_crash_rollback_while_isolating_unsticks_status_and_command(admin):
+    """A crash during the FIRST isolate_host (PhaseApplying) can roll back
+    entirely locally - the agent's Manager.OnStart never POSTs a result for
+    the original command, since none was ever reported before the crash (see
+    endpoint-agent/internal/signin). Without this fix, isolation_status and
+    the command would stay stuck "isolating"/pending forever."""
+    agent, dev = enrolled(admin)
+    admin.post(f"/api/devices/{dev}/commands", json={"type": "isolate_host", "reason": "test"})
+    poll(agent)  # delivered, but the agent "crashes" before ever posting a result
+
+    assert admin.get(f"/api/devices/{dev}").json()["isolation"]["status"] == "isolating"
+
+    rep = {"isolation": {"status": "info", "detail": "rolled back after restart",
+                        "data": {"active": False, "recovered_at_boot": True, "recovery_outcome": "rolled_back"}}}
+    r = agent.post("/api/agent/checkin", json=checkin_body(rep))
+    assert r.status_code == 200, r.text
+
+    d = admin.get(f"/api/devices/{dev}").json()
+    assert d["isolation"]["status"] is None
+    assert d["device_state"] == "active"
+
+    cmds = admin.get(f"/api/devices/{dev}/commands").json()
+    assert cmds[0]["status"] == "failed"
+
+    assert "host_isolation_rolled_back_after_crash" in actions()
+
+    # Nothing stuck: Suspend sign-in can be queued again.
+    r = admin.post(f"/api/devices/{dev}/commands", json={"type": "isolate_host", "reason": "retry"})
+    assert r.status_code == 201, r.text
+
+
+def test_crash_completed_while_isolating_marks_command_succeeded(admin):
+    """The other crash-recovery outcome: the agent finished applying the
+    suspend forward after a restart. The stuck command must resolve to
+    succeeded and isolation_status to isolated, never stay stuck "isolating"."""
+    agent, dev = enrolled(admin)
+    admin.post(f"/api/devices/{dev}/commands", json={"type": "isolate_host", "reason": "test"})
+    poll(agent)
+
+    rep = {"isolation": {"status": "info", "detail": "completed after restart",
+                        "data": {"active": True, "recovered_at_boot": True, "recovery_outcome": "completed"}}}
+    r = agent.post("/api/agent/checkin", json=checkin_body(rep))
+    assert r.status_code == 200, r.text
+
+    d = admin.get(f"/api/devices/{dev}").json()
+    assert d["isolation"]["status"] == "isolated"
+    assert d["device_state"] == "isolated"
+
+    cmds = admin.get(f"/api/devices/{dev}/commands").json()
+    assert cmds[0]["status"] == "succeeded"
+
+    assert "host_isolation_completed_after_crash" in actions()
