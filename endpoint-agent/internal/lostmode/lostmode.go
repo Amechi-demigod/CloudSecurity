@@ -79,6 +79,11 @@ func New(p state.Paths, lock func(ctx context.Context) (string, error)) *Manager
 	return &Manager{Paths: p, Backend: platformBackend(), Lock: lock, Now: time.Now}
 }
 
+// PlatformBackend returns this OS's Notice Backend, for reuse by other
+// features (signin's suspend-sign-in banner) that need the same
+// read/write/restore sign-in notice mechanism without reimplementing it.
+func PlatformBackend() Backend { return platformBackend() }
+
 func (m *Manager) file() string { return filepath.Join(m.Paths.StateDir, FileName) }
 
 // Load returns the current record (nil when not in lost mode).
