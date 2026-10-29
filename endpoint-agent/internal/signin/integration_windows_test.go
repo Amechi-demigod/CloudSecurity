@@ -24,7 +24,11 @@ import (
 const (
 	testStdUser   = "cnapp-test-std"
 	testAdminUser = "cnapp-test-admin"
-	testPassword  = "Cnapp-Test-2026!Qx" // ephemeral local test accounts only, deleted at the end of the test
+	// Ephemeral local test accounts only, deleted at the end of the test.
+	// Must be <=14 characters: a longer password makes `net user ... /add`
+	// print an interactive "computers prior to Windows 2000..." Y/N prompt,
+	// which hangs (and then fails) in CI's non-interactive shell.
+	testPassword = "Cnapp-Test26!Q"
 )
 
 func netUser(args ...string) error {
