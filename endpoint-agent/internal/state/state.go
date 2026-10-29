@@ -176,7 +176,8 @@ func Remove(p Paths) error {
 		return err
 	}
 	for _, f := range []string{p.StateFile(), p.CAFile(), p.PolicyFile(),
-		filepath.Join(p.StateDir, "lostmode.json"), filepath.Join(p.StateDir, "signin.json")} {
+		filepath.Join(p.StateDir, "lostmode.json"), filepath.Join(p.StateDir, "signin.json"),
+		filepath.Join(p.StateDir, "signin-recovery.json")} {
 		if err := os.Remove(f); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}

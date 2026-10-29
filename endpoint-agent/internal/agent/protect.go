@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/lostmode"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/model"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/scripts"
+	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/signin"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/state"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/wipe"
 )
@@ -36,6 +38,14 @@ func (a *Agent) addAgentPosture(ctx context.Context, r *model.Report) {
 	}
 	rd := a.wipeReadiness(ctx)
 	r.Posture["remote_wipe"] = model.Check(model.StatusInfo, rd.Detail, rd.Data())
+	if a.Signin != nil {
+		st := a.Signin.Status()
+		detail := "sign-in not suspended"
+		if st["active"] == true {
+			detail = "sign-in suspended"
+		}
+		r.Posture["isolation"] = model.Check(model.StatusInfo, detail, st)
+	}
 }
 
 func (a *Agent) wipeOptIn() (bool, error) {
@@ -145,6 +155,60 @@ func (a *Agent) runScript(ctx context.Context, c model.Command) commands.Outcome
 		Runner:  a.ScriptRunner,
 	})
 	return commands.Outcome{Status: o.Status, Output: o.Output, ExitCode: o.ExitCode}
+}
+
+func (a *Agent) isolateHost(ctx context.Context, c model.Command) commands.Outcome {
+	if a.Signin == nil {
+		return commands.Outcome{Status: "rejected", Output: "suspend sign-in is not supported on this platform"}
+	}
+	incidentID, _ := commands.IncidentIDParam(c.Params)
+	if incidentID == "" {
+		incidentID = c.ID
+	}
+	out, err := a.Signin.Suspend(ctx, incidentID, c.ID)
+	if err != nil {
+		if errors.Is(err, signin.ErrNoLocalAdminPresent) {
+			return commands.Outcome{Status: "rejected", Output: "refusing to suspend sign-in: no enabled local " +
+				"administrator account would remain able to sign in (ERR_NO_LOCAL_ADMIN_PRESENT)"}
+		}
+		if errors.Is(err, signin.ErrLostModeActive) {
+			return commands.Outcome{Status: "rejected", Output: err.Error()}
+		}
+		return commands.Outcome{Status: "failed", Output: strings.TrimSpace(out + "\n" + err.Error())}
+	}
+	return commands.Outcome{Status: "succeeded", Output: out}
+}
+
+func (a *Agent) restoreHost(ctx context.Context, c model.Command) commands.Outcome {
+	if a.Signin == nil {
+		return commands.Outcome{Status: "rejected", Output: "restore sign-in is not supported on this platform"}
+	}
+	out, err := a.Signin.Restore(ctx)
+	if err != nil {
+		return commands.Outcome{Status: "failed", Output: strings.TrimSpace(out + "\n" + err.Error())}
+	}
+	return commands.Outcome{Status: "succeeded", Output: out}
+}
+
+// maybeReenforceSignin re-asserts the suspend-sign-in restriction and banner
+// while it's active, correcting drift (e.g. a GPO refresh), the same way
+// maybeRelock does for lost mode.
+func (a *Agent) maybeReenforceSignin(ctx context.Context) {
+	if a.Signin == nil {
+		return
+	}
+	a.mu.Lock()
+	due := !time.Now().Before(a.nextSigninReenforce)
+	if due {
+		a.nextSigninReenforce = time.Now().Add(signin.ReenforceInterval)
+	}
+	a.mu.Unlock()
+	if !due {
+		return
+	}
+	if acted, out := a.Signin.Reenforce(ctx); acted {
+		slog.Info("suspend sign-in: re-enforcement checked", "result", out)
+	}
 }
 
 type agentError string

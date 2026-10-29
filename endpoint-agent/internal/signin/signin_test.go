@@ -455,6 +455,195 @@ func TestSuspendRefusedWhileLostModeActive(t *testing.T) {
 	}
 }
 
+func savedRecord(t *testing.T, m *Manager, phase Phase, cur string) *Record {
+	t.Helper()
+	prev, err := json.Marshal(cur)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := &Record{
+		Active: true, Since: time.Unix(1_800_000_000, 0), AdminsAtTime: []string{"Administrator"},
+		Previous: Snapshot{LogonRestriction: prev},
+		Pending:  &Pending{Phase: phase, StartedAt: time.Unix(1_800_000_000, 0)},
+	}
+	if err := m.save(rec); err != nil {
+		t.Fatal(err)
+	}
+	return rec
+}
+
+func TestOnStartPhaseSnapshottingDiscards(t *testing.T) {
+	b := goodBackend()
+	m, _ := manager(t, b, []string{"Administrator"})
+	savedRecord(t, m, PhaseSnapshotting, "open")
+	if acted := m.OnStart(context.Background()); !acted {
+		t.Fatal("expected OnStart to act (discard)")
+	}
+	if len(b.calls) != 0 {
+		t.Fatalf("expected no backend calls for PhaseSnapshotting, got %v", b.calls)
+	}
+	if r, err := m.Load(); err != nil || r != nil {
+		t.Fatalf("expected the record discarded, got %+v %v", r, err)
+	}
+}
+
+func TestOnStartPhaseApplyingFinishesForward(t *testing.T) {
+	b := goodBackend()
+	m, _ := manager(t, b, []string{"Administrator"})
+	savedRecord(t, m, PhaseApplying, "open")
+	if acted := m.OnStart(context.Background()); !acted {
+		t.Fatal("expected OnStart to act")
+	}
+	r, err := m.Load()
+	if err != nil || r == nil || r.Pending == nil || r.Pending.Phase != PhaseApplied {
+		t.Fatalf("expected PhaseApplied, got %+v %v", r, err)
+	}
+	if b.cur != "restricted" {
+		t.Fatalf("expected the restriction finished applying, got %q", b.cur)
+	}
+	found := false
+	for _, c := range b.calls {
+		if c == "signout" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected sign-out to run on finish-forward, got %v", b.calls)
+	}
+}
+
+func TestOnStartPhaseApplyingFailsThenRollsBack(t *testing.T) {
+	b := goodBackend()
+	b.applyErr = errors.New("still broken")
+	m, _ := manager(t, b, []string{"Administrator"})
+	savedRecord(t, m, PhaseApplying, "open")
+	if acted := m.OnStart(context.Background()); !acted {
+		t.Fatal("expected OnStart to act")
+	}
+	if r, err := m.Load(); err != nil || r != nil {
+		t.Fatalf("expected the record gone after a successful rollback, got %+v %v", r, err)
+	}
+	if b.cur != "open" {
+		t.Fatalf("expected the backend restored to its pre-suspend state, got %q", b.cur)
+	}
+}
+
+func TestOnStartPhaseAppliedSelfChecksOnly(t *testing.T) {
+	b := goodBackend()
+	m, _ := manager(t, b, []string{"Administrator"})
+	savedRecord(t, m, PhaseApplied, "open")
+	if acted := m.OnStart(context.Background()); acted {
+		t.Fatal("expected PhaseApplied to be a no-op (cheap self-check only)")
+	}
+	r, err := m.Load()
+	if err != nil || r == nil || r.Pending.Phase != PhaseApplied {
+		t.Fatalf("expected the record untouched, got %+v %v", r, err)
+	}
+}
+
+func TestOnStartPhaseRestoringFinishes(t *testing.T) {
+	b := goodBackend()
+	b.cur = "restricted" // mid-restore when the crash happened
+	m, _ := manager(t, b, []string{"Administrator"})
+	savedRecord(t, m, PhaseRestoring, "open")
+	if acted := m.OnStart(context.Background()); !acted {
+		t.Fatal("expected OnStart to act")
+	}
+	if r, err := m.Load(); err != nil || r != nil {
+		t.Fatalf("expected the record gone after the restore finished, got %+v %v", r, err)
+	}
+	if b.cur != "open" {
+		t.Fatalf("expected the backend restored, got %q", b.cur)
+	}
+}
+
+func TestOnStartNeverLeavesAnInProgressPhase(t *testing.T) {
+	for _, phase := range []Phase{PhaseSnapshotting, PhaseApplying, PhaseApplied, PhaseRestoring} {
+		b := goodBackend()
+		m, _ := manager(t, b, []string{"Administrator"})
+		savedRecord(t, m, phase, "open")
+		m.OnStart(context.Background())
+		r, err := m.Load()
+		if err != nil {
+			t.Fatalf("phase %s: %v", phase, err)
+		}
+		if r != nil && r.Pending.Phase != PhaseApplied {
+			t.Fatalf("phase %s: expected no record or PhaseApplied after OnStart, got %+v", phase, r)
+		}
+	}
+}
+
+func TestStatusReportsRecoveryOutcomeExactlyOnce(t *testing.T) {
+	b := goodBackend()
+	m, _ := manager(t, b, []string{"Administrator"})
+	savedRecord(t, m, PhaseApplying, "open")
+	m.OnStart(context.Background()) // finishes forward -> records "completed"
+
+	st := m.Status()
+	if st["recovered_at_boot"] != true || st["recovery_outcome"] != "completed" {
+		t.Fatalf("expected a recovery outcome reported, got %+v", st)
+	}
+	st2 := m.Status()
+	if _, ok := st2["recovered_at_boot"]; ok {
+		t.Fatalf("expected the recovery outcome to be reported only once, got %+v", st2)
+	}
+}
+
+func TestReenforceReappliesDrift(t *testing.T) {
+	b := goodBackend()
+	m, _ := manager(t, b, []string{"Administrator"})
+	ctx := context.Background()
+	if _, err := m.Suspend(ctx, "INC-1", "cmd1"); err != nil {
+		t.Fatal(err)
+	}
+	b.calls = nil
+	b.verifyBlockOK = false // simulate drift: no longer blocked
+	acted, out := m.Reenforce(ctx)
+	if !acted || !strings.Contains(out, "re-applied") {
+		t.Fatalf("expected a re-apply, got acted=%v out=%q", acted, out)
+	}
+	found := false
+	for _, c := range b.calls {
+		if c == "apply" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected Reenforce to call ApplyLogonRestriction, got %v", b.calls)
+	}
+}
+
+func TestReenforceNoopWhenNotSuspended(t *testing.T) {
+	b := goodBackend()
+	m, _ := manager(t, b, []string{"Administrator"})
+	acted, out := m.Reenforce(context.Background())
+	if acted || out != "" {
+		t.Fatalf("expected a no-op, got acted=%v out=%q", acted, out)
+	}
+	if len(b.calls) != 0 {
+		t.Fatalf("expected zero backend calls, got %v", b.calls)
+	}
+}
+
+func TestReenforceNoopWhenAlreadyBlocked(t *testing.T) {
+	b := goodBackend()
+	m, _ := manager(t, b, []string{"Administrator"})
+	ctx := context.Background()
+	if _, err := m.Suspend(ctx, "INC-1", "cmd1"); err != nil {
+		t.Fatal(err)
+	}
+	b.calls = nil
+	acted, out := m.Reenforce(ctx)
+	if !acted || !strings.Contains(out, "verified") {
+		t.Fatalf("expected a verified no-op re-enforcement, got acted=%v out=%q", acted, out)
+	}
+	for _, c := range b.calls {
+		if c == "apply" {
+			t.Fatalf("expected no re-apply when already correctly blocked, got %v", b.calls)
+		}
+	}
+}
+
 func TestIdempotentRepeatRestoreIsNoop(t *testing.T) {
 	b := goodBackend()
 	m, _ := manager(t, b, []string{"Administrator"})

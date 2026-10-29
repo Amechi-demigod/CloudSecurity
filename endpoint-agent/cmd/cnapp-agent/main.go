@@ -33,6 +33,7 @@ import (
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/lostmode"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/scripts"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/service"
+	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/signin"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/state"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/update"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/version"
@@ -312,6 +313,12 @@ func purge(p state.Paths) error {
 	} else if !strings.Contains(out, "not active") {
 		fmt.Println(out)
 	}
+	// An uninstall must never leave a device unable to sign in: restore sign-in (if suspended) too.
+	if out, err := signin.New(p).Restore(context.Background()); err != nil {
+		fmt.Fprintln(os.Stderr, "warning: could not restore sign-in before uninstall:", err)
+	} else if !strings.Contains(out, "not suspended") {
+		fmt.Println(out)
+	}
 	if err := state.Remove(p); err != nil {
 		return err
 	}
@@ -397,7 +404,7 @@ func cmdStatus(args []string) error {
 	}
 	out := map[string]any{"enrolled": true, "agent_version": version.Version, "state_file": p.StateFile(), "log_file": p.LogFile(),
 		"state": st.Redacted(), "update": update.LoadFile(p), "policy": policy,
-		"lost_mode": lostmode.New(p, nil).Status()}
+		"lost_mode": lostmode.New(p, nil).Status(), "signin": signin.New(p).Status()}
 	b, _ := json.MarshalIndent(out, "", "  ")
 	fmt.Println(string(b))
 	return nil
@@ -499,6 +506,19 @@ func startUpdates(home string, a *agent.Agent) {
 		return
 	}
 	a.Updater = u
+}
+
+// signinOnStart detects a suspend-sign-in that was half-applied or
+// half-restored when the agent last exited and finishes or rolls it back.
+// Unlike startUpdates, this never needs the process to restart: the agent
+// binary itself doesn't change here.
+func signinOnStart(home string, a *agent.Agent) {
+	if a.Signin == nil {
+		return
+	}
+	if a.Signin.OnStart(context.Background()) {
+		slog.Info("suspend sign-in: resolved an interrupted operation at startup")
+	}
 }
 
 func cmdUpdateKeys() error {
@@ -610,6 +630,7 @@ func runLoop(home string, console bool) error {
 		return err
 	}
 	startUpdates(home, a)
+	signinOnStart(home, a)
 	return a.Run(ctx)
 }
 
@@ -643,6 +664,7 @@ func runService() int {
 			return err
 		}
 		startUpdates(home, a)
+		signinOnStart(home, a)
 		return a.Run(ctx)
 	})
 	if err != nil {

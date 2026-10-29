@@ -29,6 +29,28 @@ import (
 // locking everyone out, so nothing is changed.
 var ErrNoLocalAdminPresent = errors.New("ERR_NO_LOCAL_ADMIN_PRESENT")
 
+// ErrLostModeActive is returned by Suspend when lost mode is already active:
+// both compete for the sign-in screen and session control.
+var ErrLostModeActive = errors.New("cannot suspend sign-in: lost mode is already active on this device; exit lost mode first")
+
+// ReenforceInterval: while sign-in is suspended, the agent re-asserts the
+// restriction and banner this often, mirroring lostmode.RelockInterval - a
+// GPO or other tool could otherwise silently revert the restriction while the
+// agent keeps running.
+const ReenforceInterval = 5 * time.Minute
+
+// recoveryFileName is a tiny sidecar reporting the single most recent
+// crash-recovery outcome exactly once (read-and-cleared on the next posture
+// report), independent of whether a Record even still exists afterward - a
+// crash-recovery rollback deletes the Record, but the outcome must still be
+// reported.
+const recoveryFileName = "signin-recovery.json"
+
+type recoveryOutcome struct {
+	Outcome string    `json:"outcome"` // "rolled_back" | "completed"
+	At      time.Time `json:"at"`
+}
+
 // PreflightResult is what the pre-flight check found.
 type PreflightResult struct {
 	EnabledLocalAdmins []string
@@ -167,7 +189,7 @@ func (m *Manager) Suspend(ctx context.Context, incidentID, commandID string) (st
 			return "", fmt.Errorf("checking lost mode state: %w", err)
 		}
 		if active {
-			return "", errors.New("cannot suspend sign-in: lost mode is already active on this device; exit lost mode first")
+			return "", ErrLostModeActive
 		}
 	}
 
@@ -367,4 +389,151 @@ func (m *Manager) now() time.Time {
 		return m.Deps.Now()
 	}
 	return time.Now()
+}
+
+func (m *Manager) recoveryFile() string { return filepath.Join(m.Paths.StateDir, recoveryFileName) }
+
+func (m *Manager) recordRecoveryOutcome(outcome string) {
+	b, err := json.Marshal(recoveryOutcome{Outcome: outcome, At: m.now().UTC()})
+	if err != nil {
+		return
+	}
+	_ = state.WriteFile(m.Paths, recoveryFileName, b)
+}
+
+// consumeRecoveryOutcome reads and deletes the pending recovery-outcome
+// marker (if any), for exactly-once posture reporting via Status.
+func (m *Manager) consumeRecoveryOutcome() *recoveryOutcome {
+	b, err := os.ReadFile(m.recoveryFile())
+	if err != nil {
+		return nil
+	}
+	var r recoveryOutcome
+	if json.Unmarshal(b, &r) != nil {
+		return nil
+	}
+	_ = os.Remove(m.recoveryFile())
+	return &r
+}
+
+// Status is reported with every check-in (posture check "isolation"). It also
+// surfaces, exactly once, the outcome of any crash recovery OnStart performed
+// since the last check-in.
+func (m *Manager) Status() map[string]any {
+	data := map[string]any{}
+	rec, err := m.Load()
+	switch {
+	case err != nil:
+		data["active"] = false
+		data["error"] = err.Error()
+	case rec == nil:
+		data["active"] = false
+	default:
+		data["active"] = true
+		data["since"] = rec.Since.Format(time.RFC3339)
+		if rec.IncidentID != "" {
+			data["incident_id"] = rec.IncidentID
+		}
+	}
+	if ro := m.consumeRecoveryOutcome(); ro != nil {
+		data["recovered_at_boot"] = true
+		data["recovery_outcome"] = ro.Outcome
+	}
+	return data
+}
+
+// OnStart detects a suspension that was half-applied or half-restored when
+// the agent last exited (crash, forced reboot, service kill) and finishes or
+// rolls it back - it never leaves the device in between. Returns true if it
+// took action. Called once at agent/service startup.
+func (m *Manager) OnStart(ctx context.Context) bool {
+	rec, err := m.Load()
+	if err != nil || rec == nil || rec.Pending == nil {
+		return false
+	}
+	switch rec.Pending.Phase {
+	case PhaseSnapshotting:
+		// The live system was never touched (Suspend persists the record in
+		// this phase BEFORE any live call); nothing to finish or roll back.
+		_ = m.delete()
+		return true
+
+	case PhaseApplying:
+		// Finish forward, not roll back: a half-applied restriction is a more
+		// dangerous state to leave ambiguous than to complete. Only if
+		// finishing now also fails do we fall back to restoring Previous.
+		adminNames := rec.AdminsAtTime
+		_, aerr := m.Deps.Backend.ApplyLogonRestriction(ctx, adminNames, rec.Previous.LogonRestriction)
+		if aerr == nil {
+			if ok, _, verr := m.Deps.Backend.VerifyStandardSignInBlocked(ctx, adminNames); verr == nil && ok {
+				_, _ = m.Deps.SessionTerminator.SignOutNonAdmins(ctx, adminNames)
+				_ = m.Deps.Banner.Set(ctx, composeBanner(rec.IncidentID))
+				rec.Pending.Phase, rec.Pending.LastError = PhaseApplied, ""
+				_ = m.save(rec)
+				m.recordRecoveryOutcome("completed")
+				return true
+			}
+		}
+		// Finishing forward failed (apply or its verification): roll back.
+		if rerr := m.Deps.Backend.RestoreLogonRestriction(ctx, rec.Previous.LogonRestriction); rerr == nil {
+			_ = m.Deps.Banner.Restore(ctx, rec.Previous.Banner)
+			_ = m.delete()
+			m.recordRecoveryOutcome("rolled_back")
+			return true
+		}
+		rec.Pending.LastError = fmt.Sprintf("crash recovery: could not finish applying (%v) and the rollback also "+
+			"failed; manual recovery required", aerr)
+		_ = m.save(rec)
+		return true
+
+	case PhaseApplied:
+		// Steady suspended state: a cheap self-check, no destructive
+		// auto-repair (periodic Reenforce handles drift); just flag it.
+		ok, detail, verr := m.Deps.Backend.VerifyStandardSignInBlocked(ctx, rec.AdminsAtTime)
+		if verr != nil || !ok {
+			rec.Pending.LastError = fmt.Sprintf("self-check after restart: ok=%v err=%v detail=%s", ok, verr, detail)
+			_ = m.save(rec)
+		}
+		return false
+
+	case PhaseRestoring:
+		// Finish the restore; never silently fall back to "still suspended".
+		if err := m.Deps.Backend.RestoreLogonRestriction(ctx, rec.Previous.LogonRestriction); err == nil {
+			_ = m.Deps.Banner.Restore(ctx, rec.Previous.Banner)
+			if ok, _, verr := m.Deps.Backend.VerifyStandardSignInWorks(ctx, rec.Previous.LogonRestriction); verr == nil && ok {
+				_ = m.delete()
+				return true
+			}
+		}
+		rec.Pending.LastError = "crash recovery: could not confirm the interrupted restore completed"
+		_ = m.save(rec)
+		return true
+	}
+	return false
+}
+
+// Reenforce re-applies the restriction and banner if sign-in is currently
+// suspended, correcting drift from an external tool/GPO. Called periodically
+// from the agent's main loop (every ReenforceInterval), mirroring
+// lostmode.Manager.Relock. No separate watchdog process is needed: unlike a
+// self-update, the agent binary itself never changes here, so there is no
+// "the process can't start at all" failure mode to guard against - only
+// "the agent was killed mid-apply" (handled by OnStart) and "something else
+// reverted the restriction while the agent keeps running" (handled here).
+func (m *Manager) Reenforce(ctx context.Context) (bool, string) {
+	rec, err := m.Load()
+	if err != nil || rec == nil {
+		return false, ""
+	}
+	if ok, detail, verr := m.Deps.Backend.VerifyStandardSignInBlocked(ctx, rec.AdminsAtTime); verr == nil && ok {
+		return true, "sign-in suspension verified: " + detail
+	}
+	detail, aerr := m.Deps.Backend.ApplyLogonRestriction(ctx, rec.AdminsAtTime, rec.Previous.LogonRestriction)
+	if aerr != nil {
+		rec.Pending.LastError = "re-enforcement: " + aerr.Error()
+		_ = m.save(rec)
+		return true, "re-enforcement failed: " + aerr.Error()
+	}
+	_ = m.Deps.Banner.Set(ctx, composeBanner(rec.IncidentID))
+	return true, "re-applied a drifted restriction: " + detail
 }

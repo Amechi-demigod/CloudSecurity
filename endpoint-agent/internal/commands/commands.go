@@ -40,6 +40,11 @@ const (
 	// offer still comes from the check-in and the agent verifies the signed
 	// manifest, hashes and version policy exactly as for a scheduled update.
 	CheckForUpdate = "check_for_update"
+	// IsolateHost / RestoreHost are "Suspend sign-in" / "Restore sign-in"
+	// (internal names kept for API compatibility with the backend, which
+	// shipped them first) - see internal/signin.
+	IsolateHost = "isolate_host"
+	RestoreHost = "restore_host"
 )
 
 // Lost-mode message limits (also enforced server-side).
@@ -65,6 +70,33 @@ var allowedParams = map[string][]string{
 	WipeDevice:            {"mode", "hostname"},
 	RunScript:             {"bundle_id", "bundle_version", "script", "script_sha256", "parameters"},
 	CheckForUpdate:        {},
+	IsolateHost:           {"incident_id"},
+	RestoreHost:           {},
+}
+
+// incidentIDRe matches an optional, operator-supplied incident reference
+// shown on the suspend-sign-in banner.
+var incidentIDRe = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,64}$`)
+
+// IncidentIDParam extracts and validates isolate_host's optional incident_id.
+// Empty/absent is allowed (the command id is used as the reference instead).
+func IncidentIDParam(p map[string]any) (string, error) {
+	raw, ok := p["incident_id"]
+	if !ok || raw == nil {
+		return "", nil
+	}
+	s, ok := raw.(string)
+	if !ok {
+		return "", fmt.Errorf("incident_id must be a string")
+	}
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", nil
+	}
+	if !incidentIDRe.MatchString(s) {
+		return "", fmt.Errorf("incident_id must be 1-64 characters: letters, digits, '.', '_', ':', '-' only")
+	}
+	return s, nil
 }
 
 // Allowed reports whether a command type is in the allowlist.
@@ -111,6 +143,8 @@ func Validate(c model.Command, deviceID string, now time.Time) error {
 		err = wipe.ValidateParams(c)
 	case RunScript:
 		err = scripts.ValidateCommand(c)
+	case IsolateHost:
+		_, err = IncidentIDParam(c.Params)
 	}
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrRejected, err)
@@ -162,6 +196,12 @@ type Deps struct {
 	// CheckForUpdate checks in immediately and schedules an offered update
 	// without jitter; it returns a human-readable outcome.
 	CheckForUpdate func(ctx context.Context) (string, error)
+	// IsolateHost / RestoreHost: "Suspend sign-in" / "Restore sign-in". These
+	// need the full Outcome shape (incl. "rejected" for the pre-flight-blocked
+	// case), like Wipe/RunScript, not the simpler (string, error) shape
+	// LostMode/Lock use.
+	IsolateHost func(ctx context.Context, c model.Command) Outcome
+	RestoreHost func(ctx context.Context, c model.Command) Outcome
 }
 
 // Outcome of an executed command. After (if set) runs once the result has been
@@ -236,6 +276,16 @@ func Execute(ctx context.Context, c model.Command, d Deps, restart func()) Outco
 			return Outcome{Status: "rejected", Output: "scripts are not available"}
 		}
 		return d.RunScript(ctx, c)
+	case IsolateHost:
+		if d.IsolateHost == nil {
+			return Outcome{Status: "rejected", Output: "suspend sign-in is not available"}
+		}
+		return d.IsolateHost(ctx, c)
+	case RestoreHost:
+		if d.RestoreHost == nil {
+			return Outcome{Status: "rejected", Output: "restore sign-in is not available"}
+		}
+		return d.RestoreHost(ctx, c)
 	}
 	return Outcome{Status: "rejected", Output: "command type not in allowlist"}
 }
