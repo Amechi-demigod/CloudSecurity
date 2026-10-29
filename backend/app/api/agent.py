@@ -13,6 +13,7 @@ import logging
 import re
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Path, Request
+from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -30,6 +31,7 @@ from ..schemas_devices import (
     CommandResultIn,
     EnrollRequest,
     EnrollResponse,
+    validate_result_data,
 )
 from ..services import agent_updates, approvals
 from ..services import devices as svc
@@ -149,6 +151,27 @@ def enroll(body: EnrollRequest, request: Request, db: Session = Depends(get_db))
                           reenrolled=existing is not None)
 
 
+def _detect_isolation_crash_recovery(db: Session, device: Device) -> None:
+    """The agent's Suspend-sign-in Manager.OnStart reports a crash-recovery
+    outcome on exactly one check-in after it resolves an incomplete suspend or
+    restore (see endpoint-agent/internal/signin). A malformed or missing field
+    is ignored defensively - this must never break a check-in, and re-seeing
+    the same outcome on a later check-in (a retried request) just re-notifies
+    rather than failing."""
+    data = ((device.posture or {}).get("isolation") or {}).get("data") or {}
+    if data.get("recovered_at_boot") is not True:
+        return
+    outcome = data.get("recovery_outcome")
+    if outcome not in ("rolled_back", "completed"):
+        return
+    try:
+        audit(db, f"host_isolation_{outcome}_after_crash", actor_email=f"device:{device.hostname}"[:320],
+              target=f"device:{device.id}", recovery_outcome=outcome)
+        host_isolation_source.notify(db, device, f"{outcome}_after_crash", data=data)
+    except Exception:  # must never break a check-in
+        log.exception("failed to record isolation crash-recovery for device %s", device.id)
+
+
 @router.post("/checkin", response_model=CheckinResponse)
 def checkin(body: CheckinRequest, request: Request, device: Device = Depends(current_device),
             db: Session = Depends(get_db)):
@@ -156,6 +179,7 @@ def checkin(body: CheckinRequest, request: Request, device: Device = Depends(cur
     if body.device.os_family != device.os_family:
         raise HTTPException(409, f"device is enrolled as {device.os_family}, not {body.device.os_family}")
     issues = svc.apply_checkin(db, device, body, client_ip(request))
+    _detect_isolation_crash_recovery(db, device)
     features = request.headers.get("x-cnapp-agent-features", "")
     device.agent_features = ",".join(f for f in features.split(",") if _FEATURE_RE.match(f.strip()))[:128] or None
     pending = svc.pending_count(db, device.id)
@@ -197,8 +221,13 @@ def _delivered_command(db: Session, device: Device, command_id: str, nonce: str)
 def command_result(body: CommandResultIn, command_id: str = CommandId, device: Device = Depends(current_device),
                    db: Session = Depends(get_db)):
     cmd = _delivered_command(db, device, command_id, body.nonce)
+    try:
+        result_data = validate_result_data(cmd.type, body.result_data)
+    except (ValueError, PydanticValidationError) as e:
+        raise HTTPException(422, str(e)) from None
     cmd.status = body.status
     cmd.output = body.output
+    cmd.result_data = result_data or None
     cmd.completed_at = utcnow()
     if cmd.type == "run_script":
         cmd.exit_code = body.exit_code
@@ -208,21 +237,31 @@ def command_result(body: CommandResultIn, command_id: str = CommandId, device: D
     audit(db, "device_command_completed", actor_email=f"device:{device.hostname}"[:320],
           target=f"device:{device.id}", command_id=cmd.id, type=cmd.type, status=body.status,
           exit_code=cmd.exit_code)
+    incident_id = (cmd.params or {}).get("incident_id")
     if cmd.type == "isolate_host":
-        audit(db, "host_isolated" if body.status == "succeeded" else "host_isolation_failed",
-              actor_email=f"device:{device.hostname}"[:320], target=f"device:{device.id}",
-              command_id=cmd.id, status=body.status)
-        host_isolation_source.notify(
-            db, device, "host_isolated" if body.status == "succeeded" else "isolation_failed",
-            actor=cmd.requested_by_email, detail=body.output,
-        )
+        blocked = body.status != "succeeded" and result_data.get("error_code") == "ERR_NO_LOCAL_ADMIN_PRESENT"
+        if blocked:
+            audit(db, "host_isolation_preflight_blocked", actor_email=f"device:{device.hostname}"[:320],
+                  target=f"device:{device.id}", command_id=cmd.id, status=body.status)
+            host_isolation_source.notify(
+                db, device, "preflight_blocked_no_local_admin",
+                actor=cmd.requested_by_email, detail=body.output, data=result_data, incident_id=incident_id,
+            )
+        else:
+            audit(db, "host_isolated" if body.status == "succeeded" else "host_isolation_failed",
+                  actor_email=f"device:{device.hostname}"[:320], target=f"device:{device.id}",
+                  command_id=cmd.id, status=body.status)
+            host_isolation_source.notify(
+                db, device, "host_isolated" if body.status == "succeeded" else "isolation_failed",
+                actor=cmd.requested_by_email, detail=body.output, data=result_data, incident_id=incident_id,
+            )
     elif cmd.type == "restore_host":
         audit(db, "host_restored" if body.status == "succeeded" else "host_restore_failed",
               actor_email=f"device:{device.hostname}"[:320], target=f"device:{device.id}",
               command_id=cmd.id, status=body.status)
         host_isolation_source.notify(
             db, device, "host_restored" if body.status == "succeeded" else "restore_failed",
-            actor=cmd.requested_by_email, detail=body.output,
+            actor=cmd.requested_by_email, detail=body.output, data=result_data,
         )
     device_source.command_completed(db, device, cmd)
     db.commit()

@@ -288,6 +288,127 @@ export function WipeDialog({ device, open, onClose, onDone }: { device: Device; 
   );
 }
 
+const ISOLATION_LABEL: Record<NonNullable<Device["isolation"]["status"]>, string> = {
+  isolating: "Suspending (waiting for the agent)",
+  isolated: "Suspended",
+  restoring: "Restoring (waiting for the agent)",
+};
+
+function SignInReadiness({ device }: { device: Device }) {
+  const r = device.isolation.readiness;
+  const admins = Array.isArray(r.local_admins) ? (r.local_admins as unknown[]).map(String) : null;
+  return (
+    <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs">
+      {admins && (
+        <>
+          <dt className="text-ink-3">Local admins found</dt>
+          <dd className="font-mono">{admins.length ? admins.join(", ") : "none"}</dd>
+        </>
+      )}
+      {typeof r.laps_configured === "boolean" && (
+        <>
+          <dt className="text-ink-3">LAPS configured</dt>
+          <dd>{yesNo(r.laps_configured)}</dd>
+        </>
+      )}
+      {typeof r.laps_backs_up_to_entra === "boolean" && (
+        <>
+          <dt className="text-ink-3">LAPS backs up to Entra</dt>
+          <dd>{yesNo(r.laps_backs_up_to_entra)}</dd>
+        </>
+      )}
+      {typeof r.error_code === "string" && (
+        <>
+          <dt className="text-ink-3">Blocked</dt>
+          <dd className="text-sev-high">
+            {r.error_code === "ERR_NO_LOCAL_ADMIN_PRESENT" ? "No local admin would remain able to sign in" : r.error_code}
+          </dd>
+        </>
+      )}
+    </dl>
+  );
+}
+
+/** Suspend sign-in (when not suspended) or restore it (when suspended/restoring). */
+export function SuspendSignInDialog({ device, open, onClose, onDone }: { device: Device; open: boolean; onClose: () => void; onDone: () => void }) {
+  const suspending = device.isolation.status === null;
+  const [reason, setReason] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  function close() {
+    setReason("");
+    setConfirm("");
+    setError(null);
+    onClose();
+  }
+
+  const valid = reason.trim().length >= 3 && (!suspending || nameMatches(device, confirm));
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      if (suspending) {
+        await api.queueCommand(device.id, {
+          type: "isolate_host",
+          reason: reason.trim(),
+          confirm_hostname: confirm.trim(),
+        });
+      } else {
+        await api.queueCommand(device.id, { type: "restore_host", reason: reason.trim() });
+      }
+      onDone();
+      close();
+    } catch (err) {
+      setError(errMsg(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const readiness = device.isolation.readiness;
+
+  return (
+    <Modal open={open} onClose={close} title={`${suspending ? "Suspend sign-in" : "Restore sign-in"}: ${device.hostname}`}>
+      <form className="space-y-3" onSubmit={submit}>
+        {suspending ? (
+          <div className="space-y-2 text-sm text-ink-2">
+            <p>
+              Signs out standard users and blocks interactive sign-in on this device. Local admin access keeps working so IT can still get in. This
+              is <strong>not</strong> network isolation: the device stays connected and reachable.
+            </p>
+            <p className="text-xs text-ink-3">The agent checks first that at least one local admin would still be able to sign in, and refuses otherwise.</p>
+          </div>
+        ) : (
+          <p className="text-sm text-ink-2">Restores normal sign-in exactly as it was before it was suspended.</p>
+        )}
+        {error && <Alert>{error}</Alert>}
+        {Object.keys(readiness).length > 0 && (
+          <div className="rounded border border-line bg-surface-2 p-3">
+            <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-ink-3">Pre-flight findings reported by the agent</div>
+            <SignInReadiness device={device} />
+          </div>
+        )}
+        <Field label="Reason (recorded in the audit log)" id="si-reason" required minLength={3} maxLength={500} value={reason}
+          onChange={(e) => setReason(e.target.value)} placeholder="e.g. ticket INC-1234, suspected compromise" />
+        {suspending && (
+          <Field label={`Type the device name "${device.hostname}" to confirm`} id="si-confirm" autoComplete="off" value={confirm}
+            onChange={(e) => setConfirm(e.target.value)} />
+        )}
+        <div className="flex justify-end gap-2 pt-2">
+          <Button onClick={close}>Cancel</Button>
+          <Button type="submit" variant={suspending ? "danger" : "primary"} disabled={busy || !valid}>
+            {busy ? "Queuing…" : suspending ? "Suspend sign-in" : "Restore sign-in"}
+          </Button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
 const LOST_LABEL: Record<NonNullable<Device["lost_mode"]["status"]>, string> = {
   enabling: "Enabling (waiting for the agent)",
   active: "Active",
@@ -340,6 +461,50 @@ export function LostWipeCard({ device }: { device: Device }) {
           <summary className="cursor-pointer text-ink-3">Readiness details</summary>
           <div className="mt-2">
             <WipeReadiness device={device} />
+          </div>
+        </details>
+      )}
+    </Card>
+  );
+}
+
+/** Overview card: Suspend sign-in state, pre-flight findings and crash-recovery outcome. */
+export function IsolationCard({ device }: { device: Device }) {
+  const iso = device.isolation;
+  return (
+    <Card title="Suspend sign-in">
+      <dl>
+        <Row label="Status">
+          {iso.status ? (
+            <Tag tone={iso.status === "isolated" ? "warn" : "accent"}>{ISOLATION_LABEL[iso.status]}</Tag>
+          ) : iso.supported ? (
+            "Not suspended"
+          ) : (
+            "Not reported by this agent version"
+          )}
+        </Row>
+        {iso.status && (
+          <>
+            <Row label="Since">{iso.since && `${fmtTime(iso.since)} (${fmtAgo(iso.since)})`}</Row>
+            <Row label="Requested by">{iso.requested_by}</Row>
+            <Row label="Agent reports">
+              {iso.reported_isolated === null ? "no report yet" : iso.reported_isolated ? "sign-in suspended" : "sign-in not suspended"}
+            </Row>
+          </>
+        )}
+        {iso.recovery_outcome && (
+          <Row label="Crash recovery">
+            <Tag tone={iso.recovery_outcome === "rolled_back" ? "warn" : "default"}>
+              {iso.recovery_outcome === "rolled_back" ? "Rolled back after a crash" : "Completed after a crash"}
+            </Tag>
+          </Row>
+        )}
+      </dl>
+      {Object.keys(iso.readiness).length > 0 && (
+        <details className="mt-2 text-xs">
+          <summary className="cursor-pointer text-ink-3">Pre-flight findings</summary>
+          <div className="mt-2">
+            <SignInReadiness device={device} />
           </div>
         </details>
       )}

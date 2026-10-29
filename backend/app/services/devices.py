@@ -339,13 +339,25 @@ def device_state(device: Device) -> str:
     return "revoked" if device.status == "revoked" else "active"
 
 
-def isolation_info(device: Device) -> dict[str, Any]:
+def isolation_info(db: Session, device: Device) -> dict[str, Any]:
+    """Suspend sign-in state, plus what the agent last reported: live status
+    from check-in posture, and pre-flight readiness / crash-recovery outcome
+    from the most recent isolate_host command's result_data."""
     rep = ((device.posture or {}).get("isolation") or {}).get("data") or {}
     features = set(filter(None, (device.agent_features or "").split(",")))
+    last = db.scalar(select(DeviceCommand).where(DeviceCommand.device_id == device.id,
+                                                 DeviceCommand.type == "isolate_host")
+                     .order_by(DeviceCommand.created_at.desc()).limit(1))
+    readiness = (last.result_data or {}) if last is not None else {}
+    recovery_outcome = rep.get("recovery_outcome")
     return {"supported": "host_isolation" in features,
             "status": device.isolation_status, "since": device.isolation_since,
             "requested_by": device.isolation_by,
-            "reported_isolated": rep.get("isolated") if isinstance(rep.get("isolated"), bool) else None}
+            "reported_isolated": rep.get("isolated") if isinstance(rep.get("isolated"), bool) else None,
+            "readiness": readiness,
+            "recovered_at_boot": rep.get("recovered_at_boot") if isinstance(rep.get("recovered_at_boot"), bool)
+                                 else None,
+            "recovery_outcome": recovery_outcome if recovery_outcome in ("rolled_back", "completed") else None}
 
 
 def lost_mode_info(device: Device) -> dict[str, Any]:
@@ -407,6 +419,8 @@ def fleet_summary(db: Session) -> dict[str, Any]:
 _CTRL = re.compile(r"[\x00-\x09\x0b-\x1f\x7f]")
 PHONE_RE = re.compile(r"^[0-9+][0-9 ()./+-]{2,31}$")
 LOST_MESSAGE_MAX = 300
+# Mirrors the agent's incidentIDRe (endpoint-agent/internal/commands/commands.go).
+INCIDENT_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
 
 
 def validate_params(cmd_type: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -428,6 +442,22 @@ def validate_params(cmd_type: str, params: dict[str, Any]) -> dict[str, Any]:
                 MIN_INTERVAL_SECONDS <= v <= MAX_INTERVAL_SECONDS):
             raise ValueError(f"params must be {{'interval_seconds': {MIN_INTERVAL_SECONDS}..{MAX_INTERVAL_SECONDS}}}")
         return {"interval_seconds": v}
+    if cmd_type == "isolate_host":
+        # incident_id is optional: the agent falls back to the command id as
+        # its banner reference when it's absent.
+        if not params:
+            return {}
+        if set(params) != {"incident_id"}:
+            raise ValueError("isolate_host params must be {} or {'incident_id': text}")
+        incident_id = params["incident_id"]
+        if not isinstance(incident_id, str):
+            raise ValueError("incident_id must be a string")
+        incident_id = incident_id.strip()
+        if not incident_id:
+            return {}
+        if not INCIDENT_ID_RE.match(incident_id):
+            raise ValueError("incident_id must be 1-64 characters: letters, digits, '.', '_', ':', '-' only")
+        return {"incident_id": incident_id}
     if params:
         raise ValueError(f"{cmd_type} takes no parameters")
     return {}
