@@ -439,7 +439,7 @@ export interface DeviceIssue {
   detail: string;
 }
 
-export type DeviceState = "active" | "lost" | "wipe_pending" | "revoked";
+export type DeviceState = "active" | "lost" | "wipe_pending" | "isolated" | "revoked";
 
 export interface DeviceSummary {
   id: string;
@@ -511,6 +511,20 @@ export interface WipeState {
   command_id: string | null;
 }
 
+/** Suspend sign-in state (internal name: host isolation - see endpoint-agent/internal/signin). */
+export interface IsolationState {
+  supported: boolean;
+  status: null | "isolating" | "isolated" | "restoring";
+  since: string | null;
+  requested_by: string | null;
+  /** what the agent last reported at check-in (null = no report yet) */
+  reported_isolated: boolean | null;
+  /** pre-flight findings (local admins, LAPS) from the latest isolate_host command's result_data */
+  readiness: Record<string, unknown>;
+  recovered_at_boot: boolean | null;
+  recovery_outcome: null | "rolled_back" | "completed";
+}
+
 export interface DeviceDetail extends DeviceSummary {
   os_build: string;
   last_ip: string | null;
@@ -523,6 +537,7 @@ export interface DeviceDetail extends DeviceSummary {
   collection_errors: Record<string, string>;
   lost_mode: LostModeState;
   wipe: WipeState;
+  isolation: IsolationState;
 }
 
 export interface DeviceSoftware {
@@ -555,7 +570,9 @@ export type CommandType =
   | "enable_lost_mode"
   | "disable_lost_mode"
   | "wipe_device"
-  | "run_script";
+  | "run_script"
+  | "isolate_host"
+  | "restore_host";
 
 export interface DeviceCommand {
   id: string;
@@ -572,6 +589,7 @@ export interface DeviceCommand {
   output: string;
   log_bundle_id: string | null;
   exit_code: number | null;
+  result_data: Record<string, unknown> | null;
   approval_id: string | null;
   approved_by_email: string | null;
   acknowledged_at: string | null;

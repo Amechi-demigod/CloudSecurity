@@ -715,6 +715,9 @@ class DeviceCommand(TenantMixin, Base):
     # run_script: the script's exit code. Commands created from a two-person
     # approval reference it (and record who approved).
     exit_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # isolate_host / restore_host only (schemas_devices.validate_result_data):
+    # pre-flight findings and crash-recovery outcomes reported with the result.
+    result_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     approval_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     approved_by_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
     acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

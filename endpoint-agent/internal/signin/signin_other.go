@@ -16,11 +16,11 @@ func (otherBackend) Name() string { return "unsupported" }
 func (otherBackend) CaptureLogonRestriction(context.Context) (json.RawMessage, error) {
 	return nil, errUnsupported
 }
-func (otherBackend) ApplyLogonRestriction(context.Context, []string, json.RawMessage) (string, error) {
-	return "", errUnsupported
+func (otherBackend) ApplyLogonRestriction(context.Context, []string, json.RawMessage) (string, []string, error) {
+	return "", nil, errUnsupported
 }
-func (otherBackend) ReapplyLogonRestriction(context.Context, []string, json.RawMessage) (string, error) {
-	return "", errUnsupported
+func (otherBackend) ReapplyLogonRestriction(context.Context, []string, json.RawMessage) (string, []string, error) {
+	return "", nil, errUnsupported
 }
 func (otherBackend) RestoreLogonRestriction(context.Context, json.RawMessage) error {
 	return errUnsupported

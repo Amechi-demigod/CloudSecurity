@@ -37,6 +37,10 @@ CHECKIN_ISSUES = (
 CONNECTIVITY_ISSUES = ("stale", "inactive")
 COMMAND_RESULTS = {"succeeded": "command_succeeded", "failed": "command_failed", "rejected": "command_rejected"}
 EVENT_TYPES = CHECKIN_ISSUES + CONNECTIVITY_ISSUES + tuple(COMMAND_RESULTS.values())
+# Human-facing override for command types whose internal name must never
+# appear in user-visible text (isolate_host/restore_host are "Suspend sign-in"
+# / "Restore sign-in" - see endpoint-agent/internal/signin).
+ACTION_LABELS = {"isolate_host": "suspend sign-in", "restore_host": "restore sign-in"}
 POLL_SECONDS = 300.0
 MAX_TRACKED = 20000
 
@@ -91,7 +95,7 @@ def command_completed(db: Session, device, cmd) -> None:
 
 def _command_completed(db: Session, device, cmd, event_type: str) -> None:
     ok = cmd.status == "succeeded"
-    action = cmd.type.replace("_", " ")
+    action = ACTION_LABELS.get(cmd.type, cmd.type.replace("_", " "))
     emit(db, Event(
         source=DEVICE, event_type=event_type, severity="low" if ok else "medium",
         title=f"Remote action {action} {cmd.status} on {device.hostname}",

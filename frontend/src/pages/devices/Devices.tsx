@@ -171,6 +171,7 @@ export default function Devices() {
                   </Link>
                   {d.device_state === "lost" && <span className="ml-2"><Tag tone="warn">Lost</Tag></span>}
                   {d.device_state === "wipe_pending" && <span className="ml-2"><Tag tone="critical">Wipe pending</Tag></span>}
+                  {d.device_state === "isolated" && <span className="ml-2"><Tag tone="warn">Sign-in suspended</Tag></span>}
                   {d.device_group && (
                     <span className="ml-2 rounded border border-line px-1.5 py-0.5 text-[10px] text-ink-3">{d.device_group}</span>
                   )}

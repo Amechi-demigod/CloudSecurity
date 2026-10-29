@@ -44,6 +44,7 @@ type fakeBackend struct {
 	verifyBlockMsg string
 	verifyBlockErr error
 	restoreErr     error // makes RestoreLogonRestriction fail, to test rollback-failure handling
+	keptAccounts   []string
 }
 
 func (f *fakeBackend) Name() string { return "fake backend" }
@@ -53,24 +54,24 @@ func (f *fakeBackend) CaptureLogonRestriction(ctx context.Context) (json.RawMess
 	return json.Marshal(f.cur)
 }
 
-func (f *fakeBackend) ApplyLogonRestriction(ctx context.Context, adminNames []string, previous json.RawMessage) (string, error) {
+func (f *fakeBackend) ApplyLogonRestriction(ctx context.Context, adminNames []string, previous json.RawMessage) (string, []string, error) {
 	f.calls = append(f.calls, "apply")
 	if f.applyErr != nil {
-		return "", f.applyErr
+		return "", nil, f.applyErr
 	}
 	f.cur = "restricted"
-	return "restricted to admins", nil
+	return "restricted to admins", f.keptAccounts, nil
 }
 
 // ReapplyLogonRestriction never rolls back (matching the real backends): on
 // failure it just returns the error, leaving f.cur exactly as it was.
-func (f *fakeBackend) ReapplyLogonRestriction(ctx context.Context, adminNames []string, previous json.RawMessage) (string, error) {
+func (f *fakeBackend) ReapplyLogonRestriction(ctx context.Context, adminNames []string, previous json.RawMessage) (string, []string, error) {
 	f.calls = append(f.calls, "reapply")
 	if f.reapplyErr != nil {
-		return "", f.reapplyErr
+		return "", nil, f.reapplyErr
 	}
 	f.cur = "restricted"
-	return "re-confirmed restricted to admins", nil
+	return "re-confirmed restricted to admins", f.keptAccounts, nil
 }
 
 func (f *fakeBackend) RestoreLogonRestriction(ctx context.Context, previous json.RawMessage) error {

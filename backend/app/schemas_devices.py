@@ -175,6 +175,47 @@ class CommandResultIn(Strict):
     output: Annotated[str, StringConstraints(max_length=16384)] = ""
     # run_script only: the script's exit code.
     exit_code: int | None = Field(None, ge=-(2**31), le=2**32)
+    # isolate_host / restore_host only (see validate_result_data): pre-flight
+    # findings and crash-recovery outcomes, strictly validated per command type
+    # so this can't become an unvalidated dumping ground for other commands.
+    result_data: dict[str, Any] = Field(default_factory=dict)
+
+
+class IsolateHostResultData(Strict):
+    """Suspend sign-in: pre-flight findings reported with the command result."""
+    local_admins: list[Str255] = Field(default_factory=list, max_length=64)
+    laps_configured: bool | None = None
+    laps_backs_up_to_entra: bool | None = None
+    error_code: Literal["ERR_NO_LOCAL_ADMIN_PRESENT"] | None = None
+    # SIDs of built-in service/virtual accounts the Windows backend deliberately
+    # left holding the logon rights (never removed, never counted as an admin).
+    kept_service_accounts: list[Str255] | None = Field(None, max_length=64)
+
+
+class RestoreHostResultData(Strict):
+    """Restore sign-in reports no structured findings today; this only exists
+    so an empty result_data validates and any unexpected key is rejected."""
+
+
+RESULT_DATA_SCHEMAS: dict[str, type[Strict]] = {
+    "isolate_host": IsolateHostResultData,
+    "restore_host": RestoreHostResultData,
+}
+
+
+def validate_result_data(cmd_type: str, data: dict[str, Any]) -> dict[str, Any]:
+    """Strictly validate a command result's result_data: only isolate_host and
+    restore_host may send any, each against its own schema (unknown keys
+    rejected); every other command type must send an empty dict."""
+    schema = RESULT_DATA_SCHEMAS.get(cmd_type)
+    if schema is None:
+        if data:
+            raise ValueError(f"{cmd_type} does not accept result_data")
+        return {}
+    validated = schema.model_validate(data).model_dump(exclude_none=True)
+    if len(json.dumps(validated, default=str)) > MAX_DATA_JSON:
+        raise ValueError(f"result_data larger than {MAX_DATA_JSON} bytes")
+    return validated
 
 
 class CommandAckIn(Strict):
@@ -264,6 +305,7 @@ class CommandOut(ORM):
     output: str
     log_bundle_id: str | None
     exit_code: int | None = None
+    result_data: dict[str, Any] | None = None
     approval_id: str | None = None
     approved_by_email: str | None = None
     acknowledged_at: UTCDateTime | None = None

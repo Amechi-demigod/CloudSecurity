@@ -216,17 +216,31 @@ func (c *Client) Commands(ctx context.Context) (*model.CommandList, error) {
 
 // Result reports a command's outcome.
 func (c *Client) Result(ctx context.Context, cmd model.Command, status, output string) error {
-	return c.ResultWithExit(ctx, cmd, status, output, nil)
+	return c.ResultFull(ctx, cmd, status, output, nil, nil)
 }
 
 // ResultWithExit reports a command's outcome with a script exit code.
 func (c *Client) ResultWithExit(ctx context.Context, cmd model.Command, status, output string, exitCode *int) error {
+	return c.ResultFull(ctx, cmd, status, output, exitCode, nil)
+}
+
+// ResultFull reports a command's outcome with an optional script exit code
+// and/or result_data (isolate_host/restore_host pre-flight findings and
+// crash-recovery outcomes - see commands.Outcome.ResultData, strictly
+// validated server-side against schemas_devices.IsolateHostResultData /
+// RestoreHostResultData). Both are left out of the request body entirely
+// when nil/empty, not sent as null/{}.
+func (c *Client) ResultFull(ctx context.Context, cmd model.Command, status, output string, exitCode *int,
+	resultData map[string]any) error {
 	if len(output) > 16000 {
 		output = output[:16000] + "\n[truncated]"
 	}
 	body := map[string]any{"nonce": cmd.Nonce, "status": status, "output": output}
 	if exitCode != nil {
 		body["exit_code"] = *exitCode
+	}
+	if len(resultData) > 0 {
+		body["result_data"] = resultData
 	}
 	return c.postJSON(ctx, "/api/agent/commands/"+cmd.ID+"/result", body, nil)
 }

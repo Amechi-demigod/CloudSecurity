@@ -11,7 +11,7 @@ import { fmtAgo, fmtTime } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
 import { useUrlState } from "../../lib/useUrlState";
 import { AssetRecordLink } from "../assets/AssetRecordLink";
-import { LostModeDialog, LostWipeCard, WipeDialog } from "./LostWipe";
+import { IsolationCard, LostModeDialog, LostWipeCard, SuspendSignInDialog, WipeDialog } from "./LostWipe";
 import { RunScriptDialog } from "./RunScriptDialog";
 import { PendingUpdateView, UpdateNowButton } from "./UpdateAutomation";
 
@@ -32,6 +32,8 @@ const EXTRA_LABEL: Partial<Record<CommandType, string>> = {
   disable_lost_mode: "Exit lost mode",
   wipe_device: "Remote wipe",
   run_script: "Run script",
+  isolate_host: "Suspend sign-in",
+  restore_host: "Restore sign-in",
 };
 
 function commandLabel(c: DeviceCommand): string {
@@ -258,6 +260,7 @@ function Overview({ device }: { device: Device }) {
         <IssueList issues={device.issues} />
       </Card>
       <LostWipeCard device={device} />
+      <IsolationCard device={device} />
       <Card title="Device">
         <dl>
           <Row label="Hostname">{device.hostname}</Row>
@@ -685,6 +688,7 @@ export default function DeviceDetail() {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [lostOpen, setLostOpen] = useState(false);
   const [wipeOpen, setWipeOpen] = useState(false);
+  const [signInOpen, setSignInOpen] = useState(false);
   const [scriptOpen, setScriptOpen] = useState(false);
   const { data: device, error, reload } = useApi(() => api.device(id), [id], 30000);
   const cmds = useApi(() => api.deviceCommands(id), [id], 10000);
@@ -696,6 +700,11 @@ export default function DeviceDetail() {
     setTab("Commands");
   }
   const active = device.status === "active";
+  const suspendSignInBlockedReason = !device.isolation.supported
+    ? "Not supported by this agent version"
+    : device.lost_mode.status
+      ? "Cannot suspend sign-in while lost mode is active"
+      : null;
 
   return (
     <div>
@@ -708,6 +717,7 @@ export default function DeviceDetail() {
             {active ? <HealthBadge health={device.health} /> : <Tag tone="warn">Revoked</Tag>}
             {device.device_state === "lost" && <Tag tone="warn">Lost</Tag>}
             {device.device_state === "wipe_pending" && <Tag tone="critical">Wipe pending</Tag>}
+            {device.device_state === "isolated" && <Tag tone="warn">Sign-in suspended</Tag>}
             <ConnectivityTag value={device.connectivity} />
             <AssetRecordLink deviceId={device.id} />
           </div>
@@ -746,15 +756,36 @@ export default function DeviceDetail() {
               Run script
             </Button>
           )}
+          <span aria-hidden className="mx-1 hidden h-6 w-px bg-line sm:block" />
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">Security</span>
+          {ACTIONS.filter((a) => can(a.role) && a.danger).map((a) => (
+            <Button key={a.type} variant="danger" onClick={() => setAction(a)} title={a.help}>
+              {a.label}
+            </Button>
+          ))}
+          {device.isolation.status === null && (
+            <Button variant="danger" onClick={() => setSignInOpen(true)} disabled={!!suspendSignInBlockedReason}
+              title={suspendSignInBlockedReason ??
+                "Sign out standard users and block interactive sign-in; local admin access keeps working"}>
+              Suspend sign-in
+            </Button>
+          )}
+          {device.isolation.status === "isolating" && (
+            <Button variant="danger" disabled title="Suspending: waiting for the agent">
+              Suspend sign-in
+            </Button>
+          )}
+          {can("admin") && (device.isolation.status === "isolated" || device.isolation.status === "restoring") && (
+            <Button
+              onClick={() => setSignInOpen(true)}
+              disabled={device.isolation.status === "restoring"}
+              title={device.isolation.status === "restoring" ? "Restoring: waiting for the agent" : "Restore normal sign-in"}
+            >
+              {device.isolation.status === "restoring" ? "Restoring sign-in…" : "Restore sign-in"}
+            </Button>
+          )}
           {can("admin") && (
             <>
-              <span aria-hidden className="mx-1 hidden h-6 w-px bg-line sm:block" />
-              <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">Security</span>
-              {ACTIONS.filter((a) => can(a.role) && a.danger).map((a) => (
-                <Button key={a.type} variant="danger" onClick={() => setAction(a)} title={a.help}>
-                  {a.label}
-                </Button>
-              ))}
               <Button
                 variant={device.lost_mode.status ? "default" : "danger"}
                 onClick={() => setLostOpen(true)}
@@ -852,6 +883,10 @@ export default function DeviceDetail() {
         cmds.reload();
         setTab("Commands");
       }} />
+      {can("analyst") && (
+        <SuspendSignInDialog key={`signin-${device.isolation.status ?? "off"}`} device={device} open={signInOpen}
+          onClose={() => setSignInOpen(false)} onDone={afterAction} />
+      )}
       {can("admin") && (
         <>
           <LostModeDialog key={`lost-${device.lost_mode.status ?? "off"}`} device={device} open={lostOpen} onClose={() => setLostOpen(false)}

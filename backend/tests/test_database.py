@@ -62,7 +62,8 @@ def test_migrations_match_models(tmp_path):
 MIGRATION_CHAIN = ["0001_baseline", "0002_device_management", "0003_notifications", "0004_mfa_sso",
                    "0005_agent_installers", "0006_agent_updates", "0007_it_asset_lifecycle",
                    "0008_agent_update_automation", "0009_device_approvals_scripts", "0010_scheduled_scans",
-                   "0011_vulnerability_matching", "0013_organizations", "0014_host_isolation"]
+                   "0011_vulnerability_matching", "0013_organizations", "0014_host_isolation",
+                   "0015_command_result_data"]
 
 
 def test_migration_history_is_linear():

@@ -134,7 +134,7 @@ def apply_checkin(db: Session, device: Device, body: CheckinRequest, ip: str | N
     device.last_seen_at = device.last_checkin_at = now
     device.last_ip = ip
     _reconcile_lost_mode(device, posture, now)
-    _reconcile_isolation(device, posture, now)
+    _reconcile_isolation(db, device, posture, now)
     pending = _pending_updates(posture)
     if pending:
         device.updates_pending_since = device.updates_pending_since or now
@@ -191,17 +191,52 @@ def _reconcile_lost_mode(device: Device, posture: dict[str, Any], now: datetime)
         device.lost_mode_status = None
 
 
-def _reconcile_isolation(device: Device, posture: dict[str, Any], now: datetime) -> None:
-    """The agent reports whether host isolation is active (posture check `isolation`).
-    While an isolate/restore command is in flight the server state wins."""
+def _reconcile_isolation(db: Session, device: Device, posture: dict[str, Any], now: datetime) -> None:
+    """The agent reports whether sign-in is suspended (posture check
+    `isolation`, data.active - data.isolated is read as a fallback for older
+    agents that predate the rename). While an isolate/restore command is in
+    flight the server state normally wins; _resolve_stuck_isolate_host is the
+    one exception, for a command a crash left permanently stuck."""
     data = (posture.get("isolation") or {}).get("data") or {}
-    active = data.get("isolated")
+    active = data.get("active")
+    if active is None:
+        active = data.get("isolated")
+    _resolve_stuck_isolate_host(db, device, data, now)
     if not isinstance(active, bool) or device.isolation_status in ("isolating", "restoring"):
         return
     if active and device.isolation_status is None:
         device.isolation_status, device.isolation_since = "isolated", device.isolation_since or now
     elif not active and device.isolation_status == "isolated":
         device.isolation_status = None
+
+
+def _resolve_stuck_isolate_host(db: Session, device: Device, data: dict[str, Any], now: datetime) -> None:
+    """A crash mid-Suspend can leave the server's isolate_host command stuck
+    `delivered` forever: the agent's Manager.OnStart resolves it locally
+    (finishes forward or rolls back - see endpoint-agent/internal/signin) and
+    never POSTs a result for that original command, since none was ever
+    reported before the crash. When the agent's one-time crash-recovery
+    outcome arrives on check-in, resolve that stuck command (and
+    isolation_status, via the same command_finished() used by a normal
+    result) instead of waiting for a result that will never come."""
+    if device.isolation_status != "isolating":
+        return
+    outcome = data.get("recovery_outcome")
+    if data.get("recovered_at_boot") is not True or outcome not in ("rolled_back", "completed"):
+        return
+    cmd = db.scalar(select(DeviceCommand).where(DeviceCommand.device_id == device.id,
+                                                DeviceCommand.type == "isolate_host",
+                                                DeviceCommand.status.in_(("pending", "delivered")))
+                    .order_by(DeviceCommand.created_at.desc()).limit(1))
+    if cmd is not None:
+        cmd.status = "succeeded" if outcome == "completed" else "failed"
+        cmd.completed_at = now
+        cmd.output = cmd.output or f"{outcome} after an agent restart (crash recovery)"
+        command_finished(device, cmd)
+    elif outcome == "completed":
+        device.isolation_status = "isolated"
+    else:
+        device.isolation_status = device.isolation_since = device.isolation_by = None
 
 
 def _prune_history(db: Session, device_id: str, keep: int) -> None:
@@ -339,13 +374,28 @@ def device_state(device: Device) -> str:
     return "revoked" if device.status == "revoked" else "active"
 
 
-def isolation_info(device: Device) -> dict[str, Any]:
+def isolation_info(db: Session, device: Device) -> dict[str, Any]:
+    """Suspend sign-in state, plus what the agent last reported: live status
+    from check-in posture, and pre-flight readiness / crash-recovery outcome
+    from the most recent isolate_host command's result_data."""
     rep = ((device.posture or {}).get("isolation") or {}).get("data") or {}
     features = set(filter(None, (device.agent_features or "").split(",")))
+    last = db.scalar(select(DeviceCommand).where(DeviceCommand.device_id == device.id,
+                                                 DeviceCommand.type == "isolate_host")
+                     .order_by(DeviceCommand.created_at.desc()).limit(1))
+    readiness = (last.result_data or {}) if last is not None else {}
+    recovery_outcome = rep.get("recovery_outcome")
+    reported_active = rep.get("active")
+    if reported_active is None:
+        reported_active = rep.get("isolated")  # fallback for older agents
     return {"supported": "host_isolation" in features,
             "status": device.isolation_status, "since": device.isolation_since,
             "requested_by": device.isolation_by,
-            "reported_isolated": rep.get("isolated") if isinstance(rep.get("isolated"), bool) else None}
+            "reported_isolated": reported_active if isinstance(reported_active, bool) else None,
+            "readiness": readiness,
+            "recovered_at_boot": rep.get("recovered_at_boot") if isinstance(rep.get("recovered_at_boot"), bool)
+                                 else None,
+            "recovery_outcome": recovery_outcome if recovery_outcome in ("rolled_back", "completed") else None}
 
 
 def lost_mode_info(device: Device) -> dict[str, Any]:
@@ -407,6 +457,8 @@ def fleet_summary(db: Session) -> dict[str, Any]:
 _CTRL = re.compile(r"[\x00-\x09\x0b-\x1f\x7f]")
 PHONE_RE = re.compile(r"^[0-9+][0-9 ()./+-]{2,31}$")
 LOST_MESSAGE_MAX = 300
+# Mirrors the agent's incidentIDRe (endpoint-agent/internal/commands/commands.go).
+INCIDENT_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
 
 
 def validate_params(cmd_type: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -428,6 +480,22 @@ def validate_params(cmd_type: str, params: dict[str, Any]) -> dict[str, Any]:
                 MIN_INTERVAL_SECONDS <= v <= MAX_INTERVAL_SECONDS):
             raise ValueError(f"params must be {{'interval_seconds': {MIN_INTERVAL_SECONDS}..{MAX_INTERVAL_SECONDS}}}")
         return {"interval_seconds": v}
+    if cmd_type == "isolate_host":
+        # incident_id is optional: the agent falls back to the command id as
+        # its banner reference when it's absent.
+        if not params:
+            return {}
+        if set(params) != {"incident_id"}:
+            raise ValueError("isolate_host params must be {} or {'incident_id': text}")
+        incident_id = params["incident_id"]
+        if not isinstance(incident_id, str):
+            raise ValueError("incident_id must be a string")
+        incident_id = incident_id.strip()
+        if not incident_id:
+            return {}
+        if not INCIDENT_ID_RE.match(incident_id):
+            raise ValueError("incident_id must be 1-64 characters: letters, digits, '.', '_', ':', '-' only")
+        return {"incident_id": incident_id}
     if params:
         raise ValueError(f"{cmd_type} takes no parameters")
     return {}

@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/lostmode"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/model"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/scripts"
+	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/signin"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/state"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/update"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/wipe"
@@ -174,19 +176,22 @@ func TestRunScriptEndToEnd(t *testing.T) {
 // restore_host against the real platform backend in a test, or `go test
 // ./...` would mutate real OS logon rights / groups on whatever machine runs it.
 
-type fakeSigninBackend struct{ cur string }
+type fakeSigninBackend struct {
+	cur  string
+	kept []string
+}
 
 func (f *fakeSigninBackend) Name() string { return "fake" }
 func (f *fakeSigninBackend) CaptureLogonRestriction(context.Context) (json.RawMessage, error) {
 	return json.Marshal(f.cur)
 }
-func (f *fakeSigninBackend) ApplyLogonRestriction(context.Context, []string, json.RawMessage) (string, error) {
+func (f *fakeSigninBackend) ApplyLogonRestriction(context.Context, []string, json.RawMessage) (string, []string, error) {
 	f.cur = "restricted"
-	return "restricted", nil
+	return "restricted", f.kept, nil
 }
-func (f *fakeSigninBackend) ReapplyLogonRestriction(context.Context, []string, json.RawMessage) (string, error) {
+func (f *fakeSigninBackend) ReapplyLogonRestriction(context.Context, []string, json.RawMessage) (string, []string, error) {
 	f.cur = "restricted"
-	return "re-confirmed restricted", nil
+	return "re-confirmed restricted", f.kept, nil
 }
 func (f *fakeSigninBackend) RestoreLogonRestriction(_ context.Context, previous json.RawMessage) error {
 	var prev string
@@ -222,6 +227,12 @@ func (fakeSigninSessions) SignOutNonAdmins(context.Context, []string) (string, e
 type fakeSigninLostMode bool
 
 func (f fakeSigninLostMode) Active(context.Context) (bool, error) { return bool(f), nil }
+
+type fakeSigninLAPS signin.LAPSStatus
+
+func (f fakeSigninLAPS) Status(context.Context) (signin.LAPSStatus, error) {
+	return signin.LAPSStatus(f), nil
+}
 
 func TestSuspendSignInEndToEnd(t *testing.T) {
 	a, f := setup(t)
@@ -277,6 +288,103 @@ func TestSuspendSignInEndToEnd(t *testing.T) {
 	_ = a.PollCommands(ctx)
 	if f.results["i4"] != "rejected" || !strings.Contains(f.outputs["i4"], "lost mode") {
 		t.Fatalf("%v out=%q", f.results, f.outputs["i4"])
+	}
+}
+
+// TestIsolateHostResultDataKeysMatchBackendSchema guards the wire contract
+// with the backend's strict (extra="forbid") schemas_devices.
+// IsolateHostResultData: every key the agent sends in result_data must exist
+// there under this exact name, or the backend rejects the result outright
+// (422). A key rename on either side without updating the other would pass
+// each side's own tests but fail at the real boundary - this test catches
+// that by checking the raw JSON keys, not just that known fields round-trip.
+func TestIsolateHostResultDataKeysMatchBackendSchema(t *testing.T) {
+	a, f := setup(t)
+	backend := &fakeSigninBackend{cur: "open", kept: []string{"S-1-5-80-1234"}}
+	a.Signin.Deps.Backend = backend
+	a.Signin.Deps.AdminProbe = fakeSigninAdmins{"Administrator"}
+	a.Signin.Deps.SessionTerminator = fakeSigninSessions{}
+	a.Signin.Deps.Banner = &memNotice{}
+	a.Signin.Deps.LostMode = fakeSigninLostMode(false)
+	backsUpToEntra := true
+	a.Signin.Deps.LAPSProbe = fakeSigninLAPS{Configured: true, BackupToEntraID: &backsUpToEntra}
+	ctx := context.Background()
+
+	// Success path: every field the pre-flight result can produce.
+	f.commands = []model.Command{command("i1", "isolate_host", map[string]any{"incident_id": "INC-1"})}
+	_ = a.PollCommands(ctx)
+	if f.results["i1"] != "succeeded" {
+		t.Fatalf("%v out=%q", f.results, f.outputs["i1"])
+	}
+	rd := f.resultData["i1"]
+	if rd == nil {
+		t.Fatal("expected result_data on a successful isolate_host")
+	}
+	// Mirrors backend/app/schemas_devices.py's IsolateHostResultData field names exactly.
+	allowed := map[string]bool{
+		"local_admins": true, "laps_configured": true, "laps_backs_up_to_entra": true,
+		"kept_service_accounts": true, "error_code": true,
+	}
+	for k := range rd {
+		if !allowed[k] {
+			t.Errorf("result_data key %q is not a field of schemas_devices.IsolateHostResultData", k)
+		}
+	}
+	for _, k := range []string{"local_admins", "laps_configured", "laps_backs_up_to_entra", "kept_service_accounts"} {
+		if _, ok := rd[k]; !ok {
+			t.Errorf("expected result_data to include %q, got %v", k, rd)
+		}
+	}
+
+	// The no-admin pre-flight abort: only error_code, nothing else.
+	a.Signin.Deps.AdminProbe = fakeSigninAdmins(nil)
+	f.commands = []model.Command{command("i2", "isolate_host", nil)}
+	_ = a.PollCommands(ctx)
+	if f.results["i2"] != "rejected" {
+		t.Fatalf("expected rejected, got %v out=%q", f.results["i2"], f.outputs["i2"])
+	}
+	rd2 := f.resultData["i2"]
+	if len(rd2) != 1 || rd2["error_code"] != "ERR_NO_LOCAL_ADMIN_PRESENT" {
+		t.Fatalf("expected result_data={error_code: ERR_NO_LOCAL_ADMIN_PRESENT}, got %v", rd2)
+	}
+}
+
+// TestSigninResultDataCapsLongLists guards against an oversized local_admins
+// or kept_service_accounts list getting the whole successful result rejected
+// with a 422 by the backend's max_length=64 (schemas_devices.
+// IsolateHostResultData) - which would leave the console stuck reporting
+// "isolating" forever, since the command never reports success.
+func TestSigninResultDataCapsLongLists(t *testing.T) {
+	a, f := setup(t)
+	admins := make([]string, 70)
+	for i := range admins {
+		admins[i] = "admin" + strconv.Itoa(i)
+	}
+	kept := make([]string, 70)
+	for i := range kept {
+		kept[i] = "S-1-5-80-" + strconv.Itoa(i)
+	}
+	backend := &fakeSigninBackend{cur: "open", kept: kept}
+	a.Signin.Deps.Backend = backend
+	a.Signin.Deps.AdminProbe = fakeSigninAdmins(admins)
+	a.Signin.Deps.SessionTerminator = fakeSigninSessions{}
+	a.Signin.Deps.Banner = &memNotice{}
+	a.Signin.Deps.LostMode = fakeSigninLostMode(false)
+	ctx := context.Background()
+
+	f.commands = []model.Command{command("i1", "isolate_host", nil)}
+	_ = a.PollCommands(ctx)
+	if f.results["i1"] != "succeeded" {
+		t.Fatalf("%v out=%q", f.results, f.outputs["i1"])
+	}
+	rd := f.resultData["i1"]
+	gotAdmins, _ := rd["local_admins"].([]any)
+	if len(gotAdmins) != resultDataListMax {
+		t.Fatalf("expected local_admins capped to %d, got %d", resultDataListMax, len(gotAdmins))
+	}
+	gotKept, _ := rd["kept_service_accounts"].([]any)
+	if len(gotKept) != resultDataListMax {
+		t.Fatalf("expected kept_service_accounts capped to %d, got %d", resultDataListMax, len(gotKept))
 	}
 }
 

@@ -178,15 +178,60 @@ func (a *Agent) isolateHost(ctx context.Context, c model.Command) commands.Outco
 	out, err := a.Signin.Suspend(ctx, incidentID, c.ID)
 	if err != nil {
 		if errors.Is(err, signin.ErrNoLocalAdminPresent) {
-			return commands.Outcome{Status: "rejected", Output: "refusing to suspend sign-in: no enabled local " +
-				"administrator account would remain able to sign in (ERR_NO_LOCAL_ADMIN_PRESENT)"}
+			return commands.Outcome{
+				Status: "rejected",
+				Output: "refusing to suspend sign-in: no enabled local administrator account would remain able to " +
+					"sign in (ERR_NO_LOCAL_ADMIN_PRESENT)",
+				ResultData: map[string]any{"error_code": "ERR_NO_LOCAL_ADMIN_PRESENT"},
+			}
 		}
 		if errors.Is(err, signin.ErrLostModeActive) {
 			return commands.Outcome{Status: "rejected", Output: err.Error()}
 		}
 		return commands.Outcome{Status: "failed", Output: strings.TrimSpace(out + "\n" + err.Error())}
 	}
-	return commands.Outcome{Status: "succeeded", Output: out}
+	return commands.Outcome{Status: "succeeded", Output: out, ResultData: a.signinResultData()}
+}
+
+// resultDataListMax mirrors the backend's IsolateHostResultData list fields
+// (local_admins, kept_service_accounts), each max_length=64
+// (schemas_devices.py). An oversized list would get the whole result_data -
+// and so the whole successful command result - rejected with a 422, leaving
+// the console stuck reporting "isolating" forever.
+const resultDataListMax = 64
+
+// capStrings truncates s to at most n entries; nil/short slices pass through
+// unchanged (no allocation).
+func capStrings(s []string, n int) []string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
+}
+
+// signinResultData builds isolate_host's result_data from the just-persisted
+// suspend-sign-in record (schemas_devices.IsolateHostResultData on the
+// backend): local admins and LAPS telemetry pre-flight found, plus any
+// built-in service/virtual accounts the Windows backend deliberately left
+// holding the logon rights. Returns nil if there is no active record (should
+// not happen right after a successful Suspend, but must never panic if it
+// does).
+func (a *Agent) signinResultData() map[string]any {
+	rec, err := a.Signin.Load()
+	if err != nil || rec == nil {
+		return nil
+	}
+	data := map[string]any{"local_admins": capStrings(rec.AdminsAtTime, resultDataListMax)}
+	if rec.LAPS != nil {
+		data["laps_configured"] = rec.LAPS.Configured
+		if rec.LAPS.BackupToEntraID != nil {
+			data["laps_backs_up_to_entra"] = *rec.LAPS.BackupToEntraID
+		}
+	}
+	if len(rec.KeptServiceAccounts) > 0 {
+		data["kept_service_accounts"] = capStrings(rec.KeptServiceAccounts, resultDataListMax)
+	}
+	return data
 }
 
 func (a *Agent) restoreHost(ctx context.Context, c model.Command) commands.Outcome {

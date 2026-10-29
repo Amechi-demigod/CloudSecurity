@@ -219,7 +219,7 @@ func (a *Agent) handle(ctx context.Context, c model.Command) {
 		RestoreHost:    a.restoreHost,
 	}, a.Restart)
 	log.Info("command finished", "status", out.Status, "output", out.Output)
-	if err := a.client.ResultWithExit(ctx, c, out.Status, out.Output, out.ExitCode); err != nil {
+	if err := a.client.ResultFull(ctx, c, out.Status, out.Output, out.ExitCode, out.ResultData); err != nil {
 		log.Warn("reporting result failed", "err", err)
 	}
 	if out.After != nil {

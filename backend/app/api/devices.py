@@ -250,7 +250,7 @@ def device_detail(device_id: str = DeviceId, db: Session = Depends(get_db)):
             "check_in_interval_seconds": d.check_in_interval_seconds, "software_count": d.software_count,
             "updates_pending_since": d.updates_pending_since, "revoked_at": d.revoked_at,
             "inventory": d.inventory or {}, "posture": d.posture or {}, "collection_errors": d.collection_errors or {},
-            "lost_mode": svc.lost_mode_info(d), "wipe": svc.wipe_info(d), "isolation": svc.isolation_info(d)}
+            "lost_mode": svc.lost_mode_info(d), "wipe": svc.wipe_info(d), "isolation": svc.isolation_info(db, d)}
 
 
 @router.get("/{device_id}/software", response_model=list[SoftwareOut])

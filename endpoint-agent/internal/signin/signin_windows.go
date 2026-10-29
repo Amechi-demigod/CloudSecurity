@@ -140,50 +140,51 @@ func restrictLogonRights(policy windows.Handle, adminSIDStr string, snap winLogo
 // failed post-apply safety check) it attempts to restore every right to its
 // pre-suspend holders and only reports success (via RolledBackError) once
 // that rollback itself succeeds.
-func (b winBackend) ApplyLogonRestriction(ctx context.Context, adminNames []string, previous json.RawMessage) (string, error) {
+func (b winBackend) ApplyLogonRestriction(ctx context.Context, adminNames []string, previous json.RawMessage) (string, []string, error) {
 	var snap winLogonSnapshot
 	if err := json.Unmarshal(previous, &snap); err != nil {
-		return "", fmt.Errorf("corrupt logon-restriction snapshot: %w", err)
+		return "", nil, fmt.Errorf("corrupt logon-restriction snapshot: %w", err)
 	}
 	policy, err := lsaOpenPolicy(policyViewLocalInformation | policyCreateAccount | policyLookupNames)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	defer lsaClose(policy)
 
 	adminSID, err := administratorsSID()
 	if err != nil {
-		return "", fmt.Errorf("resolving BUILTIN\\Administrators: %w", err)
+		return "", nil, fmt.Errorf("resolving BUILTIN\\Administrators: %w", err)
 	}
 	adminSIDStr := adminSID.String()
 
 	kept, err := restrictLogonRights(policy, adminSIDStr, snap)
+	kept = uniqueStrings(kept)
 	if err != nil {
 		if rerr := b.restoreWithPolicy(policy, snap); rerr != nil {
-			return "", fmt.Errorf("%w (rollback also failed: %v)", err, rerr)
+			return "", nil, fmt.Errorf("%w (rollback also failed: %v)", err, rerr)
 		}
-		return "", &RolledBackError{Err: err}
+		return "", nil, &RolledBackError{Err: err}
 	}
 
 	ok, detail, verr := b.verifyRestricted(policy, adminSIDStr, snap)
 	if verr != nil {
 		verifyErr := fmt.Errorf("verifying the restriction: %w", verr)
 		if rerr := b.restoreWithPolicy(policy, snap); rerr != nil {
-			return "", fmt.Errorf("%w (rollback also failed: %v)", verifyErr, rerr)
+			return "", nil, fmt.Errorf("%w (rollback also failed: %v)", verifyErr, rerr)
 		}
-		return "", &RolledBackError{Err: verifyErr}
+		return "", nil, &RolledBackError{Err: verifyErr}
 	}
 	if !ok {
 		safetyErr := fmt.Errorf("safety check failed: %s", detail)
 		if rerr := b.restoreWithPolicy(policy, snap); rerr != nil {
-			return "", fmt.Errorf("%w (rollback also failed: %v)", safetyErr, rerr)
+			return "", nil, fmt.Errorf("%w (rollback also failed: %v)", safetyErr, rerr)
 		}
-		return "", &RolledBackError{Err: safetyErr}
+		return "", nil, &RolledBackError{Err: safetyErr}
 	}
 
 	out := fmt.Sprintf("logon rights restricted to BUILTIN\\Administrators on both rights; %d built-in service/virtual "+
-		"account(s) left untouched", len(uniqueStrings(kept)))
-	return out, nil
+		"account(s) left untouched", len(kept))
+	return out, kept, nil
 }
 
 // ReapplyLogonRestriction is used for a REPEAT Suspend or periodic
@@ -192,27 +193,28 @@ func (b winBackend) ApplyLogonRestriction(ctx context.Context, adminNames []stri
 // suspended. No post-apply verify/rollback here; the Manager's own
 // post-call VerifyStandardSignInBlocked covers both the fresh and repeat
 // paths uniformly.
-func (winBackend) ReapplyLogonRestriction(ctx context.Context, adminNames []string, previous json.RawMessage) (string, error) {
+func (winBackend) ReapplyLogonRestriction(ctx context.Context, adminNames []string, previous json.RawMessage) (string, []string, error) {
 	var snap winLogonSnapshot
 	if err := json.Unmarshal(previous, &snap); err != nil {
-		return "", fmt.Errorf("corrupt logon-restriction snapshot: %w", err)
+		return "", nil, fmt.Errorf("corrupt logon-restriction snapshot: %w", err)
 	}
 	policy, err := lsaOpenPolicy(policyViewLocalInformation | policyCreateAccount | policyLookupNames)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	defer lsaClose(policy)
 
 	adminSID, err := administratorsSID()
 	if err != nil {
-		return "", fmt.Errorf("resolving BUILTIN\\Administrators: %w", err)
+		return "", nil, fmt.Errorf("resolving BUILTIN\\Administrators: %w", err)
 	}
 	kept, err := restrictLogonRights(policy, adminSID.String(), snap)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
+	kept = uniqueStrings(kept)
 	return fmt.Sprintf("logon rights re-confirmed restricted to BUILTIN\\Administrators on both rights; %d built-in "+
-		"service/virtual account(s) left untouched", len(uniqueStrings(kept))), nil
+		"service/virtual account(s) left untouched", len(kept)), kept, nil
 }
 
 func (winBackend) restoreWithPolicy(policy windows.Handle, snap winLogonSnapshot) error {
