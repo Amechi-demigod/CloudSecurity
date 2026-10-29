@@ -463,6 +463,13 @@ class _PinnedSMTP(smtplib.SMTP):
         self._pinned_ip = ip
         super().__init__(**kw)
 
+    def connect(self, host="localhost", port=0, source_address=None):
+        # smtplib records the server name only in __init__, which runs without a host here (the socket goes
+        # to the pinned IP). Without it STARTTLS cannot verify the certificate: "check_hostname requires
+        # server_hostname", which the QUIT on exit then masks as an SMTP error from the server.
+        self._host = host
+        return super().connect(host, port, source_address)
+
     def _get_socket(self, host, port, timeout):
         return socket.create_connection((self._pinned_ip, port), timeout, self.source_address)
 
@@ -471,6 +478,10 @@ class _PinnedSMTPSSL(smtplib.SMTP_SSL):
     def __init__(self, ip: str, **kw):
         self._pinned_ip = ip
         super().__init__(**kw)
+
+    def connect(self, host="localhost", port=0, source_address=None):
+        self._host = host  # see _PinnedSMTP.connect: _get_socket needs it for the TLS server name
+        return super().connect(host, port, source_address)
 
     def _get_socket(self, host, port, timeout):
         sock = socket.create_connection((self._pinned_ip, port), timeout, self.source_address)

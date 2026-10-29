@@ -436,6 +436,32 @@ def test_smtp_send_uses_starttls_and_pinned_ip(monkeypatch):
     assert log[-2][0] == "send" and log[-2][1] == "soc@example.com"
 
 
+
+def test_pinned_smtp_keeps_server_name_for_tls(monkeypatch):
+    """The real pinned classes (the test above fakes them): connect() must record the hostname so STARTTLS /
+    implicit TLS verify the certificate for it, while the socket goes to the pre-validated IP."""
+    import smtplib
+
+    dialed = []
+    monkeypatch.setattr(ch.socket, "create_connection", lambda addr, *a, **k: dialed.append(addr) or object())
+    monkeypatch.setattr(smtplib.SMTP, "getreply", lambda self: (220, b"ready"))
+
+    s = ch._PinnedSMTP("93.184.216.34", timeout=5)
+    s.connect("smtp.example.com", 587)
+    assert dialed[-1] == ("93.184.216.34", 587)
+    assert s._host == "smtp.example.com"  # STARTTLS uses it as server_hostname
+
+    class Ctx:
+        def wrap_socket(self, sock, server_hostname):
+            self.server_hostname = server_hostname
+            return sock
+
+    c = Ctx()
+    s2 = ch._PinnedSMTPSSL("93.184.216.34", timeout=5, context=c)
+    s2.connect("smtp.example.com", 465)
+    assert dialed[-1] == ("93.184.216.34", 465)
+    assert c.server_hostname == "smtp.example.com"
+
 # --- rules --------------------------------------------------------------------------
 
 def rule(**over):
