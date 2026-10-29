@@ -72,22 +72,44 @@ function ScheduleLine({ schedule, c }: { schedule: ScanSchedule; c: ConnectorSch
   );
 }
 
+type Unit = "hours" | "days";
+
+/** Whole hours (1-23) or whole days (1-7, capped by the server maximum), stepped by 1. */
+function unitRange(unit: Unit, schedule: ScanSchedule): [number, number] {
+  return unit === "days"
+    ? [1, Math.max(1, Math.floor(schedule.max_interval_hours / 24))]
+    : [Math.max(1, Math.ceil(schedule.min_interval_hours)), Math.min(23, schedule.max_interval_hours)];
+}
+
+function fromHours(h: number): { unit: Unit; count: number } {
+  return h >= 24 && h % 24 === 0 ? { unit: "days", count: h / 24 } : { unit: "hours", count: Math.min(23, Math.max(1, Math.round(h))) };
+}
+
 /** Admins can override SCAN_SCHEDULE_ENABLED / SCAN_INTERVAL_HOURS (stored in the database, audited). */
 function ScheduleSettings({ schedule, onSaved }: { schedule: ScanSchedule; onSaved: () => void }) {
+  const initial = fromHours(schedule.interval_hours);
   const [enabled, setEnabled] = useState(schedule.enabled);
-  const [hours, setHours] = useState(String(schedule.interval_hours));
+  const [unit, setUnit] = useState<Unit>(initial.unit);
+  const [count, setCount] = useState(initial.count);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const value = Number(hours);
-  const valid = hours.trim() !== "" && value >= schedule.min_interval_hours && value <= schedule.max_interval_hours;
+  const [min, max] = unitRange(unit, schedule);
+  const clamp = (n: number, u: Unit = unit) => {
+    const [lo, hi] = unitRange(u, schedule);
+    return Math.min(hi, Math.max(lo, Math.round(n) || lo));
+  };
+  const hours = unit === "days" ? count * 24 : count;
+  const changed = enabled !== schedule.enabled || hours !== schedule.interval_hours;
 
   async function save(body: { enabled?: boolean | null; interval_hours?: number | null }) {
     setBusy(true);
     setError(null);
     try {
       const r = await api.updateScanSchedule(body);
+      const next = fromHours(r.interval_hours);
       setEnabled(r.enabled);
-      setHours(String(r.interval_hours));
+      setUnit(next.unit);
+      setCount(next.count);
       onSaved();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -96,28 +118,59 @@ function ScheduleSettings({ schedule, onSaved }: { schedule: ScanSchedule; onSav
     }
   }
 
+  const unitLabel = unit === "days" ? (count === 1 ? "day" : "days") : count === 1 ? "hour" : "hours";
+  const stepBtn = "grid h-8 w-8 place-items-center rounded border border-line bg-surface-1 text-base text-ink-2 hover:bg-surface-2 disabled:opacity-40";
+
   return (
     <div className="mt-3 border-t border-line pt-3">
       <ErrorNote error={error} />
-      <div className="flex flex-wrap items-end gap-3 text-sm">
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-3 text-sm">
         <label className="flex items-center gap-2">
           <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} /> Enabled
         </label>
-        <label className="flex items-center gap-2">
-          Every
+        <div className="flex items-center gap-2">
+          <span className="text-ink-2">Scan every</span>
+          <div role="radiogroup" aria-label="Interval unit" className="flex overflow-hidden rounded border border-line">
+            {(["hours", "days"] as Unit[]).map((u) => (
+              <button
+                key={u}
+                type="button"
+                role="radio"
+                aria-checked={unit === u}
+                onClick={() => {
+                  setUnit(u);
+                  setCount((c) => clamp(u === "days" ? Math.max(1, Math.round(c / 24)) : c * (unit === "days" ? 24 : 1), u));
+                }}
+                className={`px-3 py-1 text-sm capitalize ${unit === u ? "bg-accent/15 font-semibold text-accent" : "text-ink-2 hover:bg-surface-2"}`}
+              >
+                {u}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <button type="button" className={stepBtn} aria-label={`One ${unit === "days" ? "day" : "hour"} less`} disabled={count <= min}
+            onClick={() => setCount((c) => clamp(c - 1))}>
+            −
+          </button>
           <input
             type="number"
-            min={schedule.min_interval_hours}
-            max={schedule.max_interval_hours}
-            step={0.25}
-            value={hours}
-            onChange={(e) => setHours(e.target.value)}
-            aria-label="Scan interval in hours"
-            className="w-20 rounded border border-line bg-surface-2 px-2 py-1 text-sm text-ink"
+            inputMode="numeric"
+            min={min}
+            max={max}
+            step={1}
+            value={count}
+            onChange={(e) => setCount(clamp(Number(e.target.value)))}
+            aria-label={`Scan interval in ${unit}`}
+            className="w-14 rounded border border-line bg-surface-2 px-2 py-1 text-center text-sm text-ink"
           />
-          hours
-        </label>
-        <Button variant="primary" disabled={busy || !valid} onClick={() => save({ enabled, interval_hours: value })}>
+          <button type="button" className={stepBtn} aria-label={`One ${unit === "days" ? "day" : "hour"} more`} disabled={count >= max}
+            onClick={() => setCount((c) => clamp(c + 1))}>
+            +
+          </button>
+          <span className="ml-1 text-ink-2">{unitLabel}</span>
+        </div>
+        <Button variant="primary" disabled={busy || !changed} onClick={() => save({ enabled, interval_hours: hours })}>
           Save
         </Button>
         {(schedule.enabled_overridden || schedule.interval_overridden) && (
@@ -129,7 +182,7 @@ function ScheduleSettings({ schedule, onSaved }: { schedule: ScanSchedule; onSav
       <p className="mt-2 text-xs text-ink-3">
         Defaults from the server environment: {schedule.default_enabled ? "enabled" : "disabled"}, every{" "}
         {fmtHours(schedule.default_interval_hours)} (<code>SCAN_SCHEDULE_ENABLED</code>, <code>SCAN_INTERVAL_HOURS</code>).
-        Allowed interval: {fmtHours(schedule.min_interval_hours)} to {fmtHours(schedule.max_interval_hours)}.
+        Choose 1 to {unitRange("hours", schedule)[1]} hours or 1 to {unitRange("days", schedule)[1]} days.
         {schedule.updated_by && schedule.updated_at && ` Last changed by ${schedule.updated_by} ${fmtAgo(schedule.updated_at)}.`}
       </p>
     </div>
@@ -193,7 +246,7 @@ export default function Connectors() {
         </Card>
       )}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 2xl:grid-cols-3">
-        {connectors.data?.map((c) => {
+        {connectors.data?.filter((c) => CLOUD.has(c.name)).map((c) => {
           const cloud = CLOUD.has(c.name);
           const running = runningFor(c.name);
           const label = PROVIDER_LABEL[c.name] ?? c.name;
@@ -254,15 +307,6 @@ export default function Connectors() {
             </Card>
           );
         })}
-        <Card title="Runtime sensor">
-          <p className="text-sm text-ink-2">
-            Runtime sensors (e.g. a future eBPF agent) push events to <code className="text-ink">POST /api/runtime/events</code>.
-            Schema at <code className="text-ink">GET /api/runtime/schema</code>.
-          </p>
-          <div className="mt-3">
-            <Tag tone="accent">Push-based</Tag>
-          </div>
-        </Card>
       </div>
 
       <Card title="Scan history" className="mt-4">

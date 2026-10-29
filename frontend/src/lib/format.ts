@@ -29,7 +29,12 @@ export const fmtUntil = (iso: string) => {
 };
 
 /** 6 -> "6 h", 0.5 -> "30 min", 1.5 -> "1.5 h". */
-export const fmtHours = (h: number) => (h < 1 ? `${Math.round(h * 60)} min` : `${Math.round(h * 100) / 100} h`);
+export const fmtHours = (h: number) =>
+  h < 1
+    ? `${Math.round(h * 60)} min`
+    : h >= 24 && h % 24 === 0
+      ? `${h / 24} ${h === 24 ? "day" : "days"}`
+      : `${Math.round(h * 100) / 100} h`;
 
 export const TYPE_LABEL: Record<string, string> = {
   vm: "Virtual machine",
