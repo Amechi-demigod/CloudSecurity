@@ -19,9 +19,15 @@ type Phase string
 
 const (
 	PhaseSnapshotting Phase = "snapshotting" // suspend: Previous captured and persisted; live state not yet touched
-	PhaseApplying     Phase = "applying"     // suspend: live change in progress
-	PhaseApplied      Phase = "applied"      // suspend: fully applied and verified
-	PhaseRestoring    Phase = "restoring"    // restore: live restore in progress
+	PhaseApplying     Phase = "applying"     // suspend: live apply call in progress, no result reported yet
+	// PhaseRollbackPending: a first-time apply (or its post-apply safety
+	// check) definitively FAILED and the attempt to roll back to Previous is
+	// unconfirmed. Distinct from PhaseApplying, whose live outcome is still
+	// unknown: OnStart only retries the rollback for this phase, never
+	// finishes forward.
+	PhaseRollbackPending Phase = "rollback_pending"
+	PhaseApplied         Phase = "applied"   // suspend: fully applied and verified
+	PhaseRestoring       Phase = "restoring" // restore: live restore in progress
 )
 
 // Pending marks an in-progress operation, for crash recovery.

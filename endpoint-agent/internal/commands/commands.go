@@ -263,7 +263,11 @@ func Execute(ctx context.Context, c model.Command, d Deps, restart func()) Outco
 		msg, phone, _ := LostModeParams(c.Params)
 		out, err := d.LostMode(ctx, c.Type == EnableLostMode, msg, phone)
 		if err != nil {
-			return Outcome{Status: "failed", Output: strings.TrimSpace(out + "\n" + err.Error())}
+			status := "failed"
+			if errors.Is(err, ErrRejected) {
+				status = "rejected"
+			}
+			return Outcome{Status: status, Output: strings.TrimSpace(out + "\n" + err.Error())}
 		}
 		return Outcome{Status: "succeeded", Output: out}
 	case WipeDevice:

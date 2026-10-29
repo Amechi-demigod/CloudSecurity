@@ -240,8 +240,15 @@ func (m *Manager) Suspend(ctx context.Context, incidentID, commandID string) (st
 	}
 
 	// Restrict, then verify, BEFORE signing anyone out: a failed or unsafe
-	// apply must leave every session exactly as it was.
-	detail, err := m.Deps.Backend.ApplyLogonRestriction(ctx, pre.EnabledLocalAdmins, rec.Previous.LogonRestriction)
+	// apply must leave every session exactly as it was. A repeat suspend uses
+	// ReapplyLogonRestriction, which never rolls back on failure - only a
+	// FIRST-time apply may roll back to Previous.
+	var detail string
+	if alreadyActive {
+		detail, err = m.Deps.Backend.ReapplyLogonRestriction(ctx, pre.EnabledLocalAdmins, rec.Previous.LogonRestriction)
+	} else {
+		detail, err = m.Deps.Backend.ApplyLogonRestriction(ctx, pre.EnabledLocalAdmins, rec.Previous.LogonRestriction)
+	}
 	if err != nil {
 		if alreadyActive {
 			// This is a repeat suspend: sign-in was already validly
@@ -263,6 +270,10 @@ func (m *Manager) Suspend(ctx context.Context, incidentID, commandID string) (st
 			_ = m.delete()
 			return "", fmt.Errorf("restricting sign-in: %w", err)
 		}
+		// A definitive failure with an unconfirmed rollback - distinct from
+		// "still mid-apply, no result reported" (PhaseApplying): OnStart must
+		// retry the rollback for this, never try to finish forward.
+		rec.Pending.Phase = PhaseRollbackPending
 		rec.Pending.LastError = err.Error()
 		if serr := m.save(rec); serr != nil {
 			return "", fmt.Errorf("restricting sign-in: %w (and the record could not be updated: %v)", err, serr)
@@ -292,6 +303,7 @@ func (m *Manager) Suspend(ctx context.Context, incidentID, commandID string) (st
 		}
 		rerr := m.Deps.Backend.RestoreLogonRestriction(ctx, rec.Previous.LogonRestriction)
 		if rerr != nil {
+			rec.Pending.Phase = PhaseRollbackPending
 			rec.Pending.LastError = fmt.Sprintf("safety check (ok=%v err=%v detail=%s); rollback failed: %v", ok, err, verifyDetail, rerr)
 			if serr := m.save(rec); serr != nil {
 				return "", fmt.Errorf("safety check failed and the rollback also failed (%v) (and the record could "+
@@ -416,9 +428,9 @@ func (m *Manager) consumeRecoveryOutcome() *recoveryOutcome {
 	return &r
 }
 
-// Status is reported with every check-in (posture check "isolation"). It also
-// surfaces, exactly once, the outcome of any crash recovery OnStart performed
-// since the last check-in.
+// Status is read-only and safe to call repeatedly with no side effects (e.g.
+// from the `cnapp-agent status` CLI command): it never consumes the pending
+// recovery-outcome marker. Use PostureData for the check-in posture report.
 func (m *Manager) Status() map[string]any {
 	data := map[string]any{}
 	rec, err := m.Load()
@@ -435,6 +447,16 @@ func (m *Manager) Status() map[string]any {
 			data["incident_id"] = rec.IncidentID
 		}
 	}
+	return data
+}
+
+// PostureData is Status() plus, EXACTLY ONCE (read-and-cleared), the outcome
+// of any crash recovery OnStart performed since the last check-in. ONLY the
+// check-in posture report may call this - the CLI `status` command must stay
+// side-effect-free, or running it manually would silently consume the report
+// meant for the next check-in and the backend would never see it.
+func (m *Manager) PostureData() map[string]any {
+	data := m.Status()
 	if ro := m.consumeRecoveryOutcome(); ro != nil {
 		data["recovered_at_boot"] = true
 		data["recovery_outcome"] = ro.Outcome
@@ -459,11 +481,16 @@ func (m *Manager) OnStart(ctx context.Context) bool {
 		return true
 
 	case PhaseApplying:
-		// Finish forward, not roll back: a half-applied restriction is a more
-		// dangerous state to leave ambiguous than to complete. Only if
-		// finishing now also fails do we fall back to restoring Previous.
+		// This phase means a genuine crash happened mid-apply: the live call
+		// was in progress (or about to start) and no result was ever
+		// reported back to Suspend(), so nothing is confirmed either way.
+		// Finish forward, not roll back: a half-applied restriction is a
+		// more dangerous state to leave ambiguous than to complete.
+		// ReapplyLogonRestriction (pure reconcile, never rolls back itself)
+		// is used here since this function manages its own explicit rollback
+		// below if finishing forward doesn't pan out.
 		adminNames := rec.AdminsAtTime
-		_, aerr := m.Deps.Backend.ApplyLogonRestriction(ctx, adminNames, rec.Previous.LogonRestriction)
+		_, aerr := m.Deps.Backend.ReapplyLogonRestriction(ctx, adminNames, rec.Previous.LogonRestriction)
 		if aerr == nil {
 			if ok, _, verr := m.Deps.Backend.VerifyStandardSignInBlocked(ctx, adminNames); verr == nil && ok {
 				_, _ = m.Deps.SessionTerminator.SignOutNonAdmins(ctx, adminNames)
@@ -481,8 +508,25 @@ func (m *Manager) OnStart(ctx context.Context) bool {
 			m.recordRecoveryOutcome("rolled_back")
 			return true
 		}
+		// The rollback itself is now unconfirmed: a future OnStart must
+		// retry the rollback, never attempt to finish forward again.
+		rec.Pending.Phase = PhaseRollbackPending
 		rec.Pending.LastError = fmt.Sprintf("crash recovery: could not finish applying (%v) and the rollback also "+
 			"failed; manual recovery required", aerr)
+		_ = m.save(rec)
+		return true
+
+	case PhaseRollbackPending:
+		// A prior attempt definitively failed and the rollback to Previous
+		// was unconfirmed: retry the rollback. Never finish forward here -
+		// that's only for PhaseApplying, where no result was ever reported.
+		if err := m.Deps.Backend.RestoreLogonRestriction(ctx, rec.Previous.LogonRestriction); err == nil {
+			_ = m.Deps.Banner.Restore(ctx, rec.Previous.Banner)
+			_ = m.delete()
+			m.recordRecoveryOutcome("rolled_back")
+			return true
+		}
+		rec.Pending.LastError = "crash recovery: retried the pending rollback and it failed again; manual recovery required"
 		_ = m.save(rec)
 		return true
 
@@ -525,10 +569,18 @@ func (m *Manager) Reenforce(ctx context.Context) (bool, string) {
 	if err != nil || rec == nil {
 		return false, ""
 	}
+	if rec.Pending != nil && rec.Pending.Phase == PhaseRollbackPending {
+		// A rollback is pending confirmation (a prior Suspend attempt failed
+		// and we're not sure sign-in is even still suspended): re-enforcing
+		// "suspended" here could fight an in-progress rollback. Leave it to
+		// OnStart's retry.
+		return false, ""
+	}
 	if ok, detail, verr := m.Deps.Backend.VerifyStandardSignInBlocked(ctx, rec.AdminsAtTime); verr == nil && ok {
 		return true, "sign-in suspension verified: " + detail
 	}
-	detail, aerr := m.Deps.Backend.ApplyLogonRestriction(ctx, rec.AdminsAtTime, rec.Previous.LogonRestriction)
+	// Never roll back here: Reenforce only reconciles toward the suspended target.
+	detail, aerr := m.Deps.Backend.ReapplyLogonRestriction(ctx, rec.AdminsAtTime, rec.Previous.LogonRestriction)
 	if aerr != nil {
 		rec.Pending.LastError = "re-enforcement: " + aerr.Error()
 		_ = m.save(rec)

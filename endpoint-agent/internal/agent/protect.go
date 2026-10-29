@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"strings"
@@ -39,7 +40,7 @@ func (a *Agent) addAgentPosture(ctx context.Context, r *model.Report) {
 	rd := a.wipeReadiness(ctx)
 	r.Posture["remote_wipe"] = model.Check(model.StatusInfo, rd.Detail, rd.Data())
 	if a.Signin != nil {
-		st := a.Signin.Status()
+		st := a.Signin.PostureData()
 		detail := "sign-in not suspended"
 		if st["active"] == true {
 			detail = "sign-in suspended"
@@ -89,6 +90,15 @@ func (a *Agent) lostMode(ctx context.Context, enable bool, message, phone string
 		return "", errLostModeUnavailable
 	}
 	if enable {
+		if a.Signin != nil {
+			rec, err := a.Signin.Load()
+			if err != nil {
+				return "", fmt.Errorf("checking suspend-sign-in state: %w", err)
+			}
+			if rec != nil {
+				return "", fmt.Errorf("%w: cannot enable lost mode while sign-in is suspended; restore sign-in first", commands.ErrRejected)
+			}
+		}
 		out, err := a.LostMode.Enable(ctx, message, phone)
 		a.mu.Lock()
 		a.nextRelock = time.Now().Add(lostmode.RelockInterval)

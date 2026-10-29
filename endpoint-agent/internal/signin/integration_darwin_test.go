@@ -10,6 +10,7 @@ package signin
 
 import (
 	"context"
+	"os"
 	"testing"
 
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/collect"
@@ -18,6 +19,10 @@ import (
 
 func TestSuspendSignInIntegrationMacOS(t *testing.T) {
 	requireHardwareIntegrationCI(t)
+	if os.Geteuid() != 0 {
+		t.Fatal("this test must run as root: dseditgroup/dscl changes to com.apple.access_loginwindow require it " +
+			"(CI: run this step with `sudo -E env \"PATH=$PATH\" go test ...`)")
+	}
 	ctx := context.Background()
 
 	admins, err := collect.AdminGroupMembers(ctx)

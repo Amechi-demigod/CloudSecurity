@@ -43,7 +43,9 @@ type macLogonSnapshot struct {
 }
 
 func groupNotFound(output string) bool {
-	return strings.Contains(output, "eDSRecordNotFound") || strings.Contains(output, "No such key")
+	lower := strings.ToLower(output)
+	return strings.Contains(lower, "edsrecordnotfound") || strings.Contains(lower, "no such key") ||
+		strings.Contains(lower, "group not found") // dseditgroup's own message for a missing group
 }
 
 func parseDSCLAttr(out, attr string) []string {
@@ -122,20 +124,31 @@ func removeMember(ctx context.Context, name, memberType string) error {
 }
 
 // applyAccessLoginwindow restricts com.apple.access_loginwindow to the local
-// admin group only, creating the group first if it did not already exist.
-// system.login.console and other authorization rights are never touched.
-func applyAccessLoginwindow(ctx context.Context, previous macLogonSnapshot) (string, error) {
-	if !previous.GroupExisted {
+// admin group only. It is idempotent: driven by the group's CURRENT state
+// (read fresh, not the original pre-suspend snapshot), so calling it again
+// while already suspended reconciles toward the same target instead of
+// trying to "-o create" a group that already exists (and failing). Creates
+// the group first only if it does not currently exist. system.login.console
+// and other authorization rights are never touched.
+func applyAccessLoginwindow(ctx context.Context) (string, error) {
+	cur, err := captureAccessLoginwindow(ctx)
+	if err != nil {
+		return "", fmt.Errorf("reading the current state of %s: %w", accessLoginwindowGroup, err)
+	}
+	if !cur.GroupExisted {
 		if out, err := exec.CommandContext(ctx, dseditgroupBin, "-o", "create", accessLoginwindowGroup).CombinedOutput(); err != nil {
 			return "", fmt.Errorf("dseditgroup -o create %s: %v: %s", accessLoginwindowGroup, err, strings.TrimSpace(string(out)))
 		}
 	} else {
-		for _, u := range previous.UserMembers {
+		for _, u := range cur.UserMembers {
 			if err := removeMember(ctx, u, "user"); err != nil {
 				return "", err
 			}
 		}
-		for _, m := range previous.Members {
+		for _, m := range cur.Members {
+			if m.IsGroup && m.Name == localAdminGroup {
+				continue // already the only member we want; nothing to remove
+			}
 			t := "user"
 			if m.IsGroup {
 				t = "group"
@@ -227,12 +240,16 @@ func (macBackend) CaptureLogonRestriction(ctx context.Context) (json.RawMessage,
 	return json.Marshal(snap)
 }
 
+// ApplyLogonRestriction is the FIRST-TIME apply: on failure it attempts to
+// restore com.apple.access_loginwindow to the pre-suspend snapshot and only
+// reports success (via RolledBackError) once that restore is confirmed by a
+// fresh read-back.
 func (macBackend) ApplyLogonRestriction(ctx context.Context, adminNames []string, previous json.RawMessage) (string, error) {
 	var snap macLogonSnapshot
 	if err := json.Unmarshal(previous, &snap); err != nil {
 		return "", fmt.Errorf("corrupt logon-restriction snapshot: %w", err)
 	}
-	detail, applyErr := applyAccessLoginwindow(ctx, snap)
+	detail, applyErr := applyAccessLoginwindow(ctx)
 	if applyErr == nil {
 		return detail, nil
 	}
@@ -251,6 +268,14 @@ func (macBackend) ApplyLogonRestriction(ctx context.Context, adminNames []string
 		return "", fmt.Errorf("%w (rollback did not restore the exact pre-suspend state)", applyErr)
 	}
 	return "", &RolledBackError{Err: applyErr}
+}
+
+// ReapplyLogonRestriction is used for a REPEAT Suspend or periodic Reenforce:
+// it only reconciles toward the suspended target (applyAccessLoginwindow is
+// itself idempotent, driven by current state) and NEVER restores the
+// pre-suspend state on failure - the device must stay suspended.
+func (macBackend) ReapplyLogonRestriction(ctx context.Context, adminNames []string, previous json.RawMessage) (string, error) {
+	return applyAccessLoginwindow(ctx)
 }
 
 func (macBackend) RestoreLogonRestriction(ctx context.Context, previous json.RawMessage) error {

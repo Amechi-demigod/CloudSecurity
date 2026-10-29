@@ -224,6 +224,22 @@ func TestExecuteIsolateRestoreHostNilDepRejects(t *testing.T) {
 	}
 }
 
+func TestEnableLostModeRejectedWhenLostModeFnWrapsErrRejected(t *testing.T) {
+	d := Deps{LostMode: func(context.Context, bool, string, string) (string, error) {
+		return "", fmt.Errorf("%w: cannot enable lost mode while sign-in is suspended; restore sign-in first", ErrRejected)
+	}}
+	o := Execute(context.Background(), cmd(EnableLostMode, map[string]any{"message": "Lost", "phone": "123456"}), d, nil)
+	if o.Status != "rejected" || !strings.Contains(o.Output, "sign-in is suspended") {
+		t.Fatalf("expected a rejected outcome mentioning the reason, got %+v", o)
+	}
+	// An ordinary (non-ErrRejected) failure still maps to "failed", not "rejected".
+	d.LostMode = func(context.Context, bool, string, string) (string, error) { return "", errors.New("disk full") }
+	o = Execute(context.Background(), cmd(EnableLostMode, map[string]any{"message": "Lost", "phone": "123456"}), d, nil)
+	if o.Status != "failed" {
+		t.Fatalf("expected an ordinary error to stay \"failed\", got %+v", o)
+	}
+}
+
 func TestCheckForUpdate(t *testing.T) {
 	if err := Validate(cmd(CheckForUpdate, nil), "dev", now); err != nil {
 		t.Fatalf("check_for_update rejected: %v", err)

@@ -39,6 +39,7 @@ type fakeBackend struct {
 	cur   string // the "live" restriction state, just a label for assertions
 
 	applyErr       error
+	reapplyErr     error // makes ReapplyLogonRestriction fail, independent of applyErr
 	verifyBlockOK  bool
 	verifyBlockMsg string
 	verifyBlockErr error
@@ -59,6 +60,17 @@ func (f *fakeBackend) ApplyLogonRestriction(ctx context.Context, adminNames []st
 	}
 	f.cur = "restricted"
 	return "restricted to admins", nil
+}
+
+// ReapplyLogonRestriction never rolls back (matching the real backends): on
+// failure it just returns the error, leaving f.cur exactly as it was.
+func (f *fakeBackend) ReapplyLogonRestriction(ctx context.Context, adminNames []string, previous json.RawMessage) (string, error) {
+	f.calls = append(f.calls, "reapply")
+	if f.reapplyErr != nil {
+		return "", f.reapplyErr
+	}
+	f.cur = "restricted"
+	return "re-confirmed restricted to admins", nil
 }
 
 func (f *fakeBackend) RestoreLogonRestriction(ctx context.Context, previous json.RawMessage) error {
@@ -251,7 +263,7 @@ func TestRepeatSuspendFailedApplyDoesNotRollBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	b.calls = nil
-	b.applyErr = errors.New("transient LSA error")
+	b.reapplyErr = errors.New("transient LSA error") // a repeat suspend goes through ReapplyLogonRestriction
 	_, err := m.Suspend(ctx, "INC-2", "cmd2")
 	if err == nil || !strings.Contains(err.Error(), "existing suspension was left unchanged") {
 		t.Fatalf("expected a left-unchanged error, got %v", err)
@@ -514,7 +526,7 @@ func TestOnStartPhaseApplyingFinishesForward(t *testing.T) {
 
 func TestOnStartPhaseApplyingFailsThenRollsBack(t *testing.T) {
 	b := goodBackend()
-	b.applyErr = errors.New("still broken")
+	b.reapplyErr = errors.New("still broken") // OnStart's finish-forward uses ReapplyLogonRestriction
 	m, _ := manager(t, b, []string{"Administrator"})
 	savedRecord(t, m, PhaseApplying, "open")
 	if acted := m.OnStart(context.Background()); !acted {
@@ -541,6 +553,58 @@ func TestOnStartPhaseAppliedSelfChecksOnly(t *testing.T) {
 	}
 }
 
+func TestSuspendFailedRollbackSavesRollbackPendingPhase(t *testing.T) {
+	b := goodBackend()
+	b.verifyBlockOK = false
+	b.verifyBlockMsg = "BUILTIN\\Administrators would be denied"
+	b.restoreErr = errors.New("LsaAddAccountRights: access denied") // the rollback itself fails
+	m, _ := manager(t, b, []string{"Administrator"})
+	if _, err := m.Suspend(context.Background(), "INC-1", "cmd1"); err == nil {
+		t.Fatal("expected Suspend to fail")
+	}
+	rec, err := m.Load()
+	if err != nil || rec == nil {
+		t.Fatalf("expected the record to be kept, got %+v %v", rec, err)
+	}
+	if rec.Pending == nil || rec.Pending.Phase != PhaseRollbackPending {
+		t.Fatalf("expected PhaseRollbackPending (a definitive failure with an unconfirmed rollback), got %+v", rec.Pending)
+	}
+}
+
+func TestOnStartPhaseRollbackPendingRetriesSuccessfully(t *testing.T) {
+	b := goodBackend()
+	m, _ := manager(t, b, []string{"Administrator"})
+	savedRecord(t, m, PhaseRollbackPending, "open") // Previous: the pre-suspend baseline to roll back to
+	b.cur = "restricted"                            // live state: still restricted, retry must restore it
+	if acted := m.OnStart(context.Background()); !acted {
+		t.Fatal("expected OnStart to act")
+	}
+	if r, err := m.Load(); err != nil || r != nil {
+		t.Fatalf("expected the record gone after the retried rollback succeeds, got %+v %v", r, err)
+	}
+	if b.cur != "open" {
+		t.Fatalf("expected the backend restored to its pre-suspend state, got %q", b.cur)
+	}
+}
+
+func TestOnStartPhaseRollbackPendingRetryFailsStaysPending(t *testing.T) {
+	b := goodBackend()
+	b.restoreErr = errors.New("still cannot restore")
+	m, _ := manager(t, b, []string{"Administrator"})
+	savedRecord(t, m, PhaseRollbackPending, "open") // Previous: the pre-suspend baseline to roll back to
+	b.cur = "restricted"                            // live state: still restricted
+	if acted := m.OnStart(context.Background()); !acted {
+		t.Fatal("expected OnStart to act (attempt the retry)")
+	}
+	r, err := m.Load()
+	if err != nil || r == nil || r.Pending.Phase != PhaseRollbackPending {
+		t.Fatalf("expected the record to remain in PhaseRollbackPending for a future retry, got %+v %v", r, err)
+	}
+	if r.Pending.LastError == "" {
+		t.Fatal("expected LastError to record the retry failure")
+	}
+}
+
 func TestOnStartPhaseRestoringFinishes(t *testing.T) {
 	b := goodBackend()
 	b.cur = "restricted" // mid-restore when the crash happened
@@ -558,7 +622,7 @@ func TestOnStartPhaseRestoringFinishes(t *testing.T) {
 }
 
 func TestOnStartNeverLeavesAnInProgressPhase(t *testing.T) {
-	for _, phase := range []Phase{PhaseSnapshotting, PhaseApplying, PhaseApplied, PhaseRestoring} {
+	for _, phase := range []Phase{PhaseSnapshotting, PhaseApplying, PhaseRollbackPending, PhaseApplied, PhaseRestoring} {
 		b := goodBackend()
 		m, _ := manager(t, b, []string{"Administrator"})
 		savedRecord(t, m, phase, "open")
@@ -573,19 +637,40 @@ func TestOnStartNeverLeavesAnInProgressPhase(t *testing.T) {
 	}
 }
 
-func TestStatusReportsRecoveryOutcomeExactlyOnce(t *testing.T) {
+func TestPostureDataReportsRecoveryOutcomeExactlyOnce(t *testing.T) {
 	b := goodBackend()
 	m, _ := manager(t, b, []string{"Administrator"})
 	savedRecord(t, m, PhaseApplying, "open")
 	m.OnStart(context.Background()) // finishes forward -> records "completed"
 
-	st := m.Status()
-	if st["recovered_at_boot"] != true || st["recovery_outcome"] != "completed" {
-		t.Fatalf("expected a recovery outcome reported, got %+v", st)
+	pd := m.PostureData()
+	if pd["recovered_at_boot"] != true || pd["recovery_outcome"] != "completed" {
+		t.Fatalf("expected a recovery outcome reported, got %+v", pd)
 	}
-	st2 := m.Status()
-	if _, ok := st2["recovered_at_boot"]; ok {
-		t.Fatalf("expected the recovery outcome to be reported only once, got %+v", st2)
+	pd2 := m.PostureData()
+	if _, ok := pd2["recovered_at_boot"]; ok {
+		t.Fatalf("expected the recovery outcome to be reported only once, got %+v", pd2)
+	}
+}
+
+// TestStatusNeverConsumesRecoveryOutcome covers the fix: the CLI `status`
+// command must stay side-effect-free, or running it manually would silently
+// eat the one-time report meant for the next check-in.
+func TestStatusNeverConsumesRecoveryOutcome(t *testing.T) {
+	b := goodBackend()
+	m, _ := manager(t, b, []string{"Administrator"})
+	savedRecord(t, m, PhaseApplying, "open")
+	m.OnStart(context.Background()) // finishes forward -> records "completed"
+
+	for i := 0; i < 3; i++ {
+		st := m.Status()
+		if _, ok := st["recovered_at_boot"]; ok {
+			t.Fatalf("call %d: Status must never surface or consume the recovery outcome, got %+v", i, st)
+		}
+	}
+	pd := m.PostureData()
+	if pd["recovered_at_boot"] != true || pd["recovery_outcome"] != "completed" {
+		t.Fatalf("expected PostureData to still report the outcome after repeated Status calls, got %+v", pd)
 	}
 }
 
@@ -604,12 +689,12 @@ func TestReenforceReappliesDrift(t *testing.T) {
 	}
 	found := false
 	for _, c := range b.calls {
-		if c == "apply" {
+		if c == "reapply" {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("expected Reenforce to call ApplyLogonRestriction, got %v", b.calls)
+		t.Fatalf("expected Reenforce to call ReapplyLogonRestriction, got %v", b.calls)
 	}
 }
 
@@ -638,9 +723,47 @@ func TestReenforceNoopWhenAlreadyBlocked(t *testing.T) {
 		t.Fatalf("expected a verified no-op re-enforcement, got acted=%v out=%q", acted, out)
 	}
 	for _, c := range b.calls {
-		if c == "apply" {
+		if c == "apply" || c == "reapply" {
 			t.Fatalf("expected no re-apply when already correctly blocked, got %v", b.calls)
 		}
+	}
+}
+
+func TestReenforceFailedReapplyLeavesDeviceSuspended(t *testing.T) {
+	b := goodBackend()
+	m, _ := manager(t, b, []string{"Administrator"})
+	ctx := context.Background()
+	if _, err := m.Suspend(ctx, "INC-1", "cmd1"); err != nil {
+		t.Fatal(err)
+	}
+	b.calls = nil
+	b.verifyBlockOK = false // simulate drift, forcing a reapply attempt
+	b.reapplyErr = errors.New("transient LSA error")
+	acted, out := m.Reenforce(ctx)
+	if !acted || !strings.Contains(out, "re-enforcement failed") {
+		t.Fatalf("expected a reported re-enforcement failure, got acted=%v out=%q", acted, out)
+	}
+	for _, c := range b.calls {
+		if c == "restore" {
+			t.Fatalf("Reenforce must never roll back on a failed reapply, got calls %v", b.calls)
+		}
+	}
+	rec, err := m.Load()
+	if err != nil || rec == nil || !rec.Active {
+		t.Fatalf("expected the device to remain marked suspended, got %+v %v", rec, err)
+	}
+}
+
+func TestReenforceSkipsWhileRollbackPending(t *testing.T) {
+	b := goodBackend()
+	m, _ := manager(t, b, []string{"Administrator"})
+	savedRecord(t, m, PhaseRollbackPending, "open")
+	acted, out := m.Reenforce(context.Background())
+	if acted || out != "" {
+		t.Fatalf("expected Reenforce to no-op while a rollback is pending, got acted=%v out=%q", acted, out)
+	}
+	if len(b.calls) != 0 {
+		t.Fatalf("expected zero backend calls, got %v", b.calls)
 	}
 }
 

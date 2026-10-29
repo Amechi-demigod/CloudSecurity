@@ -19,6 +19,9 @@ func (otherBackend) CaptureLogonRestriction(context.Context) (json.RawMessage, e
 func (otherBackend) ApplyLogonRestriction(context.Context, []string, json.RawMessage) (string, error) {
 	return "", errUnsupported
 }
+func (otherBackend) ReapplyLogonRestriction(context.Context, []string, json.RawMessage) (string, error) {
+	return "", errUnsupported
+}
 func (otherBackend) RestoreLogonRestriction(context.Context, json.RawMessage) error {
 	return errUnsupported
 }

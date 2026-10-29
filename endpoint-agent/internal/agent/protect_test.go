@@ -184,6 +184,10 @@ func (f *fakeSigninBackend) ApplyLogonRestriction(context.Context, []string, jso
 	f.cur = "restricted"
 	return "restricted", nil
 }
+func (f *fakeSigninBackend) ReapplyLogonRestriction(context.Context, []string, json.RawMessage) (string, error) {
+	f.cur = "restricted"
+	return "re-confirmed restricted", nil
+}
 func (f *fakeSigninBackend) RestoreLogonRestriction(_ context.Context, previous json.RawMessage) error {
 	var prev string
 	if err := json.Unmarshal(previous, &prev); err != nil {
@@ -273,6 +277,43 @@ func TestSuspendSignInEndToEnd(t *testing.T) {
 	_ = a.PollCommands(ctx)
 	if f.results["i4"] != "rejected" || !strings.Contains(f.outputs["i4"], "lost mode") {
 		t.Fatalf("%v out=%q", f.results, f.outputs["i4"])
+	}
+}
+
+func TestEnableLostModeRejectedWhileSigninSuspended(t *testing.T) {
+	a, f := setup(t)
+	backend := &fakeSigninBackend{cur: "open"}
+	a.Signin.Deps.Backend = backend
+	a.Signin.Deps.AdminProbe = fakeSigninAdmins{"Administrator"}
+	a.Signin.Deps.SessionTerminator = fakeSigninSessions{}
+	a.Signin.Deps.Banner = &memNotice{}
+	a.Signin.Deps.LostMode = fakeSigninLostMode(false)
+	// a.LostMode itself must never touch the real platform backend either.
+	a.LostMode.Backend = &memNotice{}
+	ctx := context.Background()
+
+	f.commands = []model.Command{command("i1", "isolate_host", nil)}
+	_ = a.PollCommands(ctx)
+	if f.results["i1"] != "succeeded" {
+		t.Fatalf("%v out=%q", f.results, f.outputs["i1"])
+	}
+
+	f.commands = []model.Command{command("l1", "enable_lost_mode", map[string]any{"message": "Lost laptop", "phone": "+234 800"})}
+	_ = a.PollCommands(ctx)
+	if f.results["l1"] != "rejected" || !strings.Contains(f.outputs["l1"], "sign-in is suspended") {
+		t.Fatalf("expected enable_lost_mode to be rejected while suspended, got %v out=%q", f.results, f.outputs["l1"])
+	}
+
+	// Restore sign-in, then lost mode must work again.
+	f.commands = []model.Command{command("i2", "restore_host", nil)}
+	_ = a.PollCommands(ctx)
+	if f.results["i2"] != "succeeded" {
+		t.Fatalf("%v out=%q", f.results, f.outputs["i2"])
+	}
+	f.commands = []model.Command{command("l2", "enable_lost_mode", map[string]any{"message": "Lost laptop", "phone": "+234 800"})}
+	_ = a.PollCommands(ctx)
+	if f.results["l2"] != "succeeded" {
+		t.Fatalf("expected enable_lost_mode to succeed once restored, got %v out=%q", f.results, f.outputs["l2"])
 	}
 }
 
