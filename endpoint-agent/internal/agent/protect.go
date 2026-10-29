@@ -193,6 +193,22 @@ func (a *Agent) isolateHost(ctx context.Context, c model.Command) commands.Outco
 	return commands.Outcome{Status: "succeeded", Output: out, ResultData: a.signinResultData()}
 }
 
+// resultDataListMax mirrors the backend's IsolateHostResultData list fields
+// (local_admins, kept_service_accounts), each max_length=64
+// (schemas_devices.py). An oversized list would get the whole result_data -
+// and so the whole successful command result - rejected with a 422, leaving
+// the console stuck reporting "isolating" forever.
+const resultDataListMax = 64
+
+// capStrings truncates s to at most n entries; nil/short slices pass through
+// unchanged (no allocation).
+func capStrings(s []string, n int) []string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
+}
+
 // signinResultData builds isolate_host's result_data from the just-persisted
 // suspend-sign-in record (schemas_devices.IsolateHostResultData on the
 // backend): local admins and LAPS telemetry pre-flight found, plus any
@@ -205,7 +221,7 @@ func (a *Agent) signinResultData() map[string]any {
 	if err != nil || rec == nil {
 		return nil
 	}
-	data := map[string]any{"local_admins": rec.AdminsAtTime}
+	data := map[string]any{"local_admins": capStrings(rec.AdminsAtTime, resultDataListMax)}
 	if rec.LAPS != nil {
 		data["laps_configured"] = rec.LAPS.Configured
 		if rec.LAPS.BackupToEntraID != nil {
@@ -213,7 +229,7 @@ func (a *Agent) signinResultData() map[string]any {
 		}
 	}
 	if len(rec.KeptServiceAccounts) > 0 {
-		data["kept_service_accounts"] = rec.KeptServiceAccounts
+		data["kept_service_accounts"] = capStrings(rec.KeptServiceAccounts, resultDataListMax)
 	}
 	return data
 }

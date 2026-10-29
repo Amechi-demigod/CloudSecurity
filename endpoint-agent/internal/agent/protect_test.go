@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -345,6 +346,45 @@ func TestIsolateHostResultDataKeysMatchBackendSchema(t *testing.T) {
 	rd2 := f.resultData["i2"]
 	if len(rd2) != 1 || rd2["error_code"] != "ERR_NO_LOCAL_ADMIN_PRESENT" {
 		t.Fatalf("expected result_data={error_code: ERR_NO_LOCAL_ADMIN_PRESENT}, got %v", rd2)
+	}
+}
+
+// TestSigninResultDataCapsLongLists guards against an oversized local_admins
+// or kept_service_accounts list getting the whole successful result rejected
+// with a 422 by the backend's max_length=64 (schemas_devices.
+// IsolateHostResultData) - which would leave the console stuck reporting
+// "isolating" forever, since the command never reports success.
+func TestSigninResultDataCapsLongLists(t *testing.T) {
+	a, f := setup(t)
+	admins := make([]string, 70)
+	for i := range admins {
+		admins[i] = "admin" + strconv.Itoa(i)
+	}
+	kept := make([]string, 70)
+	for i := range kept {
+		kept[i] = "S-1-5-80-" + strconv.Itoa(i)
+	}
+	backend := &fakeSigninBackend{cur: "open", kept: kept}
+	a.Signin.Deps.Backend = backend
+	a.Signin.Deps.AdminProbe = fakeSigninAdmins(admins)
+	a.Signin.Deps.SessionTerminator = fakeSigninSessions{}
+	a.Signin.Deps.Banner = &memNotice{}
+	a.Signin.Deps.LostMode = fakeSigninLostMode(false)
+	ctx := context.Background()
+
+	f.commands = []model.Command{command("i1", "isolate_host", nil)}
+	_ = a.PollCommands(ctx)
+	if f.results["i1"] != "succeeded" {
+		t.Fatalf("%v out=%q", f.results, f.outputs["i1"])
+	}
+	rd := f.resultData["i1"]
+	gotAdmins, _ := rd["local_admins"].([]any)
+	if len(gotAdmins) != resultDataListMax {
+		t.Fatalf("expected local_admins capped to %d, got %d", resultDataListMax, len(gotAdmins))
+	}
+	gotKept, _ := rd["kept_service_accounts"].([]any)
+	if len(gotKept) != resultDataListMax {
+		t.Fatalf("expected kept_service_accounts capped to %d, got %d", resultDataListMax, len(gotKept))
 	}
 }
 
