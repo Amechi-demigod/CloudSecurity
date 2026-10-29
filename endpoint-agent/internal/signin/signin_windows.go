@@ -100,7 +100,7 @@ func (winBackend) Name() string {
 }
 
 func (winBackend) CaptureLogonRestriction(ctx context.Context) (json.RawMessage, error) {
-	policy, err := lsaOpenPolicy(policyViewLocalInformation)
+	policy, err := lsaOpenPolicy(policyViewLocalInformation | policyLookupNames)
 	if err != nil {
 		return nil, err
 	}
@@ -121,7 +121,7 @@ func (b winBackend) ApplyLogonRestriction(ctx context.Context, adminNames []stri
 	if err := json.Unmarshal(previous, &snap); err != nil {
 		return "", fmt.Errorf("corrupt logon-restriction snapshot: %w", err)
 	}
-	policy, err := lsaOpenPolicy(policyViewLocalInformation | policyCreateAccount)
+	policy, err := lsaOpenPolicy(policyViewLocalInformation | policyCreateAccount | policyLookupNames)
 	if err != nil {
 		return "", err
 	}
@@ -143,19 +143,28 @@ func (b winBackend) ApplyLogonRestriction(ctx context.Context, adminNames []stri
 			}
 		}
 		if err := reconcileHolders(policy, right, want); err != nil {
-			_ = b.restoreWithPolicy(policy, snap)
-			return "", fmt.Errorf("restricting %s: %w", right, err)
+			applyErr := fmt.Errorf("restricting %s: %w", right, err)
+			if rerr := b.restoreWithPolicy(policy, snap); rerr != nil {
+				return "", fmt.Errorf("%w (rollback also failed: %v)", applyErr, rerr)
+			}
+			return "", &RolledBackError{Err: applyErr}
 		}
 	}
 
 	ok, detail, err := b.verifyRestricted(policy, adminSIDStr, snap)
 	if err != nil {
-		_ = b.restoreWithPolicy(policy, snap)
-		return "", fmt.Errorf("verifying the restriction: %w", err)
+		verifyErr := fmt.Errorf("verifying the restriction: %w", err)
+		if rerr := b.restoreWithPolicy(policy, snap); rerr != nil {
+			return "", fmt.Errorf("%w (rollback also failed: %v)", verifyErr, rerr)
+		}
+		return "", &RolledBackError{Err: verifyErr}
 	}
 	if !ok {
-		_ = b.restoreWithPolicy(policy, snap)
-		return "", fmt.Errorf("safety check failed, reverted: %s", detail)
+		safetyErr := fmt.Errorf("safety check failed: %s", detail)
+		if rerr := b.restoreWithPolicy(policy, snap); rerr != nil {
+			return "", fmt.Errorf("%w (rollback also failed: %v)", safetyErr, rerr)
+		}
+		return "", &RolledBackError{Err: safetyErr}
 	}
 
 	out := fmt.Sprintf("logon rights restricted to BUILTIN\\Administrators on both rights; %d built-in service/virtual "+
@@ -177,7 +186,7 @@ func (b winBackend) RestoreLogonRestriction(ctx context.Context, previous json.R
 	if err := json.Unmarshal(previous, &snap); err != nil {
 		return fmt.Errorf("corrupt logon-restriction snapshot: %w", err)
 	}
-	policy, err := lsaOpenPolicy(policyViewLocalInformation | policyCreateAccount)
+	policy, err := lsaOpenPolicy(policyViewLocalInformation | policyCreateAccount | policyLookupNames)
 	if err != nil {
 		return err
 	}
@@ -228,7 +237,7 @@ func (winBackend) verifyRestricted(policy windows.Handle, adminSIDStr string, sn
 }
 
 func (winBackend) VerifyStandardSignInBlocked(ctx context.Context, adminNames []string) (bool, string, error) {
-	policy, err := lsaOpenPolicy(policyViewLocalInformation)
+	policy, err := lsaOpenPolicy(policyViewLocalInformation | policyLookupNames)
 	if err != nil {
 		return false, "", err
 	}
@@ -257,7 +266,7 @@ func (winBackend) VerifyStandardSignInWorks(ctx context.Context, previous json.R
 	if err := json.Unmarshal(previous, &snap); err != nil {
 		return false, "", err
 	}
-	policy, err := lsaOpenPolicy(policyViewLocalInformation)
+	policy, err := lsaOpenPolicy(policyViewLocalInformation | policyLookupNames)
 	if err != nil {
 		return false, "", err
 	}

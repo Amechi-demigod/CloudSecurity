@@ -46,7 +46,21 @@ type Deps struct {
 	// lostmode.PlatformBackend()) so tests can supply a fake instead of
 	// touching real OS state.
 	Banner lostmode.Backend
-	Now    func() time.Time
+	// LostMode reports whether lost mode is active, so Suspend can refuse to
+	// run alongside it. Nil disables the check (tests only); New() always
+	// wires a real one.
+	LostMode LostModeChecker
+	Now      func() time.Time
+}
+
+type lostModeAdapter struct{ m *lostmode.Manager }
+
+func (a lostModeAdapter) Active(ctx context.Context) (bool, error) {
+	rec, err := a.m.Load()
+	if err != nil {
+		return false, err
+	}
+	return rec != nil, nil
 }
 
 // Manager applies and clears suspend-sign-in.
@@ -63,6 +77,7 @@ func New(p state.Paths) *Manager {
 		SessionTerminator: platformSessionTerminator(),
 		Backend:           platformBackend(),
 		Banner:            lostmode.PlatformBackend(),
+		LostMode:          lostModeAdapter{m: lostmode.New(p, nil)},
 		Now:               time.Now,
 	}}
 }
@@ -139,11 +154,23 @@ func composeBanner(incidentID string) lostmode.Notice {
 	}
 }
 
-// Suspend runs pre-flight, snapshots the current state, then applies the
-// restriction. Repeating it while already suspended re-runs pre-flight (the
-// invariant must still hold) and updates the banner/incident reference in
-// place, without re-snapshotting (the original Previous is never lost).
+// Suspend runs pre-flight, snapshots the current state, then restricts sign-in
+// and verifies it took effect BEFORE signing anyone out - a failed or unsafe
+// restriction must never sign anyone out. Repeating it while already
+// suspended re-runs pre-flight (the invariant must still hold) and updates
+// the banner/incident reference in place, without re-snapshotting (the
+// original Previous is never lost).
 func (m *Manager) Suspend(ctx context.Context, incidentID, commandID string) (string, error) {
+	if m.Deps.LostMode != nil {
+		active, err := m.Deps.LostMode.Active(ctx)
+		if err != nil {
+			return "", fmt.Errorf("checking lost mode state: %w", err)
+		}
+		if active {
+			return "", errors.New("cannot suspend sign-in: lost mode is already active on this device; exit lost mode first")
+		}
+	}
+
 	pre, err := m.Preflight(ctx)
 	if err != nil {
 		return "", err
@@ -189,22 +216,38 @@ func (m *Manager) Suspend(ctx context.Context, incidentID, commandID string) (st
 		return "", fmt.Errorf("saving the suspend-sign-in record: %w", err)
 	}
 
-	if so, err := m.Deps.SessionTerminator.SignOutNonAdmins(ctx, pre.EnabledLocalAdmins); err != nil {
-		out = append(out, "sign-out: "+err.Error())
-	} else {
-		out = append(out, "sign-out: "+so)
-	}
-
+	// Restrict, then verify, BEFORE signing anyone out: a failed or unsafe
+	// apply must leave every session exactly as it was.
 	detail, err := m.Deps.Backend.ApplyLogonRestriction(ctx, pre.EnabledLocalAdmins, rec.Previous.LogonRestriction)
 	if err != nil {
-		_ = m.delete()
-		return "", fmt.Errorf("restricting sign-in: %w", err)
+		var rb *RolledBackError
+		if errors.As(err, &rb) {
+			// The backend confirmed it undid everything it had changed:
+			// the live state matches the snapshot, safe to delete.
+			_ = m.delete()
+			return "", fmt.Errorf("restricting sign-in: %w", err)
+		}
+		rec.Pending.LastError = err.Error()
+		if serr := m.save(rec); serr != nil {
+			return "", fmt.Errorf("restricting sign-in: %w (and the record could not be updated: %v)", err, serr)
+		}
+		return "", fmt.Errorf("restricting sign-in: %w; the rollback could not be confirmed, the device may be "+
+			"left partially restricted - manual recovery may be required", err)
 	}
 	out = append(out, detail)
 
 	ok, verifyDetail, err := m.Deps.Backend.VerifyStandardSignInBlocked(ctx, pre.EnabledLocalAdmins)
 	if err != nil || !ok {
-		_ = m.Deps.Backend.RestoreLogonRestriction(ctx, rec.Previous.LogonRestriction)
+		rerr := m.Deps.Backend.RestoreLogonRestriction(ctx, rec.Previous.LogonRestriction)
+		if rerr != nil {
+			rec.Pending.LastError = fmt.Sprintf("safety check (ok=%v err=%v detail=%s); rollback failed: %v", ok, err, verifyDetail, rerr)
+			if serr := m.save(rec); serr != nil {
+				return "", fmt.Errorf("safety check failed and the rollback also failed (%v) (and the record could "+
+					"not be updated: %v): manual recovery required", rerr, serr)
+			}
+			return "", fmt.Errorf("safety check failed and the rollback also failed (%v): the device may be left "+
+				"partially restricted; manual recovery required", rerr)
+		}
 		_ = m.delete()
 		if err != nil {
 			return "", fmt.Errorf("verifying the restriction took effect: %w", err)
@@ -212,6 +255,13 @@ func (m *Manager) Suspend(ctx context.Context, incidentID, commandID string) (st
 		return "", fmt.Errorf("safety check failed, reverted: %s", verifyDetail)
 	}
 	out = append(out, verifyDetail)
+
+	// Only now, with the restriction verified safe, sign non-admins out.
+	if so, err := m.Deps.SessionTerminator.SignOutNonAdmins(ctx, pre.EnabledLocalAdmins); err != nil {
+		out = append(out, "sign-out: "+err.Error())
+	} else {
+		out = append(out, "sign-out: "+so)
+	}
 
 	if err := m.Deps.Banner.Set(ctx, composeBanner(incidentID)); err != nil {
 		out = append(out, "banner: FAILED to set ("+err.Error()+")")
@@ -227,8 +277,11 @@ func (m *Manager) Suspend(ctx context.Context, incidentID, commandID string) (st
 	return strings.Join(out, "\n"), nil
 }
 
-// Restore puts back exactly the snapshot Suspend recorded. Repeating it when
-// sign-in is not suspended is a no-op.
+// Restore puts back exactly the snapshot Suspend recorded. The record is only
+// deleted once that is VERIFIED: a restore whose effect can't be confirmed
+// (VerifyStandardSignInWorks errors or reports a mismatch) keeps the record
+// so a human or a future crash-recovery pass can resolve it. Repeating it
+// when sign-in is not suspended is a no-op.
 func (m *Manager) Restore(ctx context.Context) (string, error) {
 	rec, err := m.Load()
 	if err != nil {
@@ -245,6 +298,8 @@ func (m *Manager) Restore(ctx context.Context) (string, error) {
 
 	var out []string
 	if err := m.Deps.Backend.RestoreLogonRestriction(ctx, rec.Previous.LogonRestriction); err != nil {
+		rec.Pending.LastError = err.Error()
+		_ = m.save(rec)
 		return "", fmt.Errorf("restoring %s: %w", m.Deps.Backend.Name(), err)
 	}
 	out = append(out, "sign-in restriction restored")
@@ -256,13 +311,20 @@ func (m *Manager) Restore(ctx context.Context) (string, error) {
 	}
 
 	ok, verifyDetail, err := m.Deps.Backend.VerifyStandardSignInWorks(ctx, rec.Previous.LogonRestriction)
-	switch {
-	case err != nil:
-		out = append(out, "verification: could not confirm ("+err.Error()+")")
-	default:
-		out = append(out, "verification: "+verifyDetail)
-		_ = ok // reported in verifyDetail; restore itself already ran regardless
+	if err != nil || !ok {
+		rec.Pending.LastError = fmt.Sprintf("restore verification: ok=%v err=%v detail=%s", ok, err, verifyDetail)
+		if serr := m.save(rec); serr != nil {
+			return "", fmt.Errorf("restoring %s: verification failed (and the record could not be updated: %v)",
+				m.Deps.Backend.Name(), serr)
+		}
+		if err != nil {
+			return "", fmt.Errorf("restoring %s: the restriction was written back but could not be verified: %w",
+				m.Deps.Backend.Name(), err)
+		}
+		return "", fmt.Errorf("restoring %s: the restriction was written back but does not match the pre-suspend "+
+			"snapshot: %s", m.Deps.Backend.Name(), verifyDetail)
 	}
+	out = append(out, "verification: "+verifyDetail)
 
 	if err := m.delete(); err != nil {
 		return "", err

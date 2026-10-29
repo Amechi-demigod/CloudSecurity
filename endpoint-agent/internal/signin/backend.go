@@ -55,3 +55,23 @@ type Backend interface {
 	// Name describes the mechanism for result output.
 	Name() string
 }
+
+// LostModeChecker reports whether lost mode is currently active, so Suspend
+// can refuse to run alongside it: both compete for the sign-in screen and
+// session control, and layering one on top of the other risks an
+// unreviewable mixed state.
+type LostModeChecker interface {
+	Active(ctx context.Context) (bool, error)
+}
+
+// RolledBackError wraps an apply/restrict failure where the backend itself
+// successfully undid everything it had changed before the failure - the live
+// state is confirmed to match the pre-suspend snapshot, so the caller may
+// delete the suspend-sign-in record. Any OTHER error from
+// Backend.ApplyLogonRestriction must be treated conservatively: the live
+// state is NOT assumed clean, and the record must be kept so a human (or a
+// future crash-recovery pass) can resolve it.
+type RolledBackError struct{ Err error }
+
+func (e *RolledBackError) Error() string { return e.Err.Error() }
+func (e *RolledBackError) Unwrap() error { return e.Err }

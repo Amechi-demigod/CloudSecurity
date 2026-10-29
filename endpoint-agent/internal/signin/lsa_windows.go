@@ -29,6 +29,11 @@ var (
 const (
 	policyViewLocalInformation = 0x00000001
 	policyCreateAccount        = 0x00000010
+	// policyLookupNames is required by LsaEnumerateAccountsWithUserRight,
+	// LsaAddAccountRights, LsaRemoveAccountRights and LsaEnumerateAccountRights
+	// alike; every lsaOpenPolicy call in this package must include it or those
+	// calls fail with access denied.
+	policyLookupNames = 0x00000800
 )
 
 // NTSTATUS values LSA returns for "nothing found", not real errors.
