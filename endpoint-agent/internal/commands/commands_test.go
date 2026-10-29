@@ -164,6 +164,82 @@ func TestExecuteNewCommands(t *testing.T) {
 	}
 }
 
+func TestIsolateHostIncidentID(t *testing.T) {
+	ok := []map[string]any{nil, {}, {"incident_id": "INC-4821"}, {"incident_id": "a"}, {"incident_id": strings.Repeat("a", 64)}}
+	for _, p := range ok {
+		if err := Validate(cmd(IsolateHost, p), "dev", now); err != nil {
+			t.Errorf("%v: %v", p, err)
+		}
+	}
+	bad := []map[string]any{
+		{"incident_id": 123},                     // not a string
+		{"incident_id": strings.Repeat("a", 65)}, // too long
+		{"incident_id": "has space"},             // disallowed char
+		{"incident_id": "line\nbreak"},           // control char / newline
+		{"incident_id": "x", "other": "y"},       // unexpected extra param
+	}
+	for i, c := range bad {
+		if err := Validate(cmd(IsolateHost, c), "dev", now); !errors.Is(err, ErrRejected) {
+			t.Errorf("bad[%d] %v accepted", i, c)
+		}
+	}
+	if err := Validate(cmd(IsolateHost, map[string]any{"incident_id": ""}), "dev", now); err != nil {
+		t.Errorf("empty incident_id should be treated as absent: %v", err)
+	}
+	// restore_host still takes no parameters at all.
+	if err := Validate(cmd(RestoreHost, nil), "dev", now); err != nil {
+		t.Errorf("restore_host: %v", err)
+	}
+	if err := Validate(cmd(RestoreHost, map[string]any{"incident_id": "x"}), "dev", now); !errors.Is(err, ErrRejected) {
+		t.Error("restore_host accepted a parameter")
+	}
+}
+
+func TestExecuteIsolateRestoreHostNilDepRejects(t *testing.T) {
+	ctx := context.Background()
+	if o := Execute(ctx, cmd(IsolateHost, nil), Deps{}, nil); o.Status != "rejected" {
+		t.Errorf("isolate_host nil dep: %+v", o)
+	}
+	if o := Execute(ctx, cmd(RestoreHost, nil), Deps{}, nil); o.Status != "rejected" {
+		t.Errorf("restore_host nil dep: %+v", o)
+	}
+	var gotIsolate, gotRestore model.Command
+	d := Deps{
+		IsolateHost: func(_ context.Context, c model.Command) Outcome {
+			gotIsolate = c
+			return Outcome{Status: "succeeded", Output: "suspended"}
+		},
+		RestoreHost: func(_ context.Context, c model.Command) Outcome {
+			gotRestore = c
+			return Outcome{Status: "succeeded", Output: "restored"}
+		},
+	}
+	c1 := cmd(IsolateHost, map[string]any{"incident_id": "INC-1"})
+	if o := Execute(ctx, c1, d, nil); o.Status != "succeeded" || o.Output != "suspended" || gotIsolate.ID != c1.ID {
+		t.Errorf("%+v", o)
+	}
+	c2 := cmd(RestoreHost, nil)
+	if o := Execute(ctx, c2, d, nil); o.Status != "succeeded" || o.Output != "restored" || gotRestore.ID != c2.ID {
+		t.Errorf("%+v", o)
+	}
+}
+
+func TestEnableLostModeRejectedWhenLostModeFnWrapsErrRejected(t *testing.T) {
+	d := Deps{LostMode: func(context.Context, bool, string, string) (string, error) {
+		return "", fmt.Errorf("%w: cannot enable lost mode while sign-in is suspended; restore sign-in first", ErrRejected)
+	}}
+	o := Execute(context.Background(), cmd(EnableLostMode, map[string]any{"message": "Lost", "phone": "123456"}), d, nil)
+	if o.Status != "rejected" || !strings.Contains(o.Output, "sign-in is suspended") {
+		t.Fatalf("expected a rejected outcome mentioning the reason, got %+v", o)
+	}
+	// An ordinary (non-ErrRejected) failure still maps to "failed", not "rejected".
+	d.LostMode = func(context.Context, bool, string, string) (string, error) { return "", errors.New("disk full") }
+	o = Execute(context.Background(), cmd(EnableLostMode, map[string]any{"message": "Lost", "phone": "123456"}), d, nil)
+	if o.Status != "failed" {
+		t.Fatalf("expected an ordinary error to stay \"failed\", got %+v", o)
+	}
+}
+
 func TestCheckForUpdate(t *testing.T) {
 	if err := Validate(cmd(CheckForUpdate, nil), "dev", now); err != nil {
 		t.Fatalf("check_for_update rejected: %v", err)

@@ -169,6 +169,17 @@ jobs:
         run: go test -count=1 ./...
       - name: go test - real collectors on this OS (never panic, valid report)
         run: go test -count=1 -v -run 'TestCollectSmoke' ./internal/collect/
+      - name: go test - Suspend sign-in real-hardware integration (creates/removes local test accounts; Windows/macOS only)
+        if: runner.os != 'Linux'
+        env:
+          RUN_HARDWARE_INTEGRATION_TESTS: "1"
+        run: |
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            # dseditgroup/dscl changes to com.apple.access_loginwindow need root.
+            sudo -E env "PATH=$PATH" go test -count=1 -v -run 'TestSuspendSignInIntegration' ./internal/signin/
+          else
+            go test -count=1 -v -run 'TestSuspendSignInIntegration' ./internal/signin/
+          fi
       - name: Build
         run: go build -trimpath -o "cnapp-agent$(go env GOEXE)" ./cmd/cnapp-agent
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0

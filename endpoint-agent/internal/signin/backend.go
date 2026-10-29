@@ -40,10 +40,17 @@ type Backend interface {
 	// CaptureLogonRestriction reads the CURRENT state of whatever mechanism
 	// this platform uses to allow/deny interactive sign-in, unmodified.
 	CaptureLogonRestriction(ctx context.Context) (json.RawMessage, error)
-	// ApplyLogonRestriction blocks standard/domain users, keeping previous
-	// (the just-captured snapshot) available so a failed/unsafe apply can be
-	// reverted immediately. Returns a human-readable detail string.
+	// ApplyLogonRestriction is the FIRST-TIME apply: it blocks standard/domain
+	// users, keeping previous (the just-captured snapshot) available so a
+	// failed/unsafe apply can be reverted immediately. Returns a
+	// human-readable detail string.
 	ApplyLogonRestriction(ctx context.Context, adminNames []string, previous json.RawMessage) (detail string, err error)
+	// ReapplyLogonRestriction is used for a REPEAT Suspend or periodic
+	// Reenforce: it only reconciles toward the already-suspended target and
+	// NEVER restores the pre-suspend state on failure - the device must stay
+	// suspended. previous is still needed (e.g. to recompute which built-in
+	// service/virtual accounts to keep on Windows).
+	ReapplyLogonRestriction(ctx context.Context, adminNames []string, previous json.RawMessage) (detail string, err error)
 	// RestoreLogonRestriction writes back exactly what CaptureLogonRestriction read.
 	RestoreLogonRestriction(ctx context.Context, previous json.RawMessage) error
 	// VerifyStandardSignInBlocked re-reads effective state and confirms only

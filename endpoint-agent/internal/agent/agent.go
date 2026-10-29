@@ -18,6 +18,7 @@ import (
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/lostmode"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/model"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/scripts"
+	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/signin"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/state"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/update"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/wipe"
@@ -54,18 +55,20 @@ type Agent struct {
 	offer      *update.Offer
 	nextUpdate time.Time
 
-	// Lost mode, remote wipe and approved scripts (replaceable in tests).
+	// Lost mode, remote wipe, approved scripts and suspend-sign-in (replaceable in tests).
 	LostMode     *lostmode.Manager
 	WipeProbe    func(ctx context.Context, optIn bool) wipe.Readiness
 	WipeExec     wipe.Executor
 	GOOS         string
 	ScriptKeys   []update.TrustedKey
 	ScriptRunner scripts.Runner
+	Signin       *signin.Manager
 
-	hostname   string
-	probe      *wipe.Readiness
-	probedAt   time.Time
-	nextRelock time.Time
+	hostname            string
+	probe               *wipe.Readiness
+	probedAt            time.Time
+	nextRelock          time.Time
+	nextSigninReenforce time.Time
 	// forceUpdate is set while check_for_update runs its check-in: an offer
 	// it returns starts without the random jitter.
 	forceUpdate bool
@@ -90,6 +93,7 @@ func Load(p state.Paths) (*Agent, error) {
 	a := &Agent{Paths: p, st: st, client: c, policy: backoff.Default, Collect: collect.Collect, Lock: commands.Lock,
 		WipeProbe: wipe.Probe, WipeExec: wipe.WMIExecutor{}, GOOS: runtime.GOOS, ScriptRunner: scripts.OSRunner{}}
 	a.LostMode = lostmode.New(p, func(ctx context.Context) (string, error) { return a.Lock(ctx) })
+	a.Signin = signin.New(p)
 	if keys, err := scripts.BuiltinKeys(); err != nil {
 		slog.Error("script-signing keys unusable; scripts disabled", "err", err)
 	} else {
@@ -211,6 +215,8 @@ func (a *Agent) handle(ctx context.Context, c model.Command) {
 		Wipe:           a.wipe,
 		RunScript:      a.runScript,
 		CheckForUpdate: a.CheckForUpdate,
+		IsolateHost:    a.isolateHost,
+		RestoreHost:    a.restoreHost,
 	}, a.Restart)
 	log.Info("command finished", "status", out.Status, "output", out.Output)
 	if err := a.client.ResultWithExit(ctx, c, out.Status, out.Output, out.ExitCode); err != nil {
@@ -384,6 +390,7 @@ func (a *Agent) Run(ctx context.Context) error {
 			return nil
 		}
 		a.maybeRelock(ctx)
+		a.maybeReenforceSignin(ctx)
 	}
 }
 

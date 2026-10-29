@@ -1,0 +1,93 @@
+//go:build darwin
+
+// Real-hardware integration test for macOS: exercises the real
+// com.apple.access_loginwindow group via Manager.Suspend/Restore against the
+// real macBackend. It deliberately verifies the access_loginwindow group
+// state specifically - NEVER PAM or authorizationdb, since neither is
+// touched by this feature. Gated by requireHardwareIntegrationCI: it only
+// runs in CI, on macos-latest, with an explicit opt-in.
+package signin
+
+import (
+	"context"
+	"os"
+	"testing"
+
+	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/collect"
+	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/state"
+)
+
+func TestSuspendSignInIntegrationMacOS(t *testing.T) {
+	requireHardwareIntegrationCI(t)
+	if os.Geteuid() != 0 {
+		t.Fatal("this test must run as root: dseditgroup/dscl changes to com.apple.access_loginwindow require it " +
+			"(CI: run this step with `sudo -E env \"PATH=$PATH\" go test ...`)")
+	}
+	ctx := context.Background()
+
+	admins, err := collect.AdminGroupMembers(ctx)
+	if err != nil || len(admins) == 0 {
+		t.Fatalf("expected at least one local admin on the runner, got %v %v", admins, err)
+	}
+
+	baseline, err := captureAccessLoginwindow(ctx)
+	if err != nil {
+		t.Fatalf("capturing the baseline: %v", err)
+	}
+
+	m := New(state.Resolve(t.TempDir()))
+	if _, err := m.Suspend(ctx, "ci-test-suspend", "cmd-suspend"); err != nil {
+		t.Fatalf("Suspend: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := m.Restore(context.Background()); err != nil {
+			t.Logf("cleanup: Restore failed: %v", err)
+		}
+	})
+
+	// Assert the group now exists with the local admin group nested as its
+	// sole member - never check PAM or authorizationdb here, neither is
+	// touched. dseditgroup -t group stores a nested group in the
+	// NestedGroups attribute, NOT GroupMembers, so that's what's checked.
+	suspended, err := captureAccessLoginwindow(ctx)
+	if err != nil {
+		t.Fatalf("capturing the suspended state: %v", err)
+	}
+	if !suspended.GroupExisted {
+		t.Fatal("expected com.apple.access_loginwindow to exist while suspended")
+	}
+	if len(suspended.UserMembers) != 0 {
+		t.Fatalf("expected no direct user members, got %v", suspended.UserMembers)
+	}
+	if len(suspended.Members) != 0 {
+		t.Fatalf("expected no GroupMembers entries, got %+v", suspended.Members)
+	}
+	if len(suspended.NestedGroups) != 1 || suspended.NestedGroups[0] != localAdminGroup {
+		t.Fatalf("expected the sole nested group to be the local %s group, got %v", localAdminGroup, suspended.NestedGroups)
+	}
+
+	if _, err := m.Restore(ctx); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+
+	// Restore must put the group back EXACTLY: gone entirely if it didn't
+	// exist before, or member-for-member identical if it did.
+	restored, err := captureAccessLoginwindow(ctx)
+	if err != nil {
+		t.Fatalf("capturing the restored state: %v", err)
+	}
+	if restored.GroupExisted != baseline.GroupExisted {
+		t.Fatalf("expected GroupExisted to match the baseline exactly: baseline=%v restored=%v",
+			baseline.GroupExisted, restored.GroupExisted)
+	}
+	if baseline.GroupExisted {
+		if !sameStringSet(restored.UserMembers, baseline.UserMembers) || !sameMemberSet(restored.Members, baseline.Members) ||
+			!sameStringSet(restored.NestedGroups, baseline.NestedGroups) {
+			t.Fatalf("expected membership to match the baseline exactly, got baseline=%+v restored=%+v", baseline, restored)
+		}
+	}
+
+	// What this test cannot verify headlessly: an actual interactive
+	// login-window refusal, since CI runners have no GUI session. See the
+	// manual hardware checklist in the PR description / docs.
+}
