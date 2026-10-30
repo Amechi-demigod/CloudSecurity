@@ -469,7 +469,7 @@ jobs:
           CNAPP_MFA_ENCRYPTION_KEY: ci-placeholder-mfa-encryption-key-0000000
         run: bicep build-params infra/main.bicepparam --outfile "$RUNNER_TEMP/main.parameters.json"
       - name: shellcheck
-        run: shellcheck infra/setup.sh infra/deploy.sh infra/tests/*.sh endpoint-agent/packaging/macos/*.sh endpoint-agent/packaging/macos/scripts/* scripts/agent-release-keygen scripts/device-scripts-keygen
+        run: shellcheck infra/setup.sh infra/deploy.sh infra/tests/*.sh endpoint-agent/packaging/macos/*.sh endpoint-agent/packaging/macos/scripts/* scripts/agent-release-keygen scripts/device-scripts-keygen scripts/agent_build_check.sh
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"

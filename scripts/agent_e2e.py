@@ -226,13 +226,15 @@ def protect_test(api: Api, agent: str, home: str, dev: dict, key_file: str | Non
     print("ok: lost mode set the sign-in notice and restored it")
 
 
-def remote_session(api: Api, agent: str, home: str, base: str, dev_id: str, *, end_by: str,
+def remote_session(api: Api, agent: str, home: str, base: str, dev_id: str, *, end_by: str, mode: str = "view",
                    extra_env: dict[str, str] | None = None) -> dict:
-    """One View only session: request it, start `cnapp-agent run` (its first poll is
-    5 s after start), watch it as the browser would, end it from `end_by`."""
+    """One session: request it, start `cnapp-agent run` (its first poll is 5 s after
+    start), watch it as the browser would and send input after the third frame,
+    end it from `end_by`. View only: the input must be dropped (by the relay, which
+    audits how much); View and control: it must reach the (fake) helper."""
     from websockets.sync.client import connect  # backend requirement (uvicorn[standard])
 
-    sid = api.call("POST", f"/api/devices/{dev_id}/remote-sessions", {"mode": "view", "reason": "e2e remote"})["id"]
+    sid = api.call("POST", f"/api/devices/{dev_id}/remote-sessions", {"mode": mode, "reason": "e2e remote"})["id"]
     jar = next(h for h in api.opener.handlers if hasattr(h, "cookiejar")).cookiejar
     cookie = "; ".join(f"{c.name}={c.value}" for c in jar)
     url = base.replace("http://", "ws://", 1) + f"/api/remote/{sid}"
@@ -256,7 +258,9 @@ def remote_session(api: Api, agent: str, home: str, base: str, dev_id: str, *, e
                     if frames == 3:
                         # View only: input and Ctrl+Alt+Del must never reach the device.
                         ws.send(json.dumps({"t": "input", "kind": "key", "code": "KeyA", "down": True}))
-                        ws.send(json.dumps({"t": "cad"}))
+                        ws.send(json.dumps({"t": "input", "kind": "key", "code": "KeyA", "down": False}))
+                        if mode == "view":
+                            ws.send(json.dumps({"t": "cad"}))
                         if end_by == "viewer":
                             time.sleep(1)
                             ws.send(json.dumps({"t": "end"}))
@@ -276,7 +280,15 @@ def remote_session(api: Api, agent: str, home: str, base: str, dev_id: str, *, e
     assert frames >= 3, f"only {frames} frames reached the browser"
     assert close_code == 4000, f"the viewer socket was not closed by the server ({close_code})"
     assert "remote session ended" in out, "the agent's socket was not closed"
-    assert "input_events=0" in out and "input_injected=0" in out, "View only input reached the device"
+    ended = next(a for a in api.call("GET", "/api/audit-log?limit=200")
+                 if a["action"] == "remote_session_ended" and (a.get("detail") or {}).get("session_id") == sid)
+    if mode == "view":
+        assert "input_events=0" in out and "input_injected=0" in out, "View only input reached the device"
+        dropped = ended["detail"].get("input_dropped", 0)
+        assert dropped == 3, f"the relay dropped {dropped} input messages, expected the 2 keys and Ctrl+Alt+Del"
+        print(f"ok: View only input sent ({dropped} messages) and dropped before the device")
+    else:
+        assert "input_events=2" in out and "input_injected=2" in out, "View and control input did not reach the device"
     return rs
 
 
@@ -286,12 +298,16 @@ def remote_test(api: Api, agent: str, home: str, base: str, dev_id: str) -> None
     rs2 = remote_session(api, agent, home, base, dev_id, end_by="user",
                          extra_env={"CNAPP_REMOTE_FAKE_END_AFTER": "4"})
     assert rs2["state"] == "ended" and rs2["end_reason"] == "user_ended", rs2
-    trail = [a for a in api.call("GET", "/api/audit-log?limit=200") if a["action"].startswith("remote_session_")]
-    for sid in (rs["id"], rs2["id"]):
+    # The same path delivers input when the mode allows it: the View only checks above are not vacuous.
+    rs3 = remote_session(api, agent, home, base, dev_id, end_by="viewer", mode="control")
+    assert rs3["state"] == "ended" and rs3["end_reason"] == "ended_by_viewer", rs3
+    trail = [a for a in api.call("GET", "/api/audit-log?limit=300") if a["action"].startswith("remote_session_")]
+    for sid in (rs["id"], rs2["id"], rs3["id"]):
         acts = sorted(a["action"] for a in trail if (a.get("detail") or {}).get("session_id") == sid)
         assert acts == sorted(["remote_session_requested", "remote_session_consented", "remote_session_started",
                                "remote_session_ended"]), (sid, acts)
-    print("ok: remote sessions (relay socket, frames, View only input dropped, ended by viewer and by user, audit)")
+    print("ok: remote sessions (relay socket, frames, View only input dropped, View and control input injected, "
+          "ended by viewer and by user, audit)")
 
 
 def main() -> int:
@@ -376,6 +392,12 @@ def main() -> int:
 
             protect_test(api, agent, home, dev, args.script_key_file)
 
+            if args.service:
+                service_test(api, agent, home, dev["id"])
+
+            # Remote sessions run after the service test: the remote_fake build enrolls the
+            # same machine, which rotates the device secret the service would check in with.
+            # Step 4 re-enrolls the main agent afterwards.
             if args.remote_agent:
                 if expected_os != "windows":
                     raise SystemExit("--remote-agent: remote sessions are Windows-only")
@@ -387,9 +409,6 @@ def main() -> int:
                 run_agent(ragent, rhome, "checkin")
                 rdev = json.loads(Path(rhome, "state", "state.json").read_text())["device_id"]
                 remote_test(api, ragent, rhome, base, rdev)
-
-            if args.service:
-                service_test(api, agent, home, dev["id"])
 
             # 4. re-enrollment keeps the same device and rotates the secret
             run_agent(agent, home, "enroll", "--server", base, "--token", token, "--insecure-dev")
