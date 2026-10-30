@@ -72,10 +72,10 @@ flowchart LR
     direction LR
     N["frontend: nginx (uid 101)<br/>:443 TLS, :80 -> 301 https<br/>HSTS, CSP, /api proxy<br/>/api/agent/ 8 MiB"]
     A["backend: FastAPI + gunicorn<br/>2 workers, read-only FS<br/>migrations at start (advisory lock)"]
-    R["relay: backend image, 1 uvicorn worker<br/>remote-session WebSockets"]
+    R["relay: backend image, 1 process<br/>remote-session WebSockets<br/>agents :8001, viewers :8002"]
     P[("postgres:16<br/>volume cnapp_pgdata<br/>not published")]
     N -->|"http :8000, internal network"| A
-    N -->|"ws :8001 /api/remote/, /api/agent/remote/"| R
+    N -->|"ws :8001 /api/agent/remote/, :8002 /api/remote/"| R
     A --> P
     R --> P
     T["systemd: cnapp.service,<br/>cnapp-backup.timer (02:30),<br/>cnapp-update.timer (off, 03:00)"]

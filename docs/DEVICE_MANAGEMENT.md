@@ -506,7 +506,7 @@ forwards their messages.
 
 | Piece | Where | Notes |
 |---|---|---|
-| Relay | the `relay` compose service (backend image, **one** uvicorn worker) | Pairs the agent's and the viewer's WebSocket **in memory**, so both ends must reach one process. The gunicorn backend runs `REMOTE_RELAY_MODE=api` and refuses these paths. Chosen over PostgreSQL `LISTEN/NOTIFY` (8 KB payloads would chunk every tile) and Redis (not part of the stack). |
+| Relay | the `relay` compose service (backend image, **one** process: `python -m app.relay_main`) | Pairs the agent's and the viewer's WebSocket **in memory**, so both ends must reach one process. Agents arrive on `:8001` and viewers on `:8002`, two listeners of that process, each refusing frames over its own size cap before buffering them. The gunicorn backend runs `REMOTE_RELAY_MODE=api` and refuses these paths. Chosen over PostgreSQL `LISTEN/NOTIFY` (8 KB payloads would chunk every tile) and Redis (not part of the stack). |
 | Service | `cnapp-agent` as LocalSystem | Never captures. Owns the relay socket (the helper never sees the device credential or the token) and enforces the rules locally: no frame before consent, input dropped in View only mode, consent / idle / hard limits, session switch and lock. |
 | Helper | `cnapp-agent remote-helper`, started with `CreateProcessAsUser` on `winsta0\default` of the attended session, inside a **kill-on-close Job object** | Consent prompt, banner, DXGI Desktop Duplication capture (GDI fallback), `SendInput`. Talks to the service over two one-way named pipes with a DACL for SYSTEM and that user only, `FILE_FLAG_FIRST_PIPE_INSTANCE` and `PIPE_REJECT_REMOTE_CLIENTS`; the service accepts only the process it started (client PID), and the helper only a SYSTEM-owned pipe. Parameters go over the pipe, never on the command line, so a local user cannot start a capture session for someone else. |
 
@@ -524,6 +524,10 @@ forwards their messages.
   are relative to the active monitor. The viewer captures the keyboard only after a click on the screen and shows how
   to release it (**Ctrl+Alt+Shift**). Pointer moves are merged into one message per animation frame, well under the
   relay's limit.
+* **Nothing stays pressed.** Every click carries a position: the viewer sends none from the letterbox bars, and the
+  helper drops a click without one rather than clicking at the user's own cursor. A press captures the pointer, so its
+  release arrives even when the drag leaves the image. Keys and buttons still held are released when the viewer's
+  window loses focus or closes, and the helper releases everything it pressed for the viewer when the session stops.
 * **Input is dropped in View only mode** by the relay, by the service and by the helper, whatever the server or
   browser sends.
 * **Ctrl+Alt+Del** is a toolbar button. The service sends it with `sas.dll!SendSAS`, which Windows only honours when
@@ -535,7 +539,12 @@ forwards their messages.
   While one is shown, the viewer says "the user's screen is on a protected prompt" and resumes when it closes.
 * **The banner cannot be dismissed by the viewer.** The prompt and banner windows never take focus (`WS_EX_NOACTIVATE`),
   so injected keys such as Alt+F4 reach the foreground application, never them. Injected clicks on them are dropped,
-  and they re-assert "topmost" every second. If the banner is closed, destroyed or hidden anyway, the session ends
+  and they re-assert "topmost" every second.
+* **Consent cannot be forged.** **Allow** and **Deny** act only on a press and a release on the same button, both from
+  a real mouse, touch screen, pen or touchpad (`GetCurrentInputMessageSource`): another program of the user posting
+  `WM_LBUTTONUP`, or `SendInput`, does not answer the prompt. Clicks in the first second after the prompt appears are
+  ignored, so a click already on its way does not allow anything. **End session** needs a press and release on it,
+  from any source: ending stays easy, also with assistive tools. If the banner is closed, destroyed or hidden anyway, the session ends
   (`indicator_closed`); it is never silently re-created.
 * **End session** on the banner stops capture and input at once in the helper, then tells the service. It works even
   when the server is unreachable.
@@ -551,6 +560,8 @@ A session ends, and both WebSockets, the helper process, the prompt and the bann
 * it reaches `REMOTE_SESSION_MAX_DURATION_MINUTES` (120) after the user allowed it;
 * the device is revoked, put in lost mode, isolated (Suspend sign-in) or a wipe is requested;
 * the requester's account is disabled, removed from the organisation or loses the role the mode needs;
+* the viewer's sign-in session ends: sign-out, sign-out everywhere, a password reset, or its expiry or idle timeout
+  (`viewer_session_revoked`; activity in the viewer counts as use of the sign-in session);
 * the user switches Windows user, disconnects the RDP session or locks the screen;
 * the agent stops, the device disconnects or the relay restarts (`relay_restart`: a `cnapp-ctl update`, rollback or
   restore restarts it, which **ends live sessions**).
@@ -560,7 +571,9 @@ a role change closes both sockets within about 5 s. The agent applies the idle a
 2 h idle and 8 h overall whatever the server sends.
 
 **Concurrency:** one open session per device (a unique key on the open session), at most
-`REMOTE_SESSION_MAX_PER_ORG` (5) open sessions per organisation, and one viewer and one agent socket per session.
+`REMOTE_SESSION_MAX_PER_ORG` (5) open sessions per organisation (creates lock the organisation row, so racing requests
+cannot both pass the cap), and one viewer and one agent socket per session. A relay that stops writing heartbeats for
+three re-checks (at least 60 s) is presumed gone, and its sessions end as `relay_lost`.
 
 ### RBAC, audit, notifications
 
@@ -599,7 +612,13 @@ kept.
 * **Message size and rate limits:** agent messages at most `REMOTE_SESSION_AGENT_MAX_MESSAGE_BYTES` (1 MiB) and
   `REMOTE_SESSION_AGENT_MAX_BYTES_PER_SECOND` (8 MiB/s); viewer messages at most
   `REMOTE_SESSION_VIEWER_MAX_MESSAGE_BYTES` (16 KiB) and `REMOTE_SESSION_VIEWER_MAX_MSGS_PER_SECOND` (120/s). Bursts of
-  twice the rate are allowed; beyond that the session ends.
+  twice the rate are allowed; beyond that the session ends. Each end has its own relay listener whose uvicorn
+  `ws_max_size` refuses a much larger frame before it is buffered. A send to a peer that stopped reading gives up after
+  5 s, so one stuck socket cannot stall the other. Ends caused by the viewer (disconnect, rate limit, protocol error)
+  are audited with the viewer's IP, the others with the device's.
+* **The helper is not trusted beyond its job.** It runs as the signed-in user, so the service forwards only known end
+  reasons and error codes from it, cuts its error text to 200 characters, and rebuilds every forwarded message with the
+  fields of its type only.
 * **Commands are not cryptographically signed.** `start_remote_session` is trusted like every remote action: TLS to the
   enrolled server (pinned CA when enrolled with one), the per-device credential, the allowlist and parameter
   validation, device binding, a nonce, expiry and anti-replay. A server compromise could therefore ask for a session,
@@ -614,14 +633,20 @@ enabled when the device runs one. On-prem, `cnapp-ctl install` / `update` start 
 Ctrl+Alt+Del with the SoftwareSASGeneration policy (above).
 
 **Azure / Container Apps is not supported in v1.** The relay needs one process for both ends, and the Azure template
-runs up to two backend replicas without a relay app. Use the on-prem stack.
+runs up to two backend replicas without a relay app. The Bicep template sets `REMOTE_SESSION_ENABLED=false`, and a
+backend in `REMOTE_RELAY_MODE=all` with `WEB_CONCURRENCY` above 1 offers no remote sessions either (the button says why).
+Use the on-prem stack.
 
 ### Hardware checklist (Windows, not exercised in CI)
 
 GitHub-hosted runners have no interactive session to capture, so CI uses a `-tags remote_fake` build. Check on real
 hardware before relying on it:
 
-- [ ] consent prompt: **Allow** starts the session; **Deny** and no answer (60 s) end it as denied
+- [ ] consent prompt: **Allow** starts the session; **Deny** and no answer (60 s) end it as denied; a click on
+      **Allow** within the first second after it appears does nothing
+- [ ] a program of the user posting a click (`PostMessage(WM_LBUTTONUP)`) or `SendInput` on **Allow** does not answer
+      the prompt; **End session** still works with the on-screen keyboard or another assistive tool
+- [ ] hold Ctrl (or a mouse button) in the viewer and close the tab: nothing stays pressed on the device
 - [ ] the banner stays visible and on top (full-screen apps, Win+D, moving windows); Alt+F4 from the viewer does not
       close it; closing it with Task Manager ends the session
 - [ ] multi-monitor: the picker switches monitors, positions are right on monitors with different scaling
@@ -805,6 +830,9 @@ Installers: `PUBLIC_BASE_URL` (required, https; embedded in installers), `AGENT_
 - A pre-configured installer contains a live enrollment token: anyone holding the file can enroll devices until it expires, is revoked or hits its device limit.
 - Remote sessions are Windows only, attended only (someone signed in, screen unlocked) and on-prem only (no relay on Azure in v1). The secure desktop (UAC prompts, sign-in screen) is not shown.
 - **Remote control cannot reach elevated windows.** The helper runs at the user's normal privilege (medium integrity), so Windows UIPI blocks its input to elevated ("Run as administrator") windows. They can be seen but not clicked or typed into; ask the user to do that part.
+- **The consent prompt needs a real pointing device.** Assistive tools that inject clicks (the on-screen keyboard, eye or
+  voice control) cannot press **Allow**, by design (forged input must not consent); such users answer with a mouse,
+  touch or pen, or the session is not started. **End session** works with any input.
 - Remote-session rate limits are per relay process (there is one), like the other in-memory limiters.
 
 ### Adding Linux

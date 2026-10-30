@@ -2,7 +2,8 @@
 # deploy/onprem/docker-compose.prod.yml). Rendered at container start by the
 # nginx image's entrypoint (envsubst of defined env vars only):
 #   BACKEND_URL            http://backend:8000
-#   RELAY_URL              http://relay:8001 (remote-session WebSockets)
+#   RELAY_URL              http://relay:8001 (remote-session agent WebSockets, cnapp-access.sh)
+#   RELAY_VIEWER_URL       http://relay:8002 (remote-session viewer WebSockets)
 #   CNAPP_HOSTNAME         canonical internal hostname (HTTP -> HTTPS redirect target)
 #   NGINX_LOCAL_RESOLVERS  from /etc/resolv.conf (Docker's embedded DNS)
 # nginx runs unprivileged: 8080 is published as 80, 8443 as 443.
@@ -147,7 +148,7 @@ server {
     if ($cnapp_internal = 0) {
       return 404;
     }
-    set $relay_upstream "${RELAY_URL}";
+    set $relay_upstream "${RELAY_VIEWER_URL}";
     proxy_pass $relay_upstream;
     proxy_http_version 1.1;
     proxy_set_header Upgrade $http_upgrade;

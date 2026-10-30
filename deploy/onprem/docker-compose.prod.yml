@@ -154,11 +154,14 @@ services:
     restart: unless-stopped
     depends_on:
       backend:
-        # The backend runs the migrations; the relay never does.
-        condition: service_healthy
-    command: ["uvicorn", "app.relay_main:app", "--host", "0.0.0.0", "--port", "8001", "--workers", "1",
-              "--no-proxy-headers", "--ws-max-size", "8388608", "--ws-ping-interval", "20",
-              "--timeout-graceful-shutdown", "20"]
+        # Started, not healthy: `compose up -d` must not block on (and fail with)
+        # the backend's health under cnapp-ctl's set -e; cnapp-ctl's wait_healthy
+        # judges the stack. The backend runs the migrations, the relay never
+        # does; until they exist its sweeper logs and retries.
+        condition: service_started
+    # One process (app/relay_main.py): agents on :8001, viewers on :8002, each
+    # listener with its own WebSocket message-size cap.
+    command: ["python", "-m", "app.relay_main"]
     env_file:
       - path: ../cnapp.env
         required: true
@@ -192,7 +195,7 @@ services:
     pids_limit: 128
     networks: [internal]
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/api/health', timeout=4)"]
+      test: ["CMD", "python", "-c", "import urllib.request as u; [u.urlopen(f'http://127.0.0.1:{p}/api/health', timeout=4) for p in (8001, 8002)]"]
       interval: 15s
       timeout: 5s
       retries: 4
@@ -208,8 +211,10 @@ services:
         condition: service_started
     environment:
       BACKEND_URL: http://backend:8000
-      # Remote-session WebSockets (nginx/onprem.conf.template, cnapp-access.sh).
+      # Remote-session WebSockets: agents (cnapp-access.sh) and viewers
+      # (nginx/onprem.conf.template) reach separate relay listeners.
       RELAY_URL: http://relay:8001
+      RELAY_VIEWER_URL: http://relay:8002
       CNAPP_HOSTNAME: ${CNAPP_HOSTNAME:?set CNAPP_HOSTNAME in cnapp.env}
       # Access policy (nginx/cnapp-access.sh): the dashboard and user API only for
       # these networks; /api/agent/ for everyone the firewall lets in.

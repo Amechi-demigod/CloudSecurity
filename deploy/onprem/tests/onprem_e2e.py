@@ -237,6 +237,23 @@ def relay(a: argparse.Namespace) -> None:
     check(status in (400, 403, 404, 426), f"a plain GET of the viewer path is not served by the API ({status})")
 
 
+def compose_deps(a: argparse.Namespace) -> None:
+    """The rendered compose project (`docker compose ... config --format json` on
+    stdin): nothing waits for the backend to be *healthy*. cnapp-ctl runs
+    `compose up -d` under `set -e`; a service_healthy dependency on the backend
+    would make it block and fail there, before wait_healthy, the diagnostics and
+    rollback's notify_update / restore guidance. wait_healthy is the judge."""
+    services = json.load(sys.stdin)["services"]
+    check("relay" in services and "backend" in services, "the compose project has the backend and the relay")
+    for name, svc in sorted(services.items()):
+        dep = (svc.get("depends_on") or {}).get("backend")
+        if dep is not None:
+            cond = dep.get("condition", "service_started")
+            check(cond == "service_started", f"{name} waits only for the backend to start ({cond})")
+    check(services["relay"].get("command", [])[:3] == ["python", "-m", "app.relay_main"],
+          "the relay runs both listeners (python -m app.relay_main)")
+
+
 def marker(a: argparse.Namespace) -> None:
     api = Api(a.base, a.ca)
     wait_health(api)
@@ -274,8 +291,9 @@ def main() -> None:
     sub.add_parser("token").add_argument("name")
     sub.add_parser("get").add_argument("name", metavar="PATH")
     sub.add_parser("relay")
+    sub.add_parser("compose-deps", help="read `docker compose config --format json` on stdin")
     a = p.parse_args()
-    {"verify": verify, "relay": relay}.get(a.cmd, marker)(a)
+    {"verify": verify, "relay": relay, "compose-deps": compose_deps}.get(a.cmd, marker)(a)
 
 
 if __name__ == "__main__":

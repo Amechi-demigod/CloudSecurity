@@ -68,6 +68,8 @@ jobs:
               -ldflags "-s -w -X github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/version.Version=${VERSION}" \
               -o "dist/cnapp-agent-${os}-${arch}${ext}" ./cmd/cnapp-agent
           done
+          # Never publish a test-only build (the remote_fake remote-session backend).
+          ../scripts/agent_build_check.sh dist/cnapp-agent-*
           (cd dist && sha256sum cnapp-agent-* > SHA256SUMS && cat SHA256SUMS)
       - name: Sign the update manifest
         env:

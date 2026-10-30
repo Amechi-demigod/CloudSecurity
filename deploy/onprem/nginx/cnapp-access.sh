@@ -12,7 +12,8 @@
 #                          /api/agent/ only; tls/agent.crt|key if present, else server.crt)
 #   CNAPP_AGENT_RATE / _BURST, CNAPP_AGENT_ENROLL_RATE / _BURST, CNAPP_AGENT_CONN_LIMIT
 #   CNAPP_PUBLIC_SENSOR_INGEST  true: POST /api/runtime/events is reachable from anywhere too
-#   RELAY_URL              the remote-session relay service (WebSockets; http://relay:8001)
+#   RELAY_URL              the remote-session relay, agent listener (WebSockets; http://relay:8001)
+#   RELAY_VIEWER_URL       its viewer listener (used by onprem.conf.template; http://relay:8002)
 #
 # Policy: /api/agent/* is reachable from anywhere (rate limited per external IP);
 # everything else answers 404 to clients outside CNAPP_INTERNAL_CIDRS.
@@ -35,6 +36,8 @@ backend=${BACKEND_URL:-http://backend:8000}
 echo "$backend" | grep -Eq '^https?://[A-Za-z0-9.:_-]+/?$' || fail "invalid BACKEND_URL"
 relay=${RELAY_URL:-http://relay:8001}
 echo "$relay" | grep -Eq '^https?://[A-Za-z0-9.:_-]+/?$' || fail "invalid RELAY_URL"
+# The viewer listener is used by onprem.conf.template; checked here so a bad value fails loudly.
+echo "${RELAY_VIEWER_URL:-http://relay:8002}" | grep -Eq '^https?://[A-Za-z0-9.:_-]+/?$' || fail "invalid RELAY_VIEWER_URL"
 public=${CNAPP_PUBLIC_AGENT:-false}
 agent_host=${CNAPP_AGENT_HOSTNAME:-}
 main_host=${CNAPP_HOSTNAME:-}
