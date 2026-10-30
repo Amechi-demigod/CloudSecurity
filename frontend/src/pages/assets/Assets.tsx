@@ -5,7 +5,7 @@ import { assetsApi, type AssetBrief, type ImportResult } from "../../assetsApi";
 import { useAuth } from "../../auth/context";
 import { AssetFormModal, AssetStatusBadge, FormError } from "../../components/assets";
 import { Button, Card, Empty, ErrorNote, Modal, PageHeader, Select, Stat, Table, Tag } from "../../components/ui";
-import { STATUS_LABEL, STATUS_ORDER, TYPE_LABEL, errMsg, fmtDate, fmtMoney } from "../../lib/assets";
+import { STATUS_LABEL, STATUS_ORDER, TYPE_LABEL, errMsg, fmtDate, fmtMoney, namedByHost, ownerLabel } from "../../lib/assets";
 import { fmtAgo } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
 import { useSort } from "../../lib/useSort";
@@ -17,7 +17,7 @@ function BriefList({ items, render, empty }: { items: AssetBrief[]; render: (a: 
       {items.map((a) => (
         <li key={a.id} className="flex justify-between gap-2">
           <Link to={`/it-assets/${a.id}`} className="truncate font-medium hover:text-accent">
-            {a.asset_tag} <span className="text-ink-3">{a.device_hostname ?? a.model}</span>
+            {a.display_name} <span className="text-ink-3">{namedByHost(a) ? a.asset_tag : a.model}</span>
           </Link>
           <span className="shrink-0 text-xs text-ink-2">{render(a)}</span>
         </li>
@@ -128,14 +128,14 @@ export default function Assets() {
   const sorted = useSort(
     list.data,
     {
-      tag: (a) => a.asset_tag,
+      name: (a) => a.display_name.toLowerCase(),
       type: (a) => TYPE_LABEL[a.asset_type] ?? a.asset_type,
       status: (a) => STATUS_LABEL[a.status] ?? a.status,
-      owner: (a) => a.assignee_name || a.assignee_email,
+      owner: (a) => ownerLabel(a).toLowerCase(),
       site: (a) => a.location,
       warranty: (a) => (a.warranty_end ? Date.parse(a.warranty_end) : null),
     },
-    { key: "tag", dir: "asc" },
+    { key: "name", dir: "asc" },
   );
   const { data: settings } = useApi(assetsApi.settings, []);
   const s = summary.data;
@@ -207,7 +207,7 @@ export default function Assets() {
               </p>
             </Card>
             <Card title="Overdue retrievals" actions={s.retrieval_overdue > 0 && <button className="text-xs text-accent" onClick={() => { setStatus(""); setFlag("retrieval_overdue"); }}>Show all</button>}>
-              <BriefList items={s.retrieval_overdue_assets} empty="Nothing overdue." render={(a) => `${a.assignee_name || a.assignee_email} · due ${fmtDate(a.retrieval_due)}`} />
+              <BriefList items={s.retrieval_overdue_assets} empty="Nothing overdue." render={(a) => `${ownerLabel(a) || "no owner"} · due ${fmtDate(a.retrieval_due)}`} />
             </Card>
             <Card title="Warranty expiring soon" actions={s.warranty_expiring > 0 && <button className="text-xs text-accent" onClick={() => { setStatus("active"); setFlag("warranty_expiring"); }}>Show all</button>}>
               <BriefList items={s.warranty_expiring_assets} empty={`No warranty ends in the next ${s.warranty_warning_days} days.`} render={(a) => fmtDate(a.warranty_end)} />
@@ -222,7 +222,7 @@ export default function Assets() {
             <input
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              placeholder="tag, serial, model, owner, hostname"
+              placeholder="computer name, tag, serial, model, owner"
               className="w-64 rounded border border-line bg-surface-2 px-2 py-1 text-sm text-ink"
             />
           </label>
@@ -250,7 +250,7 @@ export default function Assets() {
         <ErrorNote error={list.error} />
           <Table
             head={[
-              { label: "Asset", sort: "tag" },
+              { label: "Asset", sort: "name" },
               { label: "Type", sort: "type" },
               { label: "Status", sort: "status" },
               { label: "Owner", sort: "owner" },
@@ -272,8 +272,9 @@ export default function Assets() {
               <tr key={a.id} className="cursor-pointer hover:bg-surface-2" onClick={() => navigate(`/it-assets/${a.id}`)}>
                 <td className="px-3 py-2">
                   <Link to={`/it-assets/${a.id}`} className="font-medium hover:text-accent" onClick={(e) => e.stopPropagation()}>
-                    {a.asset_tag}
+                    {a.display_name}
                   </Link>
+                  {namedByHost(a) && <div className="font-mono text-[11px] text-ink-3">{a.asset_tag}</div>}
                   <div className="text-[11px] text-ink-3">
                     {[a.manufacturer, a.model].filter(Boolean).join(" ")} {a.serial_number && `· ${a.serial_number}`}
                   </div>
@@ -288,9 +289,9 @@ export default function Assets() {
                   )}
                 </td>
                 <td className="px-3 py-2 text-xs">
-                  {a.assignee_email ? (
+                  {ownerLabel(a) ? (
                     <>
-                      <div className="text-ink">{a.assignee_name || a.assignee_email}</div>
+                      <div className="text-ink">{ownerLabel(a)}</div>
                       <div className="text-ink-3">{a.assignee_department}</div>
                     </>
                   ) : (

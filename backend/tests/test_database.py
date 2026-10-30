@@ -64,7 +64,7 @@ MIGRATION_CHAIN = ["0001_baseline", "0002_device_management", "0003_notification
                    "0008_agent_update_automation", "0009_device_approvals_scripts", "0010_scheduled_scans",
                    "0011_vulnerability_matching", "0013_organizations", "0014_host_isolation",
                    "0015_command_result_data", "0016_dashboard_snapshots", "0017_onboarding_dismissed",
-                   "0018_remote_sessions"]
+                   "0018_remote_sessions", "0019_offboarding_username"]
 
 
 def test_migration_history_is_linear():
@@ -498,11 +498,45 @@ def test_remote_sessions_migration(tmp_path):
         assert not {"token", "frames", "keystrokes"} & cols  # metadata only
         uniques = [set(u["column_names"]) for u in insp.get_unique_constraints("remote_sessions")]
         assert {"open_device_id"} in uniques
+        db.run_migrations(eng)  # later revisions on top match the ORM
         assert _schema_diff(eng) == []
 
         from alembic import command
 
         command.downgrade(db.alembic_config(eng), "0017_onboarding_dismissed")
         assert not inspect(eng).has_table("remote_sessions")
+    finally:
+        eng.dispose()
+
+
+def test_offboarding_username_migration(tmp_path):
+    """0019 adds it_asset_offboardings.person_username (existing offboardings get
+    an empty username) on top of 0018; downgrading removes it."""
+    if IS_POSTGRES:
+        reset_database()
+        eng = db.create_db_engine(TEST_DATABASE_URL)
+    else:
+        eng = db.create_db_engine(f"sqlite:///{tmp_path / 'offboarding.db'}")
+    try:
+        db.run_migrations(eng, "0018_remote_sessions")
+        assert "person_username" not in {c["name"] for c in inspect(eng).get_columns("it_asset_offboardings")}
+        with eng.begin() as conn:
+            org = conn.execute(text("SELECT id FROM organizations LIMIT 1")).scalar()
+            conn.execute(text(
+                "INSERT INTO it_asset_offboardings (id, organization_id, person_email, person_name, department, "
+                "leave_date, retrieval_due, status, notes, created_at) VALUES ('ob1', :org, 'a@example.com', '', '', "
+                "'2026-01-01', '2026-01-08', 'open', '', '2026-01-01 00:00:00')"), {"org": org})
+        db.run_migrations(eng, "0019_offboarding_username")
+        cols = {c["name"]: c for c in inspect(eng).get_columns("it_asset_offboardings")}
+        assert not cols["person_username"]["nullable"]
+        with eng.connect() as conn:
+            assert conn.execute(text("SELECT person_username FROM it_asset_offboardings")).scalar() == ""
+        db.run_migrations(eng)
+        assert _schema_diff(eng) == []
+
+        from alembic import command
+
+        command.downgrade(db.alembic_config(eng), "0018_remote_sessions")
+        assert "person_username" not in {c["name"] for c in inspect(eng).get_columns("it_asset_offboardings")}
     finally:
         eng.dispose()

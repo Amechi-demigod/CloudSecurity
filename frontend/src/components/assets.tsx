@@ -135,7 +135,7 @@ export function AssetFormModal({ open, asset, settings, onClose, onSaved }: {
         const email = form.assignee_email.trim();
         saved = await assetsApi.create({
           ...body,
-          status: email ? "assigned" : "in_stock",
+          status: email || form.assignee_name.trim() ? "assigned" : "in_stock",
           assignee_email: email,
           assignee_name: form.assignee_name.trim(),
         });

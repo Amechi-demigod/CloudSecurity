@@ -2,7 +2,7 @@
 
 **IT assets** tracks company hardware from purchase to disposal: who has what, where it is, what it cost, when its warranty ends, and what happened to it over time. It covers the software side of tools like Workwize (records, custody, offboarding, disposal evidence), but not logistics such as shipping, warehousing or procurement.
 
-- **Agent devices are tracked automatically.** Every laptop or desktop enrolled with the [endpoint agent](DEVICE_MANAGEMENT.md) gets an asset record. Its serial number, make and model come from the agent inventory.
+- **Agent devices are tracked automatically.** Every laptop or desktop enrolled with the [endpoint agent](DEVICE_MANAGEMENT.md) gets an asset record. It is listed under its **computer name**; its serial number, make and model come from the agent inventory, and the **signed-in user becomes the owner** automatically.
 - **Other assets are added by IT**, by hand or from CSV: monitors, phones, docks, headsets, laptops that are not enrolled yet, and so on.
 - **Everything is on a timeline.** Assignments, returns, status changes, offboarding, disposal and certificate uploads are recorded with who, when and notes. Each change is also written to the audit log.
 
@@ -11,6 +11,7 @@
 - [Concepts](#concepts)
 - [Using it](#using-it)
 - [Agent devices](#agent-devices)
+- [Owners without an email](#owners-without-an-email)
 - [Offboarding and retrieval](#offboarding-and-retrieval)
 - [Disposal and certificates](#disposal-and-certificates)
 - [Utilization (idle devices)](#utilization-idle-devices)
@@ -25,12 +26,13 @@
 
 | Field | Notes |
 |---|---|
-| Asset tag | Unique (case-insensitive), 1-64 characters: letters, digits, `. _ / # -`. Agent devices get `AGT-<device id>`; rename freely |
+| Name | What the list and the asset page show first. For an asset with an agent device it is the device's **computer name** (hostname), with the asset tag beneath it in smaller text. Assets without an agent show the asset tag (and make / model) as before. Search and *sort by name* use the computer name. Not stored: it follows the hostname the agent reports |
+| Asset tag | Unique (case-insensitive) and required, 1-64 characters: letters, digits, `. _ / # -`. Agent devices get `AGT-<device id>`; rename freely |
 | Serial number | Filled from the agent inventory when empty |
 | Type | laptop, desktop, computer, monitor, phone, tablet, dock, peripheral, headset, printer, network, server, other |
 | Make / model | Filled from the agent inventory when empty |
 | Status | see below |
-| Owner | name, email (lower-cased), department |
+| Owner | name, email (lower-cased), department. Either the name or the email may be empty: owners set automatically from the agent have only the **username** (in the name field) and no email. See [Owners without an email](#owners-without-an-email) |
 | Location / site | Free text. Admins keep a list of sites that the form suggests |
 | Purchase | date, supplier, cost + currency (ISO 4217; default **NGN**, configurable) |
 | Warranty end, expected refresh | Dates; drive the "warranty expiring" flag and notification |
@@ -41,7 +43,7 @@ Statuses:
 | Status | Meaning | How it is set |
 |---|---|---|
 | In stock | Available | Create, *Record return*, *Change status* |
-| Assigned | Someone has it | *Assign* / *Reassign* (from in stock, assigned, in repair or retrieved) |
+| Assigned | Someone has it | *Assign* / *Reassign* (from in stock, assigned, in repair or retrieved), or automatically from the agent's signed-in user (from in stock or assigned) |
 | In repair | At a repair shop; the owner is kept | *Change status* |
 | Retrieval pending | The owner is leaving, or IT asked for it back; it has a due date | Offboarding, or *Change status* |
 | Retrieved | Collected and waiting for checks or a wipe | *Record return* on a retrieval-pending asset, or *Change status* |
@@ -55,7 +57,7 @@ Statuses:
 Open **IT assets** in the navigation:
 
 - **Dashboard tiles.** Assets in use, assigned and in stock, total value, overdue retrievals, warranties expiring soon and idle devices. Below them are counts by status and type, the overdue list and the list of warranties expiring soon.
-- **List.** Search by tag, serial, model, owner, site or agent hostname. Filter by status, type, site or agent, or by flag (retrieval overdue, warranty expiring, idle). *Export CSV* exports exactly what the current filters show.
+- **List.** Agent devices are listed by computer name with the tag beneath; other assets by tag. The list is sorted by that name. Search by computer name, tag, serial, model, owner (name, username or email), site. Filter by status, type, site or agent, or by flag (retrieval overdue, warranty expiring, idle). *Export CSV* exports exactly what the current filters show.
 - **Asset page.** Shows the details, purchase and warranty, the linked agent device (with a link to its device page), certificates and the **chain of custody** timeline. The available actions depend on the asset's status and your role.
 - **Device page link.** Every device page (Devices → device) shows an **Asset ‹tag›** link with the status next to the health badges.
 - **Offboarding.** Leavers and their outstanding assets.
@@ -68,13 +70,45 @@ When someone opens the IT assets list or dashboard, any enrolled device without 
 1. If an asset without an agent has the **same serial number** (case-insensitive), the device is linked to it. This covers a laptop that IT recorded before it was enrolled, so no duplicate is created.
 2. Otherwise a new record is created with status *in stock*, source *agent*, tag `AGT-<first 8 hex digits of the device id>`, and a type guessed from the model ("MacBook", "ThinkPad", "Latitude" give *laptop*; "iMac", "OptiPlex" give *desktop*; anything else gives *computer*).
 
-Blank serial, make and model fields are filled from the inventory later too, because the serial number may only arrive with a later check-in. Values you type are never overwritten. Analysts can link or unlink a device by hand (`PATCH device_id`); a device can only be linked to one asset. If a device record is deleted under Devices, the asset and its history stay and only the link is cleared.
+Blank serial, make and model fields are filled from the inventory later too, because the serial number may only arrive with a later check-in. Values you type are never overwritten. Analysts can link or unlink a device by hand (`PATCH device_id`); a device can only be linked to one asset. If a device record is deleted under Devices, the asset and its history stay and only the link is cleared (the asset is then named by its tag again).
+
+### Owner from the signed-in user
+
+The agent reports the users signed in to the computer (`logged_in_users` in its inventory: OS usernames such as `musao`, `CORP\musao` or `AzureAD\AdaObi`; never an email). The sync (on the list, dashboard, asset page and before an offboarding) applies these rules:
+
+- **Which user.** The agent sends a plain list. The macOS agent puts the console user first and the Windows agent lists the owners of interactive sessions, so the **first** user is taken. Built-in accounts (`root`, `SYSTEM`, `_mbsetupuser`, `LOCAL SERVICE`, `NETWORK SERVICE`, `defaultuser0`, ...) are skipped.
+- **Username only.** The owner becomes that username, with any `DOMAIN\` prefix removed (`CORP\musao` becomes `musao`); the original form is kept in the custody note. The owner email and department are cleared. An *in stock* asset becomes *assigned*.
+- **The agent always wins.** When the reported user is different from the current owner (compared case-insensitively), it replaces that owner, including an owner set by hand. Reassigning an agent device by hand therefore lasts only until the agent next reports a different user.
+- **Nobody signed in:** the last owner stays.
+- **Only in stock or assigned assets** are changed. In repair, retrieval pending, retrieved, lost, stolen and disposed assets are never touched, so an offboarding is not undone by the leaver signing in again.
+- **History.** Each automatic change is a custody event *Assigned* by `system` with the note "assigned automatically from agent: signed-in user ...", the previous and new owner, and the reported user and hostname in the details. It is also audited (`it_asset_auto_assigned`). Nothing is recorded when the owner is already that user.
 
 The asset sync only reads device rows. It does not touch the agent API or the agent itself.
 
+## Owners without an email
+
+Because the agent only knows usernames, an owner can have a name but no email. Everything that used the owner email works with these owners too:
+
+| Where | Behaviour |
+|---|---|
+| List, asset page, dashboard | The owner column shows the name (the username), otherwise the email. The owner filter (`assignee=`) matches the email, the name or the username, ignoring case |
+| Assign / Reassign | Needs an email, a name, or both. A name alone (e.g. a username) is enough |
+| Record return, Change status | *Retrieval pending* and returning an *in repair* asset need an owner: an email or a name |
+| Add asset | An asset created with an owner name and no email is *assigned* |
+| Custody timeline and audit | The "owner" in from / to is the email, or the name when there is no email |
+| Offboarding | A leaver can be given by email, by username, or both; see below |
+| CSV | Export writes an empty `assignee_email`; re-importing it changes nothing. See [CSV import and export](#csv-import-and-export) |
+| Notifications | `retrieval_overdue` names the owner by name, else email; the `assignee_email` attribute is empty for these owners |
+
 ## Offboarding and retrieval
 
-**Offboarding → Person leaving** takes an email, a leave date and an optional retrieval due date (by default the leave date plus `retrieval_due_days`, which is 7). Every asset that is *assigned* or *in repair* for that email moves to **retrieval pending** with that due date, and the timeline records the change. Each person can have only one open offboarding at a time.
+**Offboarding → Person leaving** takes an email, a **username** (the computer sign-in, with or without `DOMAIN\`), or both, plus a leave date and an optional retrieval due date (by default the leave date plus `retrieval_due_days`, which is 7). Every asset that is *assigned* or *in repair* for that person moves to **retrieval pending** with that due date, and the timeline records the change:
+
+- **By email:** assets whose owner email is that email.
+- **By username:** assets whose owner name is that username (ignoring case and any `DOMAIN\` prefix) and that have **no email** (owners set from the agent, or names entered by hand), or the same email as the one given. A username never matches an owner who has a different email, so a namesake keeps their asset.
+- Give both to catch assets recorded either way. The owners are refreshed from the agents' latest check-ins first, so a laptop the leaver signed in to is included.
+
+Each person (email or username) can have only one open offboarding at a time. Retrieval-pending assets are not reassigned by the agent, even when the leaver signs in again.
 
 - **Record return** on a pending asset makes it *retrieved*, or *in stock* or *in repair* if you choose. When none of the person's assets is still pending (all retrieved, lost or stolen), the offboarding is marked **completed**.
 - After the due date the asset is **overdue**. It is flagged in the list, counted on the dashboard and notified once (`retrieval_overdue`).
@@ -108,7 +142,8 @@ An asset with an agent device that has not checked in for **`idle_days`** (defau
 - The header row must include `asset_tag`. Unknown columns, or `custom.<key>` columns for undefined fields, reject the file. Read-only export columns are ignored.
 - Rows are matched by asset tag, ignoring case. New tags are created with source *import*. For existing tags, **empty cells leave the value unchanged**.
 - Dates use the `YYYY-MM-DD` format. Costs are non-negative numbers; thousands separators are allowed. Currencies use 3-letter codes.
-- `status` can be `in_stock`, `assigned`, `in_repair`, `retrieved`, `lost` or `stolen`. Retrieval and disposal go through their workflows and cannot be imported, and assets that are *retrieval pending* or *disposed* cannot be changed by import. Setting an `assignee_email` assigns the asset.
+- `status` can be `in_stock`, `assigned`, `in_repair`, `retrieved`, `lost` or `stolen`. Retrieval and disposal go through their workflows and cannot be imported, and assets that are *retrieval pending* or *disposed* cannot be changed by import.
+- **Owners.** Setting an `assignee_email` assigns the asset. An `assignee_name` without an email also assigns a new asset, or an existing one that has no owner or a name-only owner (a different name is a new owner). Next to an owner who has an email, an empty `assignee_email` leaves the owner as is (only the name is updated when the email matches). *assigned* needs an email or a name. Owners set from the agent export with an empty email and re-import unchanged; the agent still replaces the owner of agent devices on its next report.
 - **All or nothing.** If any row is invalid, nothing is imported and you get the list of errors per row. **Check file** runs the same validation without saving.
 - Limits are `ASSET_IMPORT_MAX_BYTES` (2 MiB) and `ASSET_IMPORT_MAX_ROWS` (5,000). Files must be UTF-8, with or without a BOM. Each change goes on the asset's timeline as *CSV import*, and the import is audited with the file's SHA-256.
 
@@ -126,7 +161,7 @@ The notification source is **`asset_lifecycle`** (*IT asset lifecycle* in the ru
 
 The API enforces the same rules and returns 403 otherwise. State-changing requests need the session's CSRF token like the rest of the API. There is no extra MFA step-up for asset actions.
 
-Audit actions: `it_asset_created`, `it_asset_updated`, `it_asset_assigned`, `it_asset_returned`, `it_asset_status_changed`, `it_asset_disposed`, `it_asset_deleted`, `it_asset_certificate_uploaded` / `_downloaded` / `_deleted`, `it_asset_offboarding_created` / `_cancelled`, `it_assets_imported`, `it_assets_exported`, `it_asset_settings_updated`.
+Audit actions: `it_asset_created`, `it_asset_updated`, `it_asset_assigned`, `it_asset_auto_assigned` (owner from the agent, actor `system`), `it_asset_returned`, `it_asset_status_changed`, `it_asset_disposed`, `it_asset_deleted`, `it_asset_certificate_uploaded` / `_downloaded` / `_deleted`, `it_asset_offboarding_created` / `_cancelled`, `it_assets_imported`, `it_assets_exported`, `it_asset_settings_updated`.
 
 ## API reference
 
@@ -134,7 +169,7 @@ All endpoints are under `/api/it-assets` and use session authentication.
 
 | Method & path | Role | Purpose |
 |---|---|---|
-| `GET /` | viewer | List; query `q, status (active or a status), type, location, assignee, department, agent=yes/no, flag=idle/warranty_expiring/retrieval_overdue, limit, offset` |
+| `GET /` | viewer | List, sorted by `display_name` (computer name for agent devices, else the tag); query `q, status (active or a status), type, location, assignee (email, name or username), department, agent=yes/no, flag=idle/warranty_expiring/retrieval_overdue, limit, offset` |
 | `GET /summary` | viewer | Dashboard counts |
 | `GET /export.csv` | viewer | CSV export (same filters as the list) |
 | `GET /by-device/{device_id}` | viewer | The asset record of an agent device (404 if none) |
@@ -142,8 +177,10 @@ All endpoints are under `/api/it-assets` and use session authentication.
 | `POST /import?dry_run=` | analyst | CSV import (raw `text/csv` body) |
 | `POST /` · `GET /{id}` · `PATCH /{id}` · `DELETE /{id}?reason=` | analyst · viewer · analyst · admin | Create, read, edit, delete |
 | `GET /{id}/events` | viewer | Chain of custody, newest first |
-| `POST /{id}/assign` · `/return` · `/status` · `/dispose` | analyst | Lifecycle actions (409 if the current status does not allow the action) |
-| `GET /offboardings` · `POST /offboardings` · `GET /offboardings/{id}` · `POST /offboardings/{id}/cancel` | viewer · analyst · viewer · analyst | Leavers |
+| `POST /{id}/assign` · `/return` · `/status` · `/dispose` | analyst | Lifecycle actions (409 if the current status does not allow the action). `assign` takes `assignee_email`, `assignee_name` (at least one), `assignee_department`, `notes` |
+| `GET /offboardings` · `POST /offboardings` · `GET /offboardings/{id}` · `POST /offboardings/{id}/cancel` | viewer · analyst · viewer · analyst | Leavers. `POST` takes `person_email` and / or `person_username`, `person_name`, `department`, `leave_date`, `retrieval_due`, `notes` |
+
+Asset responses include `display_name` (the computer name for agent devices, else the asset tag) next to `asset_tag` and `device_hostname`.
 | `POST /certificates/{asset_id}?filename=` | analyst | Upload (raw body, `Content-Type: application/pdf`, `image/png` or `image/jpeg`) |
 | `GET /{id}/certificates` · `GET /{id}/certificates/{cid}` · `DELETE /{id}/certificates/{cid}?reason=` | viewer · analyst · admin | List, download, delete |
 
@@ -161,6 +198,6 @@ All endpoints are under `/api/it-assets` and use session authentication.
 
 ## Storage, backups and upgrades
 
-- The data lives in new tables: `it_assets`, `it_asset_events`, `it_asset_offboardings`, `it_asset_certificates` and `it_asset_settings`. They are created by Alembic migration `0007_it_asset_lifecycle`, which runs automatically on startup (`DB_AUTO_MIGRATE=true`) or with `python -m app.cli migrate`. The migration only adds tables, and the downgrade drops them.
+- The data lives in new tables: `it_assets`, `it_asset_events`, `it_asset_offboardings`, `it_asset_certificates` and `it_asset_settings`. They are created by Alembic migration `0007_it_asset_lifecycle`, which runs automatically on startup (`DB_AUTO_MIGRATE=true`) or with `python -m app.cli migrate`. The migration only adds tables, and the downgrade drops them. Migration `0019_offboarding_username` adds `it_asset_offboardings.person_username` (empty for existing offboardings).
 - **Certificates are stored in the database** (like agent log bundles), not on the file system. The nightly `cnapp-ctl backup` (`pg_dump`) and `cnapp-ctl restore` therefore include them with no extra volume or configuration. Expect the database, and so the backups, to grow by the size of the uploaded certificates.
 - On-prem and container nginx configurations include an upload location (`/api/it-assets/import`, `/api/it-assets/certificates/`) that allows 8 MiB request bodies. On-prem it is reachable from the internal networks only, like the rest of the user API.
