@@ -363,6 +363,7 @@ def test_full_session_relay_and_audit_trail(admin):
     assert ended.actor_email == "admin@example.com" and ended.detail["mode"] == "view"
     assert ended.detail["reason"] == "user reports a frozen Outlook" and ended.detail["end_reason"] == "ended_by_viewer"
     assert "duration_s" in ended.detail and ended.detail["hostname"] == "LAPTOP-001"
+    assert ended.detail["input_dropped"] == 2  # the key and Ctrl+Alt+Del, dropped by the relay
     assert all(x.ip for x in trail)
     assert sorted(events()) == ["session_ended", "session_requested", "session_started"]
     # Metadata only: nothing of the frame or the keystroke was stored anywhere.

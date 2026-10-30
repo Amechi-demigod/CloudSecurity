@@ -323,13 +323,14 @@ def _close(db: Session, rs: RemoteSession, state: str, *, end_reason: str | None
 
 
 def end(db: Session, rs: RemoteSession, end_reason: str, *, actor: User | None = None,
-        by_email: str | None = None, ip: str | None = None) -> bool:
-    """End an open session (the caller commits). False if it was already over."""
+        by_email: str | None = None, ip: str | None = None, input_dropped: int | None = None) -> bool:
+    """End an open session (the caller commits). False if it was already over.
+    `input_dropped`: input messages the relay dropped (View only), audited when any."""
     if not is_open(rs):
         return False
     device = _close(db, rs, "ended", end_reason=end_reason, by_email=actor.email if actor else by_email)
     _audit(db, rs, device, "ended", actor=actor, actor_email=by_email or _device_actor(device), ip=ip,
-           end_reason=end_reason)
+           end_reason=end_reason, input_dropped=input_dropped or None)
     remote_session_source.notify(db, device, rs, "session_ended")
     return True
 
@@ -428,12 +429,13 @@ def viewer_session_live(db: Session, session_id: str | None, activity_at: dateti
     return now < sess.last_seen_at + timedelta(minutes=config.settings.session_idle_minutes)
 
 
-def apply_end(db: Session, rs: RemoteSession, reason: str, ip: str | None = None) -> None:
+def apply_end(db: Session, rs: RemoteSession, reason: str, ip: str | None = None,
+              input_dropped: int | None = None) -> None:
     """End `rs` for a `check_live` reason with the matching final state."""
     if reason == "consent_timeout":
         deny(db, rs, "consent_timeout", ip=ip)
     else:
-        end(db, rs, reason, by_email="system", ip=ip)
+        end(db, rs, reason, by_email="system", ip=ip, input_dropped=input_dropped)
 
 
 def sweep(db: Session, now: datetime | None = None) -> int:

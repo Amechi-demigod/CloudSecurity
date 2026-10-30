@@ -185,7 +185,7 @@ class Hub:
             if end.apply is not None:
                 end.apply(s, rs)
             else:
-                rsvc.apply_end(s, rs, end.reason, ip=end.ip or pair.agent_ip)
+                rsvc.apply_end(s, rs, end.reason, ip=end.ip or pair.agent_ip, input_dropped=pair.dropped_input)
             s.commit()
 
     @staticmethod
@@ -265,7 +265,8 @@ class Hub:
             elif kind == "ended":
                 why = msg.get("reason") if msg.get("reason") in AGENT_END_REASONS else "agent_ended"
                 self._flush(rs, pair)
-                rsvc.end(s, rs, why, by_email=f"device:{rs.device_id}", ip=pair.agent_ip)
+                rsvc.end(s, rs, why, by_email=f"device:{rs.device_id}", ip=pair.agent_ip,
+                         input_dropped=pair.dropped_input)
                 end = End(why, apply=lambda _s, _rs: None)
             elif kind == "error":
                 code = str(msg.get("code") or "ERR_AGENT")[:48]
@@ -273,7 +274,8 @@ class Hub:
                     code = "ERR_AGENT"
                 if rs.state == "active":
                     self._flush(rs, pair)
-                    rsvc.end(s, rs, "agent_error", by_email=f"device:{rs.device_id}", ip=pair.agent_ip)
+                    rsvc.end(s, rs, "agent_error", by_email=f"device:{rs.device_id}", ip=pair.agent_ip,
+                             input_dropped=pair.dropped_input)
                 else:
                     rsvc.fail(s, rs, code, ip=pair.agent_ip, detail=str(msg.get("detail") or "")[:500])
                 end = End("agent_error", apply=lambda _s, _rs: None)
@@ -284,7 +286,8 @@ class Hub:
     def viewer_end(self, pair: Pair) -> End:
         def apply(s, rs):
             user = org_user(s, pair.viewer_user_id) if pair.viewer_user_id else None
-            rsvc.end(s, rs, "ended_by_viewer", actor=user, by_email=None if user else "viewer", ip=pair.viewer_ip)
+            rsvc.end(s, rs, "ended_by_viewer", actor=user, by_email=None if user else "viewer", ip=pair.viewer_ip,
+                     input_dropped=pair.dropped_input)
         return End("ended_by_viewer", apply=apply)
 
 
