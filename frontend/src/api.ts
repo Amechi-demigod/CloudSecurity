@@ -1092,6 +1092,7 @@ export interface DashOverview extends DashFrame {
     name: string;
     type: string;
     type_label: string;
+    type_short: string;
     risk: number;
     critical: number;
     high: number;

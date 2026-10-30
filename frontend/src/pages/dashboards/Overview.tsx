@@ -6,6 +6,7 @@ import { ErrorNote } from "../../components/ui";
 import {
   AXIS,
   bucketLabel,
+  dayLabel,
   cap,
   catSegments,
   fmtNum,
@@ -62,6 +63,17 @@ function RiskCard({ d, days }: { d: DashOverview; days: number }) {
   );
 }
 
+/** Why an asset ranks where it does: "2 critical · 1 high · exposed · sensitive data". */
+function riskReason(a: DashOverview["top_assets"][number]): string {
+  const parts = [
+    a.critical > 0 && `${a.critical} critical`,
+    a.high > 0 && `${a.high} high`,
+    a.internet_exposed && "exposed",
+    a.sensitive_data && "sensitive data",
+  ].filter(Boolean);
+  return parts.length ? parts.join(" · ") : `${a.findings + a.vulnerabilities} open issues`;
+}
+
 function MttrFooter({ m }: { m: DashOverview["kpis"]["mttr"] }) {
   const sep = <span className="mx-1.5 text-line">|</span>;
   const d = (v: number | null) => (v === null ? "—" : `${fmtNum(v, 1)} d`);
@@ -115,7 +127,8 @@ export default function OverviewTab({ range, account }: TabProps) {
   const days = d.days;
   const sub = account || undefined;
   const findings = (p: Record<string, string | undefined> = {}) => href("/findings", { ...p, subscription: sub });
-  const trend = d.issue_trend.points.map((p) => ({ ...p, label: bucketLabel(p, d.issue_trend.bucket) }));
+  // Axis: the bucket's first day; tooltip: the whole bucket ("Oct 1 – Oct 7" for a week).
+  const trend = d.issue_trend.points.map((p) => ({ ...p, label: dayLabel(p.start), range: bucketLabel(p, d.issue_trend.bucket) }));
   const trendEmpty = trend.every((p) => p.new === 0 && p.resolved === 0);
   const ageEmpty = d.age.every((a) => a.critical + a.high + a.medium + a.low === 0);
   const catMax = Math.max(1, ...d.categories.map((c) => c.total));
@@ -195,14 +208,14 @@ export default function OverviewTab({ range, account }: TabProps) {
         ) : (
           <div className="h-56">
             <ResponsiveContainer>
-              <BarChart data={trend} barGap={2} barCategoryGap={days > 30 ? "28%" : "22%"} margin={{ top: 4, right: 4, bottom: 0, left: -4 }}>
+              <BarChart data={trend} barGap={2} barCategoryGap={d.issue_trend.bucket === "week" ? "30%" : "22%"} margin={{ top: 4, right: 4, bottom: 0, left: -4 }}>
                 <CartesianGrid {...GRID} />
                 <XAxis dataKey="label" {...AXIS} minTickGap={24} />
                 <YAxis {...AXIS} allowDecimals={false} width={40} />
-                <Tooltip cursor={{ fill: "var(--color-surface-2)" }} content={<ChartTip />} />
-                <Bar dataKey="new" name="New" fill={NEW_COLOR} radius={[2, 2, 0, 0]} maxBarSize={14} isAnimationActive={false} cursor="pointer"
+                <Tooltip cursor={{ fill: "var(--color-surface-2)" }} content={<ChartTip title={(p) => String(p.range)} />} />
+                <Bar dataKey="new" name="New" fill={NEW_COLOR} radius={[2, 2, 0, 0]} maxBarSize={22} isAnimationActive={false} cursor="pointer"
                   onClick={() => navigate(findings())} />
-                <Bar dataKey="resolved" name="Resolved" fill={RESOLVED_COLOR} radius={[2, 2, 0, 0]} maxBarSize={14} isAnimationActive={false} cursor="pointer"
+                <Bar dataKey="resolved" name="Resolved" fill={RESOLVED_COLOR} radius={[2, 2, 0, 0]} maxBarSize={22} isAnimationActive={false} cursor="pointer"
                   onClick={() => navigate(findings({ status: "resolved" }))} />
               </BarChart>
             </ResponsiveContainer>
@@ -284,20 +297,21 @@ export default function OverviewTab({ range, account }: TabProps) {
             <thead>
               <tr className="border-b border-line text-left text-[11px] uppercase tracking-[0.06em] text-ink-3">
                 <th className="py-1.5 pr-2 font-semibold">Asset</th>
-                <th className="w-[34%] py-1.5 pr-2 font-semibold">Type</th>
+                <th className="w-[28%] py-1.5 pr-2 font-semibold">Type</th>
                 <th className="w-12 py-1.5 text-right font-semibold">Risk</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-line">
               {d.top_assets.map((a) => (
                 <tr key={a.id}>
-                  <td className="truncate py-2 pr-2">
-                    <Link to={href("/vulnerabilities", { asset: a.id })} className="font-medium text-ink hover:text-accent hover:underline" title={`${a.name}: ${a.findings} open findings, ${a.vulnerabilities} open vulnerabilities`}>
+                  <td className="py-1.5 pr-2 align-top">
+                    <Link to={href("/vulnerabilities", { asset: a.id })} className="block break-all font-medium text-ink hover:text-accent hover:underline" title={`${a.name}: ${a.findings} open findings, ${a.vulnerabilities} open vulnerabilities`}>
                       {a.name}
                     </Link>
+                    <span className="block text-[11.5px] text-ink-3">{riskReason(a)}</span>
                   </td>
-                  <td className="truncate py-2 pr-2 text-ink-3">{a.type_label}</td>
-                  <td className="py-2 text-right">
+                  <td className="py-1.5 pr-2 align-top text-ink-3" title={a.type_label}>{a.type_short}</td>
+                  <td className="py-1.5 text-right align-top">
                     <span className="inline-flex items-center gap-1.5 font-semibold text-ink" title={`Risk ${a.risk} of 100`}>
                       <span aria-hidden className="h-2 w-2 rounded-full" style={{ background: SEV_COLOR[a.risk >= 70 ? "critical" : a.risk >= 45 ? "high" : a.risk >= 20 ? "medium" : "low"] }} />
                       {a.risk}
