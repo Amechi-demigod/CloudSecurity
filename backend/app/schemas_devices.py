@@ -24,6 +24,9 @@ COMMAND_ROLES: dict[str, str] = {
     "check_for_update": "analyst",
     "isolate_host": "analyst",
     "restore_host": "admin",
+    # Never queued through POST /commands: POST /api/devices/{id}/remote-sessions
+    # (View only: analyst; View and control: admin, app/services/remote_sessions.py).
+    "start_remote_session": "analyst",
     # Never queued through POST /commands: wipe needs a two-person approval,
     # scripts go through /api/scripts/run (approval unless the signed risk is low).
     "wipe_device": "admin",
@@ -197,16 +200,22 @@ class RestoreHostResultData(Strict):
     so an empty result_data validates and any unexpected key is rejected."""
 
 
+class RemoteSessionResultData(Strict):
+    """start_remote_session: why the session could not start (failed results)."""
+    error_code: Annotated[str, StringConstraints(pattern=r"^ERR_[A-Z_]{1,40}$")] | None = None
+
+
 RESULT_DATA_SCHEMAS: dict[str, type[Strict]] = {
     "isolate_host": IsolateHostResultData,
     "restore_host": RestoreHostResultData,
+    "start_remote_session": RemoteSessionResultData,
 }
 
 
 def validate_result_data(cmd_type: str, data: dict[str, Any]) -> dict[str, Any]:
-    """Strictly validate a command result's result_data: only isolate_host and
-    restore_host may send any, each against its own schema (unknown keys
-    rejected); every other command type must send an empty dict."""
+    """Strictly validate a command result's result_data: only isolate_host,
+    restore_host and start_remote_session may send any, each against its own
+    schema (unknown keys rejected); every other command type must send an empty dict."""
     schema = RESULT_DATA_SCHEMAS.get(cmd_type)
     if schema is None:
         if data:

@@ -16,6 +16,7 @@ from . import (
     builtin,  # noqa: F401  (registers the built-in sources)
     device_source,  # noqa: F401  (endpoint devices: posture issues, connectivity, remote actions)
     host_isolation_source,  # noqa: F401  (host isolation: sign-in suspension and restore)
+    remote_session_source,  # noqa: F401  (attended remote desktop sessions)
     server_update_source,  # noqa: F401  (on-prem server updates: failures and automatic rollbacks)
 )
 from .events import SEVERITIES, Event, EventSource, emit, register_source, sources

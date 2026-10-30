@@ -246,6 +246,13 @@ def test_objects_of_another_organisation_are_not_found(tenants):
     agent = agent_client(d.app)
     r = enroll(agent, new_token(d), machine_id="d" * 64, hostname="WK-LAPTOP")
     dev = r.json()["device_id"]
+    agent.headers["Authorization"] = f"Bearer {r.json()['device_secret']}"
+    body = windows_checkin()
+    body["device"]["hostname"] = "WK-LAPTOP"
+    agent.post("/api/agent/checkin", json=body, headers={"X-CNAPP-Agent-Features": "remote_session"})
+    remote = d.post(f"/api/devices/{dev}/remote-sessions", json={"mode": "view", "reason": "helpdesk ticket"})
+    assert remote.status_code == 201, remote.text
+    remote = remote.json()
 
     not_found = [
         a.get(f"/api/alerts/{alert['id']}"),
@@ -281,6 +288,11 @@ def test_objects_of_another_organisation_are_not_found(tenants):
         a.delete(f"/api/devices/{dev}"),
         a.get(f"/api/updates/devices/{dev}"),
         a.get(f"/api/it-assets/by-device/{dev}"),
+        a.get(f"/api/devices/{dev}/remote-sessions"),
+        a.get(f"/api/devices/{dev}/remote-sessions/availability"),
+        a.post(f"/api/devices/{dev}/remote-sessions", json={"mode": "view", "reason": "pwn the screen"}),
+        a.get(f"/api/remote-sessions/{remote['id']}"),
+        a.post(f"/api/remote-sessions/{remote['id']}/end"),
     ]
     for resp in not_found:
         assert resp.status_code in (404, 422), (resp.request.method, resp.request.url, resp.status_code, resp.text)
@@ -289,6 +301,7 @@ def test_objects_of_another_organisation_are_not_found(tenants):
     assert d.get(f"/api/alerts/{alert['id']}").json()["status"] == alert["status"]
     assert d.get(f"/api/notifications/channels/{chan['id']}").json()["name"] == "SOC"
     assert d.get(f"/api/devices/{dev}").json()["status"] == "active"
+    assert d.get(f"/api/remote-sessions/{remote['id']}").json()["state"] == "requested"
     assert d.get(f"/api/it-assets/{it['id']}").status_code == 200
     roles = {u["email"]: u["role"] for u in _items(d.get("/api/users"))}
     assert roles[default_user["email"]] == default_user["role"]

@@ -63,7 +63,8 @@ MIGRATION_CHAIN = ["0001_baseline", "0002_device_management", "0003_notification
                    "0005_agent_installers", "0006_agent_updates", "0007_it_asset_lifecycle",
                    "0008_agent_update_automation", "0009_device_approvals_scripts", "0010_scheduled_scans",
                    "0011_vulnerability_matching", "0013_organizations", "0014_host_isolation",
-                   "0015_command_result_data", "0016_dashboard_snapshots", "0017_onboarding_dismissed"]
+                   "0015_command_result_data", "0016_dashboard_snapshots", "0017_onboarding_dismissed",
+                   "0018_remote_sessions"]
 
 
 def test_migration_history_is_linear():
@@ -467,11 +468,41 @@ def test_onboarding_dismissed_migration(tmp_path):
         with eng.connect() as conn:
             assert conn.execute(text("SELECT count(*) FROM organizations WHERE onboarding_dismissed_at IS NOT NULL")
                                 ).scalar() == 0
+        db.run_migrations(eng)  # later revisions on top match the ORM
         assert _schema_diff(eng) == []
 
         from alembic import command
 
         command.downgrade(db.alembic_config(eng), "0016_dashboard_snapshots")
         assert "onboarding_dismissed_at" not in {c["name"] for c in inspect(eng).get_columns("organizations")}
+    finally:
+        eng.dispose()
+
+
+def test_remote_sessions_migration(tmp_path):
+    """0018 adds remote_sessions (one open session per device through the
+    nullable unique open_device_id) on top of 0017; downgrading removes it."""
+    if IS_POSTGRES:
+        reset_database()
+        eng = db.create_db_engine(TEST_DATABASE_URL)
+    else:
+        eng = db.create_db_engine(f"sqlite:///{tmp_path / 'remote.db'}")
+    try:
+        db.run_migrations(eng, "0017_onboarding_dismissed")
+        assert not inspect(eng).has_table("remote_sessions")
+        db.run_migrations(eng, "0018_remote_sessions")
+        insp = inspect(eng)
+        assert insp.has_table("remote_sessions")
+        cols = {c["name"] for c in insp.get_columns("remote_sessions")}
+        assert {"token_hash", "open_device_id", "mode", "state", "bytes_to_viewer"} <= cols
+        assert not {"token", "frames", "keystrokes"} & cols  # metadata only
+        uniques = [set(u["column_names"]) for u in insp.get_unique_constraints("remote_sessions")]
+        assert {"open_device_id"} in uniques
+        assert _schema_diff(eng) == []
+
+        from alembic import command
+
+        command.downgrade(db.alembic_config(eng), "0017_onboarding_dismissed")
+        assert not inspect(eng).has_table("remote_sessions")
     finally:
         eng.dispose()
