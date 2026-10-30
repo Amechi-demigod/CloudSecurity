@@ -8,12 +8,13 @@ properties.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from sqlalchemy import (
     JSON,
     BigInteger,
     Boolean,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -434,6 +435,25 @@ class ScanScheduleSettings(TenantMixin, Base):
     interval_hours: Mapped[float | None] = mapped_column(Float, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_by: Mapped[str] = mapped_column(String(320), default="system")
+
+
+class DashboardSnapshot(TenantMixin, Base):
+    """Daily point-in-time dashboard metrics (open issues, exposed assets, risk
+    score, compliance %...), one row per organisation, UTC day and account scope
+    ("" = all cloud accounts). Written once a day by the snapshot job and lazily
+    on the first dashboard read of a day; the dashboards compare against them for
+    their "vs previous period" changes (app/services/dashboards.py)."""
+
+    __tablename__ = "dashboard_snapshots"
+    __table_args__ = (UniqueConstraint("organization_id", "day", "account",
+                                       name="uq_dashboard_snapshots_org_day_account"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    day: Mapped[date] = mapped_column(Date, index=True)
+    # Cloud account scope (subscription / account / project id); "" = all accounts.
+    account: Mapped[str] = mapped_column(String(64), default="")
+    metrics: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 # --- Authentication -----------------------------------------------------------

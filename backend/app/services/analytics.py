@@ -33,9 +33,13 @@ def attack_paths(db: Session, limit: int = 20, include_unconfirmed: bool = True)
     return compute_attack_paths(assets, rels, vulns, findings, limit=limit, include_unconfirmed=include_unconfirmed)
 
 
-def compliance_summary(db: Session) -> list[dict]:
-    """Per framework: controls passing vs failing (a control fails if any mapped rule has an open finding)."""
-    failing_rules = {r for (r,) in db.execute(select(Finding.rule_id).where(Finding.status == "open").distinct())}
+def compliance_summary(db: Session, account: str | None = None) -> list[dict]:
+    """Per framework: controls passing vs failing (a control fails if any mapped rule has an open finding).
+    `account`: only findings on assets of that cloud account (subscription / account / project)."""
+    stmt = select(Finding.rule_id).where(Finding.status == "open")
+    if account:
+        stmt = stmt.where(Finding.asset_id.in_(select(Asset.id).where(Asset.subscription_id == account)))
+    failing_rules = {r for (r,) in db.execute(stmt.distinct())}
     frameworks: dict[str, dict] = {}
     for control, rule_ids in posture.compliance_controls().items():
         fw = " ".join(control.split(" ")[:2])  # e.g. "CIS Azure", "CIS AKS"

@@ -19,6 +19,7 @@ from .api import agent_update_auto as agent_update_auto_api
 from .api import agent_updates as agent_updates_api
 from .api import approvals as approvals_api
 from .api import auth as auth_api
+from .api import dashboards as dashboards_api
 from .api import device_scripts as device_scripts_api
 from .api import devices, inventory, platform, runtime, vulns
 from .api import exposure as exposure_api
@@ -32,6 +33,7 @@ from .notifications import settings as notification_settings
 from .notifications.worker import NotificationWorker, set_worker
 from .security import BodySizeLimitMiddleware, SecurityHeadersMiddleware
 from .services.agent_update_auto import AgentUpdateWorker
+from .services.dashboard_snapshots import DashboardSnapshotWorker
 from .services.scan_schedule import ScanScheduler
 from .services.simulation import RuntimeSimulator, seed_if_empty
 from .vulnmatch import worker as vuln_worker
@@ -78,6 +80,11 @@ async def lifespan(app: FastAPI):
     if s.scan_scheduler_worker_enabled:
         app.state.scan_scheduler = ScanScheduler()
         app.state.scan_scheduler.start()
+    # Daily dashboard metric snapshots ("vs previous period" changes; leader-elected).
+    app.state.dashboard_snapshots = None
+    if s.dashboard_snapshot_worker_enabled:
+        app.state.dashboard_snapshots = DashboardSnapshotWorker()
+        app.state.dashboard_snapshots.start()
     # Vulnerability (CVE) matching: feeds, debounced re-matching, KEV / EPSS
     # (leader-elected; never runs inside a request).
     app.state.vuln_worker = None
@@ -91,6 +98,8 @@ async def lifespan(app: FastAPI):
         vuln_worker.set_worker(None)
     if app.state.scan_scheduler:
         app.state.scan_scheduler.stop()
+    if app.state.dashboard_snapshots:
+        app.state.dashboard_snapshots.stop()
     if app.state.simulator:
         app.state.simulator.stop()
     if app.state.notifier:
@@ -163,6 +172,7 @@ def create_app() -> FastAPI:
     for r in (platform.router, inventory.router, vulns.router, runtime.router, devices.router):
         app.include_router(r, dependencies=session_required)
     app.include_router(exposure_api.router, dependencies=session_required)  # /api/exposure: any signed-in user
+    app.include_router(dashboards_api.router, dependencies=session_required)  # /api/dashboards/*: any signed-in user
     app.include_router(auth_api.admin_router)
     app.include_router(agent_update_auto_api.router)  # /api/updates/automation, /api/updates/update-now
     app.include_router(notifications_api.router)  # analyst read-only, admin writes

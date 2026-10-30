@@ -161,6 +161,16 @@ class Settings:
     # turn it off; to stop scheduled scans use SCAN_SCHEDULE_ENABLED instead.
     scan_scheduler_worker_enabled: bool = field(default_factory=lambda: _bool("SCAN_SCHEDULER_WORKER_ENABLED", True))
 
+    # Dashboards (app/services/dashboards.py). Remediation SLA targets in days
+    # for the "Mean time to resolve" tile's "SLA met" share: a critical / high
+    # finding resolved within this many days of first being seen meets its SLA.
+    dashboard_sla_critical_days: float = field(default_factory=lambda: _checked_float("DASHBOARD_SLA_CRITICAL_DAYS", 7.0))
+    dashboard_sla_high_days: float = field(default_factory=lambda: _checked_float("DASHBOARD_SLA_HIGH_DAYS", 30.0))
+    # Internal: run the (leader-elected) daily dashboard snapshot thread in this
+    # process. Tests turn it off and drive the job explicitly.
+    dashboard_snapshot_worker_enabled: bool = field(
+        default_factory=lambda: _bool("DASHBOARD_SNAPSHOT_WORKER_ENABLED", True))
+
     # AWS read-only posture connector (opt-in, docs/CONNECT_AWS.md). Needs the
     # AWS managed policies SecurityAudit + ViewOnlyAccess on every scanned account.
     # How the scanner authenticates:
@@ -650,6 +660,10 @@ class Settings:
             problems.append(f"SCAN_INTERVAL_HOURS must be between {MIN_INTERVAL_HOURS:g} and {MAX_INTERVAL_HOURS:g}")
         if not 0 <= self.scan_startup_delay_seconds <= MAX_STARTUP_DELAY_SECONDS:
             problems.append(f"SCAN_STARTUP_DELAY_SECONDS must be between 0 and {MAX_STARTUP_DELAY_SECONDS}")
+        for name, value in (("DASHBOARD_SLA_CRITICAL_DAYS", self.dashboard_sla_critical_days),
+                            ("DASHBOARD_SLA_HIGH_DAYS", self.dashboard_sla_high_days)):
+            if not 0 < value <= 3650:
+                problems.append(f"{name} must be more than 0 and at most 3650 days")
         return problems
 
 

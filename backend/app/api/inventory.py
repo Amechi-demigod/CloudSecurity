@@ -23,6 +23,7 @@ from ..schemas import (
     RelationshipOut,
     VulnerabilityOut,
 )
+from ..services import dashboards
 
 router = APIRouter(prefix="/api", tags=["inventory"])
 SEV_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
@@ -135,9 +136,15 @@ def list_findings(
     provider: str | None = Query(None, description="Cloud of the affected asset: azure|aws|gcp"),
     subscription_id: str | None = Query(None, description="Azure subscription, AWS account or GCP project"),
     compliance: str | None = Query(None, description="Substring of a compliance control, e.g. 'CIS Azure 6'"),
+    category: str | None = Query(None, description="Dashboard category: Network, Storage, Identity, Databases, "
+                                                   "Kubernetes, Secrets, Compute or Other"),
     limit: int = Query(500, le=5000),
 ):
     stmt = select(Finding)
+    if category:
+        if category not in dashboards.CATEGORIES:
+            raise HTTPException(422, f"category must be one of {', '.join(dashboards.CATEGORIES)}")
+        stmt = stmt.where(dashboards.category_filter(category))
     if severity:
         stmt = stmt.where(Finding.severity == severity)
     if status and status != "all":

@@ -246,6 +246,7 @@ On first start, simulated mode seeds the database (`backend/cnapp.db`) and backf
 | `SCAN_SCHEDULE_ENABLED` | `true` | Scan every configured cloud connector automatically ([Scheduled scans](#scheduled-scans)). Default for the console setting |
 | `SCAN_INTERVAL_HOURS` | `6` | Hours between scheduled scans of a connector, fractions allowed (`0.25` to `168`; outside that range the API refuses to start). Default for the console setting |
 | `SCAN_STARTUP_DELAY_SECONDS` | `120` | Wait after a (re)start before the first scheduled scan (`0` to `3600`) |
+| `DASHBOARD_SLA_CRITICAL_DAYS` / `DASHBOARD_SLA_HIGH_DAYS` | `7` / `30` | Remediation SLA targets in days for the dashboards' "Mean time to resolve" tile ([docs/DASHBOARDS.md](docs/DASHBOARDS.md)) |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | | Access key of the dedicated read-only IAM user ([docs/CONNECT_AWS.md](docs/CONNECT_AWS.md)) |
 | `AWS_USE_DEFAULT_CREDENTIALS` | `false` | Use boto3's default credential chain (instance role, profile, SSO) when no access key is set |
 | `AWS_AUTH_MODE` | `auto` | `auto`, `access_key` or `default` |
