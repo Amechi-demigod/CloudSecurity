@@ -9,6 +9,8 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+
+	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/usersession"
 )
 
 // wtsapi32 has its own lazy-DLL handle here, independent of
@@ -21,29 +23,9 @@ var (
 	procWTSFreeMemory               = wtsapi32.NewProc("WTSFreeMemory")
 )
 
-const (
-	wtsActive   = 0
-	wtsUserName = 5 // WTS_INFO_CLASS.WTSUserName
-)
+const wtsUserName = 5 // WTS_INFO_CLASS.WTSUserName
 
-// activeSessions duplicates internal/commands/lock_windows.go's enumeration
-// (unexported there, a different package) rather than introducing a
-// cross-package dependency in the wrong direction.
-func activeSessions() ([]uint32, error) {
-	var info *windows.WTS_SESSION_INFO
-	var count uint32
-	if err := windows.WTSEnumerateSessions(0, 0, 1, &info, &count); err != nil {
-		return nil, fmt.Errorf("WTSEnumerateSessions: %w", err)
-	}
-	defer windows.WTSFreeMemory(uintptr(unsafe.Pointer(info)))
-	var ids []uint32
-	for _, s := range unsafe.Slice(info, count) {
-		if s.State == wtsActive && s.SessionID != 0 {
-			ids = append(ids, s.SessionID)
-		}
-	}
-	return ids, nil
-}
+func activeSessions() ([]uint32, error) { return usersession.ActiveSessions() }
 
 func sessionOwner(session uint32) string {
 	var buf *uint16

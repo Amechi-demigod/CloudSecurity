@@ -48,6 +48,10 @@ type Client struct {
 	secret string
 	http   *http.Client
 	dl     *http.Client // no overall timeout (large downloads); bounded by the context
+	// pinned trusts ONLY the enrollment CA (nil: system roots); used for the
+	// remote-session relay socket.
+	pinned      *tls.Config
+	insecureDev bool
 }
 
 // Options configure transport security.
@@ -65,6 +69,7 @@ func New(serverURL, secret string, o Options) (*Client, error) {
 		return nil, err
 	}
 	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
+	var pinned *tls.Config
 	if o.CAFile != "" || len(o.CAPEM) > 0 {
 		pem := o.CAPEM
 		if len(pem) == 0 {
@@ -80,6 +85,9 @@ func New(serverURL, secret string, o Options) (*Client, error) {
 			return nil, errors.New("CA file contains no PEM certificates")
 		}
 		tlsCfg.RootCAs = pool
+		only := x509.NewCertPool()
+		only.AppendCertsFromPEM(pem)
+		pinned = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: only}
 	}
 	if o.Timeout == 0 {
 		o.Timeout = 60 * time.Second
@@ -88,9 +96,20 @@ func New(serverURL, secret string, o Options) (*Client, error) {
 	tr.TLSClientConfig = tlsCfg
 	noRedirect := func(*http.Request, []*http.Request) error { return errors.New("redirects are not followed") }
 	return &Client{base: base, secret: secret,
-		http: &http.Client{Transport: tr, Timeout: o.Timeout, CheckRedirect: noRedirect},
-		dl:   &http.Client{Transport: tr, CheckRedirect: noRedirect},
+		http:   &http.Client{Transport: tr, Timeout: o.Timeout, CheckRedirect: noRedirect},
+		dl:     &http.Client{Transport: tr, CheckRedirect: noRedirect},
+		pinned: pinned, insecureDev: o.InsecureDev,
 	}, nil
+}
+
+// RelayConfig is what the remote-session dialer needs: the enrolled server
+// URL, the device credential and a TLS config that trusts only the enrollment
+// CA when there is one (system roots otherwise).
+func (c *Client) RelayConfig() (base, secret string, pinned *tls.Config, insecureDev bool) {
+	if c.pinned != nil {
+		pinned = c.pinned.Clone()
+	}
+	return c.base, c.secret, pinned, c.insecureDev
 }
 
 func (c *Client) do(ctx context.Context, method, path, contentType string, body []byte, hdr map[string]string, out any) error {

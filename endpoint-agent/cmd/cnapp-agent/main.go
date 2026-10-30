@@ -31,6 +31,7 @@ import (
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/collect"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/logx"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/lostmode"
+	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/remote/helper"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/scripts"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/service"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/signin"
@@ -65,6 +66,9 @@ Usage:
   cnapp-agent update-keys             list the release-signing keys this build trusts for self-update
   cnapp-agent script-keys             list the script-signing keys this build trusts for approved scripts
   cnapp-agent wipe-readiness          print the remote-wipe readiness JSON (run as SYSTEM: WinRE, MDM_RemoteWipe)
+
+Remote sessions (Windows): the service starts "cnapp-agent remote-helper" in the signed-in user's
+session itself (consent prompt, indicator, capture); it only talks to the service's pipes.
 
 Self-update: the service installs agent releases the CNAPP server offers, but only
 if their manifest is signed by a release key compiled into this binary (see
@@ -122,6 +126,8 @@ func main() {
 		err = cmdWipeReadiness(args)
 	case "update-watchdog": // started detached by the service during a self-update
 		err = cmdUpdateWatchdog(args)
+	case "remote-helper": // started by the service in the user's session (remote sessions)
+		os.Exit(cmdRemoteHelper(args))
 	case "help", "--help", "-h":
 		fmt.Printf(usage, version.Version)
 	default:
@@ -608,6 +614,11 @@ func cmdCheckin(args []string) error {
 	if err := a.PollCommands(ctx); err != nil {
 		return fmt.Errorf("command poll: %w", err)
 	}
+	if a.Remote != nil && a.Remote.Busy() {
+		// The session runs in this process: exiting now would end it.
+		fmt.Println("A remote session started; waiting until it ends.")
+		a.Remote.Wait()
+	}
 	fmt.Println("Check-in and command poll completed.")
 	return nil
 }
@@ -671,4 +682,14 @@ func runService() int {
 		return 1
 	}
 	return 0
+}
+
+// cmdRemoteHelper is the remote-session helper (internal/remote/helper). It is
+// only useful when started by the service, which passes the parameters over
+// a SYSTEM-owned pipe, not on the command line.
+func cmdRemoteHelper(args []string) int {
+	fs := flag.NewFlagSet("remote-helper", flag.ExitOnError)
+	pipe := fs.String("pipe", "", "pipe name (set by the service)")
+	_ = fs.Parse(args)
+	return helper.Run(*pipe)
 }

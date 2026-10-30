@@ -14,8 +14,9 @@ var Version = "0.1.0-dev"
 // in the X-CNAPP-Agent-Features header so it only queues commands this agent
 // understands (e.g. check_for_update; older agents get recheck_posture instead).
 // host_isolation marks Suspend sign-in / Restore sign-in support (internal
-// names kept for backend compatibility - see internal/signin).
-const Features = "check_for_update,host_isolation"
+// names kept for backend compatibility - see internal/signin); remote_session
+// marks attended remote sessions (Windows only for now, internal/remote).
+const Features = "check_for_update,host_isolation" + platformFeatures
 
 // UserAgent is sent on every request to the server.
 func UserAgent() string {
