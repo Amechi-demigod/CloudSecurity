@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import os
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -33,7 +34,7 @@ from sqlalchemy.orm import Session
 
 from .. import config, tenancy
 from ..auth import ROLE_RANK, audit, org_user
-from ..models import REMOTE_SESSION_OPEN_STATES, Device, DeviceCommand, RemoteSession, User, utcnow
+from ..models import REMOTE_SESSION_OPEN_STATES, Device, DeviceCommand, Organization, RemoteSession, User, UserSession, utcnow
 from ..notifications import remote_session_source
 from . import devices as svc
 
@@ -43,8 +44,14 @@ MODE_ROLES = {"view": "analyst", "control": "admin"}
 # Errors the agent reports with a failed start_remote_session result.
 AGENT_ERRORS = frozenset({"ERR_NO_ATTENDED_USER", "ERR_UNSUPPORTED_PLATFORM", "ERR_HELPER", "ERR_BUSY",
                           "ERR_CONNECT", "ERR_INVALID"})
-# How long the relay may go without a heartbeat before the sweep calls the session lost.
-HEARTBEAT_GRACE = timedelta(seconds=60)
+# How often a viewer's activity refreshes its sign-in session (as REST requests do).
+VIEWER_SESSION_TOUCH = timedelta(seconds=30)
+
+
+def heartbeat_grace() -> timedelta:
+    """How long the relay may go without a heartbeat before the sweep calls the
+    session lost: at least three of the relay's re-checks (which write it)."""
+    return timedelta(seconds=max(60.0, 3 * config.settings.remote_session_recheck_seconds))
 
 
 class RemoteSessionError(Exception):
@@ -90,6 +97,8 @@ def availability(device: Device) -> str | None:
     """Why a remote session cannot be started on `device` right now (None: it can)."""
     if not config.settings.remote_session_enabled:
         return "remote sessions are disabled on this server"
+    if not relay_deployment_ok():
+        return "remote sessions are not supported on this deployment (they need the single-process relay)"
     if device.status != "active":
         return "the device is revoked"
     if device.os_family != "windows":
@@ -101,6 +110,19 @@ def availability(device: Device) -> str | None:
     if device.isolation_status is not None:
         return "sign-in is suspended on the device (host isolation)"
     return None
+
+
+def relay_deployment_ok() -> bool:
+    """REMOTE_RELAY_MODE=all pairs both sockets in this process, so it only works
+    with one worker (development, tests). Several workers (the image default
+    WEB_CONCURRENCY=2, e.g. Azure Container Apps) would split a session's two
+    sockets: no button is offered there. On-prem runs mode api + the relay."""
+    if config.settings.remote_relay_mode != "all":
+        return True
+    try:
+        return int(os.getenv("WEB_CONCURRENCY", "1") or "1") <= 1
+    except ValueError:
+        return False
 
 
 def _detail(rs: RemoteSession, device: Device | None, now: datetime | None = None, **extra) -> dict:
@@ -146,6 +168,9 @@ def create(db: Session, device: Device, user: User, mode: str, reason: str, ip: 
     why = availability(device)
     if why:
         raise RemoteSessionError(409, why)
+    # Serialise creates per organisation so two racing requests cannot both pass
+    # the cap (PostgreSQL row lock; SQLite serialises writers by itself).
+    db.execute(select(Organization.id).where(Organization.id == device.organization_id).with_for_update())
     sweep(db)
     open_ = db.scalar(select(RemoteSession).where(RemoteSession.open_device_id == device.id))
     if open_ is not None:
@@ -386,6 +411,23 @@ def check_live(db: Session, rs: RemoteSession, now: datetime | None = None) -> s
     return None
 
 
+def viewer_session_live(db: Session, session_id: str | None, activity_at: datetime | None = None,
+                        now: datetime | None = None) -> bool:
+    """Whether the sign-in session the viewer's socket authenticated with is
+    still valid: not signed out (logout, sign-out everywhere, password reset),
+    not expired, not idle. The viewer's own activity counts as use of it, as
+    REST requests do (app/auth.py:session_from_connection)."""
+    if session_id is None:
+        return True
+    now = now or utcnow()
+    sess = db.get(UserSession, session_id)
+    if sess is None or sess.revoked_at is not None or now >= sess.expires_at:
+        return False
+    if activity_at and activity_at - sess.last_seen_at >= VIEWER_SESSION_TOUCH:
+        sess.last_seen_at = min(activity_at, now)
+    return now < sess.last_seen_at + timedelta(minutes=config.settings.session_idle_minutes)
+
+
 def apply_end(db: Session, rs: RemoteSession, reason: str, ip: str | None = None) -> None:
     """End `rs` for a `check_live` reason with the matching final state."""
     if reason == "consent_timeout":
@@ -412,7 +454,7 @@ def sweep(db: Session, now: datetime | None = None) -> int:
                 n += fail(db, rs, "ERR_DEVICE_TIMEOUT",
                           detail="the device did not connect in time (it polls for commands about every 60 s)")
                 continue
-        elif rs.relay_heartbeat_at is not None and now - rs.relay_heartbeat_at > HEARTBEAT_GRACE:
+        elif rs.relay_heartbeat_at is not None and now - rs.relay_heartbeat_at > heartbeat_grace():
             n += end(db, rs, "relay_lost", by_email="system")
             continue
         reason = check_live(db, rs, now)

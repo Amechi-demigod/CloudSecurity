@@ -47,7 +47,11 @@ from ..services import remote_sessions as rsvc
 from .agent import device_from_connection
 
 log = logging.getLogger("cnapp.remote")
-router = APIRouter(tags=["remote-relay"])
+# Two routers so the relay process can serve each end on its own listener with
+# its own WebSocket message-size cap (app/relay_main.py); `router` has both.
+agent_router = APIRouter(tags=["remote-relay"])
+viewer_router = APIRouter(tags=["remote-relay"])
+router = APIRouter()
 
 SESSION_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 TOKEN_HEADER = "x-remote-session-token"  # noqa: S105 (a header name, not a secret)
@@ -115,7 +119,7 @@ def _agent_auth(ws: WebSocket, session_id: str, ip: str):
         return rs.id, rs.organization_id, rs.mode, rs.state
 
 
-@router.websocket("/api/agent/remote/{session_id}")
+@agent_router.websocket("/api/agent/remote/{session_id}")
 async def agent_socket(ws: WebSocket, session_id: str):
     s = config.settings
     if not relay_enabled():
@@ -195,10 +199,10 @@ def _viewer_auth(ws: WebSocket, session_id: str):
         sess = session_from_connection(ws, s)
         user = sess.user
         rs = rsvc.viewer_check(s, user, session_id)
-        return user.id, rs.id, rs.organization_id, rs.mode, rs.state
+        return user.id, sess.id, rs.id, rs.organization_id, rs.mode, rs.state
 
 
-@router.websocket("/api/remote/{session_id}")
+@viewer_router.websocket("/api/remote/{session_id}")
 async def viewer_socket(ws: WebSocket, session_id: str):
     s = config.settings
     if not relay_enabled():
@@ -208,7 +212,7 @@ async def viewer_socket(ws: WebSocket, session_id: str):
     if not SESSION_ID_RE.match(session_id):
         return await _reject(ws, rsvc.CLOSE_NOT_FOUND, "session not found")
     try:
-        user_id, sid, org_id, mode, state = await run_in_threadpool(_viewer_auth, ws, session_id)
+        user_id, user_session_id, sid, org_id, mode, state = await run_in_threadpool(_viewer_auth, ws, session_id)
     except HTTPException as e:
         return await _reject(ws, rsvc.CLOSE_AUTH if e.status_code == 401 else rsvc.CLOSE_FORBIDDEN, str(e.detail))
     except rsvc.RelayReject as e:
@@ -218,6 +222,7 @@ async def viewer_socket(ws: WebSocket, session_id: str):
         return await _reject(ws, rsvc.CLOSE_DUPLICATE, "the session is already open in another window")
     pair = pair or hub.get_or_create(sid, org_id, mode, state)
     pair.viewer, pair.viewer_ip, pair.viewer_user_id = ws, client_ip(ws), user_id
+    pair.viewer_session_id = user_session_id
     pair.viewer_gone_at = None
     await ws.accept()
     await hub.state_to_viewer(pair)
@@ -231,16 +236,16 @@ async def viewer_socket(ws: WebSocket, session_id: str):
             if msg["type"] == "websocket.disconnect":
                 break
             if msg.get("bytes") is not None:
-                await hub.finish(pair, End("protocol_error", 1003))
+                await hub.finish(pair, End("protocol_error", 1003, ip=pair.viewer_ip))
                 break
             data = msg.get("text")
             if data is None:
                 continue
             if _too_big(data, s.remote_session_viewer_max_message_bytes):
-                await hub.finish(pair, End("protocol_error", CLOSE_TOO_BIG))
+                await hub.finish(pair, End("protocol_error", CLOSE_TOO_BIG, ip=pair.viewer_ip))
                 break
             if not budget.take():
-                await hub.finish(pair, End("viewer_rate_limited", rsvc.CLOSE_RATE))
+                await hub.finish(pair, End("viewer_rate_limited", rsvc.CLOSE_RATE, ip=pair.viewer_ip))
                 break
             await _viewer_text(pair, data)
     except (WebSocketDisconnect, RuntimeError):
@@ -275,3 +280,7 @@ async def _viewer_text(pair: Pair, data: str) -> None:
             data = '{"t":"activity"}'  # the agent's own idle limit; nothing else of it is forwarded
     await hub.send_text(pair, pair.agent, data)
     pair.to_agent += len(data)
+
+
+router.include_router(agent_router)
+router.include_router(viewer_router)

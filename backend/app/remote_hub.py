@@ -33,6 +33,9 @@ log = logging.getLogger("cnapp.remote")
 # How long a viewer may be gone (tab reload, network blip) before the session ends.
 VIEWER_RECONNECT_GRACE = timedelta(seconds=30)
 PING_SECONDS = 20.0
+# A send to a peer that stopped reading (full TCP window) gives up after this, so
+# one stuck socket cannot stall the other end or finish().
+SEND_TIMEOUT = 5.0
 
 # Messages the relay forwards, by direction. Anything else is dropped.
 VIEWER_TO_AGENT = frozenset({"input", "cad", "ack", "select_monitor", "quality", "activity"})
@@ -66,6 +69,9 @@ class End:
     code: int = rsvc.CLOSE_ENDED
     # Callable(db, rs) applying the final state; default: rsvc.end(...).
     apply: Callable | None = None
+    # The audited client address (default: the agent's). Ends caused by the
+    # viewer (disconnect, rate limit, protocol error) carry the viewer's.
+    ip: str | None = None
 
 
 @dataclass
@@ -78,6 +84,7 @@ class Pair:
     agent_ip: str | None = None
     viewer_ip: str | None = None
     viewer_user_id: str | None = None
+    viewer_session_id: str | None = None  # the UserSession the viewer authenticated with
     viewer_gone_at: datetime | None = None
     state: str = "requested"
     monitors: str | None = None  # last monitor list (replayed to a reconnecting viewer)
@@ -112,18 +119,20 @@ class Hub:
         data = msg if isinstance(msg, str) else json.dumps(msg, separators=(",", ":"))
         lock = pair.send_locks.setdefault(id(ws), asyncio.Lock())
         try:
-            async with lock:
-                await ws.send_text(data)
-        except Exception:  # the peer went away; its receive loop finishes the pair
-            log.debug("send to a closed remote-session socket", exc_info=True)
+            async with asyncio.timeout(SEND_TIMEOUT):
+                async with lock:
+                    await ws.send_text(data)
+        except Exception:  # the peer went away or stopped reading; its receive loop finishes the pair
+            log.debug("send to a closed or stuck remote-session socket", exc_info=True)
 
     async def send_bytes(self, pair: Pair, ws: WebSocket | None, data: bytes) -> bool:
         if ws is None or ws.application_state != WebSocketState.CONNECTED:
             return False
         lock = pair.send_locks.setdefault(id(ws), asyncio.Lock())
         try:
-            async with lock:
-                await ws.send_bytes(data)
+            async with asyncio.timeout(SEND_TIMEOUT):
+                async with lock:
+                    await ws.send_bytes(data)
             return True
         except Exception:
             return False
@@ -156,7 +165,8 @@ class Hub:
         for ws in (pair.agent, pair.viewer):
             if ws is not None and ws.application_state == WebSocketState.CONNECTED:
                 try:
-                    await ws.close(end.code, end.reason[:100])
+                    async with asyncio.timeout(SEND_TIMEOUT):
+                        await ws.close(end.code, end.reason[:100])
                 except Exception:  # already closed by the peer
                     log.debug("closing a remote-session socket failed", exc_info=True)
         if self.pairs.get(pair.session_id) is pair:
@@ -175,7 +185,7 @@ class Hub:
             if end.apply is not None:
                 end.apply(s, rs)
             else:
-                rsvc.apply_end(s, rs, end.reason, ip=pair.agent_ip)
+                rsvc.apply_end(s, rs, end.reason, ip=end.ip or pair.agent_ip)
             s.commit()
 
     @staticmethod
@@ -202,7 +212,7 @@ class Hub:
                     pass
                 if (pair.viewer is None and pair.viewer_gone_at is not None
                         and utcnow() - pair.viewer_gone_at >= VIEWER_RECONNECT_GRACE):
-                    await self.finish(pair, End("viewer_disconnected"))
+                    await self.finish(pair, End("viewer_disconnected", ip=pair.viewer_ip))
                     return
                 reason = await _threaded(self._recheck, pair)
                 if reason:
@@ -229,6 +239,8 @@ class Hub:
             if rs.state in ("awaiting_consent", "active"):
                 self._flush(rs, pair)
             reason = rsvc.check_live(s, rs)
+            if reason is None and not rsvc.viewer_session_live(s, pair.viewer_session_id, pair.activity_at):
+                reason = "viewer_session_revoked"  # signed out, expired or idle: the viewer may not watch on
             s.commit()
             return reason
 

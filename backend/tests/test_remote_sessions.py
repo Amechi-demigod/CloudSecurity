@@ -214,6 +214,18 @@ def test_availability_windows_only_and_feature_gated(admin):
     assert analyst.get(f"/api/devices/{win}/remote-sessions/availability").json()["modes"] == ["view"]
 
 
+def test_no_button_when_mode_all_runs_several_workers(admin, monkeypatch):
+    """REMOTE_RELAY_MODE=all with several workers (Azure: WEB_CONCURRENCY=2)
+    would split a session's two sockets: remote sessions are not offered."""
+    agent, dev = enroll_device(admin)
+    monkeypatch.setenv("WEB_CONCURRENCY", "2")
+    r = admin.get(f"/api/devices/{dev}/remote-sessions/availability")
+    assert r.status_code == 200 and not r.json()["available"] and "not supported on this deployment" in r.json()["reason"]
+    assert start(admin, dev).status_code == 409
+    monkeypatch.setattr(config.settings, "remote_relay_mode", "api")  # on-prem: the relay service pairs them
+    assert admin.get(f"/api/devices/{dev}/remote-sessions/availability").json()["available"]
+
+
 def test_one_session_per_device_and_org_cap(admin, monkeypatch):
     _, d1 = enroll_device(admin)
     _, d2 = enroll_device(admin, "LAPTOP-002", "b" * 64)
@@ -587,6 +599,144 @@ def test_termination_closes_both_sockets(admin, how):
     rs = session_row(sid)
     assert rs.state == "ended" and rs.end_reason == expected
     assert audits()[-1].action == "remote_session_ended"
+
+
+@pytest.mark.parametrize("how", ["logout", "expired", "revoked_all"])
+def test_signing_out_ends_the_open_viewer(admin, how):
+    """The viewer's socket outlives nothing its sign-in session does not: logout,
+    expiry and sign-out everywhere (password reset) end the remote session."""
+    from app.models import UserSession
+
+    agent, dev = enroll_device(admin)
+    analyst = user_client(admin, "analyst")
+    sid = start(analyst, dev).json()["id"]
+    v, a = connected(admin, agent, sid, viewer_c=analyst)
+    try:
+        if how == "logout":
+            assert analyst.post("/api/auth/logout").status_code == 204
+        else:
+            with db.get_session("default") as s:
+                for us in s.scalars(select(UserSession).where(UserSession.user_id == session_row(sid).requested_by_id)):
+                    if how == "expired":
+                        us.expires_at = utcnow() - timedelta(seconds=1)
+                    else:
+                        us.revoked_at = utcnow()
+                s.commit()
+        assert closed_code(v, timeout=10) == rsvc.CLOSE_ENDED
+        assert closed_code(a, timeout=10) == rsvc.CLOSE_ENDED
+    finally:
+        v.__exit__(None, None, None)
+        a.__exit__(None, None, None)
+    rs = session_row(sid)
+    assert rs.state == "ended" and rs.end_reason == "viewer_session_revoked"
+
+
+def test_viewer_activity_keeps_its_sign_in_session_alive(admin, monkeypatch):
+    agent, dev = enroll_device(admin)
+    sid = start(admin, dev).json()["id"]
+    v, a = connected(admin, agent, sid)
+    v.__exit__(None, None, None)
+    a.__exit__(None, None, None)
+    from app.models import UserSession
+
+    monkeypatch.setattr(config.settings, "session_idle_minutes", 30.0)
+    with db.get_session("default") as s:
+        us = s.scalars(select(UserSession).where(UserSession.revoked_at.is_(None))).first()
+        now = utcnow()
+        us.last_seen_at = now - timedelta(minutes=29)
+        assert rsvc.viewer_session_live(s, us.id, activity_at=now, now=now)
+        assert us.last_seen_at == now  # touched, as a REST request would
+        us.last_seen_at = now - timedelta(minutes=31)
+        assert not rsvc.viewer_session_live(s, us.id, now=now)  # idle
+        assert not rsvc.viewer_session_live(s, "0" * 64, now=now)  # deleted
+        assert rsvc.viewer_session_live(s, None, now=now)  # no viewer has connected yet
+        s.rollback()
+
+
+def test_viewer_caused_ends_audit_the_viewers_ip(admin, monkeypatch):
+    monkeypatch.setattr(config.settings, "trust_proxy_headers", True)
+    monkeypatch.setattr(config.settings, "trusted_proxy_cidrs", ["10.0.0.0/8"])
+    monkeypatch.setattr(admin._transport, "client", ("10.0.0.2", 50000))  # nginx
+    agent, dev = enroll_device(admin)
+    sid = start(admin, dev, "control").json()["id"]
+    token, _ = poll_token(agent, sid)
+    with admin.websocket_connect(f"/api/remote/{sid}", headers={
+            "cookie": cookie(admin), "origin": ORIGIN, "x-forwarded-for": "203.0.113.50"}) as v, \
+            admin.websocket_connect(f"/api/agent/remote/{sid}", headers={
+                "authorization": agent.headers["Authorization"], "x-remote-session-token": token,
+                "x-forwarded-for": "198.51.100.20"}) as a:
+        until_state(v, "awaiting_consent")
+        a.send_json({"t": "consent", "allow": True})
+        until_state(v, "active")
+        for _ in range(400):
+            v.send_json({"t": "activity"})
+        assert closed_code(v) == rsvc.CLOSE_RATE
+    ended = audits()[-1]
+    assert ended.action == "remote_session_ended" and ended.ip == "203.0.113.50"
+    assert next(x for x in audits() if x.action == "remote_session_consented").ip == "198.51.100.20"
+
+
+def test_heartbeat_grace_follows_the_recheck_interval(monkeypatch):
+    monkeypatch.setattr(config.settings, "remote_session_recheck_seconds", 5.0)
+    assert rsvc.heartbeat_grace() == timedelta(seconds=60)
+    monkeypatch.setattr(config.settings, "remote_session_recheck_seconds", 60.0)
+    assert rsvc.heartbeat_grace() == timedelta(seconds=180)
+
+
+def test_send_to_a_stuck_socket_gives_up(monkeypatch):
+    """A peer that stopped reading cannot stall the relay (finish(), the other end)."""
+    from starlette.websockets import WebSocketState
+
+    from app import remote_hub
+
+    class Stuck:
+        application_state = WebSocketState.CONNECTED
+
+        async def send_text(self, data):
+            await anyio.sleep(3600)
+
+        send_bytes = send_text
+
+        async def close(self, code, reason):
+            await anyio.sleep(3600)
+
+    monkeypatch.setattr(remote_hub, "SEND_TIMEOUT", 0.1)
+    pair = remote_hub.Pair(session_id="x" * 32, org_id="default", mode="view")
+    hub = remote_hub.Hub()
+
+    async def go():
+        t0 = time.monotonic()
+        await hub.send_text(pair, Stuck(), {"t": "ping"})
+        assert not await hub.send_bytes(pair, Stuck(), b"tile")
+        return time.monotonic() - t0
+    assert anyio.run(go) < 1.0
+
+
+def test_relay_listeners_have_their_own_size_caps(monkeypatch):
+    from app import relay_main
+
+    monkeypatch.setattr(config.settings, "remote_relay_mode", "relay")
+    agent, viewer = relay_main._servers()
+    s = config.settings
+    assert (agent.config.port, viewer.config.port) == (8001, 8002)
+    assert agent.config.ws_max_size > s.remote_session_agent_max_message_bytes
+    assert viewer.config.ws_max_size == 2 * s.remote_session_viewer_max_message_bytes < 1024 * 1024
+
+    def reach(app, path) -> int:
+        # Not `with TestClient(...)`: the relay's lifespan would re-initialise the
+        # process-wide database engine. These refusals need no database.
+        c = TestClient(app, base_url=BASE_URL)
+        try:
+            with c.websocket_connect(path) as ws:
+                return closed_code(ws)
+        except WebSocketDisconnect as e:
+            return -e.code  # refused before accepting: no such route here
+
+    # Each listener serves only its own end (bad ids: refused before any lookup).
+    assert reach(agent.config.app, "/api/agent/remote/not-a-session") == rsvc.CLOSE_NOT_FOUND
+    assert reach(agent.config.app, "/api/remote/not-a-session") < 0
+    assert reach(viewer.config.app, "/api/remote/not-a-session") == rsvc.CLOSE_FORBIDDEN  # no Origin
+    assert reach(viewer.config.app, "/api/agent/remote/not-a-session") < 0
 
 
 def test_agent_disconnect_ends_the_session(admin):
