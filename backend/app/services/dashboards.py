@@ -174,6 +174,18 @@ TYPE_LABEL: dict[str, str] = {
     "azure_firewall": "Azure firewalls", "private_endpoint": "Private endpoints", "subscription": "Subscriptions",
 }
 
+# Short labels for narrow table columns (top risky assets).
+TYPE_SHORT: dict[str, str] = {
+    "vm": "VM", "vmss": "VM scale set", "ec2_instance": "EC2", "gce_instance": "GCE VM", "function_app": "Function app",
+    "web_app": "Web app", "lambda_function": "Lambda", "cloud_function": "Cloud Function", "cloud_run_service": "Cloud Run",
+    "aks_cluster": "AKS", "eks_cluster": "EKS", "gke_cluster": "GKE", "pod": "K8s pod", "storage_account": "Storage",
+    "s3_bucket": "S3 bucket", "gcs_bucket": "GCS bucket", "sql_server": "SQL server", "sql_database": "SQL DB",
+    "sql_managed_instance": "SQL MI", "postgresql_server": "PostgreSQL", "cosmos_account": "Cosmos DB",
+    "redis_cache": "Redis", "rds_instance": "RDS", "cloud_sql_instance": "Cloud SQL", "key_vault": "Key vault",
+    "kms_key": "KMS key", "gcp_kms_key": "KMS key", "nsg": "NSG", "security_group": "Security group",
+    "identity": "Identity", "iam_user": "IAM user", "iam_role": "IAM role", "gcp_service_account": "Service account",
+}
+
 DATA_STORE_GROUPS = ("storage", "databases", "secrets")
 MANAGEMENT_PORTS: list[tuple[str, str, tuple[int, ...]]] = [
     ("ssh", "SSH 22", (22,)), ("rdp", "RDP 3389", (3389,)), ("winrm", "WinRM 5985/5986", (5985, 5986)),
@@ -195,8 +207,9 @@ WORKLOAD_LABEL = {key: label for key, label, _ in WORKLOAD_GROUPS} | {"endpoints
 
 # Top risky assets: the asset's risk is the higher of its riskiest open
 # vulnerability (0-100, engine/risk.py: CVSS x runtime use x internet exposure /
-# exploit / sensitive data) and a floor set by its worst open finding. Ties go
-# to the asset with more critical, then high findings, then more vulnerabilities.
+# exploit / sensitive data) and a floor set by its worst open finding. Ties are
+# broken deterministically: more open critical, then more open high findings
+# (findings + vulnerabilities), then internet-exposed, then sensitive data, then name.
 FINDING_FLOOR = {"critical": 85.0, "high": 65.0, "medium": 40.0, "low": 15.0}
 
 
@@ -215,20 +228,36 @@ class Window:
     def compare_day(self) -> date:
         return self.today - timedelta(days=self.days)
 
-    def buckets(self) -> list[tuple[date, date]]:
-        """Chart buckets ending today: daily up to 30 days, weekly beyond."""
-        if self.days <= 30:
-            return [(self.today - timedelta(days=i), self.today - timedelta(days=i)) for i in range(self.days - 1, -1, -1)]
-        n = math.ceil(self.days / 7)
+    def _days(self) -> list[tuple[date, date]]:
+        return [(self.today - timedelta(days=i), self.today - timedelta(days=i)) for i in range(self.days - 1, -1, -1)]
+
+    def _weeks(self) -> list[tuple[date, date]]:
+        """7-day buckets ending today; the oldest one is clipped to the window's first day."""
+        first = self.today - timedelta(days=self.days - 1)
         out = []
-        for i in range(n - 1, -1, -1):
+        for i in range(math.ceil(self.days / 7) - 1, -1, -1):
             end = self.today - timedelta(days=7 * i)
-            out.append((end - timedelta(days=6), end))
+            out.append((max(first, end - timedelta(days=6)), end))
         return out
+
+    # Two granularities: bar charts (new vs resolved) group by week from 30 days
+    # up, so the bars stay readable; line charts (point-in-time series) stay
+    # daily up to 30 days and go weekly beyond.
+    def buckets(self) -> list[tuple[date, date]]:
+        """Line-chart buckets ending today: daily up to 30 days, weekly beyond."""
+        return self._days() if self.days <= 30 else self._weeks()
 
     @property
     def bucket(self) -> str:
         return "day" if self.days <= 30 else "week"
+
+    def bar_buckets(self) -> list[tuple[date, date]]:
+        """Bar-chart buckets ending today: daily for 7 days, weekly from 30 days."""
+        return self._days() if self.days < 30 else self._weeks()
+
+    @property
+    def bar_bucket(self) -> str:
+        return "day" if self.days < 30 else "week"
 
 
 def window(range_: str | None = None, account: str | None = None, now: datetime | None = None) -> Window:
@@ -630,20 +659,20 @@ def _mttr(db: Session, start: datetime, end: datetime, w: Window) -> dict[str, A
 
 def _issue_trend(db: Session, w: Window) -> dict[str, Any]:
     new = db.execute(_f(select(func.date(Finding.first_seen), func.count())
-                        .where(Finding.first_seen >= datetime.combine(w.buckets()[0][0], datetime.min.time()))
+                        .where(Finding.first_seen >= datetime.combine(w.bar_buckets()[0][0], datetime.min.time()))
                         .group_by(func.date(Finding.first_seen)), w)).all()
     resolved = db.execute(_f(select(func.date(Finding.resolved_at), func.count())
                              .where(Finding.status == "resolved", Finding.resolved_at.is_not(None),
-                                    Finding.resolved_at >= datetime.combine(w.buckets()[0][0], datetime.min.time()))
+                                    Finding.resolved_at >= datetime.combine(w.bar_buckets()[0][0], datetime.min.time()))
                              .group_by(func.date(Finding.resolved_at)), w)).all()
     new_by = {_day(d): n for d, n in new}
     res_by = {_day(d): n for d, n in resolved}
     points = []
-    for start, end in w.buckets():
+    for start, end in w.bar_buckets():
         days = [_day(start + timedelta(days=i)) for i in range((end - start).days + 1)]
         points.append({"start": _day(start), "end": _day(end), "new": sum(new_by.get(d, 0) for d in days),
                        "resolved": sum(res_by.get(d, 0) for d in days)})
-    return {"bucket": w.bucket, "points": points}
+    return {"bucket": w.bar_bucket, "points": points}
 
 
 AGE_BUCKETS = [("0-7", "0–7 d", 0, 7), ("8-30", "8–30 d", 7, 30), ("31-90", "31–90 d", 30, 90),
@@ -687,6 +716,10 @@ def _top_assets(db: Session, w: Window, limit: int = 5) -> list[dict[str, Any]]:
     vrows = db.execute(_v(select(Vulnerability.asset_id, func.max(Vulnerability.risk_score), func.count())
                           .where(Vulnerability.status == "open", Vulnerability.asset_id.is_not(None))
                           .group_by(Vulnerability.asset_id), w)).all()
+    vsev = db.execute(_v(select(Vulnerability.asset_id, Vulnerability.severity, func.count())
+                         .where(Vulnerability.status == "open", Vulnerability.asset_id.is_not(None),
+                                Vulnerability.severity.in_(("critical", "high")))
+                         .group_by(Vulnerability.asset_id, Vulnerability.severity), w)).all()
     per: dict[str, dict[str, Any]] = defaultdict(lambda: {"floor": 0.0, "vuln": 0.0, "critical": 0, "high": 0,
                                                           "findings": 0, "vulns": 0})
     for aid, sev, n in frows:
@@ -695,6 +728,9 @@ def _top_assets(db: Session, w: Window, limit: int = 5) -> list[dict[str, Any]]:
         p["findings"] += n
         if sev in ("critical", "high"):
             p[sev] += n
+    for aid, sev, n in vsev:
+        if sev in ("critical", "high"):
+            per[aid][sev] += n
     for aid, mx, n in vrows:
         per[aid]["vuln"] = float(mx or 0)
         per[aid]["vulns"] = n
@@ -708,10 +744,12 @@ def _top_assets(db: Session, w: Window, limit: int = 5) -> list[dict[str, Any]]:
             continue
         score = max(p["floor"], p["vuln"])
         out.append({"id": aid, "name": a.name, "type": a.type, "type_label": TYPE_LABEL.get(a.type, a.type),
+                    "type_short": TYPE_SHORT.get(a.type, a.type.replace("_", " ")),
                     "risk": round(min(100.0, score)), "critical": p["critical"], "high": p["high"],
                     "findings": p["findings"], "vulnerabilities": p["vulns"],
                     "internet_exposed": bool(a.internet_exposed), "sensitive_data": bool(a.sensitive_data)})
-    out.sort(key=lambda x: (-x["risk"], -x["critical"], -x["high"], -x["vulnerabilities"], x["name"]))
+    out.sort(key=lambda x: (-x["risk"], -x["critical"], -x["high"], not x["internet_exposed"],
+                            not x["sensitive_data"], x["name"]))
     return out[:limit]
 
 

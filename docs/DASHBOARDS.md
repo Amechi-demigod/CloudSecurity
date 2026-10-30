@@ -16,7 +16,7 @@ user's organisation (see [MULTI_TENANCY.md](MULTI_TENANCY.md)). The code is in
 
 | Parameter | Values | Effect |
 |---|---|---|
-| `range` | `7d`, `30d` (default), `90d` | Period for trends, "new vs resolved", mean time to resolve, and the "vs previous period" changes. Charts use daily buckets up to 30 days and weekly buckets for 90 days. |
+| `range` | `7d`, `30d` (default), `90d` | Period for trends, "new vs resolved", mean time to resolve, and the "vs previous period" changes. Bar charts (new vs resolved) use daily buckets at 7 days and weekly buckets from 30 days; line charts (point-in-time series) stay daily up to 30 days and go weekly at 90. |
 | `account` | an Azure subscription, AWS account or GCP project id (`Asset.subscription_id`) | Findings, vulnerabilities, runtime alerts, attack paths, exposure and identities are limited to that account's assets. Endpoint devices are not tied to a cloud account and are never filtered (their vulnerabilities are left out of an account view). |
 
 ## Where each number comes from
@@ -33,7 +33,7 @@ user's organisation (see [MULTI_TENANCY.md](MULTI_TENANCY.md)). The code is in
 | | Compliance posture | `analytics.compliance_summary` (a control passes when none of its mapped rules has an open finding), for the frameworks that apply to the asset types present |
 | | Open issues by age | open findings by age of `first_seen`: 0–7, 8–30, 31–90, 90+ days |
 | | Findings by category | open findings by category (mapping below) |
-| | Top risky assets | per asset, the higher of its riskiest open vulnerability's risk (0–100) and a floor from its worst open finding (critical 85, high 65, medium 40, low 15) |
+| | Top risky assets | per asset, the higher of its riskiest open vulnerability's risk (0–100) and a floor from its worst open finding (critical 85, high 65, medium 40, low 15); ties broken by open critical, then open high (findings + vulnerabilities), then internet-exposed, then sensitive data, then name |
 | | Endpoints strip | active devices: healthy, failing a posture check (any device issue other than stale / inactive), sign-in suspended (`isolation_status` isolating / isolated / restoring), outdated agent (older than the newest imported release, else the newest version in the fleet) |
 | Vulnerabilities | Critical, KEV, Loaded at runtime, Fix available % | open vulnerabilities (`fixed_version` set = fix available) |
 | | Critical & high over time | open at the end of each bucket, from `first_seen` / `resolved_at`; "Prioritised" (risk priority critical or high) comes from the daily snapshots |
