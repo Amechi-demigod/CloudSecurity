@@ -18,6 +18,15 @@
   --color-sev-medium: #f5b324;
   --color-sev-low: #6aa7f8;
   --color-good: #2fb36b;
+  /* Categorical marks for non-severity categories (asset types, ports...), always
+     used in this fixed order and always next to a text label. "Other" is cat-4. */
+  --color-cat-1: #4c8dff;
+  --color-cat-2: #2bb3a6;
+  --color-cat-3: #a78bfa;
+  --color-cat-4: #64748b;
+  /* Tints behind change chips */
+  --color-good-bg: #143022;
+  --color-bad-bg: #3a1a1c;
 }
 
 /* Light palette: text tokens meet WCAG AA (4.5:1) on every surface; severity colors are
@@ -36,6 +45,12 @@
   --color-sev-medium: #a16207;
   --color-sev-low: #1d5fd1;
   --color-good: #15803d;
+  --color-cat-1: #2563eb;
+  --color-cat-2: #0f8a80;
+  --color-cat-3: #7c3aed;
+  --color-cat-4: #94a3b8;
+  --color-good-bg: #e7f6ec;
+  --color-bad-bg: #fdecec;
   color-scheme: light;
 }
 
@@ -77,4 +92,53 @@ body {
   background: var(--color-surface-2) !important;
   border: 1px solid var(--color-line) !important;
   border-radius: 8px;
+}
+
+/* Export PDF (window.print() on the Dashboards page): only the page content,
+   on the light palette, cards kept whole. */
+@media print {
+  :root {
+    --color-surface-0: #ffffff;
+    --color-surface-1: #ffffff;
+    --color-surface-2: #eef1f6;
+    --color-line: #dbe1ea;
+    --color-ink: #0f172a;
+    --color-ink-2: #3f4b5f;
+    --color-ink-3: #5b6678;
+    --color-accent: #2563eb;
+    --color-sev-critical: #c81e1e;
+    --color-sev-high: #c2410c;
+    --color-sev-medium: #a16207;
+    --color-sev-low: #1d5fd1;
+    --color-good: #15803d;
+    --color-cat-1: #2563eb;
+    --color-cat-2: #0f8a80;
+    --color-cat-3: #7c3aed;
+    --color-cat-4: #94a3b8;
+    --color-good-bg: #e7f6ec;
+    --color-bad-bg: #fdecec;
+    color-scheme: light;
+  }
+  html,
+  body,
+  #root {
+    height: auto;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  [data-print="hide"] {
+    display: none !important;
+  }
+  [data-print="flow"] {
+    display: block !important;
+    height: auto !important;
+    overflow: visible !important;
+  }
+  [data-print="card"] {
+    break-inside: avoid;
+    box-shadow: none !important;
+  }
+  @page {
+    margin: 12mm;
+  }
 }

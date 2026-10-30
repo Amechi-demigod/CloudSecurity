@@ -11,7 +11,7 @@ import { SEV_RANK, useSort } from "../lib/useSort";
 import { useUrlState } from "../lib/useUrlState";
 
 export default function Findings() {
-  // Deep links: ?severity=, ?status=, ?provider=, ?compliance= (dashboard); ?finding=<id> redirects below
+  // Deep links: ?severity=, ?status=, ?provider=, ?compliance=, ?category=, ?subscription= (dashboards); ?finding=<id> redirects below
   const [params] = useSearchParams();
   const linked = params.get("finding");
   const [severity, setSeverity] = useUrlState("severity");
@@ -19,6 +19,9 @@ export default function Findings() {
   const [source, setSource] = useUrlState("source");
   const [provider, setProvider] = useUrlState("provider");
   const [compliance, setCompliance] = useUrlState("compliance");
+  // Set by dashboard links only (no control on this page): finding category and cloud account.
+  const [category, setCategory] = useUrlState("category");
+  const [subscription, setSubscription] = useUrlState("subscription");
   const [expanded, setExpanded] = useState<string | null>(null);
   const [asset, setAsset] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -32,8 +35,10 @@ export default function Findings() {
         source: source || undefined,
         provider: provider || undefined,
         compliance: compliance || undefined,
+        category: category || undefined,
+        subscription_id: subscription || undefined,
       }),
-    [severity, status, source, provider, compliance],
+    [severity, status, source, provider, compliance, category, subscription],
   );
   const sorted = useSort(
     data,
@@ -84,6 +89,25 @@ export default function Findings() {
           value={compliance}
           onChange={(e) => setCompliance(e.target.value)}
         />
+        {[
+          { label: "Category", value: category, clear: () => setCategory("") },
+          { label: "Account", value: subscription, clear: () => setSubscription("") },
+        ]
+          .filter((f) => f.value)
+          .map((f) => (
+            <button
+              key={f.label}
+              type="button"
+              onClick={f.clear}
+              title={`Remove the ${f.label.toLowerCase()} filter`}
+              className="inline-flex max-w-[16rem] items-center gap-1 rounded-full border border-line bg-surface-2 px-2.5 py-0.5 text-xs text-ink-2 hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            >
+              <span className="truncate">
+                {f.label}: <span className="text-ink">{f.value}</span>
+              </span>
+              <span aria-hidden>✕</span>
+            </button>
+          ))}
         <span className="text-xs text-ink-3">{data ? `${data.length} findings` : ""}</span>
       </div>
       <Card>
@@ -102,7 +126,7 @@ export default function Findings() {
             loading={loading}
             rowCount={data?.length ?? 0}
             empty={
-              <Empty icon={ShieldCheck} title={status === "open" && !severity && !provider && !source && !compliance ? "No open findings" : "No findings match these filters"}>
+              <Empty icon={ShieldCheck} title={status === "open" && !severity && !provider && !source && !compliance && !category && !subscription ? "No open findings" : "No findings match these filters"}>
                 {status === "open" ? "Nothing to fix here right now. Run a scan under Connectors & scans to re-check." : "Try another status or clear a filter."}
               </Empty>
             }
