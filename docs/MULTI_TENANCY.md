@@ -138,8 +138,24 @@ recorded in the default organisation, the platform operator's.
 
 ## Per-organisation cloud connectors
 
+Organisation admins enter the credentials on **Configuration → Connectors &
+scans**. Until a cloud is connected the page shows a "Connect a cloud account"
+card: pick Azure, AWS or Google Cloud, copy the setup script (it creates a
+read-only `cnapp-scanner` identity: Azure built-in Reader, AWS SecurityAudit +
+ViewOnlyAccess, GCP roles/viewer + roles/iam.securityReviewer), run it in that
+cloud's shell and paste the values it prints. **Test & save** first tries the
+credentials with one read-only call per subscription / account / project
+(20 s timeout; a failure is shown and nothing is stored), then stores them; a
+provider that has never been scanned is scanned right away (trigger
+`first_scan`), the schedule takes over from there. Once a cloud is connected
+the page shows a card per cloud (last / next scan, resources, findings, **Edit
+connection**, **Run scan**) and offers to connect the others. Analysts and
+viewers see the status only.
+
 `GET/PUT/DELETE /api/organization/connectors/{azure|aws|gcp}` (organisation
-admins) stores an organisation's read-only credentials:
+admins) stores an organisation's read-only credentials; `PUT` takes
+`"test": true` (connection test before saving, audited as
+`connector_config_tested`) and `"start_first_scan": true`:
 
 | Provider | Settings | Secret (encrypted at rest) |
 |---|---|---|
@@ -204,9 +220,12 @@ Sign-up is **invite-only**; there is no public registration.
    (`MFA_REQUIRED_ROLES`), they sign in normally next and enrol their
    authenticator.
 4. They invite their teammates from **Administration → Organisation → Invite
-   people** (viewer, analyst or admin), create sensor tokens, and enter their
-   cloud connector credentials on the same page. Admins can still create users
-   with an initial password on the Users page.
+   people** (viewer, analyst or admin) and connect their clouds on
+   **Configuration → Connectors & scans** (see [Per-organisation cloud
+   connectors](#per-organisation-cloud-connectors)). Admins can still create
+   users with an initial password on the Users page. Runtime sensor tokens are
+   hidden from the console for now; existing tokens keep working and the API
+   (`/api/organization/ingest-tokens`) is unchanged.
 
 Accounts are platform-wide and belong to one organisation in this version, so
 an email address that already has an account cannot be invited.

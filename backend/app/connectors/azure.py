@@ -19,7 +19,7 @@ from typing import Any
 
 from ..config import Settings
 from ..engine import nsg as nsgeval
-from .base import AssetRecord, CollectionResult, Connector, RelationshipRecord
+from .base import AssetRecord, CollectionResult, Connector, RelationshipRecord, ScopeAccessError
 from .base import sensitive_from_tags as _sensitive_from_tags
 
 log = logging.getLogger(__name__)
@@ -494,6 +494,20 @@ class AzureConnector(Connector):
         if self._factory is None:
             self._factory = AzureClientFactory(build_credential(self.settings))
         return self._factory
+
+    def check_access(self, max_scopes: int = 10) -> list[dict[str, str]]:
+        """Connection test: list one resource group per subscription (Reader is enough)."""
+        factory = self._client_factory()
+        reached = []
+        for sub in self.settings.azure_subscription_ids[:max_scopes]:
+            try:
+                next(iter(factory("resource", sub).resource_groups.list()), None)
+            except ReadOnlyViolation:
+                raise
+            except Exception as exc:
+                raise ScopeAccessError(sub, exc) from exc
+            reached.append({"id": sub, "name": sub})
+        return reached
 
     # ------------------------------------------------------------------ main entry
     def collect(self) -> CollectionResult:

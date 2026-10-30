@@ -32,7 +32,7 @@ from typing import Any
 from urllib.parse import quote, urlsplit
 
 from ..config import Settings
-from .base import AssetRecord, CollectionResult, Connector, RelationshipRecord, sensitive_from_tags
+from .base import AssetRecord, CollectionResult, Connector, RelationshipRecord, ScopeAccessError, sensitive_from_tags
 
 log = logging.getLogger(__name__)
 
@@ -314,6 +314,35 @@ class GcpConnector(Connector):
     def info(self) -> dict:
         return {**super().info(), "auth_mode": resolve_auth_mode(self.settings),
                 "problem": credentials_file_problem(self.settings)}
+
+    def check_access(self, max_scopes: int = 10) -> list[dict[str, str]]:
+        """Connection test: projects.get per project and one page of the
+        organization's projects (the calls a scan starts with)."""
+        try:
+            session = self._session_factory() if self._session_factory else build_session(self.settings)
+        except Exception as exc:
+            raise ScopeAccessError("credentials", exc) from exc
+        client = ReadOnlyGcpClient(session, sleep=self._sleep, timeout=10, max_attempts=2)
+        reached = []
+        for pid in self.settings.gcp_project_ids[:max_scopes]:
+            try:
+                p = client.call("cloudresourcemanager.projects.get", f"{CRM}/projects/{quote(pid)}")
+            except ReadOnlyViolation:
+                raise
+            except Exception as exc:
+                raise ScopeAccessError(pid, exc) from exc
+            reached.append({"id": pid, "name": p.get("displayName") or pid})
+        org = self.settings.gcp_organization_id
+        if org:
+            try:
+                client.call("cloudresourcemanager.projects.list", f"{CRM}/projects",
+                            params={"parent": f"organizations/{org}", "pageSize": 1})
+            except ReadOnlyViolation:
+                raise
+            except Exception as exc:
+                raise ScopeAccessError(f"organizations/{org}", exc) from exc
+            reached.append({"id": f"organizations/{org}", "name": f"organization {org}"})
+        return reached
 
     # ------------------------------------------------------------------ main entry
     def collect(self) -> CollectionResult:

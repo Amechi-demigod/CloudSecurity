@@ -81,6 +81,10 @@ export interface ConnectorConfig {
   updated_at: string | null;
   updated_by: string | null;
   from_environment: boolean;
+  /** Save with `test`: what the connection test reached. */
+  test_message?: string | null;
+  /** Save with `start_first_scan`: the scan started because this provider had none yet. */
+  first_scan_id?: string | null;
 }
 
 export interface PlatformOrg extends Organization {
@@ -131,7 +135,10 @@ export const orgApi = {
     request<IngestToken & { token: string }>("/api/organization/ingest-tokens", json("POST", { name })),
   revokeIngestToken: (id: string) => request<IngestToken>(`/api/organization/ingest-tokens/${id}`, json("DELETE")),
   connectors: () => request<ConnectorConfig[]>("/api/organization/connectors"),
-  saveConnector: (provider: Provider, body: { enabled: boolean; config: Record<string, unknown>; secrets: Record<string, string> }) =>
+  saveConnector: (
+    provider: Provider,
+    body: { enabled: boolean; config: Record<string, unknown>; secrets: Record<string, string>; test?: boolean; start_first_scan?: boolean },
+  ) =>
     request<ConnectorConfig>(`/api/organization/connectors/${provider}`, json("PUT", body)),
   deleteConnector: (provider: Provider) => request<ConnectorConfig>(`/api/organization/connectors/${provider}`, json("DELETE")),
 

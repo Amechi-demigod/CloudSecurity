@@ -167,10 +167,9 @@ def _hint(name: str, value: str) -> str:
     return (value[:4] + "••••••") if len(value) > 8 else "••••••"
 
 
-def upsert(db: Session, provider: str, *, config_in: dict, secrets_in: dict, enabled: bool = True,
-           actor: str) -> ConnectorConfig:
-    """Create or update the session organisation's connector config. Secrets
-    not sent are kept; an empty string removes one. Caller commits."""
+def prepare(db: Session, provider: str, *, config_in: dict, secrets_in: dict) -> tuple[dict, dict]:
+    """Validated (config, secrets) the stored row would hold after this change:
+    secrets not sent are kept from the stored row, an empty string removes one."""
     from ..notifications import crypto
 
     if provider not in PROVIDERS:
@@ -205,6 +204,25 @@ def upsert(db: Session, provider: str, *, config_in: dict, secrets_in: dict, ena
     problems = _validate(provider, cfg, current)
     if problems:
         raise ConnectorConfigError("; ".join(problems))
+    return cfg, current
+
+
+def probe_settings(provider: str, cfg: dict, secrets: dict) -> Settings:
+    """Settings for a connection test of `provider` with exactly these values:
+    every cloud setting blank except the provider's own explicit credentials
+    (never the environment, the server's identity or demo data)."""
+    return dataclasses.replace(config.settings, **{**_blank_cloud(config.settings), **_apply(provider, cfg, secrets)},
+                               simulation_mode=False, simulated_connector_available=False)
+
+
+def upsert(db: Session, provider: str, *, config_in: dict, secrets_in: dict, enabled: bool = True,
+           actor: str) -> ConnectorConfig:
+    """Create or update the session organisation's connector config. Secrets
+    not sent are kept; an empty string removes one. Caller commits."""
+    from ..notifications import crypto
+
+    cfg, current = prepare(db, provider, config_in=config_in, secrets_in=secrets_in)
+    row = rows(db).get(provider)
     try:
         ciphertext = crypto.encrypt_secrets(current) if current else None
     except crypto.EncryptionUnavailable as e:

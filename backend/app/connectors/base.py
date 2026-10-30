@@ -76,6 +76,15 @@ def sensitive_from_tags(tags: dict | None) -> tuple[bool, str | None]:
     return False, None
 
 
+class ScopeAccessError(Exception):
+    """A connection test call failed for one subscription / account / project."""
+
+    def __init__(self, scope: str, cause: Exception):
+        super().__init__(f"{scope}: {type(cause).__name__}")
+        self.scope = scope
+        self.cause = cause
+
+
 class Connector(ABC):
     #: unique key, also used as `source` on stored rows
     name: str = "base"
@@ -91,6 +100,13 @@ class Connector(ABC):
     @abstractmethod
     def collect(self) -> CollectionResult:
         """Discover resources. MUST be read-only against the cloud provider."""
+
+    def check_access(self) -> list[dict[str, str]]:
+        """Connection test: one minimal read-only call per configured scope, through
+        the provider's read-only client wrapper. Returns the scopes reached
+        ([{"id", "name"}]) and raises `ScopeAccessError` on the first one that
+        fails (app/connectors/access_check.py adds the timeout and the message)."""
+        raise NotImplementedError
 
     def scope(self) -> list[str]:
         """Configured scan targets (subscriptions, accounts, projects...), for the UI."""

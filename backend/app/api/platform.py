@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select
@@ -13,7 +14,7 @@ from ..connectors import CLOUD_CONNECTORS, build_registry
 from ..connectors.org_config import org_settings
 from ..db import get_db
 from ..engine.attack_paths import INTERNET_NODE
-from ..models import Asset, ScanRun, User
+from ..models import Asset, AuditLog, ScanRun, User
 from ..schemas import ScanRequest, ScanRunOut, ScanScheduleOut, ScanScheduleUpdate
 from ..services import analytics, scan_schedule
 from ..services.scans import start_scan
@@ -128,7 +129,20 @@ def update_scan_schedule(body: ScanScheduleUpdate, request: Request, user: User 
 
 @router.get("/scans", response_model=list[ScanRunOut])
 def list_scans(db: Session = Depends(get_db), limit: int = Query(20, ge=1, le=200)):
-    return list(db.scalars(select(ScanRun).order_by(ScanRun.started_at.desc()).limit(limit)))
+    runs = [ScanRunOut.model_validate(r) for r in
+            db.scalars(select(ScanRun).order_by(ScanRun.started_at.desc()).limit(limit))]
+    started = {r.id for r in runs if r.trigger != "scheduled"}
+    if started:
+        oldest = min(r.started_at for r in runs if r.id in started) - timedelta(minutes=5)
+        by = {}
+        for detail, email in db.execute(select(AuditLog.detail, AuditLog.actor_email).where(
+                AuditLog.action == "scan_started", AuditLog.timestamp >= oldest.replace(tzinfo=None))):
+            sid = (detail or {}).get("scan_id")
+            if sid in started and email:
+                by[sid] = email
+        for r in runs:
+            r.triggered_by = by.get(r.id)
+    return runs
 
 
 @router.get("/scans/{scan_id}", response_model=ScanRunOut)

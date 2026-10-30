@@ -26,6 +26,7 @@ import { api, type Role } from "./api";
 import { useAuth } from "./auth/context";
 import UserMenu from "./components/UserMenu";
 import { useBrand } from "./lib/brand";
+import { PROVIDER_LABEL } from "./lib/format";
 import { useTheme } from "./lib/theme";
 import { useApi } from "./lib/useApi";
 import Approvals from "./pages/Approvals";
@@ -178,6 +179,8 @@ function Shell() {
   const { can, forbidden, dismissForbidden, platformAdmin } = useAuth();
   const brand = useBrand();
   const { data: health, error } = useApi(api.health, [], 15000);
+  // This organisation's connectors (console settings, or the environment for the default one).
+  const { data: connectors } = useApi(api.connectors, [], 60000);
   const admin = can("admin");
   const { data: approvals } = useApi(() => (admin ? api.approvalSummary() : Promise.resolve(null)), [admin], admin ? 30000 : undefined);
   // Below the md breakpoint the sidebar is an overlay opened from the header's menu button.
@@ -265,13 +268,10 @@ function Shell() {
               <div>
                 Cloud connectors:{" "}
                 <span className="text-ink-2">
-                  {[
-                    health.azure_configured && "Azure",
-                    health.aws_configured && "AWS",
-                    health.gcp_configured && "GCP",
-                  ]
-                    .filter(Boolean)
-                    .join(", ") || "none configured"}
+                  {(connectors
+                    ? connectors.filter((c) => c.name !== "simulated" && c.configured).map((c) => PROVIDER_LABEL[c.name] ?? c.name)
+                    : [health.azure_configured && "Azure", health.aws_configured && "AWS", health.gcp_configured && "GCP"].filter(Boolean)
+                  ).join(", ") || "none configured"}
                 </span>
               </div>
             </>

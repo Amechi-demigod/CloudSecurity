@@ -11,7 +11,7 @@ import { Button, Card, ErrorNote, Tag } from "./ui";
 const ONBOARDING_STEPS: Record<OnboardingStepKey, { title: string; hint: string; to: string; label: string; role: Role }> = {
   mfa: { title: "Secure your account", hint: "Turn on multi-factor authentication", to: "/account/security", label: "Set up MFA", role: "viewer" },
   team: { title: "Invite your team", hint: "Add at least one teammate", to: "/admin/organization", label: "Invite people", role: "admin" },
-  cloud: { title: "Connect a cloud account", hint: "Enter read-only Azure, AWS or GCP credentials", to: "/admin/organization", label: "Add credentials", role: "admin" },
+  cloud: { title: "Connect a cloud account", hint: "Run a read-only setup script for Azure, AWS or Google Cloud", to: "/connectors", label: "Connect a cloud", role: "admin" },
   agent: { title: "Install the endpoint agent", hint: "Enroll your first device", to: "/devices/enrollment", label: "Enroll a device", role: "admin" },
   scan: { title: "Run your first scan", hint: "Scan a connected cloud account", to: "/connectors", label: "Run a scan", role: "analyst" },
   alerts: { title: "Set up alerts", hint: "Add a Teams, Slack, email or webhook channel", to: "/notifications?tab=channels", label: "Add a channel", role: "analyst" },
