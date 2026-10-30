@@ -12,6 +12,7 @@ import (
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/commands"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/lostmode"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/model"
+	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/remote"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/scripts"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/signin"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/state"
@@ -271,3 +272,23 @@ type agentError string
 func (e agentError) Error() string { return string(e) }
 
 const errLostModeUnavailable = agentError("lost mode is not available")
+
+// remoteSession (start_remote_session): connect the relay and start the
+// helper; the session continues in the background after the result is
+// reported. ctx is the agent's lifetime, so stopping the service ends it.
+func (a *Agent) remoteSession(ctx context.Context, c model.Command) commands.Outcome {
+	if a.Remote == nil {
+		return commands.Outcome{Status: "failed", Output: "remote sessions are not available",
+			ResultData: map[string]any{"error_code": remote.ErrHelper}}
+	}
+	p, err := remote.ParseParams(c.Params)
+	if err != nil { // already validated; defensive
+		return commands.Outcome{Status: "rejected", Output: err.Error()}
+	}
+	r := a.Remote.Start(ctx, p)
+	out := commands.Outcome{Status: r.Status, Output: r.Output}
+	if r.ErrorCode != "" {
+		out.ResultData = map[string]any{"error_code": r.ErrorCode}
+	}
+	return out
+}

@@ -17,6 +17,7 @@ import (
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/commands"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/lostmode"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/model"
+	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/remote"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/scripts"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/signin"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/state"
@@ -63,6 +64,8 @@ type Agent struct {
 	ScriptKeys   []update.TrustedKey
 	ScriptRunner scripts.Runner
 	Signin       *signin.Manager
+	// Remote runs attended remote sessions (nil: not available).
+	Remote *remote.Controller
 
 	hostname            string
 	probe               *wipe.Readiness
@@ -94,6 +97,9 @@ func Load(p state.Paths) (*Agent, error) {
 		WipeProbe: wipe.Probe, WipeExec: wipe.WMIExecutor{}, GOOS: runtime.GOOS, ScriptRunner: scripts.OSRunner{}}
 	a.LostMode = lostmode.New(p, func(ctx context.Context) (string, error) { return a.Lock(ctx) })
 	a.Signin = signin.New(p)
+	base, secret, pinned, insecure := c.RelayConfig()
+	a.Remote = remote.New(remote.DefaultPlatform(), remote.NewDialer(remote.DialConfig{
+		ServerURL: base, Secret: secret, TLS: pinned, InsecureDev: insecure}))
 	if keys, err := scripts.BuiltinKeys(); err != nil {
 		slog.Error("script-signing keys unusable; scripts disabled", "err", err)
 	} else {
@@ -217,6 +223,7 @@ func (a *Agent) handle(ctx context.Context, c model.Command) {
 		CheckForUpdate: a.CheckForUpdate,
 		IsolateHost:    a.isolateHost,
 		RestoreHost:    a.restoreHost,
+		RemoteSession:  a.remoteSession,
 	}, a.Restart)
 	log.Info("command finished", "status", out.Status, "output", out.Output)
 	if err := a.client.ResultFull(ctx, c, out.Status, out.Output, out.ExitCode, out.ResultData); err != nil {

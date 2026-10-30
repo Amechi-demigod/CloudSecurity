@@ -6,7 +6,8 @@
 // runs scripts from a bundle signed by a script-signing key compiled into the
 // agent, with parameters validated against the signed schema (internal/scripts);
 // wipe_device only works on Windows devices that opted in at install time
-// (internal/wipe).
+// (internal/wipe); start_remote_session never captures anything before the
+// signed-in user allows it (internal/remote).
 package commands
 
 import (
@@ -20,6 +21,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/model"
+	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/remote"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/scripts"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/wipe"
 )
@@ -45,6 +47,9 @@ const (
 	// shipped them first) - see internal/signin.
 	IsolateHost = "isolate_host"
 	RestoreHost = "restore_host"
+	// StartRemoteSession opens an attended remote session (internal/remote):
+	// nothing is captured until the signed-in user allows it.
+	StartRemoteSession = remote.CommandType
 )
 
 // Lost-mode message limits (also enforced server-side).
@@ -72,6 +77,7 @@ var allowedParams = map[string][]string{
 	CheckForUpdate:        {},
 	IsolateHost:           {"incident_id"},
 	RestoreHost:           {},
+	StartRemoteSession:    remote.AllowedParams,
 }
 
 // incidentIDRe matches an optional, operator-supplied incident reference
@@ -145,6 +151,8 @@ func Validate(c model.Command, deviceID string, now time.Time) error {
 		err = scripts.ValidateCommand(c)
 	case IsolateHost:
 		_, err = IncidentIDParam(c.Params)
+	case StartRemoteSession:
+		_, err = remote.ParseParams(c.Params)
 	}
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrRejected, err)
@@ -202,6 +210,9 @@ type Deps struct {
 	// LostMode/Lock use.
 	IsolateHost func(ctx context.Context, c model.Command) Outcome
 	RestoreHost func(ctx context.Context, c model.Command) Outcome
+	// RemoteSession returns once the session is connected (it then runs in
+	// the background) or could not start; ResultData carries the error_code.
+	RemoteSession func(ctx context.Context, c model.Command) Outcome
 }
 
 // Outcome of an executed command. After (if set) runs once the result has been
@@ -211,11 +222,11 @@ type Outcome struct {
 	Output   string
 	After    func()
 	ExitCode *int // run_script
-	// ResultData is isolate_host/restore_host only: pre-flight findings and
-	// crash-recovery outcomes, sent as result_data on the result POST and
-	// strictly validated server-side against schemas_devices.
-	// IsolateHostResultData/RestoreHostResultData. Left nil/empty for every
-	// other command type - never POSTed then.
+	// ResultData is isolate_host/restore_host/start_remote_session only:
+	// pre-flight findings, crash-recovery outcomes or the remote-session
+	// error_code, sent as result_data on the result POST and strictly
+	// validated server-side against schemas_devices.RESULT_DATA_SCHEMAS.
+	// Left nil/empty for every other command type - never POSTed then.
 	ResultData map[string]any
 }
 
@@ -296,6 +307,12 @@ func Execute(ctx context.Context, c model.Command, d Deps, restart func()) Outco
 			return Outcome{Status: "rejected", Output: "restore sign-in is not available"}
 		}
 		return d.RestoreHost(ctx, c)
+	case StartRemoteSession:
+		if d.RemoteSession == nil {
+			return Outcome{Status: "failed", Output: "remote sessions are not available in this agent mode",
+				ResultData: map[string]any{"error_code": remote.ErrHelper}}
+		}
+		return d.RemoteSession(ctx, c)
 	}
 	return Outcome{Status: "rejected", Output: "command type not in allowlist"}
 }

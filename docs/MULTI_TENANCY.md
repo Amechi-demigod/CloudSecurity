@@ -74,7 +74,10 @@ in each query:
    organisation, or changing a row's organisation, raises `TenancyError`.
 3. **Requests are scoped by the authenticated principal**: the user's session
    (`auth.current_session`), the device credential or enrollment token
-   (endpoint agents), the ingest token (runtime sensors). Objects of another
+   (endpoint agents), the ingest token (runtime sensors). The remote-session
+   WebSockets use the same principals (`auth.session_from_connection`,
+   `agent.device_from_connection`): another organisation's session id is
+   "not found" on both sockets. Objects of another
    organisation are simply not found (404), never "forbidden" (no existence
    oracle).
 4. **Defense in depth in the schema**: composite foreign keys keep references

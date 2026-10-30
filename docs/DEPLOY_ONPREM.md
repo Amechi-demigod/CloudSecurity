@@ -72,9 +72,12 @@ flowchart LR
     direction LR
     N["frontend: nginx (uid 101)<br/>:443 TLS, :80 -> 301 https<br/>HSTS, CSP, /api proxy<br/>/api/agent/ 8 MiB"]
     A["backend: FastAPI + gunicorn<br/>2 workers, read-only FS<br/>migrations at start (advisory lock)"]
+    R["relay: backend image, 1 process<br/>remote-session WebSockets<br/>agents :8001, viewers :8002"]
     P[("postgres:16<br/>volume cnapp_pgdata<br/>not published")]
     N -->|"http :8000, internal network"| A
+    N -->|"ws :8001 /api/agent/remote/, :8002 /api/remote/"| R
     A --> P
+    R --> P
     T["systemd: cnapp.service,<br/>cnapp-backup.timer (02:30),<br/>cnapp-update.timer (off, 03:00)"]
   end
   B -->|HTTPS 443| N
@@ -589,6 +592,12 @@ The PostgreSQL image (`postgres:16-alpine`, major version 16) is pulled at insta
 dump/restore and is not automated. OS packages: unattended security upgrades; Docker Engine from Docker's repository
 is upgraded with your regular `apt upgrade` (not automatically).
 
+**Remote sessions.** The `relay` service (the remote-session WebSockets,
+[DEVICE_MANAGEMENT.md](DEVICE_MANAGEMENT.md#remote-sessions-windows)) runs the backend image, so `update`, rollback and
+`restore` move it with the backend. Restarting it **ends any live remote session** (end reason `relay_restart`; the
+viewer shows it, the device's banner disappears). Rolling back to a version from before remote sessions removes the
+relay container until you update again.
+
 ## 7. Backups and restore
 
 * `cnapp-backup.timer` runs nightly at 02:30 (`Persistent=true`: a missed run happens at next boot):
@@ -713,7 +722,7 @@ secrets root-only, log rotation (10 MB x 5 per container).
 ## 10. Monitoring and troubleshooting
 
 * `sudo cnapp-ctl status` - containers, health over HTTPS, version, schema, certificate expiry, backups, memory.
-* `sudo cnapp-ctl logs [backend|frontend|postgres] [-f] [--tail N]` - JSON logs from the API; also
+* `sudo cnapp-ctl logs [backend|relay|frontend|postgres] [-f] [--tail N]` - JSON logs from the API; also
   `journalctl -u cnapp -u cnapp-backup -u cnapp-update`.
 * External monitoring: HTTPS GET `https://cnapp.corp.local/api/health` (expects `{"status":"ok"}`); alert on disk > 80%
   (`df -h /var/lib/docker /opt/cnapp`) and certificate expiry.

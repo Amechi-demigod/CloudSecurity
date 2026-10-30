@@ -14,12 +14,17 @@ Sub-commands:
   expect NAME present|absent
   token NAME    create an enrollment token and print it (e.g. to enroll an agent from another network)
   get PATH      print the JSON of an authenticated GET (e.g. /api/devices/installers)
+  relay         the remote-session relay answers WebSocket upgrades through nginx: the viewer
+                path (session cookie + Origin) and the agent path, both reaching the relay's checks
 """
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
+import secrets
+import socket
 import ssl
 import subprocess
 import sys
@@ -173,6 +178,82 @@ def verify(a: argparse.Namespace) -> None:
     print("all on-prem checks passed")
 
 
+def ws_handshake(base: str, ca: str, path: str, headers: dict[str, str]) -> tuple[int, int | None]:
+    """Raw WebSocket upgrade (stdlib): returns (HTTP status, close code of the first frame or None)."""
+    host = base.split("://", 1)[1].rstrip("/")
+    name, _, port = host.partition(":")
+    ctx = ssl.create_default_context(cafile=ca)
+    with socket.create_connection((name, int(port or 443)), timeout=20) as raw, \
+            ctx.wrap_socket(raw, server_hostname=name) as sock:
+        key = base64.b64encode(secrets.token_bytes(16)).decode()
+        lines = [f"GET {path} HTTP/1.1", f"Host: {host}", "Upgrade: websocket", "Connection: Upgrade",
+                 f"Sec-WebSocket-Key: {key}", "Sec-WebSocket-Version: 13", "User-Agent: cnapp-onprem-e2e",
+                 *[f"{k}: {v}" for k, v in headers.items()]]
+        sock.sendall(("\r\n".join(lines) + "\r\n\r\n").encode())
+        buf = b""
+        while b"\r\n\r\n" not in buf:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            buf += chunk
+        head, _, rest = buf.partition(b"\r\n\r\n")
+        status = int(head.split(b" ", 2)[1]) if head.startswith(b"HTTP/") else 0
+        if status != 101:
+            return status, None
+        while len(rest) < 4:
+            chunk = sock.recv(4096)
+            if not chunk:
+                return status, None
+            rest += chunk
+        opcode, length = rest[0] & 0x0F, rest[1] & 0x7F
+        if opcode != 8 or length < 2:
+            return status, None
+        return status, int.from_bytes(rest[2:4], "big")
+
+
+def relay(a: argparse.Namespace) -> None:
+    """After install / update / rollback / restore: nginx upgrades both remote-session
+    paths and the relay service answers (a made-up session id is refused with the
+    relay's own close codes, which proves the upgrade reached the relay)."""
+    api = Api(a.base, a.ca)
+    wait_health(api)
+    api.login(a.email, Path(a.password_file).read_text().strip())
+    sid = secrets.token_hex(16)
+    deadline = time.monotonic() + 120
+    status, code = 0, None
+    while time.monotonic() < deadline:  # the relay may still be starting
+        status, code = ws_handshake(a.base, a.ca, f"/api/remote/{sid}", {"Cookie": api.cookie, "Origin": a.base})
+        if status == 101 and code == 4404:
+            break
+        time.sleep(3)
+    check(status == 101 and code == 4404,
+          f"viewer WebSocket upgraded by nginx and answered by the relay (HTTP {status}, close {code})")
+    status, code = ws_handshake(a.base, a.ca, f"/api/remote/{sid}", {"Cookie": api.cookie,
+                                                                     "Origin": "https://evil.example"})
+    check(status == 101 and code == 4403, f"a cross-site Origin is refused (HTTP {status}, close {code})")
+    status, code = ws_handshake(a.base, a.ca, f"/api/agent/remote/{sid}", {"Authorization": "Bearer cnd_fake"})
+    check(status == 101 and code == 4401, f"agent WebSocket reaches the relay's credential check (close {code})")
+    status, _, _, _ = api.req("GET", f"/api/remote/{sid}")
+    check(status in (400, 403, 404, 426), f"a plain GET of the viewer path is not served by the API ({status})")
+
+
+def compose_deps(a: argparse.Namespace) -> None:
+    """The rendered compose project (`docker compose ... config --format json` on
+    stdin): nothing waits for the backend to be *healthy*. cnapp-ctl runs
+    `compose up -d` under `set -e`; a service_healthy dependency on the backend
+    would make it block and fail there, before wait_healthy, the diagnostics and
+    rollback's notify_update / restore guidance. wait_healthy is the judge."""
+    services = json.load(sys.stdin)["services"]
+    check("relay" in services and "backend" in services, "the compose project has the backend and the relay")
+    for name, svc in sorted(services.items()):
+        dep = (svc.get("depends_on") or {}).get("backend")
+        if dep is not None:
+            cond = dep.get("condition", "service_started")
+            check(cond == "service_started", f"{name} waits only for the backend to start ({cond})")
+    check(services["relay"].get("command", [])[:3] == ["python", "-m", "app.relay_main"],
+          "the relay runs both listeners (python -m app.relay_main)")
+
+
 def marker(a: argparse.Namespace) -> None:
     api = Api(a.base, a.ca)
     wait_health(api)
@@ -209,8 +290,10 @@ def main() -> None:
     e.add_argument("state", choices=["present", "absent"])
     sub.add_parser("token").add_argument("name")
     sub.add_parser("get").add_argument("name", metavar="PATH")
+    sub.add_parser("relay")
+    sub.add_parser("compose-deps", help="read `docker compose config --format json` on stdin")
     a = p.parse_args()
-    verify(a) if a.cmd == "verify" else marker(a)
+    {"verify": verify, "relay": relay, "compose-deps": compose_deps}.get(a.cmd, marker)(a)
 
 
 if __name__ == "__main__":

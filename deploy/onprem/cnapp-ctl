@@ -147,20 +147,38 @@ https_health() { # end-to-end check through nginx + TLS, verified against our CA
   [[ $body == *'"status":"ok"'* ]]
 }
 
+# The remote-session relay (docs/DEVICE_MANAGEMENT.md#remote-sessions-windows)
+# runs the backend image. An image from before remote sessions (e.g. after a
+# rollback to an older tag) has no app/relay_main.py: the relay is then removed
+# instead of crash-looping, and not required for health.
+relay_supported() {
+  compose exec -T backend test -f /app/app/relay_main.py >/dev/null 2>&1
+}
+
+relay_health() { # -> healthy|unhealthy|starting|...|n/a (this image has no relay)
+  if relay_supported; then container_health relay; return; fi
+  if [[ "$(container_health relay)" != missing ]]; then
+    warn "this image predates remote sessions: removing the relay container"
+    compose rm -sf relay >/dev/null 2>&1 || true
+  fi
+  echo n/a
+}
+
 wait_healthy() { # wait_healthy timeout_seconds
-  local timeout=${1:-300} start=$SECONDS b f
+  local timeout=${1:-300} start=$SECONDS b f r=pending
   (( DRY_RUN )) && return 0
   log "Waiting up to ${timeout}s for the stack to become healthy"
   while (( SECONDS - start < timeout )); do
-    b=$(container_health backend); f=$(container_health frontend)
-    if [[ $b == healthy && $f == healthy ]] && https_health; then
-      ok "healthy after $(( SECONDS - start ))s (backend=$b frontend=$f, HTTPS /api/health ok)"
+    b=$(container_health backend); f=$(container_health frontend); r=pending
+    [[ $b == healthy ]] && r=$(relay_health)
+    if [[ $b == healthy && $f == healthy && ( $r == healthy || $r == n/a ) ]] && https_health; then
+      ok "healthy after $(( SECONDS - start ))s (backend=$b relay=$r frontend=$f, HTTPS /api/health ok)"
       return 0
     fi
     [[ $b == exited || $b == missing ]] && (( SECONDS - start > 30 )) && break
     sleep 5
   done
-  warn "not healthy after $(( SECONDS - start ))s (backend=$(container_health backend) frontend=$(container_health frontend))"
+  warn "not healthy after $(( SECONDS - start ))s (backend=$(container_health backend) relay=$(container_health relay) frontend=$(container_health frontend))"
   return 1
 }
 
@@ -1512,7 +1530,7 @@ cmd_install() {
   log "Starting the stack"
   run systemctl enable cnapp-firewall.service cnapp.service >/dev/null 2>&1
   run compose up -d --remove-orphans
-  wait_healthy "$timeout" || { compose logs --tail 80 backend frontend >&2 || true; die "the stack did not become healthy (see the logs above; cnapp-ctl logs backend)"; }
+  wait_healthy "$timeout" || { compose logs --tail 80 backend relay frontend >&2 || true; die "the stack did not become healthy (see the logs above; cnapp-ctl logs backend)"; }
   record_state "$(conf_get IMAGE_TAG)" "install"
   run systemctl enable --now cnapp-backup.timer >/dev/null 2>&1
   ok "nightly backups enabled (cnapp-backup.timer, 02:30, kept $(conf_get BACKUP_RETENTION_DAYS) days)"
@@ -1609,7 +1627,7 @@ cmd_backup() {
 
 restore_db() { # restore_db file - replaces the database content
   local f=$1
-  compose stop backend frontend >/dev/null 2>&1 || true
+  compose stop backend relay frontend >/dev/null 2>&1 || true
   compose exec -T postgres psql -U cnapp -d postgres -v ON_ERROR_STOP=1 -q \
     -c "DROP DATABASE IF EXISTS cnapp WITH (FORCE)" -c "CREATE DATABASE cnapp OWNER cnapp" >/dev/null
   gunzip -c "$f" | compose exec -T postgres pg_restore -U cnapp -d cnapp --no-owner --exit-on-error
@@ -1986,9 +2004,9 @@ cmd_update() {
 
   # ---- rollback
   local logf; logf="$STATE_DIR/failed-update-$(date +%Y%m%d-%H%M%S).log"
-  compose logs --no-color --tail 300 backend frontend >"$logf" 2>&1 || true
+  compose logs --no-color --tail 300 backend relay frontend >"$logf" 2>&1 || true
   warn "update to $target FAILED health checks; rolling back to $prev (logs: $logf)"
-  compose stop backend frontend >/dev/null 2>&1 || true
+  compose stop backend relay frontend >/dev/null 2>&1 || true
   local now_rev; now_rev=$(alembic_revision)
   # Re-point the previous tag at the exact old images (matters for 'latest').
   [[ -n $old_b ]] && docker tag "$rb_b" "$(image_ref backend "$prev")"
@@ -2119,7 +2137,7 @@ cmd_restart() {
   need_root restart; require_installed
   local wait=1; [[ ${1:-} == --no-wait ]] && wait=0
   # 'up' (not 'restart') so edits to cnapp.env are applied
-  run compose up -d --force-recreate --remove-orphans backend frontend
+  run compose up -d --force-recreate --remove-orphans backend relay frontend
   (( wait )) && { wait_healthy 300 || die "not healthy (cnapp-ctl logs backend)"; }
   return 0
 }

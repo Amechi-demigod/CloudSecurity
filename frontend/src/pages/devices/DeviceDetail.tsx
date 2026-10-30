@@ -12,6 +12,7 @@ import { useApi } from "../../lib/useApi";
 import { useUrlState } from "../../lib/useUrlState";
 import { AssetRecordLink } from "../assets/AssetRecordLink";
 import { IsolationCard, LostModeDialog, LostWipeCard, SuspendSignInDialog, WipeDialog } from "./LostWipe";
+import { RemoteSessionButton, RemoteSessionsCard } from "./RemoteSessions";
 import { RunScriptDialog } from "./RunScriptDialog";
 import { PendingUpdateView, UpdateNowButton } from "./UpdateAutomation";
 
@@ -34,6 +35,7 @@ const EXTRA_LABEL: Partial<Record<CommandType, string>> = {
   run_script: "Run script",
   isolate_host: "Suspend sign-in",
   restore_host: "Restore sign-in",
+  start_remote_session: "Remote session",
 };
 
 function commandLabel(c: DeviceCommand): string {
@@ -751,6 +753,7 @@ export default function DeviceDetail() {
               {a.label}
             </Button>
           ))}
+          <RemoteSessionButton device={device} />
           {can("admin") && (
             <Button onClick={() => setScriptOpen(true)} title="Run a script from the signed library">
               Run script
@@ -873,7 +876,12 @@ export default function DeviceDetail() {
       {tab === "Posture" && <PostureCards device={device} />}
       {tab === "Software" && <SoftwareTab id={device.id} />}
       {tab === "Vulnerabilities" && <VulnerabilitiesTab id={device.id} />}
-      {tab === "History" && <HistoryTab id={device.id} />}
+      {tab === "History" && (
+        <>
+          <RemoteSessionsCard deviceId={device.id} />
+          <HistoryTab id={device.id} />
+        </>
+      )}
       {tab === "Updates" && <UpdatesTab id={device.id} admin={can("admin") && active} analyst={can("analyst") && active} />}
       {tab === "Commands" && <CommandsTab device={device} commands={cmds.data} error={cmds.error} reload={cmds.reload} />}
       {tab === "Commands" && can("admin") && <DeviceApprovals id={device.id} onChanged={() => { cmds.reload(); reload(); }} />}

@@ -265,3 +265,45 @@ func TestCheckForUpdate(t *testing.T) {
 		t.Errorf("nil dep: %+v", out)
 	}
 }
+
+func remoteParams() map[string]any {
+	return map[string]any{"session_id": strings.Repeat("a", 32), "token": strings.Repeat("T", 43), "mode": "view",
+		"requester_name": "IT Support", "requester_email": "it@example.com", "org_name": "Wakanow",
+		"reason": "user reports a frozen Outlook", "consent_timeout_seconds": 60.0, "idle_timeout_seconds": 900.0,
+		"max_duration_seconds": 7200.0, "max_fps": 15.0}
+}
+
+func TestStartRemoteSessionValidation(t *testing.T) {
+	if err := Validate(cmd(StartRemoteSession, remoteParams()), "dev", now); err != nil {
+		t.Fatalf("valid command rejected: %v", err)
+	}
+	// It goes through the same channel checks as every command.
+	if err := Validate(cmd(StartRemoteSession, remoteParams()), "other", now); err == nil {
+		t.Error("bound to another device but accepted")
+	}
+	c := cmd(StartRemoteSession, remoteParams())
+	c.Nonce = "short"
+	if err := Validate(c, "dev", now); err == nil {
+		t.Error("missing nonce accepted")
+	}
+	for name, mut := range map[string]func(map[string]any){
+		"extra param":   func(p map[string]any) { p["server_url"] = "https://evil.example" },
+		"unknown mode":  func(p map[string]any) { p["mode"] = "unattended" },
+		"no token":      func(p map[string]any) { delete(p, "token") },
+		"bad session":   func(p map[string]any) { p["session_id"] = "../x" },
+		"control chars": func(p map[string]any) { p["reason"] = "a\nb" },
+	} {
+		p := remoteParams()
+		mut(p)
+		if err := Validate(cmd(StartRemoteSession, p), "dev", now); !errors.Is(err, ErrRejected) {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
+func TestStartRemoteSessionWithoutBackend(t *testing.T) {
+	out := Execute(context.Background(), cmd(StartRemoteSession, remoteParams()), Deps{}, nil)
+	if out.Status != "failed" || out.ResultData["error_code"] != "ERR_HELPER" {
+		t.Fatalf("got %+v", out)
+	}
+}

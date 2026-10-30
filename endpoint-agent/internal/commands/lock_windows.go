@@ -9,9 +9,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"unsafe"
 
 	"golang.org/x/sys/windows"
+
+	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/usersession"
 )
 
 var (
@@ -20,8 +21,6 @@ var (
 	wtsapi32                 = windows.NewLazySystemDLL("wtsapi32.dll")
 	procWTSDisconnectSession = wtsapi32.NewProc("WTSDisconnectSession")
 )
-
-const wtsActive = 0
 
 // Lock locks every active interactive session.
 //
@@ -68,64 +67,26 @@ func Lock(ctx context.Context) (string, error) {
 	return msg, nil
 }
 
-func isLocalSystem() bool {
-	tu, err := windows.GetCurrentProcessToken().GetTokenUser()
-	if err != nil {
-		return false
-	}
-	return tu.User.Sid.IsWellKnown(windows.WinLocalSystemSid)
-}
+func isLocalSystem() bool { return usersession.IsLocalSystem() }
 
-func activeSessions() ([]uint32, error) {
-	var info *windows.WTS_SESSION_INFO
-	var count uint32
-	if err := windows.WTSEnumerateSessions(0, 0, 1, &info, &count); err != nil {
-		return nil, fmt.Errorf("WTSEnumerateSessions: %w", err)
-	}
-	defer windows.WTSFreeMemory(uintptr(unsafe.Pointer(info)))
-	var ids []uint32
-	for _, s := range unsafe.Slice(info, count) {
-		if s.State == wtsActive && s.SessionID != 0 {
-			ids = append(ids, s.SessionID)
-		}
-	}
-	return ids, nil
-}
+func activeSessions() ([]uint32, error) { return usersession.ActiveSessions() }
 
 func lockSession(session uint32) error {
-	var tok windows.Token
-	if err := windows.WTSQueryUserToken(session, &tok); err != nil {
-		return fmt.Errorf("WTSQueryUserToken: %w", err)
-	}
-	defer tok.Close()
-	var env *uint16
-	if err := windows.CreateEnvironmentBlock(&env, tok, false); err == nil {
-		defer windows.DestroyEnvironmentBlock(env)
-	}
 	root := os.Getenv("SystemRoot")
 	if root == "" {
 		root = `C:\Windows`
 	}
 	exe := filepath.Join(root, "System32", "rundll32.exe")
-	app, _ := windows.UTF16PtrFromString(exe)
-	cmdline, _ := windows.UTF16PtrFromString(`"` + exe + `" user32.dll,LockWorkStation`)
-	desktop, _ := windows.UTF16PtrFromString(`winsta0\default`)
-	si := windows.StartupInfo{Desktop: desktop}
-	si.Cb = uint32(unsafe.Sizeof(si))
-	var pi windows.ProcessInformation
-	const createUnicodeEnvironment, createNoWindow = 0x00000400, 0x08000000
-	if err := windows.CreateProcessAsUser(tok, app, cmdline, nil, nil, false,
-		createUnicodeEnvironment|createNoWindow, env, nil, &si, &pi); err != nil {
-		return fmt.Errorf("CreateProcessAsUser: %w", err)
+	p, err := usersession.Launch(session, exe, `"`+exe+`" user32.dll,LockWorkStation`, usersession.Options{NoWindow: true})
+	if err != nil {
+		return err
 	}
-	defer windows.CloseHandle(pi.Thread)
-	defer windows.CloseHandle(pi.Process)
-	ev, err := windows.WaitForSingleObject(pi.Process, 15000)
-	if err != nil || ev != windows.WAIT_OBJECT_0 {
+	defer p.Close()
+	code, err := p.Wait(15000)
+	if err != nil {
 		return fmt.Errorf("rundll32 did not finish: %v", err)
 	}
-	var code uint32
-	if err := windows.GetExitCodeProcess(pi.Process, &code); err == nil && code != 0 {
+	if code != 0 {
 		return fmt.Errorf("rundll32 exited with %d", code)
 	}
 	return nil

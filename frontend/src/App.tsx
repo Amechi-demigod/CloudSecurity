@@ -37,6 +37,7 @@ import AttackPaths from "./pages/AttackPaths";
 import Connectors from "./pages/Connectors";
 import AgentUpdates from "./pages/devices/AgentUpdates";
 import DeviceDetail from "./pages/devices/DeviceDetail";
+import RemoteViewer from "./pages/devices/RemoteViewer";
 import Devices from "./pages/devices/Devices";
 import Enrollment from "./pages/devices/Enrollment";
 import Scripts from "./pages/devices/Scripts";
@@ -316,6 +317,7 @@ function Shell() {
             <Route path="/devices/updates" element={<AgentUpdates />} />
             <Route path="/devices/scripts" element={<Scripts />} />
             <Route path="/devices/:id" element={<DeviceDetail />} />
+            <Route path="/devices/:id/remote/:sid" element={<RequireRole role="analyst"><RemoteViewer /></RequireRole>} />
             <Route path="/it-assets" element={<Assets />} />
             <Route path="/it-assets/offboarding" element={<Offboarding />} />
             <Route path="/it-assets/settings" element={<RequireRole role="admin"><AssetSettings /></RequireRole>} />

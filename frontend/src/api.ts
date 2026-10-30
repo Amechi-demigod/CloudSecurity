@@ -572,7 +572,8 @@ export type CommandType =
   | "wipe_device"
   | "run_script"
   | "isolate_host"
-  | "restore_host";
+  | "restore_host"
+  | "start_remote_session";
 
 export interface DeviceCommand {
   id: string;
@@ -593,6 +594,40 @@ export interface DeviceCommand {
   approval_id: string | null;
   approved_by_email: string | null;
   acknowledged_at: string | null;
+}
+
+export type RemoteMode = "view" | "control";
+export type RemoteState = "requested" | "awaiting_consent" | "active" | "ended" | "denied" | "failed";
+
+/** An attended remote session (metadata only: no frame or keystroke content is ever stored). */
+export interface RemoteSession {
+  id: string;
+  device_id: string;
+  mode: RemoteMode;
+  reason: string;
+  state: RemoteState;
+  end_reason: string | null;
+  error_code: string | null;
+  requested_by_email: string;
+  requested_by_name: string;
+  created_at: string;
+  agent_connected_at: string | null;
+  consented_at: string | null;
+  started_at: string | null;
+  ended_at: string | null;
+  ended_by_email: string | null;
+  duration_seconds: number | null;
+  bytes_to_viewer: number;
+  bytes_to_agent: number;
+}
+
+export interface RemoteAvailability {
+  available: boolean;
+  /** why a session cannot be started (Windows only, agent too old, lost mode, ...) */
+  reason: string | null;
+  /** the modes the signed-in user may start */
+  modes: RemoteMode[];
+  open_session_id: string | null;
 }
 
 export interface DeviceFleetSummary {
@@ -847,7 +882,7 @@ export interface DeviceUpdateState {
   history: { id: number; release_id: string | null; from_version: string; to_version: string; status: string; detail: string; created_at: string }[];
 }
 
-const BASE = import.meta.env.VITE_API_BASE ?? "";
+export const BASE = import.meta.env.VITE_API_BASE ?? "";
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
 /** Error carrying the HTTP status, so callers can tell 401/403 from other failures. */
@@ -1262,6 +1297,14 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ reason }),
     }),
+  remoteAvailability: (id: string) => request<RemoteAvailability>(`/api/devices/${id}/remote-sessions/availability`),
+  deviceRemoteSessions: (id: string, limit = 50) =>
+    request<RemoteSession[]>(`/api/devices/${id}/remote-sessions${qs({ limit })}`),
+  startRemoteSession: (id: string, body: { mode: RemoteMode; reason: string }) =>
+    request<RemoteSession>(`/api/devices/${id}/remote-sessions`, { method: "POST", body: JSON.stringify(body) }),
+  remoteSession: (sessionId: string) => request<RemoteSession>(`/api/remote-sessions/${sessionId}`),
+  endRemoteSession: (sessionId: string) =>
+    request<RemoteSession>(`/api/remote-sessions/${sessionId}/end`, { method: "POST" }),
   revokeDevice: (id: string, reason: string) =>
     request<DeviceDetail>(`/api/devices/${id}/revoke`, { method: "POST", body: JSON.stringify({ reason }) }),
   deleteDevice: (id: string, reason: string) =>

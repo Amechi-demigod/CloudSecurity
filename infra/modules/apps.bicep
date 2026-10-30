@@ -171,6 +171,9 @@ resource api 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'APP_ENV', value: 'production' }
             { name: 'LOG_FORMAT', value: 'json' }
             { name: 'WEB_CONCURRENCY', value: string(backendWorkers) }
+            // Remote sessions need the single-process relay of the on-prem stack (docs/DEVICE_MANAGEMENT.md#setup):
+            // not supported on Container Apps in v1, so the console offers no button here.
+            { name: 'REMOTE_SESSION_ENABLED', value: 'false' }
             { name: 'DATABASE_URL', secretRef: 'database-url' }
             { name: 'DB_AUTO_MIGRATE', value: 'true' }
             { name: 'SESSION_SECRET', secretRef: 'session-secret' }
