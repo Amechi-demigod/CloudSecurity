@@ -15,6 +15,12 @@ script on the real OS and checks the exit code and output. On Windows it also
 enables and clears lost mode (the legal notice is restored) and checks that a
 remote wipe is refused for a device that did not opt in (nothing is wiped).
 
+With --remote-agent BIN (Windows; a `-tags remote_fake` build: synthetic screen,
+the "user" allows at once) it also runs attended remote sessions end to end:
+the agent opens the WSS relay socket, frames reach a test browser client
+(websockets), View only input never reaches the agent, ending from the viewer
+or from the user closes both sockets, and the audit trail is complete.
+
 With --service (CI only: it installs a real Windows service / macOS
 LaunchDaemon, using sudo on macOS) it also installs the agent as a service,
 waits for the service's own check-in, sends restart_agent and checks that the
@@ -220,6 +226,74 @@ def protect_test(api: Api, agent: str, home: str, dev: dict, key_file: str | Non
     print("ok: lost mode set the sign-in notice and restored it")
 
 
+def remote_session(api: Api, agent: str, home: str, base: str, dev_id: str, *, end_by: str,
+                   extra_env: dict[str, str] | None = None) -> dict:
+    """One View only session: request it, start `cnapp-agent run` (its first poll is
+    5 s after start), watch it as the browser would, end it from `end_by`."""
+    from websockets.sync.client import connect  # backend requirement (uvicorn[standard])
+
+    sid = api.call("POST", f"/api/devices/{dev_id}/remote-sessions", {"mode": "view", "reason": "e2e remote"})["id"]
+    jar = next(h for h in api.opener.handlers if hasattr(h, "cookiejar")).cookiejar
+    cookie = "; ".join(f"{c.name}={c.value}" for c in jar)
+    url = base.replace("http://", "ws://", 1) + f"/api/remote/{sid}"
+    env = {**os.environ, **(extra_env or {}), "CNAPP_AGENT_HOME": home}
+    runner = subprocess.Popen([agent, "run", "--home", home], env=env, stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, text=True)
+    frames, states, close_code = 0, [], None
+    try:
+        with connect(url, additional_headers={"Cookie": cookie, "Origin": base}, open_timeout=20) as ws:
+            deadline = time.time() + 120
+            while time.time() < deadline:
+                try:
+                    m = ws.recv(timeout=60)
+                except Exception as exc:  # the server closed the socket
+                    close_code = getattr(getattr(exc, "rcvd", None), "code", None)
+                    break
+                if isinstance(m, bytes):
+                    frames += 1
+                    assert m[0] == 1 and len(m) > 16, "tile header"
+                    ws.send(json.dumps({"t": "ack", "seq": int.from_bytes(m[10:14], "big")}))
+                    if frames == 3:
+                        # View only: input and Ctrl+Alt+Del must never reach the device.
+                        ws.send(json.dumps({"t": "input", "kind": "key", "code": "KeyA", "down": True}))
+                        ws.send(json.dumps({"t": "cad"}))
+                        if end_by == "viewer":
+                            time.sleep(1)
+                            ws.send(json.dumps({"t": "end"}))
+                    continue
+                d = json.loads(m)
+                if d.get("t") == "state":
+                    states.append(d["state"])
+    finally:
+        time.sleep(1)
+        runner.terminate()
+        out = runner.communicate(timeout=30)[0]
+    sys.stdout.write("\n".join(line for line in out.splitlines() if "remote" in line)[-3000:] + "\n")
+    rs = api.call("GET", f"/api/remote-sessions/{sid}")
+    print(f"remote session ({end_by}): states={states} frames={frames} close={close_code} -> {rs['state']} "
+          f"{rs['end_reason']}")
+    assert "awaiting_consent" in states or "active" in states, f"the agent never opened the relay socket: {states}"
+    assert frames >= 3, f"only {frames} frames reached the browser"
+    assert close_code == 4000, f"the viewer socket was not closed by the server ({close_code})"
+    assert "remote session ended" in out, "the agent's socket was not closed"
+    assert "input_events=0" in out and "input_injected=0" in out, "View only input reached the device"
+    return rs
+
+
+def remote_test(api: Api, agent: str, home: str, base: str, dev_id: str) -> None:
+    rs = remote_session(api, agent, home, base, dev_id, end_by="viewer")
+    assert rs["state"] == "ended" and rs["end_reason"] == "ended_by_viewer", rs
+    rs2 = remote_session(api, agent, home, base, dev_id, end_by="user",
+                         extra_env={"CNAPP_REMOTE_FAKE_END_AFTER": "4"})
+    assert rs2["state"] == "ended" and rs2["end_reason"] == "user_ended", rs2
+    trail = [a for a in api.call("GET", "/api/audit-log?limit=200") if a["action"].startswith("remote_session_")]
+    for sid in (rs["id"], rs2["id"]):
+        acts = sorted(a["action"] for a in trail if (a.get("detail") or {}).get("session_id") == sid)
+        assert acts == sorted(["remote_session_requested", "remote_session_consented", "remote_session_started",
+                               "remote_session_ended"]), (sid, acts)
+    print("ok: remote sessions (relay socket, frames, View only input dropped, ended by viewer and by user, audit)")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--agent", required=True, help="path to the cnapp-agent binary")
@@ -227,6 +301,7 @@ def main() -> int:
     ap.add_argument("--service", action="store_true", help="also test the real OS service (CI runners only)")
     ap.add_argument("--script-key-file", help="script-signing private key (PEM) the agent build trusts: "
                     "also run an approved script, lost mode and the wipe guard rails")
+    ap.add_argument("--remote-agent", help="a `-tags remote_fake` agent build: also test remote sessions (Windows)")
     args = ap.parse_args()
     if args.service and platform.system() == "Darwin":
         SUDO[:] = ["sudo", "-n"]  # the LaunchDaemon runs as root; keep all agent state root-owned
@@ -300,6 +375,18 @@ def main() -> int:
             assert len(api.call("GET", f"/api/devices/{dev['id']}/history")) >= 2
 
             protect_test(api, agent, home, dev, args.script_key_file)
+
+            if args.remote_agent:
+                if expected_os != "windows":
+                    raise SystemExit("--remote-agent: remote sessions are Windows-only")
+                rtoken = api.call("POST", "/api/devices/enrollment-tokens",
+                                  {"name": "e2e-remote", "max_uses": 1, "expires_in_hours": 1})["token"]
+                rhome = str(Path(tmp, "remote-agent-home"))
+                ragent = str(Path(args.remote_agent).resolve())
+                run_agent(ragent, rhome, "enroll", "--server", base, "--token", rtoken, "--insecure-dev")
+                run_agent(ragent, rhome, "checkin")
+                rdev = json.loads(Path(rhome, "state", "state.json").read_text())["device_id"]
+                remote_test(api, ragent, rhome, base, rdev)
 
             if args.service:
                 service_test(api, agent, home, dev["id"])

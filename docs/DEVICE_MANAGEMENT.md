@@ -23,6 +23,7 @@ Linux is not supported yet. The code is split so it can be added later: see [Add
 - [Lost mode](#lost-mode)
 - [Suspend sign-in](#suspend-sign-in)
 - [Remote wipe (Windows)](#remote-wipe-windows)
+- [Remote sessions (Windows)](#remote-sessions-windows) (attended remote desktop)
 - [Approved scripts](#approved-scripts) (details: [DEVICE_SCRIPTS.md](DEVICE_SCRIPTS.md))
 - [Security model](#security-model)
 - [Service install, upgrade and uninstall](#service-install-upgrade-and-uninstall) (and **[automatic, signed agent updates](AGENT_UPDATES.md)**)
@@ -327,6 +328,7 @@ There is no generic "run command". Only the following actions exist, and each on
 | `isolate_host` / `restore_host` | analyst / admin | blocks standard interactive sign-in while local admin access keeps working, then restores it exactly ([Suspend sign-in](#suspend-sign-in)). Internal names kept for API compatibility; the UI only ever says "Suspend sign-in" / "Restore sign-in". Typed hostname to suspend; no second approval (reversible) |
 | `wipe_device` | admin **+ a second admin** | Windows only, device opted in at install time: factory-resets the device through `MDM_RemoteWipe` ([Remote wipe](#remote-wipe-windows)). Never queued directly: `POST /api/devices/{id}/wipe` creates an approval request |
 | `run_script` | admin (**+ a second admin** unless the signed manifest says `risk: low`) | runs one approved, signed script with validated parameters ([Approved scripts](#approved-scripts)) |
+| `start_remote_session` | analyst (View only) / admin (View and control) | Windows only: opens an attended remote session after the signed-in user allows it ([Remote sessions](#remote-sessions-windows)). Never queued directly: `POST /api/devices/{id}/remote-sessions` |
 
 Every action requires a **reason**. Creating one is written to the audit log (`device_command_created`, with actor, device, type, parameters and reason), and so are cancellation, completion (reported by the device), log-bundle downloads, token creation and revocation, enrollment, re-enrollment, revocation and deletion.
 
@@ -441,6 +443,209 @@ Unlike [remote wipe](#remote-wipe-windows) and medium/high-risk [approved script
 **After a wipe** the device record stays (state *Wipe pending / started*) for your asset records; revoke and delete it when the hardware is disposed of or re-imaged (a reset device enrolls as a new machine).
 
 **Testing.** CI never calls the method. Unit tests drive the whole command path with a fake WMI executor (opt-in, hostname, validity window, WinRE, ack-before-wipe, replay), and on `windows-latest` CI runs `cnapp-agent wipe-readiness` **as SYSTEM** (scheduled task) and checks that `MDM_RemoteWipe` exposes `doWipeMethod` and `doWipeProtectedMethod`. Try a real wipe on a spare device before relying on it.
+
+## Remote sessions (Windows)
+
+IT support can **view**, and with permission **control**, the screen of a managed Windows device to help the
+signed-in user: **Devices > device > Remote session**. Sessions are **attended**: nothing is shared until the user
+clicks **Allow**, a banner stays on their screen for the whole session, and they can end it at any time. Version 1 is
+screen view plus keyboard and mouse. Clipboard, file transfer and session recording are not part of it, and the screen
+is never stored.
+
+**Windows only for now.** macOS and Linux agents refuse the command with `ERR_UNSUPPORTED_PLATFORM` (audited as
+`remote_session_failed`), and the console disables the button with a "Windows only for now" tooltip. See
+[Future work](#future-work-remote-sessions).
+
+### Flow
+
+```mermaid
+sequenceDiagram
+  participant V as Viewer (browser)
+  participant API as Backend API
+  participant R as Relay (1 process)
+  participant S as Agent service (SYSTEM)
+  participant H as Helper (user session)
+  V->>API: POST /api/devices/{id}/remote-sessions (mode, reason)
+  API-->>V: session (requested) + start_remote_session queued
+  V->>R: wss /api/remote/{sid} (cookie, Origin)
+  S->>API: GET /api/agent/commands (poll, ~60 s)
+  API-->>S: command + single-use token (minted now, 2 min)
+  S->>R: wss /api/agent/remote/{sid} (device credential + token)
+  S->>H: CreateProcessAsUser + named pipes (SYSTEM + user only)
+  H->>H: consent prompt (name, email, organisation, mode, reason)
+  H-->>S: Allow
+  S-->>R: consent allow, then tiles
+  R-->>V: tiles (JPEG) / state
+  V-->>R: input (View and control only), acks
+  R-->>S: input
+  S-->>H: input (SendInput)
+```
+
+1. An **analyst** (View only) or **admin** (View and control) clicks **Remote session**, picks the mode and enters a
+   reason (3-500 characters, like every remote action). The backend records a `remote_sessions` row and queues a
+   `start_remote_session` command. The console shows "Waiting for the device": commands are delivered by polling,
+   about every 60 seconds; the poll interval is not shortened for this.
+2. When the agent polls, the server **mints the single-use session token** (valid `REMOTE_SESSION_TOKEN_TTL_SECONDS`,
+   120 s) and stores only its SHA-256. The token is never in the command's stored parameters, so it is not visible in
+   the console's Commands tab.
+3. The agent checks the command like any other: allowlist, device binding, nonce, expiry and replay protection. It
+   checks that someone is signed in and the screen is unlocked (`ERR_NO_ATTENDED_USER` otherwise; unattended access is
+   not supported). Then it dials `wss://<enrolled server>/api/agent/remote/{id}`. The URL always comes from the
+   enrolled server URL, never from the command; redirects are refused; and when the agent was enrolled with a CA, only
+   that CA is trusted.
+4. The service starts the **helper** (`cnapp-agent remote-helper`) in the user's session, which shows the **consent
+   prompt** with the requester's name and email, the organisation, the mode and the reason. **Deny**, or no answer
+   within `REMOTE_SESSION_CONSENT_TIMEOUT_SECONDS` (60), ends the session as `denied` (audited).
+5. On **Allow**, an always-on-top banner reads "IT support (name) is viewing / controlling your screen" with **End
+   session**, and capture starts.
+
+Both sides dial **out** to the server; neither accepts inbound connections. The relay pairs the two sockets and
+forwards their messages.
+
+### What runs where
+
+| Piece | Where | Notes |
+|---|---|---|
+| Relay | the `relay` compose service (backend image, **one** uvicorn worker) | Pairs the agent's and the viewer's WebSocket **in memory**, so both ends must reach one process. The gunicorn backend runs `REMOTE_RELAY_MODE=api` and refuses these paths. Chosen over PostgreSQL `LISTEN/NOTIFY` (8 KB payloads would chunk every tile) and Redis (not part of the stack). |
+| Service | `cnapp-agent` as LocalSystem | Never captures. Owns the relay socket (the helper never sees the device credential or the token) and enforces the rules locally: no frame before consent, input dropped in View only mode, consent / idle / hard limits, session switch and lock. |
+| Helper | `cnapp-agent remote-helper`, started with `CreateProcessAsUser` on `winsta0\default` of the attended session, inside a **kill-on-close Job object** | Consent prompt, banner, DXGI Desktop Duplication capture (GDI fallback), `SendInput`. Talks to the service over two one-way named pipes with a DACL for SYSTEM and that user only, `FILE_FLAG_FIRST_PIPE_INSTANCE` and `PIPE_REJECT_REMOTE_CLIENTS`; the service accepts only the process it started (client PID), and the helper only a SYSTEM-owned pipe. Parameters go over the pipe, never on the command line, so a local user cannot start a capture session for someone else. |
+
+### Screen and input
+
+* **Encoding:** JPEG tiles of the changed regions of the active monitor (64 px grid, merged runs), capped at
+  `REMOTE_SESSION_MAX_FPS` (15). The viewer acknowledges each frame. With more than 3 frames unacknowledged, capture
+  pauses and JPEG quality drops, then recovers. We chose this over WebRTC (H.264 with Pion): it needs no ICE/STUN/TURN,
+  no codec licensing and no third-party relay, it fits the existing CSP (`connect-src 'self'`), and Go's standard
+  library encodes JPEG (it has no WebP encoder) while browsers decode it natively (`createImageBitmap`).
+* **Monitors and DPI:** the helper is per-monitor DPI aware (physical pixels). The viewer has a monitor picker and
+  shows each monitor's resolution and scale.
+* **Input (View and control only):** keys are sent as the browser's `KeyboardEvent.code` and replayed as
+  layout-independent scan codes, so shortcuts work as pressed (Ctrl+C, Alt+Tab, Win+E, Shift+arrows). Mouse positions
+  are relative to the active monitor. The viewer captures the keyboard only after a click on the screen and shows how
+  to release it (**Ctrl+Alt+Shift**). Pointer moves are merged into one message per animation frame, well under the
+  relay's limit.
+* **Input is dropped in View only mode** by the relay, by the service and by the helper, whatever the server or
+  browser sends.
+* **Ctrl+Alt+Del** is a toolbar button. The service sends it with `sas.dll!SendSAS`, which Windows only honours when
+  the **SoftwareSASGeneration** policy allows services (Group Policy: *Computer Configuration > Administrative
+  Templates > Windows Components > Windows Logon Options > Disable or enable software Secure Attention Sequence* =
+  *Services*, or registry `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\SoftwareSASGeneration` =
+  `1` or `3`). The agent never changes this policy; without it the button reports an error.
+* **Protected desktops:** the UAC secure desktop and the sign-in / Ctrl+Alt+Del screen are **not** captured in v1.
+  While one is shown, the viewer says "the user's screen is on a protected prompt" and resumes when it closes.
+* **The banner cannot be dismissed by the viewer.** The prompt and banner windows never take focus (`WS_EX_NOACTIVATE`),
+  so injected keys such as Alt+F4 reach the foreground application, never them. Injected clicks on them are dropped,
+  and they re-assert "topmost" every second. If the banner is closed, destroyed or hidden anyway, the session ends
+  (`indicator_closed`); it is never silently re-created.
+* **End session** on the banner stops capture and input at once in the helper, then tells the service. It works even
+  when the server is unreachable.
+
+### Limits and termination
+
+A session ends, and both WebSockets, the helper process, the prompt and the banner are torn down, when:
+
+* the viewer, the user (End session) or an admin (`POST /api/remote-sessions/{id}/end`, any session in the
+  organisation) ends it;
+* nobody uses the viewer for `REMOTE_SESSION_IDLE_TIMEOUT_MINUTES` (15). Mouse, keyboard and activity heartbeats count;
+  frame acknowledgements do not;
+* it reaches `REMOTE_SESSION_MAX_DURATION_MINUTES` (120) after the user allowed it;
+* the device is revoked, put in lost mode, isolated (Suspend sign-in) or a wipe is requested;
+* the requester's account is disabled, removed from the organisation or loses the role the mode needs;
+* the user switches Windows user, disconnects the RDP session or locks the screen;
+* the agent stops, the device disconnects or the relay restarts (`relay_restart`: a `cnapp-ctl update`, rollback or
+  restore restarts it, which **ends live sessions**).
+
+The relay re-checks every live session every `REMOTE_SESSION_RECHECK_SECONDS` (5): an end through the API, a revoke or
+a role change closes both sockets within about 5 s. The agent applies the idle and hard limits locally too, capped at
+2 h idle and 8 h overall whatever the server sends.
+
+**Concurrency:** one open session per device (a unique key on the open session), at most
+`REMOTE_SESSION_MAX_PER_ORG` (5) open sessions per organisation, and one viewer and one agent socket per session.
+
+### RBAC, audit, notifications
+
+| Role | Can |
+|---|---|
+| viewer | see the session history (History tab) |
+| analyst | start **View only** sessions, view and end their own |
+| admin | start **View and control** sessions; end anyone's session |
+
+Only the requester watches a session. Another organisation's device or session is 404, through the API and through
+both WebSockets.
+
+Every transition is audited with the requester, device, mode, reason, client IP (the trusted-proxy address, as for the
+REST API), timestamps, duration and byte counts:
+
+* `remote_session_requested`, `remote_session_consented`, `remote_session_denied` (with `user_denied` or
+  `consent_timeout`), `remote_session_started`;
+* `remote_session_ended`, with the end reason;
+* `remote_session_failed`, with the error code: `ERR_NO_ATTENDED_USER`, `ERR_UNSUPPORTED_PLATFORM`,
+  `ERR_DEVICE_TIMEOUT` (never polled in time), `ERR_TOKEN_EXPIRED`, `ERR_HELPER` and similar.
+
+The **Remote sessions** notification source (`remote_session`: requested, started, denied, ended, failed) routes them to
+Teams, Slack or email like any other source ([NOTIFICATIONS.md](NOTIFICATIONS.md)). The device page's History tab lists
+every session: who, when, how long, mode and outcome.
+
+**Privacy:** frame content and keystrokes are never logged or stored. Only metadata, byte counts and durations are
+kept.
+
+### Security
+
+* **Both ends are authenticated.** The agent socket uses the device credential and the single-use token; a wrong,
+  expired or replayed token is refused (close codes 4401, 4410, 4409), and so is a second connection. The viewer
+  socket uses the session cookie plus an **Origin** check. In production only the server's own origin is accepted (the
+  `Host` the browser sent, or `PUBLIC_BASE_URL`); in development, explicit `CORS_ORIGINS` entries are accepted too
+  (never `*`).
+* **Message size and rate limits:** agent messages at most `REMOTE_SESSION_AGENT_MAX_MESSAGE_BYTES` (1 MiB) and
+  `REMOTE_SESSION_AGENT_MAX_BYTES_PER_SECOND` (8 MiB/s); viewer messages at most
+  `REMOTE_SESSION_VIEWER_MAX_MESSAGE_BYTES` (16 KiB) and `REMOTE_SESSION_VIEWER_MAX_MSGS_PER_SECOND` (120/s). Bursts of
+  twice the rate are allowed; beyond that the session ends.
+* **Commands are not cryptographically signed.** `start_remote_session` is trusted like every remote action: TLS to the
+  enrolled server (pinned CA when enrolled with one), the per-device credential, the allowlist and parameter
+  validation, device binding, a nonce, expiry and anti-replay. A server compromise could therefore ask for a session,
+  but the user must still allow it on their own screen, and the banner shows who is watching.
+* **nginx** upgrades only `/api/remote/{id}` (internal networks, like the console) and `/api/agent/remote/{id}` (like the
+  rest of the agent API), with long read timeouts on these two paths only. The CSP stays `default-src 'self'`.
+
+### Setup
+
+Nothing to configure on devices: agents that support it advertise `remote_session` (Windows builds), and the button is
+enabled when the device runs one. On-prem, `cnapp-ctl install` / `update` start the `relay` service. Optional: allow
+Ctrl+Alt+Del with the SoftwareSASGeneration policy (above).
+
+**Azure / Container Apps is not supported in v1.** The relay needs one process for both ends, and the Azure template
+runs up to two backend replicas without a relay app. Use the on-prem stack.
+
+### Hardware checklist (Windows, not exercised in CI)
+
+GitHub-hosted runners have no interactive session to capture, so CI uses a `-tags remote_fake` build. Check on real
+hardware before relying on it:
+
+- [ ] consent prompt: **Allow** starts the session; **Deny** and no answer (60 s) end it as denied
+- [ ] the banner stays visible and on top (full-screen apps, Win+D, moving windows); Alt+F4 from the viewer does not
+      close it; closing it with Task Manager ends the session
+- [ ] multi-monitor: the picker switches monitors, positions are right on monitors with different scaling
+- [ ] typing and shortcuts (Ctrl+C / Ctrl+V, Alt+Tab, Win+E, Shift+arrows, AltGr on a non-US layout)
+- [ ] Ctrl+Alt+Del button with the SoftwareSASGeneration policy set, and the error without it
+- [ ] a UAC prompt shows "the user's screen is on a protected prompt", and the view resumes afterwards
+- [ ] **elevated windows:** an elevated ("Run as administrator") window can be seen but not clicked or typed into
+- [ ] the user's **End session** works, also with the network cable unplugged (capture stops at once)
+- [ ] fast user switching, RDP disconnect and locking the screen end the session
+- [ ] afterwards no `cnapp-agent.exe remote-helper` process is left in Task Manager (also after killing the service)
+- [ ] View only: mouse and keyboard in the viewer do nothing on the device
+
+### Future work (remote sessions)
+
+* **macOS:** a signed Swift helper app (ScreenCaptureKit, `CGEventPost`) launched as a per-user LaunchAgent, behind
+  the same platform interface (`internal/remote`). It needs a guide to Screen Recording and Accessibility (TCC)
+  permissions: the user grants them once, or an MDM PPPC profile lets standard users approve Screen Recording
+  (`AllowStandardUserToSetSystemService`) and pre-approves Accessibility for the helper's code signature. It also
+  needs posture reporting of the permission state, so the console can say "remote control not available: Screen
+  Recording not granted" before a session starts.
+* **Unattended access** (nobody signed in, locked screen): only as an install-time opt-in like `allow_wipe`, with
+  two-person approval.
+* Capturing the secure desktop (UAC, sign-in screen), clipboard, file transfer, session recording.
+* A relay for the Azure deployment (a single-replica relay app).
 
 ## Approved scripts
 
@@ -558,6 +763,8 @@ Installers (admin; CSRF on POST; `AGENT_INSTALLER_RATE_LIMIT` downloads per admi
 
 Backend environment variables (defaults in brackets): `AGENT_MAX_REQUEST_BYTES` [6 MiB], `DEVICE_LOG_BUNDLE_MAX_BYTES` [5 MiB], `DEVICE_RATE_LIMIT` [120] per `DEVICE_RATE_WINDOW_SECONDS` [600], `ENROLL_RATE_LIMIT` [300] and `ENROLL_FAILURE_LIMIT` [20] (a stricter budget counted only on failed attempts), both per `ENROLL_RATE_WINDOW_SECONDS` [600], `DEVICE_STALE_HOURS` [24], `DEVICE_INACTIVE_DAYS` [7], `DEVICE_UPDATES_GRACE_DAYS` [14], `DEVICE_AV_SIGNATURE_MAX_AGE_DAYS` [7], `DEVICE_HISTORY_LIMIT` [200], `DEVICE_COMMAND_TTL_HOURS` [24] and `AGENT_DOWNLOAD_URL` [unset]. Approvals and wipe: `DEVICE_APPROVAL_TTL_HOURS` [24], `DEVICE_APPROVAL_ALLOW_SELF` [false], `DEVICE_APPROVAL_SELF_COOLDOWN_MINUTES` [15], `DEVICE_WIPE_COMMAND_TTL_MINUTES` [60]. Scripts: `DEVICE_SCRIPT_TRUSTED_KEYS`, `DEVICE_SCRIPT_MAX_BUNDLE_BYTES` [512 KiB]. Migration `0009_device_approvals_scripts` adds the approval and script tables and the lost-mode / wipe columns. Suspend sign-in has no dedicated environment variables; migration `0014_host_isolation` adds the isolation-status columns and `0015_command_result_data` adds `device_commands.result_data`.
 
+Remote sessions ([details](#remote-sessions-windows)): `REMOTE_SESSION_ENABLED` [true], `REMOTE_RELAY_MODE` [all; on-prem the backend runs `api` and the relay service `relay`], `REMOTE_SESSION_TOKEN_TTL_SECONDS` [120] (single-use agent token and command lifetime), `REMOTE_SESSION_CONSENT_TIMEOUT_SECONDS` [60], `REMOTE_SESSION_IDLE_TIMEOUT_MINUTES` [15], `REMOTE_SESSION_MAX_DURATION_MINUTES` [120], `REMOTE_SESSION_MAX_PER_ORG` [5], `REMOTE_SESSION_MAX_FPS` [15], `REMOTE_SESSION_AGENT_MAX_MESSAGE_BYTES` [1 MiB], `REMOTE_SESSION_VIEWER_MAX_MESSAGE_BYTES` [16 KiB], `REMOTE_SESSION_VIEWER_MAX_MSGS_PER_SECOND` [120], `REMOTE_SESSION_AGENT_MAX_BYTES_PER_SECOND` [8 MiB], `REMOTE_SESSION_RECHECK_SECONDS` [5]. Out-of-range values stop the server at start. Migration `0018_remote_sessions` adds the `remote_sessions` table.
+
 Installers: `PUBLIC_BASE_URL` (required, https; embedded in installers), `AGENT_CA_CERT_B64` (base64 PEM of a private CA to embed; set by `cnapp-ctl` on-prem) or `AGENT_CA_CERT_FILE`, `AGENT_INSTALLERS_DIR` [`/app/installers`], `AGENT_INSTALLER_RATE_LIMIT` [10] per `AGENT_INSTALLER_RATE_WINDOW_SECONDS` [600], `AGENT_INSTALLER_MAX_PARALLEL` [2]. Migration `0005_agent_installers` adds the package/group columns.
 
 **Azure deployment.** No infrastructure change is needed. Agents use the public frontend URL (`https://<frontend-fqdn>`). nginx proxies `/api/agent/*` to the internal backend with an 8 MiB body limit, and the Container Apps ingress needs nothing else. Per-IP enrollment rate limiting uses the real client IP through `TRUSTED_PROXY_CIDRS`. The database tables come with Alembic migration `0002_device_management`, applied automatically on startup.
@@ -578,6 +785,8 @@ Installers: `PUBLIC_BASE_URL` (required, https; embedded in installers), `AGENT_
 - **Approvals, lost mode, wipe, scripts** (`backend/tests/test_approvals_lost_wipe.py`, `test_device_scripts.py`): different-admin rule, self-approval off by default / typed name / cooling-off / cancel, expiry, RBAC, race-safe decisions, single-use wipe command + acknowledgement + replay, device state, notifications; bundle signature / tampering / expiry / anti-rollback / wrong signing context, typed parameter validation, low-risk direct runs vs approval. Agent: `internal/wipe` (fake WMI executor), `internal/lostmode` (fake notice backend, restore), `internal/scripts` (signature, hash, parameters, timeout and process-tree kill, output cap), `internal/agent/protect_test.go` (end to end against a fake server). The real e2e (`agent_e2e.py --script-key-file`) runs a signed script on the Windows and macOS runners, sets and restores the Windows legal notice, and checks a non-opted-in device cannot be wiped.
 - **Suspend sign-in** (`backend/tests/test_host_isolation.py`): roles (analyst suspends, only admin restores), parameter validation (`incident_id` pattern), lifecycle and state transitions, failure/cancellation leaving the right state, `result_data` round-trip and its strict per-command-type schema (unexpected keys / wrong command type / oversized payload all rejected), the pre-flight-blocked path (`ERR_NO_LOCAL_ADMIN_PRESENT`) versus an ordinary failure, crash-recovery reporting on check-in (reported exactly once, malformed data ignored, and a crash mid-apply that resolves itself locally never leaves the command or device state stuck), audit entries and notifications, multi-tenant isolation. Agent: `internal/signin` (fake backend/admin-probe/session-terminator/LAPS-probe fakes covering pre-flight abort, snapshot-before-any-change, Apply-vs-Reapply never rolling back a repeat suspend, every crash-recovery phase, idempotent repeat suspend/restore), `internal/agent/protect_test.go` (end to end against a fake server, including that `result_data`'s JSON keys match the backend's schema and that oversized `local_admins`/`kept_service_accounts` lists are capped before they could get the whole result rejected). CI-gated **real-runner** integration tests (`internal/signin/integration_windows_test.go`, `integration_darwin_test.go`) run **only** on GitHub-hosted `windows-latest`/`macos-latest` runners, double-gated by `CI=true` **and** `RUN_HARDWARE_INTEGRATION_TESTS=1` so a developer's own machine never touches real local accounts, LSA rights or the `com.apple.access_loginwindow` group: the Windows leg creates real local test accounts and confirms `LogonUser` is refused/allowed as expected, including a simulated crash-recovery finish-forward; the macOS leg runs **as root** (asserted explicitly) and confirms the real group's `NestedGroups`/`GroupMembers`/`GroupMembership` match exactly, suspended and restored. What that still can't cover - an actual interactive login-window/Winlogon refusal, RDP, and the FileVault-unlock-then-login-window sequence - is the [hardware checklist](#hardware-checklist-not-exercised-in-ci) above.
 
+- **Remote sessions** (`backend/tests/test_remote_sessions.py`, SQLite and PostgreSQL): RBAC per role and mode, organisation isolation of the API and both WebSockets, the single-use token (minted on delivery, hashed, expiry, replay, wrong token), one session per device and the per-organisation cap, termination (revoke, lost mode, isolation, role loss, disabled user, admin end, idle and hard limits, consent timeout), the audit trail and notifications, and the relay itself with fake agent and browser WebSocket clients: pairing, forwarding, no frames before consent, View only input dropped, second connections refused, Origin rules (production and development), client IP through trusted proxies, size limits, and a fast drag that is not rate-limited while a flood is. Agent: `internal/remote` (fake platform, helper and socket: View only drops input, no frames before consent, End session / banner closed / server unreachable / session switch / agent stop all close the helper, consent timeout means denied, idle and hard limits, `ERR_NO_ATTENDED_USER`, `ERR_UNSUPPORTED_PLATFORM`, parameter validation and local caps, the relay URL), `internal/remote/helper` (consent, End session stops capture first, the closed banner ends the session, View only, clicks on the banner dropped, monitor mapping, back-pressure, tile diffing, JPEG colours, key map) and, on `windows-latest`, the pipe protections (other users refused, wrong client PID refused, no second pipe instance). End to end: `scripts/agent_e2e.py --remote-agent` on `windows-latest` with a `-tags remote_fake` build (synthetic screen; CI checks that release builds do not contain it). The agent opens the WSS socket, frames reach a test browser client, View only input never reaches the device, a session ended by the viewer and one ended by the user both close both sockets, and the audit trail is complete. On-prem: `onprem_e2e.py relay` checks the WebSocket upgrade through nginx after install, update, rollback and restore. Real capture and input are covered by the [hardware checklist](#hardware-checklist-windows-not-exercised-in-ci).
+
 `lock_device` is **not** exercised in CI, because CI runners have no interactive user session to lock. Its logic is unit-tested with a stub, but the Windows session-token path and the macOS `pmset` path have to be checked on real hardware before you rely on them.
 
 ## Limitations
@@ -594,6 +803,9 @@ Installers: `PUBLIC_BASE_URL` (required, https; embedded in installers), `AGENT_
 - Binaries are not signed by CI. See [Packaging and code signing](#packaging-and-code-signing). Pre-configured installers are always unsigned ([Code signing](#code-signing)).
 - The Windows MSI is x64 only (it runs on Windows on ARM through emulation); the native `windows-arm64` binary is available for `install.ps1`.
 - A pre-configured installer contains a live enrollment token: anyone holding the file can enroll devices until it expires, is revoked or hits its device limit.
+- Remote sessions are Windows only, attended only (someone signed in, screen unlocked) and on-prem only (no relay on Azure in v1). The secure desktop (UAC prompts, sign-in screen) is not shown.
+- **Remote control cannot reach elevated windows.** The helper runs at the user's normal privilege (medium integrity), so Windows UIPI blocks its input to elevated ("Run as administrator") windows. They can be seen but not clicked or typed into; ask the user to do that part.
+- Remote-session rate limits are per relay process (there is one), like the other in-memory limiters.
 
 ### Adding Linux
 

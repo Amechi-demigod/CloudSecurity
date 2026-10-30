@@ -2,6 +2,7 @@
 # deploy/onprem/docker-compose.prod.yml). Rendered at container start by the
 # nginx image's entrypoint (envsubst of defined env vars only):
 #   BACKEND_URL            http://backend:8000
+#   RELAY_URL              http://relay:8001 (remote-session WebSockets)
 #   CNAPP_HOSTNAME         canonical internal hostname (HTTP -> HTTPS redirect target)
 #   NGINX_LOCAL_RESOLVERS  from /etc/resolv.conf (Docker's embedded DNS)
 # nginx runs unprivileged: 8080 is published as 80, 8443 as 443.
@@ -132,6 +133,35 @@ server {
     proxy_set_header X-Forwarded-For $remote_addr;
     proxy_set_header X-Forwarded-Proto https;
     proxy_read_timeout 120s;
+    proxy_hide_header X-Content-Type-Options;
+    proxy_hide_header X-Frame-Options;
+    proxy_hide_header Referrer-Policy;
+    proxy_hide_header Strict-Transport-Security;
+  }
+
+  # Remote-session viewer WebSocket (docs/DEVICE_MANAGEMENT.md#remote-sessions-windows):
+  # the single-worker relay service pairs it with the device's socket. Internal
+  # clients only, like the console; same-origin wss:// keeps the CSP at 'self'.
+  # Long timeouts on this path only (the relay pings every 20 s).
+  location ~ "^/api/remote/[0-9a-f]{32}$" {
+    if ($cnapp_internal = 0) {
+      return 404;
+    }
+    set $relay_upstream "${RELAY_URL}";
+    proxy_pass $relay_upstream;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+    # The Host the browser sent, port included: the relay accepts the socket only
+    # when the Origin is this exact origin ($host drops a non-default port).
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Forwarded-Host $http_host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_buffering off;
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
     proxy_hide_header X-Content-Type-Options;
     proxy_hide_header X-Frame-Options;
     proxy_hide_header Referrer-Policy;

@@ -12,6 +12,7 @@
 #                          /api/agent/ only; tls/agent.crt|key if present, else server.crt)
 #   CNAPP_AGENT_RATE / _BURST, CNAPP_AGENT_ENROLL_RATE / _BURST, CNAPP_AGENT_CONN_LIMIT
 #   CNAPP_PUBLIC_SENSOR_INGEST  true: POST /api/runtime/events is reachable from anywhere too
+#   RELAY_URL              the remote-session relay service (WebSockets; http://relay:8001)
 #
 # Policy: /api/agent/* is reachable from anywhere (rate limited per external IP);
 # everything else answers 404 to clients outside CNAPP_INTERNAL_CIDRS.
@@ -32,6 +33,8 @@ eburst_v=${CNAPP_AGENT_ENROLL_BURST:-100};     num CNAPP_AGENT_ENROLL_BURST "$eb
 conn_v=${CNAPP_AGENT_CONN_LIMIT:-200};         num CNAPP_AGENT_CONN_LIMIT "$conn_v"
 backend=${BACKEND_URL:-http://backend:8000}
 echo "$backend" | grep -Eq '^https?://[A-Za-z0-9.:_-]+/?$' || fail "invalid BACKEND_URL"
+relay=${RELAY_URL:-http://relay:8001}
+echo "$relay" | grep -Eq '^https?://[A-Za-z0-9.:_-]+/?$' || fail "invalid RELAY_URL"
 public=${CNAPP_PUBLIC_AGENT:-false}
 agent_host=${CNAPP_AGENT_HOSTNAME:-}
 main_host=${CNAPP_HOSTNAME:-}
@@ -90,6 +93,11 @@ log_format cnapp_edge '$remote_addr - [$time_local] "$request_method $uri $serve
                       '$body_bytes_sent "$host" "$http_user_agent" $cnapp_access';
 limit_req_status 429;
 limit_conn_status 429;
+# WebSocket upgrades (remote sessions: /api/remote/ and /api/agent/remote/ only).
+map $http_upgrade $connection_upgrade {
+  default upgrade;
+  ''      close;
+}
 EOF
   echo "limit_req_zone \$cnapp_agent_limit_key zone=cnapp_agent:10m rate=$rate_v;"
   echo "limit_req_zone \$cnapp_agent_limit_key zone=cnapp_enroll:2m rate=$erate_v;"
@@ -147,6 +155,32 @@ EOF
   echo "    limit_req zone=cnapp_enroll burst=$eburst_v nodelay;"
   proxy_block
   echo "}"
+  cat <<EOF
+# Remote sessions: the agent's outbound WebSocket to the single-worker relay
+# service (docs/DEVICE_MANAGEMENT.md#remote-sessions-windows). Long timeouts on
+# this path only; the relay pings every 20 s and limits message sizes itself.
+location ~ "^/api/agent/remote/[0-9a-f]{32}\$" {
+    if (\$request_method != GET) { return 405; }
+    limit_req zone=cnapp_agent burst=$burst_v nodelay;
+    limit_conn cnapp_agent_conn $conn_v;
+    set \$relay_upstream "$relay";
+    proxy_pass \$relay_upstream;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade \$http_upgrade;
+    proxy_set_header Connection \$connection_upgrade;
+    proxy_set_header Host \$host;
+    proxy_set_header X-Forwarded-Host \$host;
+    # nginx is the edge: overwrite (never append to) client-supplied values.
+    proxy_set_header X-Real-IP \$remote_addr;
+    proxy_set_header X-Forwarded-For \$remote_addr;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header Cookie "";
+    proxy_buffering off;
+    proxy_connect_timeout 10s;
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
+}
+EOF
 } >"$out/cnapp-agent-locations.inc"
 
 # ---------------------------------------------------------------- dedicated agent hostname

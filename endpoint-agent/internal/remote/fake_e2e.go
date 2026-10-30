@@ -9,6 +9,8 @@ import (
 	"image/color"
 	"image/jpeg"
 	"log/slog"
+	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -20,7 +22,8 @@ import (
 // release and installer binary, refuses a build with this tag): no helper process, no
 // screen. The "user" allows at once, a synthetic 64x64 tile is sent four
 // times a second and input is only counted. GitHub-hosted runners have no
-// interactive session to capture.
+// interactive session to capture. CNAPP_REMOTE_FAKE_END_AFTER=N makes the
+// "user" click End session after N seconds.
 func DefaultPlatform() Platform { return e2ePlatform{} }
 
 type e2ePlatform struct{}
@@ -80,9 +83,16 @@ func (h *e2eHelper) run(p Params) {
 	h.emit(Event{wire.KindJSON, wire.Encode(wire.Msg{T: "started"})})
 	t := time.NewTicker(250 * time.Millisecond)
 	defer t.Stop()
+	var userEnds <-chan time.Time
+	if n, err := strconv.Atoi(os.Getenv("CNAPP_REMOTE_FAKE_END_AFTER")); err == nil && n > 0 {
+		userEnds = time.After(time.Duration(n) * time.Second)
+	}
 	for seq := uint32(1); ; seq++ {
 		select {
 		case <-h.stop:
+			return
+		case <-userEnds:
+			h.emit(Event{wire.KindJSON, wire.Encode(wire.Msg{T: "ended", Reason: "user_ended"})})
 			return
 		case <-t.C:
 			if !h.emit(Event{wire.KindTile, e2eTile(seq)}) {

@@ -64,7 +64,8 @@ async def _sweeper(stop: asyncio.Event) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    db.init_engine(config.settings.database_url)
+    # The backend runs the migrations (the compose file starts the relay after it is healthy).
+    db.init_engine(config.settings.database_url, migrate=False)
     stop = asyncio.Event()
     task = asyncio.create_task(_sweeper(stop), name="remote-session-sweep")
     yield

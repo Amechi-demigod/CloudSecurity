@@ -40,7 +40,7 @@ jobs:
           if [ -z "$base" ]; then echo "agent=true" >> "$GITHUB_OUTPUT"; exit 0; fi
           changed="$(git diff --name-only "$base" HEAD)"
           echo "$changed"
-          if echo "$changed" | grep -Eq '^(endpoint-agent/|device-scripts/|scripts/((agent|installer|update)_e2e|agent_release|device_scripts)\.py|backend/(Dockerfile|requirements|installers/|app/(api/(agent|agent_updates|devices|approvals|device_scripts)\.py|services/(devices|installers|pkgtools|agent_updates|approvals|device_scripts)\.py|schemas_devices\.py|script_manifest\.py|models\.py|config\.py|cli\.py))|\.github/workflows/)'; then
+          if echo "$changed" | grep -Eq '^(endpoint-agent/|device-scripts/|scripts/((agent|installer|update)_e2e|agent_release|device_scripts)\.py|backend/(Dockerfile|requirements|installers/|app/(api/(agent|agent_updates|devices|approvals|device_scripts|remote_relay|remote_sessions)\.py|services/(devices|installers|pkgtools|agent_updates|approvals|device_scripts|remote_sessions)\.py|schemas_devices\.py|schemas_remote\.py|remote_hub\.py|relay_main\.py|script_manifest\.py|models\.py|config\.py|cli\.py))|\.github/workflows/)'; then
             echo "agent=true" >> "$GITHUB_OUTPUT"
           else
             echo "agent=false" >> "$GITHUB_OUTPUT"
@@ -254,7 +254,21 @@ jobs:
           line="$(cut -d'#' -f1 "$k/key.pub" | xargs)"
           exe="cnapp-agent-e2e$(cd endpoint-agent && go env GOEXE)"
           (cd endpoint-agent && go build -trimpath -ldflags "-X 'github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/scripts.ExtraTrustedKeys=$line'" -o "$exe" ./cmd/cnapp-agent)
-          python scripts/agent_e2e.py --agent "endpoint-agent/$exe" --service --script-key-file "$k/key.pem"
+          remote=()
+          if [ "$RUNNER_OS" = Windows ]; then
+            # Remote sessions: the runner has no interactive session to capture, so a
+            # `-tags remote_fake` build replaces the helper (synthetic screen, input counted).
+            # Release builds must not contain it.
+            rexe="cnapp-agent-remote-fake$(cd endpoint-agent && go env GOEXE)"
+            (cd endpoint-agent && go build -trimpath -tags remote_fake -o "$rexe" ./cmd/cnapp-agent)
+            # grep -c (not -q) reads all of nm's output: no SIGPIPE under pipefail.
+            (cd endpoint-agent && go tool nm "$rexe" | grep -c 'remote.e2ePlatform' >/dev/null)
+            if (cd endpoint-agent && go tool nm "$exe" | grep -c 'remote.e2ePlatform' >/dev/null); then
+              echo "::error::the e2e fake remote-session backend is in a non-test build"; exit 1
+            fi
+            remote=(--remote-agent "endpoint-agent/$rexe")
+          fi
+          python scripts/agent_e2e.py --agent "endpoint-agent/$exe" --service --script-key-file "$k/key.pem" "${remote[@]}"
           rm -rf "$k"
       - name: Self-update e2e - signed update A->B as the OS service, broken C rolled back, untrusted key and tampered binary rejected
         if: runner.os != 'Linux'
@@ -831,6 +845,10 @@ jobs:
           python3 deploy/onprem/tests/onprem_e2e.py --base "https://$HOST" --ca "$CA" --email "$ADMIN" \
             --password-file "$RUNNER_TEMP/admin.pw" verify --agent "$RUNNER_TEMP/cnapp-agent" \
             --sensor-dir sensor --ingest-token-file "$RUNNER_TEMP/ingest.token"
+          # Remote-session relay service: WebSocket upgrades through nginx reach it.
+          python3 deploy/onprem/tests/onprem_e2e.py --base "https://$HOST" --ca "$CA" --email "$ADMIN" \
+            --password-file "$RUNNER_TEMP/admin.pw" relay
+          test "$(docker inspect -f '{{.State.Health.Status}}' cnapp-relay-1)" = healthy
       - name: cnapp-ctl agent-release import (signed bundle accepted; tampered, untrusted and duplicate refused)
         run: |
           python3 -m pip install -q --break-system-packages "cryptography>=43" 2>/dev/null || python3 -m pip install -q "cryptography>=43"
@@ -1011,6 +1029,7 @@ jobs:
           sudo cnapp-ctl restore "$backup" --yes
           e2e expect before-backup present
           e2e expect after-backup absent
+          e2e relay
       - name: Update to a second tag (ci-2)
         run: |
           for svc in backend frontend; do
@@ -1022,6 +1041,9 @@ jobs:
           test "$(docker inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' cnapp-backend-1)" = ci-2
           sudo cnapp-ctl update --tag ci-2 | tee "$RUNNER_TEMP/noop.txt"; grep -q "already up to date" "$RUNNER_TEMP/noop.txt"
           python3 deploy/onprem/tests/onprem_e2e.py --base "https://$HOST" --ca "$CA" --email "$ADMIN" --password-file "$RUNNER_TEMP/admin.pw" expect before-backup present
+          # The relay runs the updated backend image too.
+          test "$(docker inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' cnapp-relay-1)" = ci-2
+          python3 deploy/onprem/tests/onprem_e2e.py --base "https://$HOST" --ca "$CA" --email "$ADMIN" --password-file "$RUNNER_TEMP/admin.pw" relay
       - name: Forced failing update (new migration, then crash) rolls back and restores the database
         run: |
           ctx="$RUNNER_TEMP/bad"; mkdir -p "$ctx"
@@ -1063,6 +1085,7 @@ jobs:
           ev="$(docker exec cnapp-postgres-1 psql -U cnapp -d cnapp -tAc "select event_type from notification_events where source='server_update'")"
           echo "$ev"; grep -qx update_rolled_back <<<"$ev"
           python3 deploy/onprem/tests/onprem_e2e.py --base "https://$HOST" --ca "$CA" --email "$ADMIN" --password-file "$RUNNER_TEMP/admin.pw" expect before-backup present
+          python3 deploy/onprem/tests/onprem_e2e.py --base "https://$HOST" --ca "$CA" --email "$ADMIN" --password-file "$RUNNER_TEMP/admin.pw" relay
       - name: update without --tag - newest published main commit (fake GitHub API + registry), wait for a running CI build, --no-wait, timeout, offline
         run: |
           st="$RUNNER_TEMP/fake-gh.json"
