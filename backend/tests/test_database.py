@@ -63,7 +63,7 @@ MIGRATION_CHAIN = ["0001_baseline", "0002_device_management", "0003_notification
                    "0005_agent_installers", "0006_agent_updates", "0007_it_asset_lifecycle",
                    "0008_agent_update_automation", "0009_device_approvals_scripts", "0010_scheduled_scans",
                    "0011_vulnerability_matching", "0013_organizations", "0014_host_isolation",
-                   "0015_command_result_data", "0016_dashboard_snapshots"]
+                   "0015_command_result_data", "0016_dashboard_snapshots", "0017_onboarding_dismissed"]
 
 
 def test_migration_history_is_linear():
@@ -439,11 +439,39 @@ def test_dashboard_snapshots_migration(tmp_path):
         assert cols == {"id", "organization_id", "day", "account", "metrics", "created_at"}
         uniques = [set(u["column_names"]) for u in insp.get_unique_constraints("dashboard_snapshots")]
         assert {"organization_id", "day", "account"} in uniques
+        db.run_migrations(eng)  # later revisions on top match the ORM
         assert _schema_diff(eng) == []
 
         from alembic import command
 
         command.downgrade(db.alembic_config(eng), "0015_command_result_data")
         assert not inspect(eng).has_table("dashboard_snapshots")
+    finally:
+        eng.dispose()
+
+
+def test_onboarding_dismissed_migration(tmp_path):
+    """0017 adds the organisation's checklist dismissal columns on top of 0016
+    (existing organisations stay not dismissed); downgrading removes them."""
+    if IS_POSTGRES:
+        reset_database()
+        eng = db.create_db_engine(TEST_DATABASE_URL)
+    else:
+        eng = db.create_db_engine(f"sqlite:///{tmp_path / 'onboarding.db'}")
+    try:
+        db.run_migrations(eng, "0016_dashboard_snapshots")
+        assert "onboarding_dismissed_at" not in {c["name"] for c in inspect(eng).get_columns("organizations")}
+        db.run_migrations(eng, "0017_onboarding_dismissed")
+        cols = {c["name"]: c for c in inspect(eng).get_columns("organizations")}
+        assert cols["onboarding_dismissed_at"]["nullable"] and cols["onboarding_dismissed_by"]["nullable"]
+        with eng.connect() as conn:
+            assert conn.execute(text("SELECT count(*) FROM organizations WHERE onboarding_dismissed_at IS NOT NULL")
+                                ).scalar() == 0
+        assert _schema_diff(eng) == []
+
+        from alembic import command
+
+        command.downgrade(db.alembic_config(eng), "0016_dashboard_snapshots")
+        assert "onboarding_dismissed_at" not in {c["name"] for c in inspect(eng).get_columns("organizations")}
     finally:
         eng.dispose()

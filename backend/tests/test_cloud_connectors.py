@@ -188,18 +188,16 @@ def test_scan_flows_into_inventory_findings_and_filters(empty_client, monkeypatc
         return {**real(s), "aws": FakeAws()}
 
     monkeypatch.setattr(platform, "build_registry", registry)
+    # Run the scan synchronously (as test_api does): a background scan thread and
+    # the polling requests share the in-memory SQLite connection (StaticPool), which
+    # made this test flaky on CI runners (the run was still "running" after 60s).
+    from app.services import scans
+
+    monkeypatch.setattr(platform, "start_scan",
+                        lambda c, org, background=True: scans.start_scan(c, org, background=False))
     r = empty_client.post("/api/scans", json={"connector": "aws"})
     assert r.status_code == 202, r.text
-    import time
-
-    # The scan runs in a background thread; on a slow CI runner the full rule
-    # set + post-scan steps can take several seconds, so wait on a deadline.
-    deadline = time.monotonic() + 60
-    while True:
-        runs = empty_client.get("/api/scans").json()
-        if (runs and runs[0]["status"] != "running") or time.monotonic() > deadline:
-            break
-        time.sleep(0.05)
+    runs = empty_client.get("/api/scans").json()
     run = runs[0]
     assert run["connector"] == "aws" and run["status"] == "succeeded" and run["errors"]
     conns = {c["name"]: c for c in empty_client.get("/api/connectors").json()}

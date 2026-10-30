@@ -23,7 +23,20 @@ export interface Usage {
   scans: number;
 }
 
-export type InvitationState = "pending" | "accepted" | "expired" | "revoked";
+export type OnboardingStepKey = "mfa" | "team" | "cloud" | "agent" | "scan" | "alerts";
+
+/** The "Getting started" checklist: each step detected from the organisation's own data. */
+export interface Onboarding {
+  steps: { key: OnboardingStepKey; done: boolean }[];
+  completed: number;
+  total: number;
+  is_default: boolean;
+  dismissed: boolean;
+  dismissed_at: string | null;
+  dismissed_by: string | null;
+}
+
+export type InvitationState ="pending" | "accepted" | "expired" | "revoked";
 
 export interface Invitation {
   id: string;
@@ -106,6 +119,8 @@ export const orgApi = {
   updateOrganization: (patch: Partial<Pick<Organization, "name" | "contact_email" | "logo_url">>) =>
     request<Organization>("/api/organization", json("PATCH", patch)),
   usage: () => request<Usage>("/api/organization/usage"),
+  onboarding: () => request<Onboarding>("/api/organization/onboarding"),
+  dismissOnboarding: () => request<Onboarding>("/api/organization/onboarding/dismiss", json("POST")),
   invitations: () => request<Invitation[]>("/api/organization/invitations"),
   mailStatus: () => request<{ configured: boolean }>("/api/organization/invitations/mail"),
   invite: (email: string, role: Role) => request<IssuedInvitation>("/api/organization/invitations", json("POST", { email, role })),
