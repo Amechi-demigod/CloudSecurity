@@ -75,7 +75,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
           cache: pip
@@ -102,7 +102,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
           cache: pip
@@ -182,7 +182,7 @@ jobs:
           fi
       - name: Build
         run: go build -trimpath -o "cnapp-agent$(go env GOEXE)" ./cmd/cnapp-agent
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
           cache: pip
@@ -404,7 +404,7 @@ jobs:
           cp packaging/windows/*.ps1 packaging/macos/install.sh dist/
           (cd dist && sha256sum cnapp-agent-* > SHA256SUMS && cat SHA256SUMS)
           file dist/cnapp-agent-*
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
       - name: Signed update bundle (EPHEMERAL CI key - for testing the pipeline only; real releases use agent-release.yml)
@@ -470,7 +470,7 @@ jobs:
         run: bicep build-params infra/main.bicepparam --outfile "$RUNNER_TEMP/main.parameters.json"
       - name: shellcheck
         run: shellcheck infra/setup.sh infra/deploy.sh infra/tests/*.sh endpoint-agent/packaging/macos/*.sh endpoint-agent/packaging/macos/scripts/* scripts/agent-release-keygen scripts/device-scripts-keygen scripts/agent_build_check.sh
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
       - name: setup.sh and deploy.sh tests (az, gh and docker are mocked; nothing touches Azure)
@@ -703,7 +703,7 @@ jobs:
         with:
           name: installer-e2e-bundle
           path: ${{ runner.temp }}/bundle
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
           cache: pip
