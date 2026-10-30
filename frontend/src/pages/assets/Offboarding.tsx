@@ -8,7 +8,7 @@ import { errMsg, fmtDate } from "../../lib/assets";
 import { useApi } from "../../lib/useApi";
 
 function NewOffboarding({ open, onClose, onDone }: { open: boolean; onClose: () => void; onDone: (o: Ob) => void }) {
-  const [f, setF] = useState({ person_email: "", person_name: "", department: "", leave_date: "", retrieval_due: "", notes: "" });
+  const [f, setF] = useState({ person_email: "", person_username: "", person_name: "", department: "", leave_date: "", retrieval_due: "", notes: "" });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const inp = (k: keyof typeof f) => ({ value: f[k], onChange: (e: { target: { value: string } }) => setF((x) => ({ ...x, [k]: e.target.value })) });
@@ -17,7 +17,7 @@ function NewOffboarding({ open, onClose, onDone }: { open: boolean; onClose: () 
     setBusy(true);
     setError(null);
     try {
-      const o = await assetsApi.createOffboarding({ ...f, person_email: f.person_email.trim(), retrieval_due: f.retrieval_due || undefined });
+      const o = await assetsApi.createOffboarding({ ...f, person_email: f.person_email.trim(), person_username: f.person_username.trim(), retrieval_due: f.retrieval_due || undefined });
       onDone(o);
       onClose();
     } catch (err) {
@@ -29,9 +29,13 @@ function NewOffboarding({ open, onClose, onDone }: { open: boolean; onClose: () 
   return (
     <Modal open={open} onClose={onClose} title="Person leaving">
       <form className="space-y-3" onSubmit={submit}>
-        <p className="text-sm text-ink-2">Every asset assigned to this email (or in repair for them) moves to “retrieval pending” with the due date below.</p>
+        <p className="text-sm text-ink-2">
+          Every asset assigned to this person (or in repair for them) moves to “retrieval pending” with the due date below. Give the email, the computer username, or both: owners set
+          automatically from the agent are known by username only.
+        </p>
         <FormError error={error} />
-        <Field label="Email" id="ob-email" type="email" required maxLength={320} {...inp("person_email")} />
+        <Field label="Email" id="ob-email" type="email" maxLength={320} {...inp("person_email")} />
+        <Field label="Username (computer sign-in)" id="ob-user" maxLength={128} placeholder="e.g. musao or CORP\musao" {...inp("person_username")} />
         <Field label="Name (default: from their assets)" id="ob-name" maxLength={128} {...inp("person_name")} />
         <Field label="Department" id="ob-dept" maxLength={128} {...inp("department")} />
         <Field label="Leave date" id="ob-leave" type="date" required {...inp("leave_date")} />
@@ -39,7 +43,7 @@ function NewOffboarding({ open, onClose, onDone }: { open: boolean; onClose: () 
         <TextArea label="Notes" id="ob-notes" value={f.notes} onChange={(v) => setF((x) => ({ ...x, notes: v }))} />
         <div className="flex justify-end gap-2 pt-2">
           <Button onClick={onClose}>Cancel</Button>
-          <Button type="submit" variant="primary" disabled={busy || !f.person_email || !f.leave_date}>
+          <Button type="submit" variant="primary" disabled={busy || (!f.person_email.trim() && !f.person_username.trim()) || !f.leave_date}>
             {busy ? "Saving…" : "Start offboarding"}
           </Button>
         </div>
@@ -65,12 +69,12 @@ function Detail({ id, canEdit, onChange }: { id: string; canEdit: boolean; onCha
   }
   return (
     <Card
-      title={`${data.person_name || data.person_email}: leaving ${fmtDate(data.leave_date)}`}
+      title={`${data.person_name || data.person_email || data.person_username}: leaving ${fmtDate(data.leave_date)}`}
       actions={canEdit && data.status === "open" && <Button onClick={cancel}>Cancel offboarding</Button>}
     >
       <ErrorNote error={err} />
       <p className="mb-3 text-sm text-ink-2">
-        {data.person_email} {data.department && `· ${data.department}`} · retrieval due {fmtDate(data.retrieval_due)} · {data.assets_outstanding} of {data.assets_total} outstanding
+        {[data.person_email, data.person_username && `username ${data.person_username}`].filter(Boolean).join(" · ")} {data.department && `· ${data.department}`} · retrieval due {fmtDate(data.retrieval_due)} · {data.assets_outstanding} of {data.assets_total} outstanding
         {data.notes && <span className="block whitespace-pre-wrap text-ink-3">{data.notes}</span>}
       </p>
       {(data.assets ?? []).length === 0 ? (
@@ -81,9 +85,9 @@ function Detail({ id, canEdit, onChange }: { id: string; canEdit: boolean; onCha
             <tr key={a.id}>
               <td className="px-3 py-2">
                 <Link to={`/it-assets/${a.id}`} className="font-medium hover:text-accent">
-                  {a.asset_tag}
+                  {a.display_name}
                 </Link>{" "}
-                <span className="text-xs text-ink-3">{[a.manufacturer, a.model].filter(Boolean).join(" ")}</span>
+                <span className="text-xs text-ink-3">{[a.display_name !== a.asset_tag && a.asset_tag, a.manufacturer, a.model].filter(Boolean).join(" ")}</span>
               </td>
               <td className="px-3 py-2">
                 <AssetStatusBadge status={a.status} />
@@ -127,8 +131,8 @@ export default function Offboarding() {
               {(data ?? []).map((o) => (
                 <tr key={o.id} className={`cursor-pointer hover:bg-surface-2 ${selected === o.id ? "bg-surface-2" : ""}`} onClick={() => setParams({ id: o.id })}>
                   <td className="px-3 py-2">
-                    <div className="font-medium">{o.person_name || o.person_email}</div>
-                    <div className="text-[11px] text-ink-3">{o.person_email}</div>
+                    <div className="font-medium">{o.person_name || o.person_email || o.person_username}</div>
+                    <div className="text-[11px] text-ink-3">{[o.person_email, o.person_username].filter(Boolean).join(" · ")}</div>
                   </td>
                   <td className="px-3 py-2 text-xs">{fmtDate(o.leave_date)}</td>
                   <td className="px-3 py-2 text-xs">

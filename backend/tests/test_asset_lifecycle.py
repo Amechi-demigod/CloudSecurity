@@ -339,6 +339,257 @@ def test_csv_import_limits(admin, monkeypatch):
     assert r.status_code == 422 and "too many rows" in r.text
 
 
+# --------------------------------------------------------------------------- hostname + owner from the agent
+def set_users(device_id: str, users: list[str]) -> None:
+    """What the agent's next check-in would store (DeviceInfo.logged_in_users)."""
+    with db.get_session("default") as s:
+        d = s.get(Device, device_id)
+        d.inventory = {**(d.inventory or {}), "logged_in_users": users}
+        s.commit()
+
+
+def auto_events(c, asset_id: str) -> list[dict]:
+    return [e for e in events(c, asset_id) if e["event_type"] == "assigned" and e["actor_email"] == "system"]
+
+
+def test_agent_assets_are_named_by_hostname(admin):
+    new_asset(admin, asset_tag="MON-1", asset_type="monitor", model="Dell U2723QE", serial_number="")
+    dev = add_device(hostname="ZZ-LAPTOP", serial_number="SER-A")
+    add_device(hostname="aa-desktop", serial_number="SER-B", model="OptiPlex 7090")
+    lst = admin.get("/api/it-assets").json()
+    # sorted by name: computer name for agent devices, tag otherwise (case-insensitive)
+    assert [x["display_name"] for x in lst] == ["aa-desktop", "MON-1", "ZZ-LAPTOP"]
+    assert lst[0]["asset_tag"].startswith("AGT-")  # the tag is kept, unique and required
+    mon = next(x for x in lst if x["asset_tag"] == "MON-1")
+    assert mon["display_name"] == "MON-1" and mon["device_hostname"] is None
+    detail = admin.get(f"/api/it-assets/by-device/{dev}").json()
+    assert detail["display_name"] == "ZZ-LAPTOP"
+    assert admin.get(f"/api/it-assets/{detail['id']}").json()["display_name"] == "ZZ-LAPTOP"
+    assert [x["display_name"] for x in admin.get("/api/it-assets?q=zz-lap").json()] == ["ZZ-LAPTOP"]
+    s = admin.get("/api/it-assets/summary").json()
+    assert s["total"] == 3
+
+
+def test_owner_set_from_agent_signed_in_user(admin):
+    dev = add_device(hostname="LAP-MUSA", inventory={"logged_in_users": ["musao", "other"]})
+    a = admin.get("/api/it-assets").json()[0]
+    assert a["status"] == "assigned" and a["assignee_name"] == "musao" and a["assignee_email"] == ""
+    assert a["assigned_at"] is not None
+    ev = auto_events(admin, a["id"])
+    assert len(ev) == 1
+    assert ev[0]["from_status"] == "in_stock" and ev[0]["to_status"] == "assigned"
+    assert ev[0]["from_assignee"] is None and ev[0]["to_assignee"] == "musao"
+    assert "assigned automatically from agent" in ev[0]["notes"] and ev[0]["detail"]["hostname"] == "LAP-MUSA"
+    assert "it_asset_auto_assigned" in audit_actions()
+    # unchanged user (any case) -> no new event, on the list and on the detail page
+    set_users(dev, ["MUSAO"])
+    admin.get("/api/it-assets")
+    admin.get(f"/api/it-assets/{a['id']}")
+    assert len(auto_events(admin, a["id"])) == 1
+    # nobody signed in -> the last owner stays
+    set_users(dev, [])
+    assert admin.get(f"/api/it-assets/{a['id']}").json()["assignee_name"] == "musao"
+    assert len(auto_events(admin, a["id"])) == 1
+    # owner filter matches the username; owners without email are shown by name
+    assert [x["id"] for x in admin.get("/api/it-assets?assignee=MusaO").json()] == [a["id"]]
+
+
+def _enrolled_agent(admin, users: list[str]):
+    from tests.test_devices import agent_client, enroll, new_token, windows_checkin
+
+    agent = agent_client(admin.app)
+    r = enroll(agent, new_token(admin))
+    assert r.status_code == 200, r.text
+    agent.headers["Authorization"] = f"Bearer {r.json()['device_secret']}"
+
+    def checkin(users: list[str]):
+        body = windows_checkin()
+        body["device"]["logged_in_users"] = users
+        r = agent.post("/api/agent/checkin", json=body)
+        assert r.status_code == 200, r.text
+
+    checkin(users)
+    return r.json()["device_id"], checkin
+
+
+def _asset_for(device_id: str):
+    from app.asset_lifecycle.models import ItAsset
+
+    with db.get_session("default") as s:
+        a = s.scalars(select(ItAsset).where(ItAsset.device_id == device_id)).one()
+        return a.id, a.assignee_name, a.assignee_email, a.status
+
+
+def test_checkin_updates_owner(admin):
+    # no IT assets page is opened: the check-in alone creates the asset and sets the owner
+    device_id, checkin = _enrolled_agent(admin, ["CORP\\alice"])
+    asset_id, name, email, status = _asset_for(device_id)
+    assert (name, email, status) == ("alice", "", "assigned")
+    assert len(auto_events(admin, asset_id)) == 1
+    checkin(["CORP\\alice"])  # same user again: nothing recorded
+    checkin([])               # nobody signed in: last owner kept
+    assert _asset_for(device_id)[1] == "alice" and len(auto_events(admin, asset_id)) == 1
+    checkin(["CORP\\bob", "CORP\\alice"])  # new user: exactly one event
+    assert _asset_for(device_id)[1] == "bob"
+    ev = auto_events(admin, asset_id)
+    assert len(ev) == 2 and ev[0]["from_assignee"] == "alice" and ev[0]["to_assignee"] == "bob"
+    checkin(["CORP\\bob"])
+    assert len(auto_events(admin, asset_id)) == 2
+
+
+def test_checkin_survives_it_asset_errors(admin, monkeypatch):
+    from app.asset_lifecycle import service as svc
+
+    def boom(*a, **kw):
+        raise RuntimeError("asset sync broken")
+
+    monkeypatch.setattr(svc, "sync_device", boom)
+    device_id, checkin = _enrolled_agent(admin, ["CORP\\alice"])  # asserts 200
+    checkin(["CORP\\bob"])
+    d = admin.get(f"/api/devices/{device_id}").json()
+    assert d["logged_in_users"] == ["CORP\\bob"] and d["last_checkin_at"]
+    # an error inside the owner sync itself (after the asset exists) does not break it either
+    monkeypatch.undo()
+    monkeypatch.setattr(svc, "sync_owners", boom)
+    checkin(["CORP\\carol"])
+    assert admin.get(f"/api/devices/{device_id}").json()["logged_in_users"] == ["CORP\\carol"]
+
+
+def test_owner_username_strips_domain_and_skips_system_accounts(admin):
+    from app.asset_lifecycle import service as svc
+
+    assert svc.normalize_username("WAKANOW\\musao") == "musao"
+    assert svc.normalize_username("AzureAD\\AdaObi") == "AdaObi"
+    assert svc.normalize_username("  bola  ") == "bola"
+    assert svc.reported_user({"logged_in_users": ["root", "NT AUTHORITY\\SYSTEM", "CORP\\ada"]}) == ("CORP\\ada", "ada")
+    assert svc.reported_user({"logged_in_users": ["_mbsetupuser"]}) is None
+    assert svc.reported_user({}) is None
+
+    add_device(hostname="WIN-01", inventory={"logged_in_users": ["WAKANOW\\musao"]})
+    a = admin.get("/api/it-assets").json()[0]
+    assert a["assignee_name"] == "musao" and a["assignee_email"] == ""
+    ev = auto_events(admin, a["id"])[0]
+    assert ev["to_assignee"] == "musao" and ev["detail"]["reported_user"] == "WAKANOW\\musao"
+    assert "WAKANOW\\musao" in ev["notes"]  # the original form stays in the history
+
+
+def test_agent_user_overwrites_manual_owner(admin):
+    dev = add_device(hostname="LAP-02", serial_number="SER-2")
+    a = admin.get("/api/it-assets").json()[0]
+    assert a["status"] == "in_stock" and auto_events(admin, a["id"]) == []  # nobody signed in yet
+    r = admin.post(f"/api/it-assets/{a['id']}/assign", json={
+        "assignee_email": "ada@example.com", "assignee_name": "Ada Obi", "assignee_department": "Finance"})
+    assert r.status_code == 200
+    set_users(dev, ["CORP\\bola"])
+    a = admin.get(f"/api/it-assets/{a['id']}").json()
+    assert (a["assignee_name"], a["assignee_email"], a["assignee_department"], a["status"]) == (
+        "bola", "", "", "assigned")
+    ev = auto_events(admin, a["id"])
+    assert len(ev) == 1 and ev[0]["from_assignee"] == "ada@example.com" and ev[0]["to_assignee"] == "bola"
+    assert ev[0]["from_status"] == "assigned" and ev[0]["actor_email"] == "system"
+    admin.get("/api/it-assets")
+    assert len(auto_events(admin, a["id"])) == 1  # no event when nothing changed
+    # a manual reassignment is overwritten again on the next sync (the agent wins)
+    admin.post(f"/api/it-assets/{a['id']}/assign", json={"assignee_email": "chi@example.com"})
+    admin.get("/api/it-assets")
+    assert admin.get(f"/api/it-assets/{a['id']}").json()["assignee_name"] == "bola"
+    assert len(auto_events(admin, a["id"])) == 2
+
+
+@pytest.mark.parametrize("status", ["disposed", "lost", "stolen", "in_repair", "retrieved", "retrieval_pending"])
+def test_agent_user_never_touches_other_statuses(admin, status):
+    dev = add_device(hostname="LAP-03", serial_number="SER-3")
+    a = admin.get("/api/it-assets").json()[0]
+    if status in ("retrieval_pending", "in_repair"):
+        admin.post(f"/api/it-assets/{a['id']}/assign", json={"assignee_email": "x@example.com"})
+    if status == "disposed":
+        r = admin.post(f"/api/it-assets/{a['id']}/dispose", json={"method": "recycled",
+                                                                  "disposal_date": utcnow().date().isoformat()})
+    else:
+        r = admin.post(f"/api/it-assets/{a['id']}/status", json={"status": status})
+    assert r.status_code == 200 and r.json()["status"] == status, r.text
+    before = r.json()
+    set_users(dev, ["musao"])
+    admin.get("/api/it-assets")
+    after = admin.get(f"/api/it-assets/{a['id']}").json()
+    assert after["status"] == status and after["assignee_name"] == before["assignee_name"]
+    assert after["assignee_email"] == before["assignee_email"]
+    assert auto_events(admin, a["id"]) == []
+
+
+def test_username_only_owners_in_manual_flows(admin):
+    a = new_asset(admin, asset_tag="WK-U1", status="assigned", assignee_name="musao")
+    assert a["status"] == "assigned" and a["assignee_email"] == "" and a["assigned_at"]
+    assert admin.post("/api/it-assets/{}/assign".format(a["id"]), json={}).status_code == 422
+    r = admin.post(f"/api/it-assets/{a['id']}/assign", json={"assignee_name": "bola"})
+    assert r.status_code == 200 and r.json()["assignee_name"] == "bola"
+    assert events(admin, a["id"])[0]["from_assignee"] == "musao" and events(admin, a["id"])[0]["to_assignee"] == "bola"
+    assert admin.post(f"/api/it-assets/{a['id']}/status", json={"status": "in_repair"}).status_code == 200
+    r = admin.post(f"/api/it-assets/{a['id']}/return", json={})
+    assert r.status_code == 200 and r.json()["status"] == "in_stock" and r.json()["assignee_name"] == ""
+    admin.post(f"/api/it-assets/{a['id']}/assign", json={"assignee_name": "bola"})
+    # CSV: username-only owners export with an empty email and re-import unchanged
+    exported = admin.get("/api/it-assets/export.csv").text
+    row = next(csv.DictReader(io.StringIO(exported)))
+    assert row["assignee_name"] == "bola" and row["assignee_email"] == "" and row["status"] == "assigned"
+    r = admin.post("/api/it-assets/import", content=exported.encode(), headers={"Content-Type": "text/csv"})
+    assert r.status_code == 200 and r.json()["unchanged"] == 1, r.text
+    r = admin.post(f"/api/it-assets/{a['id']}/status", json={"status": "retrieval_pending"})
+    assert r.status_code == 200 and r.json()["status"] == "retrieval_pending"
+    body = ("asset_tag,assignee_name,assignee_email,status\n"
+            "WK-U2,chi,,\n"        # new, name only -> assigned
+            "WK-U3,,,assigned\n")  # assigned needs someone
+    r = admin.post("/api/it-assets/import", content=body.encode(), headers={"Content-Type": "text/csv"})
+    assert r.status_code == 422 and [e["row"] for e in r.json()["detail"]["errors"]] == [3]
+    r = admin.post("/api/it-assets/import", content=body.splitlines()[0].encode() + b"\nWK-U2,chi,,\n",
+                   headers={"Content-Type": "text/csv"})
+    assert r.status_code == 200 and r.json()["created"] == 1
+    u2 = admin.get("/api/it-assets?q=WK-U2").json()[0]
+    assert u2["status"] == "assigned" and u2["assignee_name"] == "chi" and u2["assignee_email"] == ""
+    # name-only row on a name-only owner = new owner
+    r = admin.post("/api/it-assets/import", content=b"asset_tag,assignee_name\nWK-U2,dayo\n",
+                   headers={"Content-Type": "text/csv"})
+    assert r.status_code == 200 and r.json()["updated"] == 1
+    assert events(admin, u2["id"])[0]["from_assignee"] == "chi" and events(admin, u2["id"])[0]["to_assignee"] == "dayo"
+
+
+def test_offboarding_by_username(admin):
+    dev = add_device(hostname="LAP-LEAVER", serial_number="SER-L", inventory={"logged_in_users": ["CORP\\leaver"]})
+    other = new_asset(admin, asset_tag="WK-PH", asset_type="phone", serial_number="")
+    admin.post(f"/api/it-assets/{other['id']}/assign", json={"assignee_name": "Leaver"})  # name-only, by hand
+    namesake = new_asset(admin, asset_tag="WK-NS", serial_number="")
+    admin.post(f"/api/it-assets/{namesake['id']}/assign", json={"assignee_name": "leaver",
+                                                                  "assignee_email": "someone.else@example.com"})
+    leave = utcnow().date().isoformat()
+    assert admin.post("/api/it-assets/offboardings", json={"leave_date": leave}).status_code == 422
+    assert admin.post("/api/it-assets/offboardings", json={"person_username": "a@b.c", "leave_date": leave}
+                      ).status_code == 422
+    r = admin.post("/api/it-assets/offboardings", json={"person_username": "CORP\\Leaver", "leave_date": leave})
+    assert r.status_code == 201, r.text
+    ob = r.json()
+    assert ob["person_username"] == "Leaver" and ob["person_email"] == "" and ob["person_name"] in ("leaver", "Leaver")
+    tags = {x["asset_tag"] for x in ob["assets"]}
+    laptop = admin.get(f"/api/it-assets/by-device/{dev}").json()
+    assert tags == {laptop["asset_tag"], "WK-PH"}  # not the namesake who has another email
+    assert laptop["status"] == "retrieval_pending"
+    assert admin.get(f"/api/it-assets/{namesake['id']}").json()["status"] == "assigned"
+    # the agent does not take a pending asset back
+    admin.get("/api/it-assets")
+    assert admin.get(f"/api/it-assets/{laptop['id']}").json()["status"] == "retrieval_pending"
+    # one open offboarding per username
+    assert admin.post("/api/it-assets/offboardings", json={"person_username": "leaver", "leave_date": leave}
+                      ).status_code == 409
+    # email and username together: both kinds of owner are found
+    a = new_asset(admin, asset_tag="WK-E", serial_number="")
+    admin.post(f"/api/it-assets/{a['id']}/assign", json={"assignee_email": "musa@example.com"})
+    b = new_asset(admin, asset_tag="WK-F", serial_number="")
+    admin.post(f"/api/it-assets/{b['id']}/assign", json={"assignee_name": "musao"})
+    r = admin.post("/api/it-assets/offboardings", json={"person_email": "musa@example.com", "person_username": "musao",
+                                                         "leave_date": leave})
+    assert r.status_code == 201 and {x["asset_tag"] for x in r.json()["assets"]} == {"WK-E", "WK-F"}
+    assert admin.get("/api/it-assets/offboardings").status_code == 200
+
+
 # --------------------------------------------------------------------------- notifications
 def test_notifications_overdue_warranty_unseen_lost(admin):
     from app.notifications import dispatcher

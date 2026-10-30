@@ -10,7 +10,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -27,6 +27,13 @@ INACTIVE_STATUSES = frozenset({"disposed", "lost", "stolen"})
 ASSIGNABLE_FROM = frozenset({"in_stock", "assigned", "in_repair", "retrieved"})
 # Statuses whose holder must return the asset when they leave.
 HELD_STATUSES = frozenset({"assigned", "in_repair"})
+# Statuses in which the agent's signed-in user becomes the owner automatically.
+AUTO_OWNER_STATUSES = ("in_stock", "assigned")
+# Built-in / service accounts that never own a device (compared lower-cased,
+# after any DOMAIN\ prefix is removed).
+SYSTEM_ACCOUNTS = frozenset({"root", "system", "local service", "network service", "_mbsetupuser", "loginwindow",
+                             "defaultuser0", "daemon", "nobody"})
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 
 
 class AssetError(ValueError):
@@ -94,6 +101,91 @@ def _jsonable(v: Any) -> Any:
     return v
 
 
+# --------------------------------------------------------------------------- owners
+def owner_key(asset: ItAsset) -> str:
+    """Who holds the asset, for custody events, audit and comparisons: the email,
+    or the name for owners without one (e.g. the username set from the agent)."""
+    return asset.assignee_email or asset.assignee_name
+
+
+def normalize_username(raw: str) -> str:
+    """OS login name -> owner name: `DOMAIN\\musao` / `AzureAD\\AdaObi` become
+    `musao` / `AdaObi`. Control characters are dropped; at most 128 characters."""
+    name = _CONTROL.sub("", raw or "").strip()
+    return name.rsplit("\\", 1)[-1].strip()[:128]
+
+
+def reported_user(inventory: dict | None) -> tuple[str, str] | None:
+    """(as reported, normalised) signed-in user of an agent device, or None.
+
+    The agent sends a plain list (no separate "console user" field): the macOS
+    agent puts the console user first and Windows lists the owners of
+    interactive sessions (explorer.exe). So the first entry is used; built-in
+    accounts are skipped."""
+    users = (inventory or {}).get("logged_in_users") or []
+    if not isinstance(users, list):
+        return None
+    for raw in users:
+        if not isinstance(raw, str):
+            continue
+        name = normalize_username(raw)
+        if name and name.lower() not in SYSTEM_ACCOUNTS:
+            return _CONTROL.sub("", raw).strip()[:128], name
+    return None
+
+
+def sync_owners(db: Session, *, asset_id: str | None = None, limit: int = 5000) -> int:
+    """Make the agent's signed-in user the owner of in-stock / assigned agent assets.
+
+    The agent always wins: a different user replaces the current owner (also one
+    set by hand), the email and department are cleared (the agent only knows the
+    username) and an in-stock asset becomes assigned. Nothing happens when no user
+    is signed in (the last owner stays), when the owner already is that user, or
+    for any other status (in repair, retrieval pending, retrieved, lost, stolen,
+    disposed). Each change is a custody event by `system` plus an audit record.
+    Commits when something changed; the conditional UPDATE makes concurrent syncs
+    record a change only once. Returns the number of assets changed."""
+    from ..auth import audit
+
+    stmt = (select(ItAsset, Device.inventory, Device.hostname).join(Device, Device.id == ItAsset.device_id)
+            .where(ItAsset.status.in_(AUTO_OWNER_STATUSES)).order_by(ItAsset.id).limit(limit))
+    if asset_id:
+        stmt = stmt.where(ItAsset.id == asset_id)
+    changed = 0
+    for asset, inventory, hostname in db.execute(stmt).all():
+        found = reported_user(inventory)
+        if found is None:
+            continue
+        raw, name = found
+        if asset.status == "assigned" and asset.assignee_name.casefold() == name.casefold():
+            continue
+        prev_status, prev_owner = asset.status, owner_key(asset)
+        now = utcnow()
+        res = db.execute(
+            update(ItAsset)
+            .where(and_(ItAsset.id == asset.id, ItAsset.status == prev_status,
+                        ItAsset.assignee_name == asset.assignee_name, ItAsset.assignee_email == asset.assignee_email))
+            .values(assignee_name=name, assignee_email="", assignee_department="", assigned_at=now,
+                    status="assigned", retrieval_due=None, offboarding_id=None, updated_at=now)
+            .execution_options(synchronize_session=False))
+        if res.rowcount != 1:
+            continue  # changed concurrently
+        note = f"assigned automatically from agent: signed-in user {raw}"
+        if raw != name:
+            note += f" (owner recorded as {name})"
+        record(db, asset, "assigned", SYSTEM, notes=note, from_status=prev_status, to_status="assigned",
+               from_assignee=prev_owner, to_assignee=name, source="agent", reported_user=raw,
+               device_id=asset.device_id, hostname=hostname)
+        audit(db, "it_asset_auto_assigned", actor_email=SYSTEM, target=f"it-asset:{asset.id}",
+              asset_tag=asset.asset_tag, hostname=hostname, from_status=prev_status,
+              from_assignee=prev_owner or None, to_assignee=name, reported_user=raw)
+        changed += 1
+    if changed:
+        db.commit()
+        db.expire_all()  # the UPDATE bypassed the loaded objects
+    return changed
+
+
 # --------------------------------------------------------------------------- utilization
 def is_idle(device: Device | None, now: datetime, idle_days: int) -> bool:
     """An agent device not seen for `idle_days` (or never, if enrolled that long ago)."""
@@ -120,11 +212,17 @@ def to_out(asset: ItAsset, device: Device | None, st: dict[str, Any], now: datet
         "purchase_cost": float(asset.purchase_cost) if asset.purchase_cost is not None else None,
         "custom_fields": dict(asset.custom_fields or {}),
         "device_hostname": device.hostname if device else None,
+        # Main name in the UI: the computer name for agent devices, else the tag.
+        "display_name": display_name(asset, device),
         "device_last_seen_at": device.last_seen_at if device else None,
         "idle": asset.status not in INACTIVE_STATUSES and is_idle(device, now, st["idle_days"]),
         "warranty_expiring": warranty_expiring(asset, on, st["warranty_warning_days"]),
         "retrieval_overdue": retrieval_overdue(asset, on),
     }
+
+
+def display_name(asset: ItAsset, device: Device | None) -> str:
+    return device.hostname if device is not None and device.hostname else asset.asset_tag
 
 
 def devices_for(db: Session, assets: list[ItAsset]) -> dict[str, Device]:
@@ -169,37 +267,13 @@ def sync_devices(db: Session, *, limit: int = 2000) -> int:
       same serial number (e.g. a laptop added by hand before it was enrolled),
       otherwise a new asset is created (status in_stock, source agent).
     * Serial, make and model are copied into empty asset fields.
+    * The signed-in user becomes the owner (`sync_owners`).
     Commits; safe to run concurrently (a duplicate link loses the unique constraint race)."""
     linked = select(ItAsset.device_id).where(ItAsset.device_id.is_not(None))
     devices = list(db.scalars(select(Device).where(Device.id.not_in(linked)).order_by(Device.enrolled_at).limit(limit)))
     created = 0
     for d in devices:
-        serial = (d.serial_number or "").strip()
-        asset = None
-        if serial:
-            asset = db.scalars(select(ItAsset).where(func.lower(ItAsset.serial_number) == serial.lower(),
-                                                     ItAsset.device_id.is_(None)).limit(1)).first()
-        try:
-            if asset is not None:
-                asset.device_id = d.id
-                asset.updated_at = utcnow()
-                _fill_from_device(asset, d)
-                record(db, asset, "device_linked", SYSTEM, notes=f"matched agent device {d.hostname} by serial number",
-                       device_id=d.id, hostname=d.hostname)
-            else:
-                asset = ItAsset(asset_tag=_auto_tag(db, d), device_id=d.id, source="agent", status="in_stock",
-                                asset_type=guess_type(d.manufacturer, d.model), serial_number=serial[:128],
-                                manufacturer=(d.manufacturer or "")[:128], model=(d.model or "")[:128],
-                                currency=get_settings(db)["default_currency"], custom_fields={},
-                                created_by=SYSTEM, created_at=utcnow(), updated_at=utcnow())
-                db.add(asset)
-                db.flush()
-                record(db, asset, "created", SYSTEM, to_status="in_stock",
-                       notes=f"created from agent device {d.hostname}", device_id=d.id, hostname=d.hostname)
-                created += 1
-            db.commit()
-        except IntegrityError:
-            db.rollback()  # another request linked it first
+        created += _link_or_create(db, d) == "created"
     # Fill blanks of linked assets (serial may only arrive with a later check-in).
     rows = db.execute(select(ItAsset, Device).join(Device, Device.id == ItAsset.device_id)
                       .where(or_(ItAsset.serial_number == "", ItAsset.manufacturer == "", ItAsset.model == ""))
@@ -209,7 +283,59 @@ def sync_devices(db: Session, *, limit: int = 2000) -> int:
         changed |= _fill_from_device(asset, d)
     if changed:
         db.commit()
+    sync_owners(db, limit=max(limit, 5000))
     return created
+
+
+def _link_or_create(db: Session, d: Device) -> str | None:
+    """Give an unlinked device an asset: link the unlinked asset with the same
+    serial number, else create one. Commits. Returns "linked", "created", or
+    None when another request linked it first."""
+    serial = (d.serial_number or "").strip()
+    asset = None
+    if serial:
+        asset = db.scalars(select(ItAsset).where(func.lower(ItAsset.serial_number) == serial.lower(),
+                                                 ItAsset.device_id.is_(None)).limit(1)).first()
+    try:
+        if asset is not None:
+            asset.device_id = d.id
+            asset.updated_at = utcnow()
+            _fill_from_device(asset, d)
+            record(db, asset, "device_linked", SYSTEM, notes=f"matched agent device {d.hostname} by serial number",
+                   device_id=d.id, hostname=d.hostname)
+            result = "linked"
+        else:
+            asset = ItAsset(asset_tag=_auto_tag(db, d), device_id=d.id, source="agent", status="in_stock",
+                            asset_type=guess_type(d.manufacturer, d.model), serial_number=serial[:128],
+                            manufacturer=(d.manufacturer or "")[:128], model=(d.model or "")[:128],
+                            currency=get_settings(db)["default_currency"], custom_fields={},
+                            created_by=SYSTEM, created_at=utcnow(), updated_at=utcnow())
+            db.add(asset)
+            db.flush()
+            record(db, asset, "created", SYSTEM, to_status="in_stock",
+                   notes=f"created from agent device {d.hostname}", device_id=d.id, hostname=d.hostname)
+            result = "created"
+        db.commit()
+        return result
+    except IntegrityError:
+        db.rollback()  # another request linked it first
+        return None
+
+
+def sync_device(db: Session, device: Device) -> int:
+    """One agent device after its check-in: make sure it has an asset record
+    (link by serial or create, as `sync_devices` does), fill blank serial / make /
+    model, and apply the signed-in user as owner (`sync_owners`). Commits.
+    Returns the number of owner changes (0 or 1)."""
+    asset = db.scalars(select(ItAsset).where(ItAsset.device_id == device.id)).first()
+    if asset is None:
+        _link_or_create(db, device)
+        asset = db.scalars(select(ItAsset).where(ItAsset.device_id == device.id)).first()
+        if asset is None:
+            return 0
+    elif _fill_from_device(asset, device):
+        db.commit()
+    return sync_owners(db, asset_id=asset.id)
 
 
 def _fill_from_device(asset: ItAsset, d: Device) -> bool:
@@ -244,9 +370,12 @@ def check_dates(purchase_date: date | None, warranty_end: date | None, refresh_d
 def assign(db: Session, asset: ItAsset, actor: str, *, name: str, email: str, department: str, notes: str) -> None:
     if asset.status not in ASSIGNABLE_FROM:
         raise AssetError(f"an asset that is {asset.status.replace('_', ' ')} cannot be assigned")
-    prev_status, prev_owner = asset.status, asset.assignee_email
+    if not (email or name):
+        raise ValueError("an owner email or name is required")
+    prev_status, prev_owner = asset.status, owner_key(asset)
+    new_owner = email or name
     asset.assignee_name, asset.assignee_email = name, email
-    if department or prev_owner != email:
+    if department or prev_owner.casefold() != new_owner.casefold():
         asset.assignee_department = department
     asset.assigned_at = utcnow()
     asset.status = "assigned"
@@ -254,16 +383,16 @@ def assign(db: Session, asset: ItAsset, actor: str, *, name: str, email: str, de
     asset.offboarding_id = None
     asset.updated_at = utcnow()
     record(db, asset, "assigned", actor, notes=notes, from_status=prev_status, to_status="assigned",
-           from_assignee=prev_owner, to_assignee=email, assignee_name=name, department=asset.assignee_department)
+           from_assignee=prev_owner, to_assignee=new_owner, assignee_name=name, department=asset.assignee_department)
 
 
 def return_asset(db: Session, asset: ItAsset, actor: str, *, notes: str, status: str | None,
                  location: str | None) -> None:
     if asset.status not in {"assigned", "retrieval_pending", "in_repair", "lost", "stolen"}:
         raise AssetError(f"an asset that is {asset.status.replace('_', ' ')} cannot be returned")
-    if asset.status in {"in_repair"} and not asset.assignee_email:
+    if asset.status in {"in_repair"} and not owner_key(asset):
         raise AssetError("this asset is not assigned to anyone")
-    prev_status, prev_owner = asset.status, asset.assignee_email
+    prev_status, prev_owner = asset.status, owner_key(asset)
     new = status or ("retrieved" if prev_status == "retrieval_pending" else "in_stock")
     offboarding_id = asset.offboarding_id
     asset.status = new
@@ -286,9 +415,9 @@ def change_status(db: Session, asset: ItAsset, actor: str, *, status: str, notes
         raise AssetError("a disposed asset cannot change status")
     if status == asset.status and status != "retrieval_pending":
         raise AssetError(f"the asset is already {status.replace('_', ' ')}")
-    prev_status, prev_owner = asset.status, asset.assignee_email
+    prev_status, prev_owner = asset.status, owner_key(asset)
     if status == "retrieval_pending":
-        if not asset.assignee_email:
+        if not prev_owner:
             raise AssetError("only an assigned asset can be marked for retrieval")
         asset.retrieval_due = retrieval_due or today() + timedelta(days=get_settings(db)["retrieval_due_days"])
     else:
@@ -300,7 +429,7 @@ def change_status(db: Session, asset: ItAsset, actor: str, *, status: str, notes
     asset.updated_at = utcnow()
     offboarding_id = asset.offboarding_id
     record(db, asset, "status_changed", actor, notes=notes, from_status=prev_status, to_status=status,
-           from_assignee=prev_owner, to_assignee=asset.assignee_email or None,
+           from_assignee=prev_owner, to_assignee=owner_key(asset) or None,
            retrieval_due=asset.retrieval_due)
     if status in {"lost", "stolen"}:
         from ..notifications import asset_lifecycle_source
@@ -332,22 +461,44 @@ def dispose(db: Session, asset: ItAsset, actor: str, *, method: str, disposal_da
            method=method, disposal_date=disposal_date, vendor=vendor)
 
 
+def held_by(email: str, username: str):
+    """SQL condition: the asset's owner is this person. By email, or by username
+    for owners without an email (set from the agent, or by hand with a name only);
+    a username never matches an owner who has a different email."""
+    conds = []
+    if email:
+        conds.append(func.lower(ItAsset.assignee_email) == email.lower())
+    if username:
+        conds.append(and_(func.lower(ItAsset.assignee_name) == username.lower(),
+                          or_(ItAsset.assignee_email == "", func.lower(ItAsset.assignee_email) == (email or "").lower())))
+    return or_(*conds)
+
+
 def start_offboarding(db: Session, actor: str, *, email: str, name: str, department: str, leave_date: date,
-                      retrieval_due: date | None, notes: str) -> tuple[ItAssetOffboarding, list[ItAsset]]:
+                      retrieval_due: date | None, notes: str,
+                      username: str = "") -> tuple[ItAssetOffboarding, list[ItAsset]]:
+    if not (email or username):
+        raise ValueError("an email or a username is required")
+    same_person = []
+    if email:
+        same_person.append(ItAssetOffboarding.person_email == email)
+    if username:
+        same_person.append(func.lower(ItAssetOffboarding.person_username) == username.lower())
     if db.scalar(select(func.count()).select_from(ItAssetOffboarding).where(
-            ItAssetOffboarding.person_email == email, ItAssetOffboarding.status == "open")):
-        raise AssetError(f"{email} already has an open offboarding")
+            or_(*same_person), ItAssetOffboarding.status == "open")):
+        raise AssetError(f"{email or username} already has an open offboarding")
     st = get_settings(db)
     due = retrieval_due or leave_date + timedelta(days=st["retrieval_due_days"])
     if due < leave_date - timedelta(days=60):
         raise ValueError("retrieval due date is long before the leave date")
-    assets = list(db.scalars(select(ItAsset).where(func.lower(ItAsset.assignee_email) == email,
-                                                   ItAsset.status.in_(HELD_STATUSES))))
+    assets = list(db.scalars(select(ItAsset).where(held_by(email, username), ItAsset.status.in_(HELD_STATUSES))
+                             .order_by(ItAsset.asset_tag)))
     if not name and assets:
         name = assets[0].assignee_name
     if not department and assets:
         department = assets[0].assignee_department
-    ob = ItAssetOffboarding(person_email=email, person_name=name, department=department, leave_date=leave_date,
+    ob = ItAssetOffboarding(person_email=email, person_username=username, person_name=name, department=department,
+                            leave_date=leave_date,
                             retrieval_due=due, notes=notes, created_by=actor, created_at=utcnow(),
                             status="open" if assets else "completed", closed_at=None if assets else utcnow())
     db.add(ob)
@@ -356,7 +507,7 @@ def start_offboarding(db: Session, actor: str, *, email: str, name: str, departm
         prev = a.status
         a.status, a.retrieval_due, a.offboarding_id, a.updated_at = "retrieval_pending", due, ob.id, utcnow()
         record(db, a, "offboarding", actor, notes=notes, from_status=prev, to_status="retrieval_pending",
-               from_assignee=a.assignee_email, to_assignee=a.assignee_email, offboarding_id=ob.id,
+               from_assignee=owner_key(a), to_assignee=owner_key(a), offboarding_id=ob.id,
                leave_date=leave_date, retrieval_due=due)
     return ob, assets
 
@@ -368,7 +519,7 @@ def cancel_offboarding(db: Session, ob: ItAssetOffboarding, actor: str, notes: s
     for a in db.scalars(select(ItAsset).where(ItAsset.offboarding_id == ob.id, ItAsset.status == "retrieval_pending")):
         a.status, a.retrieval_due, a.offboarding_id, a.updated_at = "assigned", None, None, utcnow()
         record(db, a, "offboarding_cancelled", actor, notes=notes, from_status="retrieval_pending",
-               to_status="assigned", from_assignee=a.assignee_email, to_assignee=a.assignee_email,
+               to_status="assigned", from_assignee=owner_key(a), to_assignee=owner_key(a),
                offboarding_id=ob.id)
         n += 1
     ob.status, ob.closed_at = "cancelled", utcnow()
@@ -428,7 +579,8 @@ def summary(db: Session) -> dict[str, Any]:
 
     def brief(a: ItAsset) -> dict[str, Any]:
         d = devices.get(a.device_id or "")
-        return {"id": a.id, "asset_tag": a.asset_tag, "asset_type": a.asset_type, "model": a.model,
+        return {"id": a.id, "asset_tag": a.asset_tag, "display_name": display_name(a, d), "asset_type": a.asset_type,
+                "model": a.model,
                 "assignee_name": a.assignee_name, "assignee_email": a.assignee_email,
                 "warranty_end": a.warranty_end, "retrieval_due": a.retrieval_due,
                 "device_hostname": d.hostname if d else None, "device_last_seen_at": d.last_seen_at if d else None}

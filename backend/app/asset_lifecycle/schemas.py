@@ -6,7 +6,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 
 from .models import ASSET_STATUSES, ASSET_TYPES, DISPOSAL_METHODS
 
@@ -42,6 +42,16 @@ def clean_email(v: str) -> str:
     v = (v or "").strip().lower()
     if v and not EMAIL_RE.match(v):
         raise ValueError("is not a valid email address")
+    return v
+
+
+def clean_username(v: str) -> str:
+    """OS login name as an owner / offboarding key: `DOMAIN\\user` -> `user`."""
+    v = (v or "").strip().rsplit("\\", 1)[-1].strip()
+    if "@" in v:
+        raise ValueError("is an email address; use the email field")
+    if len(v) > 128:
+        raise ValueError("must be at most 128 characters")
     return v
 
 
@@ -138,18 +148,23 @@ class AssetUpdate(AssetFields):
 
 
 class AssignIn(_Base):
+    """An owner is an email, a name (e.g. an OS username), or both."""
+
     assignee_name: Str128 = ""
-    assignee_email: str
+    assignee_email: str = ""
     assignee_department: Str128 = ""
     notes: Reason = ""
 
     @field_validator("assignee_email")
     @classmethod
     def _email(cls, v: str) -> str:
-        v = clean_email(v)
-        if not v:
-            raise ValueError("assignee email is required")
-        return v
+        return clean_email(v)
+
+    @model_validator(mode="after")
+    def _someone(self) -> AssignIn:
+        if not (self.assignee_email or self.assignee_name):
+            raise ValueError("an assignee email or name is required")
+        return self
 
 
 class ReturnIn(_Base):
@@ -173,7 +188,11 @@ class DisposeIn(_Base):
 
 
 class OffboardingIn(_Base):
-    person_email: str
+    """The leaver is identified by email, by OS username (owners set from the
+    agent have no email), or both: assets held under either are retrieved."""
+
+    person_email: str = ""
+    person_username: str = ""
     person_name: Str128 = ""
     department: Str128 = ""
     leave_date: date
@@ -183,10 +202,18 @@ class OffboardingIn(_Base):
     @field_validator("person_email")
     @classmethod
     def _email(cls, v: str) -> str:
-        v = clean_email(v)
-        if not v:
-            raise ValueError("email is required")
-        return v
+        return clean_email(v)
+
+    @field_validator("person_username")
+    @classmethod
+    def _username(cls, v: str) -> str:
+        return clean_username(v)
+
+    @model_validator(mode="after")
+    def _someone(self) -> OffboardingIn:
+        if not (self.person_email or self.person_username):
+            raise ValueError("an email or a username is required")
+        return self
 
 
 class CancelIn(_Base):
@@ -249,6 +276,8 @@ class AssetOut(BaseModel):
     source: str
     device_id: str | None
     device_hostname: str | None = None
+    # Computer name for agent devices, else the asset tag.
+    display_name: str = ""
     device_last_seen_at: datetime | None = None
     idle: bool = False
     assignee_name: str
@@ -309,6 +338,7 @@ class OffboardingOut(BaseModel):
 
     id: str
     person_email: str
+    person_username: str = ""
     person_name: str
     department: str
     leave_date: date

@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from starlette.requests import HTTPConnection
 
 from .. import config, tenancy
+from ..asset_lifecycle import service as asset_svc
 from ..auth import RateLimiter, audit, client_ip
 from ..db import get_db
 from ..models import Device, DeviceCommand, DeviceCredential, DeviceLogBundle, EnrollmentToken, utcnow
@@ -178,6 +179,17 @@ def _detect_isolation_crash_recovery(db: Session, device: Device) -> None:
         log.exception("failed to record isolation crash-recovery for device %s", device.id)
 
 
+def _sync_it_asset(db: Session, device: Device) -> None:
+    """Keep the device's IT asset current: create / link it, and make the
+    signed-in user its owner (docs/ASSET_MANAGEMENT.md#owner-from-the-signed-in-user).
+    Runs after the check-in is committed and never fails it."""
+    try:
+        asset_svc.sync_device(db, device)
+    except Exception:  # an IT asset problem must never break check-ins
+        db.rollback()
+        log.exception("updating the IT asset of device %s failed", device.id)
+
+
 @router.post("/checkin", response_model=CheckinResponse)
 def checkin(body: CheckinRequest, request: Request, device: Device = Depends(current_device),
             db: Session = Depends(get_db)):
@@ -190,6 +202,7 @@ def checkin(body: CheckinRequest, request: Request, device: Device = Depends(cur
     device.agent_features = ",".join(f for f in features.split(",") if _FEATURE_RE.match(f.strip()))[:128] or None
     pending = svc.pending_count(db, device.id)
     db.commit()
+    _sync_it_asset(db, device)
     try:
         offer = agent_updates.offer_for(db, device, request.headers.get("user-agent"))
         db.commit()  # the offer is recorded on the device (console: "offered at ...")

@@ -94,8 +94,9 @@ def _filtered(db: Session, *, q: str | None, status: str | None, asset_type: str
         stmt = stmt.where(ItAsset.asset_type == asset_type)
     if location:
         stmt = stmt.where(ItAsset.location == location)
-    if assignee:
-        stmt = stmt.where(func.lower(ItAsset.assignee_email) == assignee.strip().lower())
+    if assignee:  # email, or name / username (owners set from the agent have no email)
+        who = assignee.strip().lower()
+        stmt = stmt.where(or_(func.lower(ItAsset.assignee_email) == who, func.lower(ItAsset.assignee_name) == who))
     if department:
         stmt = stmt.where(func.lower(ItAsset.assignee_department) == department.strip().lower())
     if agent == "yes":
@@ -133,6 +134,8 @@ def _rows(db: Session, f: dict) -> list[dict[str, Any]]:
     st = svc.get_settings(db)
     now = utcnow()
     out = [svc.to_out(a, devices.get(a.device_id or ""), st, now) for a in assets]
+    # By name: the computer name for agent devices, else the tag.
+    out.sort(key=lambda r: (r["display_name"].casefold(), r["asset_tag"].casefold()))
     if flag:
         out = [r for r in out if r[flag]]
     return out
@@ -291,40 +294,45 @@ def _import_row(db: Session, row: dict[str, str], st: dict, actor: str, seen: se
                                            "assignee_name": name, "assignee_email": email})
         svc.check_custom_fields(body.custom_fields or {}, st)
         svc.check_dates(body.purchase_date, body.warranty_end, body.refresh_date)
-        status = status or ("assigned" if email else "in_stock")
-        if status == "assigned" and not email:
-            raise ValueError("status assigned needs an assignee_email")
+        status = status or ("assigned" if email or name else "in_stock")
+        if status == "assigned" and not (email or name):
+            raise ValueError("status assigned needs an assignee_email or assignee_name")
         a = _new_asset(body, st, actor, source="import")
         a.status = status
-        if email and status in {"assigned", "in_repair", "lost", "stolen"}:
+        if (email or name) and status in {"assigned", "in_repair", "lost", "stolen"}:
             a.assigned_at = utcnow()
         else:
             a.assignee_name = a.assignee_email = a.assignee_department = ""
         db.add(a)
         db.flush()
-        svc.record(db, a, "imported", actor, to_status=a.status, to_assignee=a.assignee_email, notes="created by CSV import")
+        svc.record(db, a, "imported", actor, to_status=a.status, to_assignee=svc.owner_key(a),
+                   notes="created by CSV import")
         return "created"
 
     body = AssetUpdate.model_validate({**fields, "custom_fields": custom or None})
     changes = _apply_update(existing, body, st)
-    prev_status, prev_owner = existing.status, existing.assignee_email
-    if existing.status in {"disposed", "retrieval_pending"} and (status and status != existing.status
-                                                                   or email and email != prev_owner):
+    prev_status, prev_owner = existing.status, svc.owner_key(existing)
+    # A new owner: a different email, or (no email in the row) a different name
+    # where the current owner has no email either (name / username-only owners).
+    # An empty email cell next to an owner with an email leaves the owner as is.
+    new_owner = (email and email != existing.assignee_email) or (
+        not email and name and not existing.assignee_email and name.casefold() != existing.assignee_name.casefold())
+    if existing.status in {"disposed", "retrieval_pending"} and (status and status != existing.status or new_owner):
         raise ValueError(f"asset is {existing.status.replace('_', ' ')}: change it in the app, not by import")
-    if email and email != prev_owner:
+    if new_owner:
         if existing.status not in svc.ASSIGNABLE_FROM:
             raise ValueError(f"an asset that is {existing.status} cannot be assigned")
         existing.assignee_email, existing.assignee_name, existing.assigned_at = email, name, utcnow()
         if "assignee_department" not in fields:
             existing.assignee_department = ""
-        changes["assignee_email"] = [prev_owner, email]
+        changes["assignee_email" if email else "assignee_name"] = [prev_owner, email or name]
         status = status or "assigned"
-    elif name and email == prev_owner and name != existing.assignee_name:
+    elif name and email == existing.assignee_email and name != existing.assignee_name:
         changes["assignee_name"] = [existing.assignee_name, name]
         existing.assignee_name = name
     if status and status != existing.status:
-        if status == "assigned" and not existing.assignee_email:
-            raise ValueError("status assigned needs an assignee_email")
+        if status == "assigned" and not svc.owner_key(existing):
+            raise ValueError("status assigned needs an assignee_email or assignee_name")
         if status in {"in_stock", "retrieved"}:
             existing.assignee_name = existing.assignee_email = existing.assignee_department = ""
             existing.assigned_at = None
@@ -334,7 +342,7 @@ def _import_row(db: Session, row: dict[str, str], st: dict, actor: str, seen: se
         return "unchanged"
     existing.updated_at = utcnow()
     svc.record(db, existing, "imported", actor, from_status=prev_status, to_status=existing.status,
-               from_assignee=prev_owner, to_assignee=existing.assignee_email, notes="updated by CSV import",
+               from_assignee=prev_owner, to_assignee=svc.owner_key(existing), notes="updated by CSV import",
                changes=changes)
     return "updated"
 
@@ -360,16 +368,20 @@ def list_offboardings(status: str | None = Query(None, pattern="^(open|completed
 @router.post("/offboardings", status_code=201)
 def create_offboarding(body: OffboardingIn, request: Request, user: User = Depends(require_analyst),
                        db: Session = Depends(get_db)):
-    """Mark a person as leaving: their assigned assets go to retrieval pending."""
+    """Mark a person as leaving: their assigned assets (by email, or by username
+    for owners without an email) go to retrieval pending."""
+    svc.sync_devices(db)  # owners from the agents' latest check-ins first
     try:
-        ob, assets = svc.start_offboarding(db, user.email, email=body.person_email, name=body.person_name,
-                                           department=body.department, leave_date=body.leave_date,
-                                           retrieval_due=body.retrieval_due, notes=body.notes)
+        ob, assets = svc.start_offboarding(db, user.email, email=body.person_email, username=body.person_username,
+                                           name=body.person_name, department=body.department,
+                                           leave_date=body.leave_date, retrieval_due=body.retrieval_due,
+                                           notes=body.notes)
     except (svc.AssetError, ValueError) as e:
         db.rollback()
         raise _conflict(e) from None
     audit(db, "it_asset_offboarding_created", actor=user, target=f"it-asset-offboarding:{ob.id}",
-          ip=client_ip(request), person_email=ob.person_email, leave_date=ob.leave_date.isoformat(),
+          ip=client_ip(request), person_email=ob.person_email or None, person_username=ob.person_username or None,
+          leave_date=ob.leave_date.isoformat(),
           retrieval_due=ob.retrieval_due.isoformat(), assets=[a.asset_tag for a in assets])
     db.commit()
     return {**_offboarding_out(db, [ob])[0], "assets": [_out(db, a) for a in assets]}
@@ -401,7 +413,8 @@ def cancel_offboarding(body: CancelIn, request: Request, offboarding_id: str = I
     except svc.AssetError as e:
         raise _conflict(e) from None
     audit(db, "it_asset_offboarding_cancelled", actor=user, target=f"it-asset-offboarding:{ob.id}",
-          ip=client_ip(request), person_email=ob.person_email, assets_restored=n, notes=body.notes)
+          ip=client_ip(request), person_email=ob.person_email or None, person_username=ob.person_username or None,
+          assets_restored=n, notes=body.notes)
     db.commit()
     return _offboarding_out(db, [ob])[0]
 
@@ -489,8 +502,8 @@ def create_asset(body: AssetCreate, request: Request, user: User = Depends(requi
         svc.check_dates(body.purchase_date, body.warranty_end, body.refresh_date)
     except ValueError as e:
         raise HTTPException(422, str(e)) from None
-    if body.status == "assigned" and not body.assignee_email:
-        raise HTTPException(422, "an assigned asset needs an assignee email")
+    if body.status == "assigned" and not (body.assignee_email or body.assignee_name):
+        raise HTTPException(422, "an assigned asset needs an assignee email or name")
     if _tag_taken(db, body.asset_tag):
         raise HTTPException(409, f"asset tag {body.asset_tag} already exists")
     if body.device_id:
@@ -499,7 +512,7 @@ def create_asset(body: AssetCreate, request: Request, user: User = Depends(requi
     a.device_id = body.device_id
     if body.status != "assigned" and body.status != "in_repair":
         a.assignee_name = a.assignee_email = a.assignee_department = ""
-    elif a.assignee_email:
+    elif svc.owner_key(a):
         a.assigned_at = utcnow()
     db.add(a)
     try:
@@ -507,9 +520,9 @@ def create_asset(body: AssetCreate, request: Request, user: User = Depends(requi
     except IntegrityError:
         db.rollback()
         raise HTTPException(409, "asset tag or device link already in use") from None
-    svc.record(db, a, "created", user.email, to_status=a.status, to_assignee=a.assignee_email or None)
+    svc.record(db, a, "created", user.email, to_status=a.status, to_assignee=svc.owner_key(a) or None)
     audit(db, "it_asset_created", actor=user, target=_target(a), ip=client_ip(request), asset_tag=a.asset_tag,
-          asset_type=a.asset_type, status=a.status, assignee=a.assignee_email or None, device_id=a.device_id)
+          asset_type=a.asset_type, status=a.status, assignee=svc.owner_key(a) or None, device_id=a.device_id)
     db.commit()
     return _out(db, a)
 
@@ -517,7 +530,10 @@ def create_asset(body: AssetCreate, request: Request, user: User = Depends(requi
 # ----------------------------------------------------------------------------- one asset
 @router.get("/{asset_id}", response_model=AssetOut)
 def asset_detail(asset_id: str = Id32, db: Session = Depends(get_db)):
-    return _out(db, _get(db, asset_id))
+    a = _get(db, asset_id)
+    if a.device_id and svc.sync_owners(db, asset_id=a.id):
+        a = _get(db, asset_id)
+    return _out(db, a)
 
 
 @router.get("/{asset_id}/events", response_model=list[EventOut])
@@ -598,7 +614,7 @@ def update_asset(body: AssetUpdate, request: Request, asset_id: str = Id32, user
 
 
 def _lifecycle(request: Request, db: Session, a: ItAsset, user: User, action: str, fn, **audit_detail) -> dict:
-    prev_status, prev_owner = a.status, a.assignee_email
+    prev_status, prev_owner = a.status, svc.owner_key(a)
     try:
         fn()
     except (svc.AssetError, ValueError) as e:
@@ -606,7 +622,7 @@ def _lifecycle(request: Request, db: Session, a: ItAsset, user: User, action: st
         raise _conflict(e) from None
     audit(db, action, actor=user, target=_target(a), ip=client_ip(request), asset_tag=a.asset_tag,
           from_status=prev_status, to_status=a.status, from_assignee=prev_owner or None,
-          to_assignee=a.assignee_email or None, **svc._jsonable(audit_detail))
+          to_assignee=svc.owner_key(a) or None, **svc._jsonable(audit_detail))
     db.commit()
     return _out(db, a)
 

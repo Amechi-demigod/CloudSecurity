@@ -22,6 +22,8 @@ export interface ItAsset {
   source: "manual" | "agent" | "import";
   device_id: string | null;
   device_hostname: string | null;
+  /** Main name: the computer name for agent devices, else the asset tag. */
+  display_name: string;
   device_last_seen_at: string | null;
   idle: boolean;
   assignee_name: string;
@@ -53,6 +55,7 @@ export interface ItAsset {
 export interface AssetBrief {
   id: string;
   asset_tag: string;
+  display_name: string;
   asset_type: string;
   model: string;
   assignee_name: string;
@@ -108,6 +111,7 @@ export interface Certificate {
 export interface Offboarding {
   id: string;
   person_email: string;
+  person_username: string;
   person_name: string;
   department: string;
   leave_date: string;
@@ -229,7 +233,7 @@ export const assetsApi = {
   importCsv,
   offboardings: (status?: string) => request<Offboarding[]>(`/api/it-assets/offboardings${qs({ status })}`),
   offboarding: (id: string) => request<Offboarding>(`/api/it-assets/offboardings/${id}`),
-  createOffboarding: (body: { person_email: string; person_name: string; department: string; leave_date: string; retrieval_due?: string; notes: string }) =>
+  createOffboarding: (body: { person_email: string; person_username: string; person_name: string; department: string; leave_date: string; retrieval_due?: string; notes: string }) =>
     request<Offboarding>("/api/it-assets/offboardings", { method: "POST", body: json(body) }),
   cancelOffboarding: (id: string, notes: string) =>
     request<Offboarding>(`/api/it-assets/offboardings/${id}/cancel`, { method: "POST", body: json({ notes }) }),

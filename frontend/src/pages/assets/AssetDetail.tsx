@@ -4,7 +4,7 @@ import { assetsApi, type AssetEvent, type ItAsset } from "../../assetsApi";
 import { useAuth } from "../../auth/context";
 import { AssetFormModal, AssetStatusBadge, FormError, SelectField, TextArea } from "../../components/assets";
 import { Button, Card, Empty, ErrorNote, Field, Modal, PageHeader, Tag } from "../../components/ui";
-import { DISPOSAL_LABEL, EVENT_LABEL, STATUS_LABEL, TYPE_LABEL, errMsg, fmtDate, fmtMoney, todayIso } from "../../lib/assets";
+import { DISPOSAL_LABEL, EVENT_LABEL, STATUS_LABEL, TYPE_LABEL, errMsg, fmtDate, fmtMoney, namedByHost, ownerLabel, todayIso } from "../../lib/assets";
 import { fmtBytes } from "../../lib/devices";
 import { fmtAgo, fmtTime } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
@@ -62,7 +62,7 @@ function ActionDialog({ asset, action, onClose, onDone }: { asset: ItAsset; acti
   }
 
   const titles: Record<string, string> = {
-    assign: asset.assignee_email ? "Reassign" : "Assign",
+    assign: ownerLabel(asset) ? "Reassign" : "Assign",
     return: "Record return",
     status: "Change status",
     dispose: "Dispose of asset",
@@ -70,13 +70,14 @@ function ActionDialog({ asset, action, onClose, onDone }: { asset: ItAsset; acti
   };
   if (!action) return null;
   return (
-    <Modal open onClose={onClose} title={`${titles[action]}: ${asset.asset_tag}`}>
+    <Modal open onClose={onClose} title={`${titles[action]}: ${asset.display_name}`}>
       <form className="space-y-3" onSubmit={submit}>
         <FormError error={error} />
         {action === "assign" && (
           <>
-            <Field label="Owner email" id="ad-email" type="email" required maxLength={320} {...inp("assignee_email")} />
-            <Field label="Owner name" id="ad-name" maxLength={128} {...inp("assignee_name")} />
+            <Field label="Owner email" id="ad-email" type="email" maxLength={320} {...inp("assignee_email")} />
+            <Field label="Owner name or username" id="ad-name" maxLength={128} {...inp("assignee_name")} hint="Email, name or both." />
+            {asset.device_id && <p className="text-xs text-ink-3">This device has the agent: when it reports a different signed-in user, that user becomes the owner again.</p>}
             <Field label="Department" id="ad-dept" maxLength={128} {...inp("assignee_department")} />
           </>
         )}
@@ -130,7 +131,11 @@ function ActionDialog({ asset, action, onClose, onDone }: { asset: ItAsset; acti
         )}
         <div className="flex justify-end gap-2 pt-2">
           <Button onClick={onClose}>Cancel</Button>
-          <Button type="submit" variant={action === "delete" || action === "dispose" ? "danger" : "primary"} disabled={busy || (action === "delete" && f.reason.trim().length < 3)}>
+          <Button
+            type="submit"
+            variant={action === "delete" || action === "dispose" ? "danger" : "primary"}
+            disabled={busy || (action === "delete" && f.reason.trim().length < 3) || (action === "assign" && !f.assignee_email.trim() && !f.assignee_name.trim())}
+          >
             {busy ? "Saving…" : titles[action]}
           </Button>
         </div>
@@ -287,11 +292,11 @@ export default function AssetDetail() {
         <Link to="/it-assets" className="hover:text-ink">
           IT assets
         </Link>{" "}
-        / {asset.asset_tag}
+        / {asset.display_name}
       </div>
       <PageHeader
-        title={asset.asset_tag}
-        subtitle={`${TYPE_LABEL[asset.asset_type] ?? asset.asset_type} · ${[asset.manufacturer, asset.model].filter(Boolean).join(" ") || "no model"}${asset.serial_number ? ` · S/N ${asset.serial_number}` : ""}`}
+        title={asset.display_name}
+        subtitle={`${namedByHost(asset) ? `${asset.asset_tag} · ` : ""}${TYPE_LABEL[asset.asset_type] ?? asset.asset_type} · ${[asset.manufacturer, asset.model].filter(Boolean).join(" ") || "no model"}${asset.serial_number ? ` · S/N ${asset.serial_number}` : ""}`}
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <AssetStatusBadge status={asset.status} />
@@ -306,10 +311,10 @@ export default function AssetDetail() {
           {!disposed && <Button onClick={() => setEditing(true)}>Edit</Button>}
           {["in_stock", "assigned", "in_repair", "retrieved"].includes(asset.status) && (
             <Button variant="primary" onClick={() => setAction("assign")}>
-              {asset.assignee_email ? "Reassign" : "Assign"}
+              {ownerLabel(asset) ? "Reassign" : "Assign"}
             </Button>
           )}
-          {["assigned", "retrieval_pending", "lost", "stolen"].includes(asset.status) || (asset.status === "in_repair" && asset.assignee_email) ? (
+          {["assigned", "retrieval_pending", "lost", "stolen"].includes(asset.status) || (asset.status === "in_repair" && ownerLabel(asset)) ? (
             <Button onClick={() => setAction("return")}>Record return</Button>
           ) : null}
           {!disposed && <Button onClick={() => setAction("status")}>Change status</Button>}
@@ -330,9 +335,10 @@ export default function AssetDetail() {
           <dl>
             <Row label="Status">{STATUS_LABEL[asset.status]}</Row>
             <Row label="Owner">
-              {asset.assignee_email && (
+              {ownerLabel(asset) && (
                 <>
-                  {asset.assignee_name || asset.assignee_email} <span className="text-ink-3">{asset.assignee_name && asset.assignee_email}</span>
+                  {ownerLabel(asset)} <span className="text-ink-3">{asset.assignee_name && asset.assignee_email}</span>
+                  {!asset.assignee_email && asset.device_id && <span className="text-xs text-ink-3"> (signed-in user from the agent)</span>}
                   {asset.assigned_at && <div className="text-xs text-ink-3">since {fmtTime(asset.assigned_at)}</div>}
                 </>
               )}
@@ -349,6 +355,9 @@ export default function AssetDetail() {
                 )}
               </Row>
             )}
+            <Row label="Asset tag">
+              <span className="font-mono">{asset.asset_tag}</span>
+            </Row>
             <Row label="Source">{asset.source === "agent" ? "Agent enrollment" : asset.source === "import" ? "CSV import" : "Added manually"}</Row>
             {Object.entries(asset.custom_fields).map(([k, v]) => (
               <Row key={k} label={labelFor(k)}>

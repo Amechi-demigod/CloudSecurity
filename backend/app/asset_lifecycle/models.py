@@ -50,8 +50,10 @@ class ItAsset(TenantMixin, Base):
         String(32), ForeignKey("devices.id", ondelete="SET NULL"), nullable=True, unique=True)
     # manual | agent | import
     source: Mapped[str] = mapped_column(String(16), default="manual")
+    # Owner. Set by hand (name and/or email) or automatically from the agent's
+    # signed-in user (the OS username in assignee_name, no email).
     assignee_name: Mapped[str] = mapped_column(String(128), default="")
-    # Stored lower-cased.
+    # Stored lower-cased; empty for owners known by name / username only.
     assignee_email: Mapped[str] = mapped_column(String(320), default="", index=True)
     assignee_department: Mapped[str] = mapped_column(String(128), default="")
     assigned_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -102,7 +104,11 @@ class ItAssetOffboarding(TenantMixin, Base):
     __tablename__ = "it_asset_offboardings"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    # Empty when the person is identified by username only.
     person_email: Mapped[str] = mapped_column(String(320), index=True)
+    # OS login name (as the agent reports it, without DOMAIN\): matches owners
+    # that have no email, e.g. set automatically from the agent.
+    person_username: Mapped[str] = mapped_column(String(128), default="", server_default="", index=True)
     person_name: Mapped[str] = mapped_column(String(128), default="")
     department: Mapped[str] = mapped_column(String(128), default="")
     leave_date: Mapped[date] = mapped_column(Date)
