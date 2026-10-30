@@ -142,12 +142,72 @@ function ResetPasswordDialog({ user, onClose, onDone }: { user: User | null; onC
   );
 }
 
+function DeleteUserDialog({ user, onClose, onDeleted }: { user: User | null; onClose: () => void; onDeleted: (email: string) => void }) {
+  const [confirm, setConfirm] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const matches = !!user && confirm.trim().toLowerCase() === user.email.toLowerCase();
+
+  function close() {
+    setConfirm("");
+    setError(null);
+    onClose();
+  }
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    if (!user || !matches) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.deleteUser(user.id);
+      onDeleted(user.email);
+      close();
+    } catch (err) {
+      setError(errMsg(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal open={!!user} onClose={close} title="Delete user">
+      {user && (
+        <form className="space-y-3" onSubmit={submit}>
+          <div className="rounded border border-sev-critical/60 bg-sev-critical/10 px-3 py-2 text-sm">
+            Permanently deletes <span className="font-medium">{user.email}</span>: the account, its organisation
+            membership, sessions, two-step verification and Microsoft sign-in links, and pending invitations for this
+            address. This cannot be undone.
+          </div>
+          <p className="text-sm text-ink-2">
+            The audit log and other history keep the email address. The address can be invited again later.
+          </p>
+          {error && (
+            <div role="alert" className="rounded border border-sev-critical/60 bg-sev-critical/10 px-3 py-2 text-sm">
+              {error}
+            </div>
+          )}
+          <Field label={`Type the email "${user.email}" to confirm`} id="du-confirm" autoComplete="off" value={confirm}
+            onChange={(e) => setConfirm(e.target.value)} />
+          <div className="flex justify-end gap-2 pt-2">
+            <Button onClick={close}>Cancel</Button>
+            <Button type="submit" variant="danger" disabled={busy || !matches}>
+              {busy ? "Deleting…" : "Delete user"}
+            </Button>
+          </div>
+        </form>
+      )}
+    </Modal>
+  );
+}
+
 export default function Users() {
   const { user: me } = useAuth();
   const { data: users, error, reload } = useApi(api.users, []);
   const [actionError, setActionError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [resetting, setResetting] = useState<User | null>(null);
+  const [deleting, setDeleting] = useState<User | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   async function update(u: User, patch: Partial<Pick<User, "role" | "is_active">>) {
@@ -269,7 +329,20 @@ export default function Users() {
                         Deactivate
                       </Button>
                     ) : (
-                      <Button onClick={() => update(u, { is_active: true })}>Reactivate</Button>
+                      <>
+                        <Button onClick={() => update(u, { is_active: true })}>Reactivate</Button>
+                        <Button
+                          variant="danger"
+                          title="Permanently delete this deactivated account"
+                          onClick={() => {
+                            setActionError(null);
+                            setNotice(null);
+                            setDeleting(u);
+                          }}
+                        >
+                          Delete
+                        </Button>
+                      </>
                     )}
                   </div>
                 </td>
@@ -287,6 +360,14 @@ export default function Users() {
         ))}
       </div>
       <CreateUserDialog open={creating} onClose={() => setCreating(false)} onCreated={() => { setNotice("User created."); reload(); }} />
+      <DeleteUserDialog
+        user={deleting}
+        onClose={() => setDeleting(null)}
+        onDeleted={(email) => {
+          setNotice(`Deleted ${email}. The audit log keeps its history.`);
+          reload();
+        }}
+      />
       <ResetPasswordDialog
         user={resetting}
         onClose={() => setResetting(null)}

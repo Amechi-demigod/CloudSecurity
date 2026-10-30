@@ -547,7 +547,7 @@ class AuditLog(TenantMixin, Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
     # login_success | login_failure | login_locked | logout | password_changed | user_created |
-    # user_updated | password_reset | finding_updated | alert_updated | scan_started | user_bootstrapped |
+    # user_updated | user_deleted | password_reset | finding_updated | alert_updated | scan_started | user_bootstrapped |
     # scan_schedule_updated
     action: Mapped[str] = mapped_column(String(64), index=True)
     actor_id: Mapped[str | None] = mapped_column(String(32), nullable=True)

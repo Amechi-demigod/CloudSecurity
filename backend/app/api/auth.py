@@ -231,6 +231,24 @@ def reset_password(user_id: str, body: PasswordReset, request: Request, admin: U
     return user
 
 
+@admin_router.delete("/users/{user_id}", status_code=204)
+def delete_user(user_id: str, request: Request, admin: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Permanently delete a deactivated account of this organisation (and its
+    membership, sessions, MFA and SSO links). Audit history is kept."""
+    from ..services import user_deletion
+
+    user = _get_user(db, user_id)
+    org_id = tenancy.require_org(db)
+    email, role = user.email, user.role
+    try:
+        user_deletion.check(db, user, org_id, actor_id=admin.id)
+    except user_deletion.UserDeleteError as e:
+        raise HTTPException(e.status, e.message) from None
+    removed = user_deletion.delete_account(db, user, org_id)
+    audit(db, "user_deleted", actor=admin, target=email, ip=client_ip(request), role=role, removed=removed)
+    db.commit()
+
+
 @admin_router.get("/audit-log", response_model=list[AuditLogOut])
 def audit_log(db: Session = Depends(get_db), action: str | None = None, actor: str | None = None,
               limit: int = Query(200, ge=1, le=2000)):

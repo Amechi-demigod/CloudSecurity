@@ -413,9 +413,11 @@ Then open the UI, sign in, and add other users under **Administration → Users*
 |---|---|
 | `viewer` | Read everything: dashboard, inventory, findings, vulnerabilities, threats, attack paths, connectors, scan history and schedule, IT assets (incl. CSV export) |
 | `analyst` | Viewer, plus suppress / resolve / reopen findings, acknowledge / resolve alerts, run connector scans, edit IT assets (assign, return, offboard, dispose, certificates, CSV import), and view notification channels (masked), rules and the delivery log |
-| `admin` | Everything, including user management (create, change role, deactivate, reset password), the audit log, connector settings, and notification channels / rules (test sends, retries) |
+| `admin` | Everything, including user management (create, change role, deactivate, delete deactivated accounts, reset password), the audit log, connector settings, and notification channels / rules (test sends, retries) |
 
 The UI hides or disables actions the signed-in role cannot perform; the API enforces the same rules (403). The last active admin cannot be demoted or deactivated.
+
+**Deleting a user.** A deactivated account can be deleted permanently from **Administration → Users → Delete** (type the email to confirm; `DELETE /api/users/{id}`, admin only) or with `python -m app.cli delete-user --email E` (`cnapp-ctl delete-user --email E` on-prem). It removes the account, its organisation membership, sessions, MFA authenticator and recovery codes, SSO links and the organisation's pending invitations for that email; the audit log and other history that names the user (approvals, commands, asset custody) are kept as they are, and a `user_deleted` entry is recorded. Refused (409) while the account is active, for your own account, for the organisation's last admin, for platform owners (`is_platform_admin` / `PLATFORM_ADMIN_EMAILS`) and for break-glass accounts (`AUTH_BREAK_GLASS_EMAILS` / `ADMIN_EMAIL`). Users of another organisation are not found (404). The email address can be invited or created again afterwards.
 
 ### Passwords, lockout and rate limiting
 
@@ -434,7 +436,7 @@ The UI hides or disables actions the signed-in role cannot perform; the API enfo
 
 ### Audit log
 
-`audit_log` records sign-in success and failure (with the reason: unknown user, bad password, locked, inactive, rate limited), sign-out, password changes and resets, user creation and changes (with before/after values), the bootstrap admin, and analyst actions (finding and alert status changes, scans). Admins can browse it under **Administration → Audit log** or `GET /api/audit-log`.
+`audit_log` records sign-in success and failure (with the reason: unknown user, bad password, locked, inactive, rate limited), sign-out, password changes and resets, user creation, changes (with before/after values) and deletion, the bootstrap admin, and analyst actions (finding and alert status changes, scans). Admins can browse it under **Administration → Audit log** or `GET /api/audit-log`.
 
 ### Session cookie settings
 

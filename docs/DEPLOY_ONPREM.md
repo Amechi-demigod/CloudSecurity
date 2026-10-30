@@ -757,6 +757,7 @@ the server before `--purge`.
 | `set-hostname NAME` | change the URL (PUBLIC_BASE_URL, redirects, Entra redirect URI) |
 | `firewall status / configure` | UFW + DOCKER-USER rules |
 | `create-admin`, `reset-password`, `reset-mfa`, `show-secret` | account recovery, secrets |
+| `delete-user --email E [--yes]` | permanently delete a deactivated user (same checks as the console; asks to type the email) |
 | `uninstall [--purge]` | removal |
 
 The CI job **On-prem** (`.github/workflows/ci.yml`) runs the real `cnapp-ctl install` on an Ubuntu 24.04 runner on

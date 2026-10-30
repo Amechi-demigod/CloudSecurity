@@ -5,6 +5,7 @@
     python -m app.cli org-list                              # organisations with usage counts
     python -m app.cli reset-password --email you@example.com
     python -m app.cli reset-mfa --email you@example.com   # lost authenticator (break-glass)
+    python -m app.cli delete-user --email old@example.com [--yes]   # permanently delete a deactivated user
     python -m app.cli migrate        # apply schema migrations (Alembic on PostgreSQL)
     python -m app.cli rotate-notification-key   # after prepending a new NOTIFICATIONS_ENCRYPTION_KEY
     python -m app.cli agent-release-import BUNDLE.tar.gz   # or - for stdin (cnapp-ctl agent-release import)
@@ -141,6 +142,35 @@ def reset_mfa(args: argparse.Namespace) -> int:
         auth.audit(s, "mfa_reset", actor_email="cli", target=email, had_mfa=had)
         s.commit()
     print(f"MFA reset for {email}; they sign in with their password (and enrol again if required)")
+    return 0
+
+
+def delete_user(args: argparse.Namespace) -> int:
+    """Permanently delete a deactivated account (same rules as the console's Delete)."""
+    from .services import user_deletion
+
+    email = auth.normalize_email(args.email)
+    s, user = _user_session(email)
+    with s:
+        org_id = tenancy.org_id(s)
+        if org_id is None:
+            raise SystemExit(f"error: {email} is not a member of any organisation")
+        try:
+            user_deletion.check(s, user, org_id)
+        except user_deletion.UserDeleteError as e:
+            raise SystemExit(f"error: {e.message}") from None
+        if not args.yes:
+            try:
+                typed = input(f"Permanently delete {email}? This cannot be undone. Type the email to confirm: ")
+            except EOFError:
+                typed = ""
+            if auth.normalize_email(typed) != email:
+                raise SystemExit("error: confirmation did not match; nothing was deleted")
+        role = auth.memberships(s, user.id)[0][0].role
+        removed = user_deletion.delete_account(s, user, org_id)
+        auth.audit(s, "user_deleted", actor_email="cli", target=email, role=role, removed=removed)
+        s.commit()
+    print(f"Deleted user {email} (audit history is kept)")
     return 0
 
 
@@ -305,6 +335,10 @@ def main(argv: list[str] | None = None) -> int:
     f = sub.add_parser("reset-mfa", help="remove a user's authenticator app and recovery codes, unlock them")
     f.add_argument("--email", required=True)
     f.set_defaults(func=reset_mfa)
+    du = sub.add_parser("delete-user", help="permanently delete a deactivated user (membership, sessions, MFA, SSO)")
+    du.add_argument("--email", required=True)
+    du.add_argument("--yes", action="store_true", help="do not ask to type the email to confirm")
+    du.set_defaults(func=delete_user)
     m = sub.add_parser("migrate", help="apply database schema migrations (also done on startup by default)")
     m.set_defaults(func=migrate)
     k = sub.add_parser("rotate-notification-key",

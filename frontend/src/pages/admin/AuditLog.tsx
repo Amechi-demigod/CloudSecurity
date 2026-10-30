@@ -15,6 +15,7 @@ const ACTIONS = [
   "password_reset",
   "user_created",
   "user_updated",
+  "user_deleted",
   "user_bootstrapped",
   "finding_updated",
   "alert_updated",
