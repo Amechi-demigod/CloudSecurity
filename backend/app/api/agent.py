@@ -16,6 +16,7 @@ from fastapi import APIRouter, Body, Depends, Header, HTTPException, Path, Reque
 from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from starlette.requests import HTTPConnection
 
 from .. import config, tenancy
 from ..auth import RateLimiter, audit, client_ip
@@ -33,7 +34,7 @@ from ..schemas_devices import (
     EnrollResponse,
     validate_result_data,
 )
-from ..services import agent_updates, approvals
+from ..services import agent_updates, approvals, remote_sessions
 from ..services import devices as svc
 
 log = logging.getLogger(__name__)
@@ -46,7 +47,7 @@ enroll_failure_limiter = RateLimiter()
 CommandId = Path(pattern=r"^[0-9a-f]{32}$")
 
 
-def _deny(status: int, detail: str, request: Request | None = None, kind: str = "invalid_credential") -> HTTPException:
+def _deny(status: int, detail: str, request: HTTPConnection | None = None, kind: str = "invalid_credential") -> HTTPException:
     if request is not None:
         agent_security.rejected(kind, client_ip(request))
     return HTTPException(status, detail, headers={"WWW-Authenticate": "Bearer"} if status == 401 else None)
@@ -55,6 +56,11 @@ def _deny(status: int, detail: str, request: Request | None = None, kind: str = 
 def current_device(request: Request, authorization: str | None = Header(None),
                    db: Session = Depends(get_db)) -> Device:
     """Resolve the device credential; reject revoked devices and rate-limit per device."""
+    return device_from_connection(request, authorization, db)
+
+
+def device_from_connection(request: HTTPConnection, authorization: str | None, db: Session) -> Device:
+    """current_device for a request or a WebSocket handshake (the remote-session relay)."""
     s = config.settings
     scheme, _, token = (authorization or "").strip().partition(" ")
     token = token.strip()
@@ -84,7 +90,7 @@ def current_device(request: Request, authorization: str | None = Header(None),
     return device
 
 
-def _require_active_org(db: Session, org_id: str, request: Request) -> None:
+def _require_active_org(db: Session, org_id: str, request: HTTPConnection) -> None:
     org = tenancy.get_org(db, org_id)
     if org is None or org.status != "active":
         raise _deny(403, "organisation suspended", request, "suspended_organization")
@@ -200,10 +206,21 @@ def fetch_commands(device: Device = Depends(current_device), db: Session = Depen
     """Pending commands for this device. Each is handed out once (then 'delivered')."""
     approvals.release_due(db, device.id)  # self-approved actions whose cooling-off delay is over
     cmds = svc.deliver_pending(db, device)
+    out = []
+    for c in cmds:
+        params = c.params or {}
+        if c.type == remote_sessions.COMMAND_TYPE:
+            # The single-use session token is minted now and only its hash is
+            # stored: it never appears in the command's (console-visible) params.
+            token = remote_sessions.issue_token(db, c)
+            if token is None:
+                c.status, c.completed_at, c.output = "cancelled", utcnow(), "remote session no longer open"
+                continue
+            params = {**params, "token": token}
+        out.append(AgentCommand(id=c.id, device_id=c.device_id, type=c.type, params=params, nonce=c.nonce,
+                                issued_at=c.created_at, expires_at=c.expires_at))
     db.commit()
-    return AgentCommandList(server_time=utcnow(), commands=[
-        AgentCommand(id=c.id, device_id=c.device_id, type=c.type, params=c.params or {}, nonce=c.nonce,
-                     issued_at=c.created_at, expires_at=c.expires_at) for c in cmds])
+    return AgentCommandList(server_time=utcnow(), commands=out)
 
 
 def _delivered_command(db: Session, device: Device, command_id: str, nonce: str) -> DeviceCommand:
@@ -255,6 +272,8 @@ def command_result(body: CommandResultIn, command_id: str = CommandId, device: D
                 db, device, "host_isolated" if body.status == "succeeded" else "isolation_failed",
                 actor=cmd.requested_by_email, detail=body.output, data=result_data, incident_id=incident_id,
             )
+    elif cmd.type == remote_sessions.COMMAND_TYPE and body.status != "succeeded":
+        remote_sessions.command_failed(db, device, cmd, result_data.get("error_code"), body.output)
     elif cmd.type == "restore_host":
         audit(db, "host_restored" if body.status == "succeeded" else "host_restore_failed",
               actor_email=f"device:{device.hostname}"[:320], target=f"device:{device.id}",

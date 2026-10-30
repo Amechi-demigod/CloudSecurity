@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import JSONResponse, RedirectResponse
 
-from . import auth, config, db, locks, logging_setup, tenancy
+from . import auth, config, db, locks, logging_setup, remote_hub, tenancy
 from .api import agent as agent_api
 from .api import agent_update_auto as agent_update_auto_api
 from .api import agent_updates as agent_updates_api
@@ -27,6 +27,8 @@ from .api import invitations as invitations_api
 from .api import mfa_sso as mfa_sso_api
 from .api import organization as organization_api
 from .api import platform_admin as platform_admin_api
+from .api import remote_relay as remote_relay_api
+from .api import remote_sessions as remote_sessions_api
 from .asset_lifecycle import api as it_assets_api
 from .notifications import api as notifications_api
 from .notifications import settings as notification_settings
@@ -93,6 +95,7 @@ async def lifespan(app: FastAPI):
         vuln_worker.set_worker(app.state.vuln_worker)
         app.state.vuln_worker.start()
     yield
+    await remote_hub.hub.shutdown()
     if app.state.vuln_worker:
         app.state.vuln_worker.stop()
         vuln_worker.set_worker(None)
@@ -169,8 +172,12 @@ def create_app() -> FastAPI:
     # Everything else requires a logged-in user (viewer or higher). Write
     # endpoints additionally require analyst/admin via their own dependencies.
     session_required = [Depends(auth.require_viewer)]
-    for r in (platform.router, inventory.router, vulns.router, runtime.router, devices.router):
+    for r in (platform.router, inventory.router, vulns.router, runtime.router, devices.router,
+              remote_sessions_api.router):
         app.include_router(r, dependencies=session_required)
+    # Remote-session WebSockets (own authentication: device credential + single-use
+    # token, or session cookie + Origin). Served only with REMOTE_RELAY_MODE=all|relay.
+    app.include_router(remote_relay_api.router)
     app.include_router(exposure_api.router, dependencies=session_required)  # /api/exposure: any signed-in user
     app.include_router(dashboards_api.router, dependencies=session_required)  # /api/dashboards/*: any signed-in user
     app.include_router(auth_api.admin_router)

@@ -840,6 +840,48 @@ class DeviceLogBundle(TenantMixin, Base):
     data: Mapped[bytes] = mapped_column(LargeBinary)
 
 
+REMOTE_SESSION_OPEN_STATES = ("requested", "awaiting_consent", "active")
+
+
+class RemoteSession(TenantMixin, Base):
+    """Attended remote desktop session (docs/DEVICE_MANAGEMENT.md#remote-sessions).
+    Only metadata is stored: never frame content or keystrokes."""
+
+    __tablename__ = "remote_sessions"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    device_id: Mapped[str] = mapped_column(String(32), ForeignKey("devices.id", ondelete="CASCADE"), index=True)
+    # Set to device_id while the session is open, NULL once it is over: the unique
+    # constraint allows one open session per device (NULLs never collide).
+    open_device_id: Mapped[str | None] = mapped_column(String(32), nullable=True, unique=True)
+    requested_by_id: Mapped[str] = mapped_column(String(32))
+    requested_by_email: Mapped[str] = mapped_column(String(320))
+    requested_by_name: Mapped[str] = mapped_column(String(255), default="")
+    requester_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    mode: Mapped[str] = mapped_column(String(16))  # view | control
+    reason: Mapped[str] = mapped_column(Text, default="")
+    # requested -> awaiting_consent -> active -> ended ; or denied | failed
+    state: Mapped[str] = mapped_column(String(24), default="requested", index=True)
+    end_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    command_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # sha256 of the single-use agent token (minted when the command is delivered).
+    token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    token_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    token_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    agent_connected_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    consent_deadline_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    consented_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    ended_by_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    last_activity_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    relay_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    bytes_to_viewer: Mapped[int] = mapped_column(BigInteger, default=0)
+    bytes_to_agent: Mapped[int] = mapped_column(BigInteger, default=0)
+
+
 # --- Agent auto-update -------------------------------------------------------------
 
 class AgentRelease(Base):

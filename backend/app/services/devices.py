@@ -97,7 +97,10 @@ def issue_credential(db: Session, device: Device) -> str:
 
 
 def revoke_device(db: Session, device: Device) -> None:
+    from . import remote_sessions  # (imports this module)
+
     now = utcnow()
+    remote_sessions.end_for_device(db, device, "device_revoked")
     device.status = "revoked"
     device.revoked_at = now
     db.execute(update(DeviceCredential).where(DeviceCredential.device_id == device.id,
@@ -525,6 +528,11 @@ def expire_commands(db: Session, device_id: str | None = None) -> None:
     db.execute(stmt.values(status="expired", completed_at=now).execution_options(synchronize_session=False))
 
 
+# Queuing one of these ends the device's open remote session (end reason).
+REMOTE_SESSION_ENDING = {"enable_lost_mode": "device_lost_mode", "isolate_host": "device_isolated",
+                         "wipe_device": "device_wipe"}
+
+
 def new_command(db: Session, device: Device, cmd_type: str, params: dict[str, Any], reason: str, *,
                 requested_by_id: str | None, requested_by_email: str | None, ttl: timedelta | None = None,
                 approval_id: str | None = None, approved_by_email: str | None = None) -> DeviceCommand:
@@ -537,6 +545,10 @@ def new_command(db: Session, device: Device, cmd_type: str, params: dict[str, An
                         approved_by_email=approved_by_email)
     db.add(cmd)
     db.flush()
+    if cmd_type in REMOTE_SESSION_ENDING:
+        from . import remote_sessions  # (imports this module)
+
+        remote_sessions.end_for_device(db, device, REMOTE_SESSION_ENDING[cmd_type], by_email=requested_by_email)
     if cmd_type == "enable_lost_mode":
         device.lost_mode_status = "enabling"
         device.lost_mode_message, device.lost_mode_phone = params["message"], params["phone"]

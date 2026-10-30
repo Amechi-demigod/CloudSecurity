@@ -320,6 +320,36 @@ class Settings:
     # Default lifetime of a queued remote command.
     device_command_ttl_hours: float = field(
         default_factory=lambda: float(os.getenv("DEVICE_COMMAND_TTL_HOURS", "24")))
+    # --- Remote sessions (attended remote desktop, docs/DEVICE_MANAGEMENT.md#remote-sessions) ---
+    remote_session_enabled: bool = field(default_factory=lambda: _bool("REMOTE_SESSION_ENABLED", True))
+    # Which WebSocket routes this process serves: all (single process: dev,
+    # tests), api (REST only: the gunicorn backend; the relay routes are refused)
+    # or relay (the single-worker relay service that pairs both ends in memory).
+    remote_relay_mode: str = field(default_factory=lambda: os.getenv("REMOTE_RELAY_MODE", "all").strip().lower())
+    # Lifetime of the single-use agent token (minted when the command is delivered)
+    # and of the start_remote_session command itself.
+    remote_session_token_ttl_seconds: int = field(
+        default_factory=lambda: int(os.getenv("REMOTE_SESSION_TOKEN_TTL_SECONDS", "120")))
+    remote_session_consent_timeout_seconds: int = field(
+        default_factory=lambda: int(os.getenv("REMOTE_SESSION_CONSENT_TIMEOUT_SECONDS", "60")))
+    remote_session_idle_timeout_minutes: float = field(
+        default_factory=lambda: float(os.getenv("REMOTE_SESSION_IDLE_TIMEOUT_MINUTES", "15")))
+    remote_session_max_duration_minutes: float = field(
+        default_factory=lambda: float(os.getenv("REMOTE_SESSION_MAX_DURATION_MINUTES", "120")))
+    remote_session_max_per_org: int = field(default_factory=lambda: int(os.getenv("REMOTE_SESSION_MAX_PER_ORG", "5")))
+    remote_session_max_fps: int = field(default_factory=lambda: int(os.getenv("REMOTE_SESSION_MAX_FPS", "15")))
+    remote_session_agent_max_message_bytes: int = field(
+        default_factory=lambda: int(os.getenv("REMOTE_SESSION_AGENT_MAX_MESSAGE_BYTES", str(1024 * 1024))))
+    remote_session_viewer_max_message_bytes: int = field(
+        default_factory=lambda: int(os.getenv("REMOTE_SESSION_VIEWER_MAX_MESSAGE_BYTES", "16384")))
+    remote_session_viewer_max_msgs_per_second: int = field(
+        default_factory=lambda: int(os.getenv("REMOTE_SESSION_VIEWER_MAX_MSGS_PER_SECOND", "120")))
+    remote_session_agent_max_bytes_per_second: int = field(
+        default_factory=lambda: int(os.getenv("REMOTE_SESSION_AGENT_MAX_BYTES_PER_SECOND", str(8 * 1024 * 1024))))
+    # How often the relay re-checks each live session (ended elsewhere, device
+    # revoked / lost / isolated, requester disabled or demoted, limits).
+    remote_session_recheck_seconds: float = field(
+        default_factory=lambda: float(os.getenv("REMOTE_SESSION_RECHECK_SECONDS", "5")))
     # Optional link shown on the enrollment page for downloading agent builds
     # (e.g. your GitHub release or an internal file share).
     agent_download_url: str | None = field(default_factory=lambda: os.getenv("AGENT_DOWNLOAD_URL") or None)
@@ -592,6 +622,7 @@ class Settings:
         if not 5 <= self.device_wipe_command_ttl_minutes <= 1440:
             problems.append("DEVICE_WIPE_COMMAND_TTL_MINUTES must be between 5 and 1440")
         problems.extend(self.scan_schedule_problems())
+        problems.extend(self.remote_session_problems())
         if not 1 <= self.invite_ttl_hours <= 24 * 30:
             problems.append("INVITE_TTL_HOURS must be between 1 and 720")
         if self.platform_smtp_security not in ("starttls", "tls"):
@@ -664,6 +695,28 @@ class Settings:
                             ("DASHBOARD_SLA_HIGH_DAYS", self.dashboard_sla_high_days)):
             if not 0 < value <= 3650:
                 problems.append(f"{name} must be more than 0 and at most 3650 days")
+        return problems
+
+    def remote_session_problems(self) -> list[str]:
+        problems = []
+        if self.remote_relay_mode not in ("all", "api", "relay"):
+            problems.append("REMOTE_RELAY_MODE must be all, api or relay")
+        for name, value, lo, hi in (
+                ("REMOTE_SESSION_TOKEN_TTL_SECONDS", self.remote_session_token_ttl_seconds, 30, 600),
+                ("REMOTE_SESSION_CONSENT_TIMEOUT_SECONDS", self.remote_session_consent_timeout_seconds, 10, 300),
+                ("REMOTE_SESSION_IDLE_TIMEOUT_MINUTES", self.remote_session_idle_timeout_minutes, 1, 120),
+                ("REMOTE_SESSION_MAX_DURATION_MINUTES", self.remote_session_max_duration_minutes, 5, 480),
+                ("REMOTE_SESSION_MAX_PER_ORG", self.remote_session_max_per_org, 1, 1000),
+                ("REMOTE_SESSION_MAX_FPS", self.remote_session_max_fps, 1, 30),
+                ("REMOTE_SESSION_AGENT_MAX_MESSAGE_BYTES", self.remote_session_agent_max_message_bytes,
+                 64 * 1024, 8 * 1024 * 1024),
+                ("REMOTE_SESSION_VIEWER_MAX_MESSAGE_BYTES", self.remote_session_viewer_max_message_bytes, 1024, 65536),
+                ("REMOTE_SESSION_VIEWER_MAX_MSGS_PER_SECOND", self.remote_session_viewer_max_msgs_per_second, 10, 1000),
+                ("REMOTE_SESSION_AGENT_MAX_BYTES_PER_SECOND", self.remote_session_agent_max_bytes_per_second,
+                 256 * 1024, 64 * 1024 * 1024),
+                ("REMOTE_SESSION_RECHECK_SECONDS", self.remote_session_recheck_seconds, 1, 60)):
+            if not lo <= value <= hi:
+                problems.append(f"{name} must be between {lo:g} and {hi:g}")
         return problems
 
 

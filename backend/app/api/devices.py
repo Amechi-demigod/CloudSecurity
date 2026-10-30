@@ -50,7 +50,7 @@ from ..schemas_devices import (
     SnapshotOut,
     SoftwareOut,
 )
-from ..services import approvals, installers
+from ..services import approvals, installers, remote_sessions
 from ..services import devices as svc
 
 log = logging.getLogger(__name__)
@@ -368,6 +368,8 @@ def cancel_command(body: DeviceAction, request: Request, device_id: str = Device
         raise HTTPException(409, f"only pending commands can be cancelled (this one is {cmd.status})")
     cmd.status, cmd.completed_at, cmd.output = "cancelled", utcnow(), f"cancelled by {user.email}"
     svc.command_finished(_get_device(db, device_id), cmd)
+    if cmd.type == remote_sessions.COMMAND_TYPE:
+        remote_sessions.command_cancelled(db, cmd, user, client_ip(request))
     audit(db, "device_command_cancelled", actor=user, target=f"device:{device_id}", ip=client_ip(request),
           command_id=cmd.id, type=cmd.type, reason=body.reason)
     db.commit()

@@ -38,6 +38,7 @@ from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatc
 from fastapi import Depends, HTTPException, Request, Response
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
+from starlette.requests import HTTPConnection
 
 from . import config, tenancy
 from .db import get_db
@@ -130,8 +131,9 @@ def _is_trusted_proxy(ip: str, cidrs: list[str]) -> bool:
     return any(addr in n for n in nets)
 
 
-def client_ip(request: Request) -> str:
-    """Best-effort client IP, used for rate limiting and the audit log.
+def client_ip(request: HTTPConnection) -> str:
+    """Best-effort client IP, used for rate limiting and the audit log (requests
+    and WebSocket handshakes alike).
 
     * TRUST_PROXY_HEADERS=false (default): the TCP peer.
     * TRUST_PROXY_HEADERS=true without TRUSTED_PROXY_CIDRS: the right-most
@@ -353,11 +355,13 @@ def _unauthorized(detail: str) -> HTTPException:
     return HTTPException(401, detail, headers={"WWW-Authenticate": "Session"})
 
 
-def current_session(request: Request, db: Session = Depends(get_db)) -> UserSession:
-    """Resolve the session cookie; enforce expiry, idle timeout and CSRF; scope
-    the request's database session to the session's organisation."""
+def session_from_connection(conn: HTTPConnection, db: Session, *, check_csrf: bool = False) -> UserSession:
+    """Resolve the session cookie of a request or WebSocket handshake: enforce
+    expiry, idle timeout and the membership (and CSRF for state-changing
+    requests with `check_csrf`), and scope `db` to the session's organisation.
+    WebSockets have no CSRF header: the relay checks their Origin instead."""
     s = config.settings
-    token = request.cookies.get(s.session_cookie_name)
+    token = conn.cookies.get(s.session_cookie_name)
     if not token:
         raise _unauthorized("Not authenticated")
     sess = db.get(UserSession, _token_id(token))
@@ -377,16 +381,22 @@ def current_session(request: Request, db: Session = Depends(get_db)) -> UserSess
         sess.revoked_at = now
         db.commit()
         raise _unauthorized("Session expired")
-    if request.method not in SAFE_METHODS:
-        supplied = request.headers.get(CSRF_HEADER, "")
+    if check_csrf and getattr(conn, "method", "GET") not in SAFE_METHODS:
+        supplied = conn.headers.get(CSRF_HEADER, "")
         if not supplied or not hmac.compare_digest(supplied.encode(), sess.csrf_token.encode()):
             raise HTTPException(403, "CSRF token missing or invalid")
     if now - sess.last_seen_at >= _TOUCH_INTERVAL:
         sess.last_seen_at = now
         db.commit()
-    request.state.session = sess
+    conn.state.session = sess
     tenancy.set_org(db, sess.organization_id)
     return sess
+
+
+def current_session(request: Request, db: Session = Depends(get_db)) -> UserSession:
+    """Resolve the session cookie; enforce expiry, idle timeout and CSRF; scope
+    the request's database session to the session's organisation."""
+    return session_from_connection(request, db, check_csrf=True)
 
 
 def current_user(sess: UserSession = Depends(current_session)) -> User:
