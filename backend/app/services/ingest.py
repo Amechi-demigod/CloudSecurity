@@ -1,6 +1,8 @@
 """Persist connector output and run the posture rules engine."""
 from __future__ import annotations
 
+import logging
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -10,6 +12,8 @@ from ..engine.risk import cvss_severity, priority_for, vuln_risk_score
 from ..models import Asset, Finding, Relationship, Vulnerability, get_asset, new_id, utcnow
 from ..notifications import builtin as notify
 from .eol_vulns import sync_eol_vulnerabilities
+
+log = logging.getLogger(__name__)
 
 EOL_VULN_TYPES = {"web_app", "function_app", "postgresql_server", "mysql_server", "redis_cache"}
 
@@ -73,16 +77,7 @@ def ingest_collection(db: Session, result: CollectionResult, source: str) -> dic
         pending[key] = exists
     db.flush()
 
-    for v in result.vulnerabilities:
-        vuln = Vulnerability(id=new_id(), asset_id=v.asset_id, cve_id=v.cve_id, package=v.package,
-                             version=v.version, fixed_version=v.fixed_version, title=v.title, cvss=v.cvss,
-                             severity=cvss_severity(v.cvss), exploit_available=v.exploit_available,
-                             in_use=v.in_use, source=source)
-        db.add(vuln)
-        notify.vulnerability_found(db, vuln)
-    db.flush()
-    if result.vulnerabilities:
-        rescore_vulnerabilities(db)
+    _upsert_vulnerabilities(db, result, source, seen_ids, now)
 
     scanned = [get_asset(db, i) for i in seen_ids]
     stats = evaluate_posture(db, scanned, source)
@@ -93,6 +88,72 @@ def ingest_collection(db: Session, result: CollectionResult, source: str) -> dic
         rescore_vulnerabilities(db)
     db.commit()
     return {"assets": len(seen_ids), **stats}
+
+
+def _vuln_key(asset_id: str | None, cve_id: str, package: str) -> tuple[str | None, str, str]:
+    return asset_id, cve_id, package
+
+
+def _upsert_vulnerabilities(db: Session, result: CollectionResult, source: str, seen_ids: set[str],
+                            now) -> None:
+    """Connector vulnerabilities are upserted per (asset, CVE, package) of this source,
+    so a re-scan updates the existing rows instead of adding a copy of each one.
+
+    * reported again: fields refreshed, `last_seen` set; a resolved one is reopened;
+    * new: inserted and notified;
+    * open but no longer reported for a re-scanned asset: resolved;
+    * duplicates of one key left by older versions (every scan used to insert
+      the whole list again) are removed, keeping the oldest row.
+    """
+    existing: dict[tuple, Vulnerability] = {}
+    duplicates: list[Vulnerability] = []
+    if seen_ids:
+        rows = db.scalars(select(Vulnerability).where(Vulnerability.source == source,
+                                                      Vulnerability.asset_id.in_(list(seen_ids)))
+                          .order_by(Vulnerability.first_seen, Vulnerability.id))
+        for row in rows:
+            key = _vuln_key(row.asset_id, row.cve_id, row.package)
+            if key in existing:
+                duplicates.append(row)
+            else:
+                existing[key] = row
+    for dup in duplicates:
+        db.delete(dup)
+    if duplicates:
+        log.info("removed %d duplicate %s vulnerabilities left by earlier scans", len(duplicates), source)
+
+    reported: set[tuple] = set()
+    for v in result.vulnerabilities:
+        key = _vuln_key(v.asset_id, v.cve_id, v.package)
+        if key in reported:
+            continue
+        reported.add(key)
+        vuln = existing.get(key)
+        if vuln is None:
+            vuln = Vulnerability(id=new_id(), asset_id=v.asset_id, cve_id=v.cve_id, package=v.package,
+                                 version=v.version, fixed_version=v.fixed_version, title=v.title, cvss=v.cvss,
+                                 severity=cvss_severity(v.cvss), exploit_available=v.exploit_available,
+                                 in_use=v.in_use, source=source, first_seen=now, last_seen=now)
+            db.add(vuln)
+            notify.vulnerability_found(db, vuln)
+            continue
+        vuln.version = v.version
+        vuln.fixed_version = v.fixed_version
+        vuln.title = v.title
+        vuln.cvss = v.cvss
+        vuln.severity = cvss_severity(v.cvss)
+        vuln.exploit_available = v.exploit_available
+        if vuln.in_use_source is None:  # runtime evidence from a sensor wins over the connector's flag
+            vuln.in_use = v.in_use
+        vuln.last_seen = now
+        if vuln.status != "open":
+            vuln.status, vuln.resolved_at = "open", None
+    for key, vuln in existing.items():
+        if key not in reported and vuln.status == "open":
+            vuln.status, vuln.resolved_at = "resolved", now
+    db.flush()
+    if result.vulnerabilities or existing:
+        rescore_vulnerabilities(db)
 
 
 def asset_to_dict(a: Asset) -> dict:
