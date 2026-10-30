@@ -29,7 +29,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from ..config import Settings
-from .base import AssetRecord, CollectionResult, Connector, RelationshipRecord, sensitive_from_tags
+from .base import AssetRecord, CollectionResult, Connector, RelationshipRecord, ScopeAccessError, sensitive_from_tags
 
 log = logging.getLogger(__name__)
 
@@ -325,6 +325,35 @@ class AwsConnector(Connector):
         s = self.settings
         return {**super().info(), "auth_mode": resolve_auth_mode(s),
                 "regions": list(s.aws_regions) or ["all enabled"]}
+
+    def check_access(self, max_scopes: int = 10) -> list[dict[str, str]]:
+        """Connection test per account: sts:GetCallerIdentity (the key works) and
+        iam:ListAccountAliases (SecurityAudit is attached)."""
+        from botocore.config import Config
+
+        cfg = Config(retries={"mode": "standard", "max_attempts": 2}, connect_timeout=5, read_timeout=10,
+                     user_agent_extra="cloudsecurity-cnapp-readonly")
+        home = self.settings.aws_home_region
+        try:
+            base = self._session_factory() if self._session_factory else build_base_session(self.settings)
+        except Exception as exc:
+            raise ScopeAccessError("credentials", exc) from exc
+        targets: list[tuple[str, Callable[[], Any]]] = [
+            (arn, lambda arn=arn: assume_role_session(base, arn, self.settings.aws_external_id, home))
+            for arn in self.settings.aws_role_arns[:max_scopes]] or [("credentials", lambda: base)]
+        reached = []
+        for label, make_session in targets:
+            try:
+                session = make_session()
+                ident = ReadOnlyAwsClient(session.client("sts", region_name=home, config=cfg), "sts").get_caller_identity()
+                aliases = ReadOnlyAwsClient(session.client("iam", region_name=home, config=cfg),
+                                            "iam").list_account_aliases(MaxItems=1).get("AccountAliases") or []
+            except ReadOnlyViolation:
+                raise
+            except Exception as exc:
+                raise ScopeAccessError(label, exc) from exc
+            reached.append({"id": str(ident["Account"]), "name": aliases[0] if aliases else str(ident["Account"])})
+        return reached
 
     # ------------------------------------------------------------------ main entry
     def collect(self) -> CollectionResult:

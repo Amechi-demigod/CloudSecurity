@@ -19,6 +19,10 @@ log = logging.getLogger(__name__)
 
 MANUAL = "manual"
 SCHEDULED = "scheduled"
+# Started automatically right after a provider is connected (PUT
+# /api/organization/connectors/{provider} with start_first_scan). Like a manual
+# scan it neither resets nor delays the schedule.
+FIRST_SCAN = "first_scan"
 
 
 def scan_lock_name(org_id: str, connector: str) -> str:

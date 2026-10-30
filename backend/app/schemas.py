@@ -357,7 +357,10 @@ class ScanRunOut(ORM):
     findings_open: int
     errors: list[str]
     message: str
-    trigger: str | None = None  # manual | scheduled (None: recorded before scheduled scans existed)
+    # manual | scheduled | first_scan (None: recorded before scheduled scans existed)
+    trigger: str | None = None
+    # Who started a manual / first scan (from the scan_started audit record); GET /api/scans only.
+    triggered_by: str | None = None
 
 
 class ConnectorScheduleOut(ORM):

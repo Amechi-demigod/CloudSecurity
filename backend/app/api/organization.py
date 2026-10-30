@@ -14,13 +14,14 @@ from sqlalchemy.orm import Session
 
 from .. import tenancy
 from ..auth import audit, client_ip, require_admin, require_viewer
-from ..connectors import org_config
+from ..connectors import access_check, build_registry, org_config
 from ..db import get_db
-from ..models import IngestToken, Organization, User, utcnow
+from ..models import IngestToken, Organization, ScanRun, User, utcnow
 from ..schemas import ORM, UTCDateTime
 from ..security import INGEST_TOKEN_PREFIX, hash_ingest_token
 from ..services import onboarding
 from ..services import organizations as orgs
+from ..services.scans import FIRST_SCAN, start_scan
 
 router = APIRouter(prefix="/api/organization", tags=["organization"], dependencies=[Depends(require_viewer)])
 Provider = Literal["azure", "aws", "gcp"]
@@ -199,6 +200,10 @@ class ConnectorConfigOut(BaseModel):
     # Default organisation only: true while the environment (AZURE_* / AWS_* /
     # GCP_*) configures this provider and no console setting overrides it.
     from_environment: bool = False
+    # PUT with "test": true: what the connection test reached ("Connected to Azure: ...").
+    test_message: str | None = None
+    # PUT with "start_first_scan": true: the scan started because this provider had none yet.
+    first_scan_id: str | None = None
 
 
 class ConnectorConfigIn(BaseModel):
@@ -209,11 +214,15 @@ class ConnectorConfigIn(BaseModel):
     # Secret fields to set; omitted ones are kept, "" removes one.
     secrets: dict[str, str] = Field(default_factory=dict)
     reason: Annotated[str, StringConstraints(strip_whitespace=True, max_length=500)] = ""
+    # Connection test before saving ("Test & save"): one read-only call per scope
+    # (app/connectors/access_check.py); nothing is stored when it fails (422).
+    test: bool = False
+    # Start a scan of this provider right away when it has never been scanned.
+    start_first_scan: bool = False
 
 
 def _env_configured(provider: str) -> bool:
     from .. import config
-    from ..connectors import build_registry
 
     return build_registry(config.settings)[provider].is_configured()
 
@@ -234,16 +243,49 @@ def list_connector_configs(db: Session = Depends(get_db)):
 def put_connector_config(provider: Provider, body: ConnectorConfigIn, request: Request,
                          admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     """Set this organisation's read-only credentials for a cloud provider
-    (docs/CONNECT_AZURE.md, CONNECT_AWS.md, CONNECT_GCP.md for the permissions)."""
+    (docs/CONNECT_AWS.md, CONNECT_GCP.md, README "Connecting a real Azure
+    environment" for the permissions). With "test": true the credentials are
+    tried first (read-only calls, short timeout) and only stored if they work."""
+    check = None
     try:
+        if body.test and body.enabled:
+            cfg, secrets_now = org_config.prepare(db, provider, config_in=body.config, secrets_in=body.secrets)
+            check = access_check.run(provider, org_config.probe_settings(provider, cfg, secrets_now), secrets_now)
+            audit(db, "connector_config_tested", actor=admin, target=f"connector:{provider}", ip=client_ip(request),
+                  ok=check.ok, scopes=[s["id"] for s in check.scopes])
+            if not check.ok:
+                db.commit()
+                raise HTTPException(422, check.message)
         row = org_config.upsert(db, provider, config_in=body.config, secrets_in=body.secrets, enabled=body.enabled,
                                 actor=admin.email)
     except org_config.ConnectorConfigError as e:
         raise HTTPException(422, str(e)) from None
     audit(db, "connector_config_updated", actor=admin, target=f"connector:{provider}", ip=client_ip(request),
-          enabled=row.enabled, config=row.config, secrets_set=sorted(row.secret_hints), reason=body.reason)
+          enabled=row.enabled, config=row.config, secrets_set=sorted(row.secret_hints), reason=body.reason,
+          tested=check is not None)
     db.commit()
-    return _out(db, provider)
+    first_scan = _start_first_scan(db, provider, admin, request) if body.start_first_scan and row.enabled else None
+    out = _out(db, provider)
+    out.test_message = check.message if check else None
+    out.first_scan_id = first_scan
+    return out
+
+
+def _start_first_scan(db: Session, provider: str, admin: User, request: Request) -> str | None:
+    """Scan a newly connected provider once, right away (the schedule takes over
+    from there). Only when this organisation has never scanned it, so a re-save
+    or an edit never piles up scans; one scan per connector at a time still
+    holds (app/services/scans.py)."""
+    if db.scalar(select(ScanRun.id).where(ScanRun.connector == provider).limit(1)) is not None:
+        return None
+    conn = build_registry(org_config.org_settings(db))[provider]
+    if not conn.is_configured():
+        return None
+    run = start_scan(conn, tenancy.require_org(db), background=True, trigger=FIRST_SCAN)
+    audit(db, "scan_started", actor=admin, target=provider, ip=client_ip(request), scan_id=run.id,
+          trigger=FIRST_SCAN)
+    db.commit()
+    return run.id
 
 
 @router.delete("/connectors/{provider}", response_model=ConnectorConfigOut)

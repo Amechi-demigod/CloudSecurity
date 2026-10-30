@@ -293,8 +293,10 @@ export interface ScanRun {
   findings_open: number;
   errors: string[];
   message: string;
-  /** manual | scheduled (null: recorded before scheduled scans existed) */
-  trigger: "manual" | "scheduled" | null;
+  /** manual | scheduled | first_scan (started right after connecting); null: recorded before scheduled scans existed */
+  trigger: "manual" | "scheduled" | "first_scan" | null;
+  /** Who started a manual / first scan (GET /api/scans only). */
+  triggered_by?: string | null;
 }
 
 export interface ConnectorSchedule {
