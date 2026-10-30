@@ -16,7 +16,8 @@ import (
 )
 
 // DefaultPlatform in a `-tags remote_fake` build (scripts/agent_e2e.py only;
-// CI checks that release binaries do not contain it): no helper process, no
+// scripts/agent_build_check.sh, run by CI and agent-release.yml on every
+// release and installer binary, refuses a build with this tag): no helper process, no
 // screen. The "user" allows at once, a synthetic 64x64 tile is sent four
 // times a second and input is only counted. GitHub-hosted runners have no
 // interactive session to capture.

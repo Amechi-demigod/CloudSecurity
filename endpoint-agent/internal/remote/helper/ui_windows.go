@@ -22,6 +22,12 @@ import (
 // only the user's own clicks answer them (injected clicks on them are dropped
 // in RunSession). The indicator re-asserts "topmost" every second; if it is
 // closed, destroyed or hidden anyway the session ends - it is not re-created.
+//
+// Allow / Deny answer only a press and a release on the same button, both from
+// a real pointing device (GetCurrentInputMessageSource: not SendInput, not a
+// posted WM_LBUTTONUP from another process of the user), and not in the first
+// second after the prompt appeared (clickguard.go). End session only needs a
+// press and release on it: ending stays easy, also with assistive tools.
 
 var (
 	procRegisterClassExW   = user32.NewProc("RegisterClassExW")
@@ -48,6 +54,7 @@ var (
 	procGetDpiForSystem    = user32.NewProc("GetDpiForSystem")
 	procSystemParamsInfoW  = user32.NewProc("SystemParametersInfoW")
 	procShowWindow         = user32.NewProc("ShowWindow")
+	procGetInputSource     = user32.NewProc("GetCurrentInputMessageSource")
 
 	gdi32                = windows.NewLazySystemDLL("gdi32.dll")
 	procCreateSolidBrush = gdi32.NewProc("CreateSolidBrush")
@@ -70,6 +77,7 @@ const (
 	wmQueryEndSession = 0x0011
 	wmEndSession      = 0x0016
 	wmTimer           = 0x0113
+	wmLButtonDown     = 0x0201
 	wmLButtonUp       = 0x0202
 	wmMouseActivate   = 0x0021
 	wmApp             = 0x8000
@@ -88,6 +96,15 @@ const (
 	transparent       = 1
 	idcArrow          = 32512
 	spiGetWorkArea    = 0x0030
+
+	// INPUT_MESSAGE_SOURCE
+	imdtMouse    = 0x02
+	imdtTouch    = 0x04
+	imdtPen      = 0x08
+	imdtTouchpad = 0x10
+	imoHardware  = 0x01
+
+	consentSettle = time.Second
 
 	msgConsent   = wmApp + 1
 	msgIndicator = wmApp + 2
@@ -155,13 +172,16 @@ type winUI struct {
 	bold      uintptr
 	// Button rectangles (client coordinates).
 	allowBtn, denyBtn, endBtn rect
+	// Press / release pairing (UI thread only).
+	consentClick, endClick clickGuard
 }
 
 // The WndProc callback is process-wide; there is one UI per helper process.
 var theUI *winUI
 
 func newWinUI() (*winUI, error) {
-	u := &winUI{ready: make(chan error, 1), answer: make(chan bool, 1), ended: make(chan string, 1)}
+	u := &winUI{ready: make(chan error, 1), answer: make(chan bool, 1), ended: make(chan string, 1),
+		consentClick: clickGuard{strict: true, settle: consentSettle}}
 	theUI = u
 	go u.loop()
 	if err := <-u.ready; err != nil {
@@ -261,6 +281,7 @@ func (u *winUI) createConsent() {
 	x, y := wa.Left+(wa.Right-wa.Left-w)/2, wa.Top+(wa.Bottom-wa.Top-h)/2
 	u.allowBtn = rect{w - u.px(220), h - u.px(56), w - u.px(124), h - u.px(20)}
 	u.denyBtn = rect{w - u.px(112), h - u.px(56), w - u.px(16), h - u.px(20)}
+	u.consentClick.show(time.Now())
 	hwnd := u.create("CnappRemoteConsent", x, y, w, h)
 	u.mu.Lock()
 	u.consent = hwnd
@@ -275,6 +296,7 @@ func (u *winUI) createIndicator() {
 	w, h := u.px(560), u.px(44)
 	x, y := wa.Left+(wa.Right-wa.Left-w)/2, wa.Top+u.px(8)
 	u.endBtn = rect{w - u.px(128), u.px(7), w - u.px(10), h - u.px(7)}
+	u.endClick.show(time.Now())
 	hwnd := u.create("CnappRemoteIndicator", x, y, w, h)
 	u.mu.Lock()
 	u.indicator = hwnd
@@ -340,15 +362,32 @@ func wndProc(hwnd, m, wp, lp uintptr) uintptr {
 				swpNoMove|swpNoSize|swpNoActivate|swpShowWindow)
 		}
 		return 0
-	case wmLButtonUp:
+	case wmLButtonDown, wmLButtonUp:
 		x, y := int32(int16(lp&0xffff)), int32(int16(lp>>16&0xffff))
+		hw, down := fromPointingDevice(), uint32(m) == wmLButtonDown
 		switch {
-		case isConsent && u.allowBtn.contains(x, y):
-			u.answerOnce(true)
-		case isConsent && u.denyBtn.contains(x, y):
-			u.answerOnce(false)
-		case isIndicator && u.endBtn.contains(x, y):
-			u.end("user_ended")
+		case isConsent:
+			btn := ""
+			if u.allowBtn.contains(x, y) {
+				btn = "allow"
+			} else if u.denyBtn.contains(x, y) {
+				btn = "deny"
+			}
+			if down {
+				u.consentClick.down(btn, hw, time.Now())
+			} else if got := u.consentClick.up(btn, hw); got != "" {
+				u.answerOnce(got == "allow")
+			}
+		case isIndicator:
+			btn := ""
+			if u.endBtn.contains(x, y) {
+				btn = "end"
+			}
+			if down {
+				u.endClick.down(btn, hw, time.Now())
+			} else if u.endClick.up(btn, hw) == "end" {
+				u.end("user_ended")
+			}
 		}
 		return 0
 	case wmClose, wmQueryEndSession, wmEndSession:
@@ -377,6 +416,24 @@ func wndProc(hwnd, m, wp, lp uintptr) uintptr {
 	}
 	r, _, _ := procDefWindowProcW.Call(hwnd, m, wp, lp)
 	return r
+}
+
+// fromPointingDevice reports whether the message being processed came from a
+// real mouse, touch screen, pen or touchpad (Windows 8+). Messages from
+// SendInput, PostMessage or SendMessage do not.
+func fromPointingDevice() bool {
+	var src struct{ DeviceType, OriginID uint32 }
+	if procGetInputSource.Find() != nil {
+		return false
+	}
+	if r, _, _ := procGetInputSource.Call(uintptr(unsafe.Pointer(&src))); r == 0 {
+		return false
+	}
+	switch src.DeviceType {
+	case imdtMouse, imdtTouch, imdtPen, imdtTouchpad:
+		return src.OriginID == imoHardware
+	}
+	return false
 }
 
 func (u *winUI) text(hdc uintptr, s string, r rect, flags uintptr, font uintptr, color uintptr) {

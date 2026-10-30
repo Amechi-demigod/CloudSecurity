@@ -141,10 +141,11 @@ func (w *winInjector) Inject(m wire.Msg, x, y int, ok bool) error {
 		if m.Button == nil || m.Down == nil {
 			return errors.New("button needs button and down")
 		}
-		if ok {
-			if err := w.move(x, y); err != nil {
-				return err
-			}
+		if !ok {
+			return errors.New("button without a position") // never at the user's own cursor
+		}
+		if err := w.move(x, y); err != nil {
+			return err
 		}
 		flags := map[[2]int]uint32{{0, 1}: mouseLeftDown, {0, 0}: mouseLeftUp, {1, 1}: mouseMiddleDown,
 			{1, 0}: mouseMiddleUp, {2, 1}: mouseRightDown, {2, 0}: mouseRightUp}
@@ -158,6 +159,11 @@ func (w *winInjector) Inject(m wire.Msg, x, y int, ok bool) error {
 		}
 		return sendMouse(mouseInput{Flags: f})
 	case "wheel":
+		if ok { // scroll what is under the viewer's pointer
+			if err := w.move(x, y); err != nil {
+				return err
+			}
+		}
 		if d := notches(m.DY); d != 0 {
 			if err := sendMouse(mouseInput{Flags: mouseWheel, MouseData: d}); err != nil {
 				return err

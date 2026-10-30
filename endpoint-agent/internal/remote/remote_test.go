@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/remote/wire"
 )
@@ -514,5 +515,43 @@ func TestRelayURL(t *testing.T) {
 	}
 	if _, err := relayURL("https://console.example.com", "x/../y", false); err == nil {
 		t.Fatal("invalid session id accepted")
+	}
+}
+
+// The helper runs as the user: only known end reasons and error codes reach
+// the server, and its detail text is cut short.
+func TestHelperTextIsAllowlistedAndTruncated(t *testing.T) {
+	r := newRig()
+	r.c.Start(context.Background(), params("view"))
+	r.helper.allow()
+	r.helper.emit(wire.Msg{T: "ended", Reason: "ended_by_admin\nforged"})
+	r.waitOver(t)
+	if !hasMsg(r.conn.msgs(), "ended", "helper_exit") || hasMsg(r.conn.msgs(), "ended", "ended_by_admin\nforged") {
+		t.Fatalf("unknown reason forwarded: %+v", r.conn.msgs())
+	}
+
+	r = newRig()
+	r.c.Start(context.Background(), params("view"))
+	r.helper.allow()
+	r.helper.emit(wire.Msg{T: "monitors", Monitors: []wire.Monitor{{W: 10, H: 10}}, Params: &wire.Params{Mode: "control"},
+		Reason: "x", Detail: "y"})
+	r.helper.emit(wire.Msg{T: "error", Code: "ERR_FORGED", Detail: strings.Repeat("é", 300) + "\x1b[2J"})
+	r.waitOver(t)
+	var errMsg, mons *wire.Msg
+	for _, m := range r.conn.msgs() {
+		m := m
+		switch m.T {
+		case "error":
+			errMsg = &m
+		case "monitors":
+			mons = &m
+		}
+	}
+	if errMsg == nil || errMsg.Code != ErrHelper || utf8.RuneCountInString(errMsg.Detail) != 200 ||
+		strings.ContainsRune(errMsg.Detail, 0x1b) {
+		t.Fatalf("error forwarded as %+v", errMsg)
+	}
+	if mons == nil || mons.Params != nil || mons.Reason != "" || mons.Detail != "" || len(mons.Monitors) != 1 {
+		t.Fatalf("monitors forwarded as %+v", mons)
 	}
 }

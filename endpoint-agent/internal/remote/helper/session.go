@@ -15,7 +15,9 @@
 //     focus (injected keys such as Alt+F4 never reach them), injected clicks
 //     on them are dropped, and if it is closed or destroyed anyway the
 //     session ends (it is never silently re-created).
-//   - Input is dropped in View only mode, whatever the service sends.
+//   - Input is dropped in View only mode, whatever the service sends. Clicks
+//     need a position (never "wherever the user's cursor is"), and every key
+//     and button the viewer pressed is released when the session stops.
 package helper
 
 import (
@@ -157,16 +159,76 @@ type state struct {
 	protected bool
 	okSince   time.Time
 	dropped   int
+
+	// Held down by the viewer (released by stop): keys by KeyboardEvent.code, mouse buttons.
+	keys    map[string]bool
+	buttons map[int]bool
+	// The last position input was injected at (where a release goes).
+	lastX, lastY int
+	hasPos       bool
 }
 
 // stop is idempotent: from here on no frame is captured and no input injected.
+// Keys and buttons the viewer still holds are released first, so nothing stays
+// stuck down on the user's desktop (a Ctrl held when the viewer's tab closed).
 func (s *state) stop() {
 	if s.stopped {
 		return
 	}
+	s.releaseAll()
 	s.stopped = true
 	s.capt.Close()
 	s.ui.Close()
+}
+
+func (s *state) releaseAll() {
+	up := wire.Bool(false)
+	for code := range s.keys {
+		if err := s.inj.Inject(wire.Msg{T: "input", Kind: "key", Code: code, Down: up}, 0, 0, false); err != nil {
+			slog.Debug("key not released", "err", err)
+		}
+	}
+	for b := range s.buttons {
+		if !s.hasPos {
+			break
+		}
+		btn := b
+		if err := s.inj.Inject(wire.Msg{T: "input", Kind: "button", Button: &btn, Down: up},
+			s.lastX, s.lastY, true); err != nil {
+			slog.Debug("mouse button not released", "err", err)
+		}
+	}
+	s.keys, s.buttons = nil, nil
+}
+
+// track records what the viewer holds down after a successful injection.
+func (s *state) track(m wire.Msg, x, y int, ok bool) {
+	if ok {
+		s.lastX, s.lastY, s.hasPos = x, y, true
+	}
+	if m.Down == nil {
+		return
+	}
+	switch {
+	case m.Kind == "key" && m.Code != "":
+		if s.keys == nil {
+			s.keys = map[string]bool{}
+		}
+		if *m.Down {
+			s.keys[m.Code] = true
+		} else {
+			delete(s.keys, m.Code)
+		}
+	case m.Kind == "button" && m.Button != nil:
+		if s.buttons == nil {
+			s.buttons = map[int]bool{}
+		}
+		if *m.Down {
+			s.buttons[*m.Button] = true
+		} else {
+			delete(s.buttons, *m.Button)
+		}
+	}
 }
 
 func (s *state) loadMonitors() error {
@@ -201,14 +263,27 @@ func (s *state) handle(m wire.Msg) {
 			return
 		}
 		x, y, ok := s.resolve(m)
-		if ok && s.ui.Excluded(x, y) {
-			// The prompt / indicator only answer the user's own clicks.
+		if !ok && (m.Kind == "button" || m.Kind == "move") {
+			// A click without a position would land wherever the user's cursor
+			// is, possibly on the indicator: never.
 			s.dropped++
 			return
 		}
+		if ok && s.ui.Excluded(x, y) {
+			// The prompt / indicator only answer the user's own clicks. A held
+			// button is still released, where the viewer last was.
+			if m.Kind == "button" && m.Button != nil && m.Down != nil && !*m.Down && s.buttons[*m.Button] && s.hasPos {
+				x, y = s.lastX, s.lastY
+			} else {
+				s.dropped++
+				return
+			}
+		}
 		if err := s.inj.Inject(m, x, y, ok); err != nil {
 			slog.Debug("input not injected", "err", err)
+			return
 		}
+		s.track(m, x, y, ok)
 	case "select_monitor":
 		if m.ID != nil && *m.ID >= 0 && *m.ID < len(s.monitors) {
 			s.active, s.prev = *m.ID, nil

@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"sync"
@@ -87,36 +88,41 @@ func createPipe(name string, inbound bool, sa *windows.SecurityAttributes) (wind
 	if inbound {
 		access = windows.PIPE_ACCESS_INBOUND
 	}
-	return windows.CreateNamedPipe(p, access|windows.FILE_FLAG_FIRST_PIPE_INSTANCE,
+	// Overlapped so that waiting for the helper to connect can be cancelled; the
+	// os.File wrapping it afterwards uses the runtime poller (Go 1.25+), so
+	// Close also unblocks a pending read.
+	return windows.CreateNamedPipe(p, access|windows.FILE_FLAG_FIRST_PIPE_INSTANCE|windows.FILE_FLAG_OVERLAPPED,
 		windows.PIPE_TYPE_BYTE|windows.PIPE_READMODE_BYTE|windows.PIPE_WAIT|windows.PIPE_REJECT_REMOTE_CLIENTS,
 		1, 1<<20, 1<<20, 0, sa)
 }
 
-// connect waits for the helper to open `h` and checks it is that helper.
-func connect(h windows.Handle, name string, pid uint32, timeout time.Duration) error {
-	done := make(chan error, 1)
-	go func() {
-		err := windows.ConnectNamedPipe(h, nil)
-		if errors.Is(err, windows.ERROR_PIPE_CONNECTED) {
-			err = nil
+// connect waits for the helper to open `h` and checks it is that helper. The
+// wait is overlapped and ends when the client connects, when the helper process
+// (`proc`, 0 for none) exits, when `ctx` is done (service stop) or after
+// `timeout`; then the pending ConnectNamedPipe is cancelled. Launch therefore
+// never blocks the agent's command loop (lock, wipe, isolate) for longer.
+func connect(ctx context.Context, h, proc windows.Handle, pid uint32, timeout time.Duration) error {
+	ev, err := windows.CreateEvent(nil, 1, 0, nil)
+	if err != nil {
+		return fmt.Errorf("CreateEvent: %w", err)
+	}
+	defer windows.CloseHandle(ev)
+	cancelled, err := windows.CreateEvent(nil, 1, 0, nil)
+	if err != nil {
+		return fmt.Errorf("CreateEvent: %w", err)
+	}
+	defer windows.CloseHandle(cancelled)
+	stop := context.AfterFunc(ctx, func() { _ = windows.SetEvent(cancelled) })
+	defer stop()
+	ov := windows.Overlapped{HEvent: ev}
+	switch err := windows.ConnectNamedPipe(h, &ov); {
+	case err == nil, errors.Is(err, windows.ERROR_PIPE_CONNECTED):
+	case errors.Is(err, windows.ERROR_IO_PENDING):
+		if err := waitConnected(h, &ov, cancelled, proc, timeout); err != nil {
+			return err
 		}
-		done <- err
-	}()
-	select {
-	case err := <-done:
-		if err != nil {
-			return fmt.Errorf("ConnectNamedPipe: %w", err)
-		}
-	case <-time.After(timeout):
-		// Unblock ConnectNamedPipe with our own client; the PID check below rejects it.
-		if p, err := windows.UTF16PtrFromString(name); err == nil {
-			if c, err := windows.CreateFile(p, windows.GENERIC_READ|windows.GENERIC_WRITE, 0, nil,
-				windows.OPEN_EXISTING, 0, 0); err == nil {
-				_ = windows.CloseHandle(c)
-			}
-		}
-		<-done
-		return errors.New("the helper did not connect in time")
+	default:
+		return fmt.Errorf("ConnectNamedPipe: %w", err)
 	}
 	var got uint32
 	if err := windows.GetNamedPipeClientProcessId(h, &got); err != nil {
@@ -126,6 +132,35 @@ func connect(h windows.Handle, name string, pid uint32, timeout time.Duration) e
 		return fmt.Errorf("unexpected pipe client (process %d, expected %d)", got, pid)
 	}
 	return nil
+}
+
+func waitConnected(h windows.Handle, ov *windows.Overlapped, cancelled, proc windows.Handle,
+	timeout time.Duration) error {
+	handles := []windows.Handle{ov.HEvent, cancelled}
+	if proc != 0 {
+		handles = append(handles, proc)
+	}
+	ev, werr := windows.WaitForMultipleObjects(handles, false, uint32(timeout.Milliseconds()))
+	var n uint32
+	if werr == nil && ev == windows.WAIT_OBJECT_0 {
+		if err := windows.GetOverlappedResult(h, ov, &n, false); err != nil {
+			return fmt.Errorf("ConnectNamedPipe: %w", err)
+		}
+		return nil
+	}
+	// Cancel, and wait for the cancellation to complete: `ov` must outlive the I/O.
+	_ = windows.CancelIoEx(h, ov)
+	_ = windows.GetOverlappedResult(h, ov, &n, true)
+	switch {
+	case werr != nil:
+		return fmt.Errorf("waiting for the helper to connect: %w", werr)
+	case ev == windows.WAIT_OBJECT_0+1:
+		return errors.New("cancelled while waiting for the helper to connect")
+	case ev == windows.WAIT_OBJECT_0+2:
+		return errors.New("the helper exited before connecting")
+	default:
+		return errors.New("the helper did not connect in time")
+	}
 }
 
 func (w *winPlatform) Launch(ctx context.Context, p Params) (Helper, error) {
@@ -170,17 +205,17 @@ func (w *winPlatform) Launch(ctx context.Context, p Params) (Helper, error) {
 		_ = windows.CloseHandle(out)
 		return nil, Errorf(ErrHelper, "starting the helper: %v", err)
 	}
-	h := &pipeHelper{proc: proc, events: make(chan Event, 32)}
+	h := &pipeHelper{proc: proc, events: make(chan Event, 32), done: make(chan struct{})}
 	fail := func(err error) (Helper, error) {
 		_ = windows.CloseHandle(in)
 		_ = windows.CloseHandle(out)
 		_ = proc.Close()
 		return nil, Errorf(ErrHelper, "%v", err)
 	}
-	if err := connect(out, name+"-out", proc.PID, 20*time.Second); err != nil {
+	if err := connect(ctx, out, proc.Handle, proc.PID, 20*time.Second); err != nil {
 		return fail(err)
 	}
-	if err := connect(in, name+"-in", proc.PID, 5*time.Second); err != nil {
+	if err := connect(ctx, in, proc.Handle, proc.PID, 5*time.Second); err != nil {
 		return fail(err)
 	}
 	h.r = os.NewFile(uintptr(in), name+"-in")
@@ -254,9 +289,11 @@ func (w *winPlatform) SendSAS() error {
 
 type pipeHelper struct {
 	proc   *usersession.Process
-	r, wf  *os.File
+	r      io.ReadCloser
+	wf     *os.File
 	w      *wire.Writer
 	events chan Event
+	done   chan struct{} // closed by Close: readLoop stops even if nobody reads events
 	once   sync.Once
 }
 
@@ -269,7 +306,11 @@ func (h *pipeHelper) readLoop() {
 		if err != nil {
 			return
 		}
-		h.events <- Event{Kind: kind, Data: data}
+		select {
+		case h.events <- Event{Kind: kind, Data: data}:
+		case <-h.done:
+			return
+		}
 	}
 }
 
@@ -279,6 +320,7 @@ func (h *pipeHelper) Send(m wire.Msg) error { return h.w.WriteMsg(m) }
 // two seconds to remove its windows, then kills it and the Job object.
 func (h *pipeHelper) Close() error {
 	h.once.Do(func() {
+		close(h.done)
 		stopped := make(chan struct{})
 		go func() {
 			_ = h.w.WriteMsg(wire.Msg{T: "stop"})

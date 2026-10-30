@@ -34,6 +34,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/remote/wire"
@@ -528,18 +529,75 @@ func (s *session) fromHelper(ctx context.Context, ev Event) {
 		}
 		s.send(ctx, wire.Msg{T: "consent", Allow: wire.Bool(false), Reason: reason})
 		s.end(ctx, "denied", false)
-	case "started", "monitors", "protected", "cursor":
+	case "started", "monitors", "protected":
 		if s.consented {
-			s.send(ctx, msg)
+			s.send(ctx, fromHelperMsg(msg))
 		}
 	case "ended":
 		// The user clicked End session (capture already stopped in the helper),
 		// closed the indicator, or the helper lost its desktop for good.
-		s.end(ctx, msg.Reason, true)
+		reason := msg.Reason
+		if !helperEndReasons[reason] {
+			reason = "helper_exit"
+		}
+		s.end(ctx, reason, true)
 	case "error":
-		s.send(ctx, msg)
+		code := msg.Code
+		if !helperErrorCodes[code] {
+			code = ErrHelper
+		}
+		s.send(ctx, wire.Msg{T: "error", Code: code, Detail: cleanDetail(msg.Detail)})
 		s.end(ctx, "error", false)
 	}
+}
+
+// The helper runs as the signed-in user, so what it reports is not trusted
+// beyond these: only known end reasons and error codes reach the server, the
+// detail text is cut short and stripped of control characters, and forwarded
+// messages are rebuilt with the fields of their type only.
+var (
+	helperEndReasons = map[string]bool{"user_ended": true, "indicator_closed": true}
+	helperErrorCodes = map[string]bool{ErrHelper: true}
+)
+
+const (
+	maxHelperDetail   = 200
+	maxHelperMonitors = 16
+)
+
+func cleanDetail(s string) string {
+	var b strings.Builder
+	n := 0
+	for _, r := range s {
+		if n == maxHelperDetail {
+			break
+		}
+		if unicode.IsControl(r) || r == utf8.RuneError {
+			r = ' '
+		}
+		b.WriteRune(r)
+		n++
+	}
+	return b.String()
+}
+
+func fromHelperMsg(m wire.Msg) wire.Msg {
+	switch m.T {
+	case "monitors":
+		mons := m.Monitors
+		if len(mons) > maxHelperMonitors {
+			mons = mons[:maxHelperMonitors]
+		}
+		out := wire.Msg{T: "monitors", Monitors: mons}
+		if m.Active != nil && *m.Active >= 0 && *m.Active < len(mons) {
+			active := *m.Active
+			out.Active = &active
+		}
+		return out
+	case "protected":
+		return wire.Msg{T: "protected", On: wire.Bool(m.On != nil && *m.On)}
+	}
+	return wire.Msg{T: m.T}
 }
 
 func (s *session) limits(ctx context.Context) {

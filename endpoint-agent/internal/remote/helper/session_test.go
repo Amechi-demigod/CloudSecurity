@@ -343,3 +343,73 @@ func TestBackpressurePausesCapture(t *testing.T) {
 	r.link.recv <- wire.Msg{T: "stop"}
 	r.wait(t)
 }
+
+func (i *fakeInjector) snapshot() ([]wire.Msg, [][2]int) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return append([]wire.Msg(nil), i.got...), append([][2]int(nil), i.pos...)
+}
+
+// Whatever the viewer still holds when the session stops (tab closed, network
+// gone, End session) is released: nothing stays stuck down on the desktop.
+func TestHeldKeysAndButtonsAreReleasedWhenTheSessionStops(t *testing.T) {
+	r := start(t, "control", yes())
+	eventually(t, "frames", func() bool { return r.link.tileCount() > 0 })
+	right := 2
+	r.link.recv <- wire.Msg{T: "input", Kind: "key", Code: "ControlLeft", Down: yes()}
+	r.link.recv <- wire.Msg{T: "input", Kind: "key", Code: "KeyC", Down: yes()}
+	r.link.recv <- wire.Msg{T: "input", Kind: "key", Code: "KeyC", Down: no()}
+	r.link.recv <- wire.Msg{T: "input", Kind: "button", Button: &right, Down: yes(), X: fp(0.5), Y: fp(0.5)}
+	eventually(t, "four injected", func() bool { return r.inj.count() == 4 })
+	r.link.recv <- wire.Msg{T: "stop"}
+	r.wait(t)
+	got, pos := r.inj.snapshot()
+	if len(got) != 6 {
+		t.Fatalf("injected %d, want 6 (2 releases): %+v", len(got), got)
+	}
+	key, btn := got[4], got[5]
+	if key.Kind != "key" || key.Code != "ControlLeft" || key.Down == nil || *key.Down {
+		t.Fatalf("key release %+v", key)
+	}
+	if btn.Kind != "button" || btn.Button == nil || *btn.Button != 2 || btn.Down == nil || *btn.Down ||
+		pos[5] != pos[3] {
+		t.Fatalf("button release %+v at %v (pressed at %v)", btn, pos[5], pos[3])
+	}
+}
+
+// A click without a position would land at the user's own cursor (maybe on
+// the indicator): dropped. Keys need no position.
+func TestClickWithoutPositionIsDropped(t *testing.T) {
+	r := start(t, "control", yes())
+	eventually(t, "frames", func() bool { return r.link.tileCount() > 0 })
+	r.link.recv <- wire.Msg{T: "input", Kind: "button", Button: new(int), Down: yes()}
+	r.link.recv <- wire.Msg{T: "input", Kind: "move"}
+	r.link.recv <- wire.Msg{T: "input", Kind: "key", Code: "KeyA", Down: yes()}
+	eventually(t, "the key", func() bool { return r.inj.count() == 1 })
+	time.Sleep(20 * time.Millisecond)
+	if got, _ := r.inj.snapshot(); len(got) != 1 || got[0].Kind != "key" {
+		t.Fatalf("injected %+v", got)
+	}
+	r.link.recv <- wire.Msg{T: "stop"}
+	r.wait(t)
+}
+
+// A drag that ends over the indicator still releases the button, where the
+// viewer last was (never on the indicator itself).
+func TestButtonReleasedOverTheIndicatorIsNotLost(t *testing.T) {
+	r := start(t, "control", yes())
+	r.ui.mu.Lock()
+	r.ui.exclude = image.Rect(0, 0, 40, 10)
+	r.ui.mu.Unlock()
+	eventually(t, "frames", func() bool { return r.link.tileCount() > 0 })
+	r.link.recv <- wire.Msg{T: "input", Kind: "button", Button: new(int), Down: yes(), X: fp(0.5), Y: fp(0.5)}
+	r.link.recv <- wire.Msg{T: "input", Kind: "move", X: fp(0.1), Y: fp(0.02)} // onto the indicator: dropped
+	r.link.recv <- wire.Msg{T: "input", Kind: "button", Button: new(int), Down: no(), X: fp(0.1), Y: fp(0.02)}
+	eventually(t, "down and up", func() bool { return r.inj.count() == 2 })
+	r.link.recv <- wire.Msg{T: "stop"}
+	r.wait(t)
+	got, pos := r.inj.snapshot()
+	if len(got) != 2 || *got[1].Down || pos[1] != pos[0] {
+		t.Fatalf("injected %+v at %v", got, pos)
+	}
+}
