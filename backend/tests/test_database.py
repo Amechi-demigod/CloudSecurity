@@ -63,7 +63,7 @@ MIGRATION_CHAIN = ["0001_baseline", "0002_device_management", "0003_notification
                    "0005_agent_installers", "0006_agent_updates", "0007_it_asset_lifecycle",
                    "0008_agent_update_automation", "0009_device_approvals_scripts", "0010_scheduled_scans",
                    "0011_vulnerability_matching", "0013_organizations", "0014_host_isolation",
-                   "0015_command_result_data"]
+                   "0015_command_result_data", "0016_dashboard_snapshots"]
 
 
 def test_migration_history_is_linear():
@@ -419,3 +419,31 @@ def test_sqlite_startup_upgrade_with_data(tmp_path):
         _check_migrated(db.engine)
     finally:
         fresh_db()
+
+
+def test_dashboard_snapshots_migration(tmp_path):
+    """0016 adds dashboard_snapshots (unique per organisation, day and account)
+    on top of 0015; downgrading removes it again."""
+    if IS_POSTGRES:
+        reset_database()
+        eng = db.create_db_engine(TEST_DATABASE_URL)
+    else:
+        eng = db.create_db_engine(f"sqlite:///{tmp_path / 'snapshots.db'}")
+    try:
+        db.run_migrations(eng, "0015_command_result_data")
+        assert not inspect(eng).has_table("dashboard_snapshots")
+        db.run_migrations(eng, "0016_dashboard_snapshots")
+        insp = inspect(eng)
+        assert insp.has_table("dashboard_snapshots")
+        cols = {c["name"] for c in insp.get_columns("dashboard_snapshots")}
+        assert cols == {"id", "organization_id", "day", "account", "metrics", "created_at"}
+        uniques = [set(u["column_names"]) for u in insp.get_unique_constraints("dashboard_snapshots")]
+        assert {"organization_id", "day", "account"} in uniques
+        assert _schema_diff(eng) == []
+
+        from alembic import command
+
+        command.downgrade(db.alembic_config(eng), "0015_command_result_data")
+        assert not inspect(eng).has_table("dashboard_snapshots")
+    finally:
+        eng.dispose()

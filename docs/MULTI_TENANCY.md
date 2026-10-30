@@ -125,6 +125,9 @@ organisations, each in a session scoped to it:
 - **Vulnerability matching**: KEV / EPSS / NVD / OSV feeds are fetched once for
   the platform (global caches); matching, KEV re-flagging and notifications run
   per organisation.
+- **Dashboard snapshots**: once a day, each organisation's point-in-time
+  dashboard metrics (all accounts and each cloud account), stored in its own
+  rows of `dashboard_snapshots` ([DASHBOARDS.md](DASHBOARDS.md)).
 - **Agent update automation**: each organisation's mode, rings and rollout. The
   GitHub Releases auto-import is platform-wide (releases are shared) and
   configured on, audited to and notified to the default organisation.

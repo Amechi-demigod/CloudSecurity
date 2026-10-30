@@ -37,6 +37,8 @@ os.environ.update({
     "AGENT_UPDATE_DEFAULT_MODE": "manual",
     # Scheduled scans: tests drive the scheduler explicitly (no background thread).
     "SCAN_SCHEDULER_WORKER_ENABLED": "false",
+    # Dashboard snapshots: tests drive the daily job explicitly (no background thread).
+    "DASHBOARD_SNAPSHOT_WORKER_ENABLED": "false",
     # Vulnerability matching: tests drive the worker explicitly with fake feeds
     # (no background thread, never any NVD / OSV / KEV / EPSS network access).
     "VULN_WORKER_ENABLED": "false",
@@ -50,6 +52,7 @@ for k in ("AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET", "AZURE_SU
           "TRUST_PROXY_HEADERS", "TRUSTED_PROXY_CIDRS", "API_DOCS_ENABLED", "LOG_FORMAT", "CORS_ORIGINS",
           "NOTIFICATIONS_ENCRYPTION_KEY", "PUBLIC_BASE_URL", "PUBLIC_AGENT_URL", "NOTIFICATIONS_ALLOW_INSECURE_DEV",
           "SCAN_SCHEDULE_ENABLED", "SCAN_INTERVAL_HOURS", "SCAN_STARTUP_DELAY_SECONDS",
+          "DASHBOARD_SLA_CRITICAL_DAYS", "DASHBOARD_SLA_HIGH_DAYS",
           "NVD_API_KEY", "VULN_MATCHING_ENABLED", "VULN_DEBOUNCE_SECONDS", "VULN_NOTIFY_MIN_SEVERITY"):
     os.environ.pop(k, None)
 # AWS / GCP connectors: never pick up the developer's cloud credentials or
