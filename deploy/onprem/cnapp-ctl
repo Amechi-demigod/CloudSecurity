@@ -9,7 +9,7 @@
 #   cnapp-ctl tls init|renew|show|import|import-pfx|export-ca
 #   cnapp-ctl set-hostname NAME
 #   cnapp-ctl public-agent enable --hostname agents.corp.com | disable | status
-#   cnapp-ctl create-admin --email E | reset-password --email E
+#   cnapp-ctl create-admin --email E | reset-password --email E | delete-user --email E
 #   cnapp-ctl uninstall [--purge]
 #
 # Run `cnapp-ctl help` for every option. Full guide: docs/DEPLOY_ONPREM.md.
@@ -2201,6 +2201,22 @@ cmd_reset_mfa() {
   compose exec -T backend python -m app.cli reset-mfa --email "$2"
 }
 
+# Permanently delete a deactivated user (same rules as the console's Delete:
+# not a platform owner, break-glass account or the organisation's last admin).
+cmd_delete_user() {
+  need_root delete-user; require_installed
+  [[ ${1:-} == --email && -n ${2:-} ]] || die "usage: cnapp-ctl delete-user --email EMAIL [--yes]"
+  local email=$2; shift 2
+  local yes=()
+  if [[ ${1:-} == --yes ]]; then yes=(--yes); shift; fi
+  [[ $# -eq 0 ]] || die "usage: cnapp-ctl delete-user --email EMAIL [--yes]"
+  if (( ${#yes[@]} )); then
+    compose exec -T backend python -m app.cli delete-user --email "$email" --yes
+  else
+    compose exec backend python -m app.cli delete-user --email "$email"
+  fi
+}
+
 # Outbound proxy settings from cnapp.env for host-side downloads (curl). The
 # backend container gets the same values through docker-compose.prod.yml.
 export_proxy_env() {
@@ -2529,6 +2545,7 @@ Operations
   public-agent disable [--forget-hostname] | status
   create-admin --email E [--role admin|analyst|viewer] [--generate]
   reset-password --email E [--generate]   reset-mfa --email E
+  delete-user --email E [--yes]           permanently delete a deactivated user (asks to type the email)
   platform-admin EMAIL [--revoke]         make a user a platform owner (manages organisations)
   orgs                                    list organisations with usage counts
   show-secret INGEST_API_TOKEN|...        print one generated secret (e.g. for the runtime sensor)
@@ -2578,6 +2595,7 @@ main() {
     create-admin) user_cli create "$@" ;;
     reset-password) user_cli reset "$@" ;;
     reset-mfa) cmd_reset_mfa "$@" ;;
+    delete-user) cmd_delete_user "$@" ;;
     platform-admin) cmd_platform_admin "$@" ;;
     orgs) cmd_orgs "$@" ;;
     show-secret) cmd_show_secret "$@" ;;

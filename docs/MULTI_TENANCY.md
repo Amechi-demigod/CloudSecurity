@@ -214,6 +214,16 @@ Sign-up is **invite-only**; there is no public registration.
 Accounts are platform-wide and belong to one organisation in this version, so
 an email address that already has an account cannot be invited.
 
+**Deleting an account.** An organisation admin can permanently delete a
+*deactivated* member on the Users page (`DELETE /api/users/{id}`; the CLI has
+`delete-user --email E`). The account row and what belongs only to it (the
+membership, login sessions, MFA state, SSO identities and the organisation's
+pending invitations for that address) are deleted; audit log entries and other
+history keep the email in plain text. Members of other organisations are
+invisible (404); active accounts, your own account, the organisation's last
+admin, platform owners and break-glass accounts are refused (409). Afterwards
+the address can be invited again.
+
 **Getting started checklist.** Until setup is complete, the Dashboards page of
 a new organisation shows a "Getting started" card with six steps, each detected
 from that organisation's own data (`GET /api/organization/onboarding`, any
