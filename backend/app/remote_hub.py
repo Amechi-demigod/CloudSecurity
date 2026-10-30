@@ -81,8 +81,10 @@ class Pair:
     viewer_gone_at: datetime | None = None
     state: str = "requested"
     monitors: str | None = None  # last monitor list (replayed to a reconnecting viewer)
-    to_viewer: int = 0
+    to_viewer: int = 0  # since the last flush to the database
     to_agent: int = 0
+    total_to_viewer: int = 0
+    total_to_agent: int = 0
     dropped_input: int = 0
     activity_at: datetime | None = None
     finished: asyncio.Event = field(default_factory=asyncio.Event)
@@ -162,7 +164,7 @@ class Hub:
         if pair.watchdog and pair.watchdog is not asyncio.current_task():
             pair.watchdog.cancel()
         log.info("remote session %s finished: %s (to viewer %d B, to agent %d B, dropped input %d)",
-                 pair.session_id, end.reason, pair.to_viewer, pair.to_agent, pair.dropped_input)
+                 pair.session_id, end.reason, pair.total_to_viewer, pair.total_to_agent, pair.dropped_input)
 
     def _record_end(self, pair: Pair, end: End) -> None:
         with _session(pair.org_id) as s:
@@ -179,6 +181,8 @@ class Hub:
     @staticmethod
     def _flush(rs: RemoteSession, pair: Pair) -> None:
         rsvc.heartbeat(None, rs, to_viewer=pair.to_viewer, to_agent=pair.to_agent, activity_at=pair.activity_at)
+        pair.total_to_viewer += pair.to_viewer
+        pair.total_to_agent += pair.to_agent
         pair.to_viewer = pair.to_agent = 0
 
     async def shutdown(self, reason: str = "relay_restart") -> None:
