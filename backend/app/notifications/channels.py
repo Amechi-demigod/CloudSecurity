@@ -336,6 +336,10 @@ def render_webhook(msg: dict[str, Any], delivery_id: str) -> dict[str, Any]:
     return payload
 
 
+# An email as (subject, plain text, html).
+Rendered = tuple[str, str, str]
+
+
 def _header_safe(s: str) -> str:
     return re.sub(r"[\r\n\t]+", " ", s or "").strip()
 
@@ -442,12 +446,13 @@ def acs_headers(endpoint: str, access_key: str, path_and_query: str, body: bytes
 ACS_PATH = "/emails:send?api-version=2023-03-31"
 
 
-def send_acs(config: dict[str, Any], secrets: dict[str, str], msg: dict[str, Any], delivery_id: str) -> SendResult:
+def send_acs(config: dict[str, Any], secrets: dict[str, str], msg: dict[str, Any], delivery_id: str,
+             *, rendered: Rendered | None = None) -> SendResult:
     endpoint, key = parse_connection_string(secrets.get("connection_string", ""))
-    subject, text, body_html = render_email(msg)
+    subject, text, body_html = rendered or render_email(msg)
     payload = {"senderAddress": config["sender_address"],
                "recipients": {"to": [{"address": a} for a in config["to_addresses"]]},
-               "content": {"subject": subject, "plainText": text, "html": body_html},
+               "content": {"subject": _clip(_header_safe(subject), 200), "plainText": text, "html": body_html},
                "userEngagementTrackingDisabled": True}
     body = json.dumps(payload, separators=(",", ":")).encode()
     headers = acs_headers(endpoint, key, ACS_PATH, body, formatdate(usegmt=True))
@@ -504,13 +509,14 @@ def _smtp_target(host: str, port: int) -> str:
     return str(addrs[0])
 
 
-def send_smtp(config: dict[str, Any], secrets: dict[str, str], msg: dict[str, Any], delivery_id: str) -> SendResult:
+def send_smtp(config: dict[str, Any], secrets: dict[str, str], msg: dict[str, Any], delivery_id: str,
+              *, rendered: Rendered | None = None) -> SendResult:
     s = nsettings.get()
     host, port, security = config["host"], int(config.get("port") or 587), config.get("security", "starttls")
     ip = _smtp_target(host, port)
-    subject, text, body_html = render_email(msg)
+    subject, text, body_html = rendered or render_email(msg)
     em = EmailMessage()
-    em["Subject"] = subject
+    em["Subject"] = _clip(_header_safe(subject), 200)
     em["From"] = config["from_address"]
     em["To"] = ", ".join(config["to_addresses"])
     em["Date"] = formatdate(localtime=False, usegmt=True)
@@ -559,8 +565,12 @@ def send_smtp(config: dict[str, Any], secrets: dict[str, str], msg: dict[str, An
 
 
 def send(ctype: str, config: dict[str, Any], secrets: dict[str, str], msg: dict[str, Any],
-         delivery_id: str) -> SendResult:
-    """Deliver `msg`. Raises PermanentError / TransientError on failure."""
+         delivery_id: str, *, rendered: Rendered | None = None) -> SendResult:
+    """Deliver `msg`. Raises PermanentError / TransientError on failure.
+
+    `rendered` (email only): a ready (subject, text, html) used instead of the
+    alert layout of `render_email`, for platform transactional mail
+    (app/mailer.py, e.g. invitations)."""
     try:
         if ctype == "teams":
             return _post_json(secrets["webhook_url"], render_teams(msg), "teams")
@@ -570,8 +580,8 @@ def send(ctype: str, config: dict[str, Any], secrets: dict[str, str], msg: dict[
             return send_webhook(secrets, msg, delivery_id)
         if ctype == "email":
             if config.get("provider") == "acs":
-                return send_acs(config, secrets, msg, delivery_id)
-            return send_smtp(config, secrets, msg, delivery_id)
+                return send_acs(config, secrets, msg, delivery_id, rendered=rendered)
+            return send_smtp(config, secrets, msg, delivery_id, rendered=rendered)
     except KeyError as exc:
         raise PermanentError(f"channel is missing required setting {exc}") from None
     except ChannelConfigError as exc:

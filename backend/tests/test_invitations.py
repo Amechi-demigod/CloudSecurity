@@ -91,35 +91,64 @@ def test_create_organisation_and_accept_the_invitation(platform):
     assert {"organization_created", "invitation_accepted", "login_success"} <= actions
 
 
-def test_invitation_email_is_sent_when_mail_is_configured(platform, monkeypatch):
+@pytest.fixture()
+def outbox(monkeypatch):
+    """Platform mail configured, delivery faked: [(cfg, secrets, (subject, text, html))]."""
     sent = []
 
-    def fake_send(ctype, cfg, secrets, msg, delivery_id):
-        sent.append((ctype, cfg, secrets, msg))
+    def fake_send(ctype, cfg, secrets, msg, delivery_id, *, rendered=None):
+        assert ctype == "email" and rendered is not None
+        sent.append((cfg, secrets, rendered))
         return channels.SendResult(250, "accepted")
 
     monkeypatch.setattr(channels, "send", fake_send)
-    monkeypatch.setenv("PLATFORM_SMTP_HOST", "smtp.example.com")
-    monkeypatch.setenv("PLATFORM_SMTP_FROM", "CloudSecurity <no-reply@example.com>")
-    monkeypatch.setenv("PLATFORM_SMTP_USERNAME", "mailer")
-    monkeypatch.setenv("PLATFORM_SMTP_PASSWORD", "smtp-pass")
-    monkeypatch.setenv("PUBLIC_BASE_URL", "https://cnapp.example.com")
+    env = {"PLATFORM_SMTP_HOST": "smtp.example.com", "PLATFORM_SMTP_FROM": "Acme Security <no-reply@example.com>",
+           "PLATFORM_SMTP_USERNAME": "mailer", "PLATFORM_SMTP_PASSWORD": "smtp-pass",
+           "PUBLIC_BASE_URL": "https://cnapp.example.com", "BRAND_NAME": "Acme Security"}
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
     config.reload_settings()
-    try:
-        assert platform.get("/api/platform/mail").json() == {"configured": True}
-        inv = create_org(platform)["invitation"]
-        assert inv["emailed"] is True and inv["invite_url"] is None
-        ctype, cfg, secrets, msg = sent[0]
-        assert ctype == "email" and cfg["to_addresses"] == ["boss@acme.test"] and cfg["host"] == "smtp.example.com"
-        assert secrets == {"password": "smtp-pass"}
-        assert msg["link"].startswith("https://cnapp.example.com/invite#token=cnv_") and "Acme Ltd" in msg["title"]
-        # The emailed link works.
-        assert accept(platform.app, token_of(msg["link"]))[1].status_code == 200
-    finally:
-        for k in ("PLATFORM_SMTP_HOST", "PLATFORM_SMTP_FROM", "PLATFORM_SMTP_USERNAME", "PLATFORM_SMTP_PASSWORD",
-                  "PUBLIC_BASE_URL"):
-            monkeypatch.delenv(k)
-        config.reload_settings()
+    yield sent
+    for k in env:
+        monkeypatch.delenv(k)
+    config.reload_settings()
+
+
+def link_of(text: str) -> str:
+    return next(w for w in text.split() if "/invite#token=" in w)
+
+
+def test_invitation_email_is_sent_when_mail_is_configured(platform, outbox):
+    assert platform.get("/api/platform/mail").json() == {"configured": True}
+    inv = create_org(platform)["invitation"]
+    assert inv["emailed"] is True and inv["invite_url"] is None
+    cfg, secrets, (subject, text, body_html) = outbox[0]
+    assert cfg["to_addresses"] == ["boss@acme.test"] and cfg["host"] == "smtp.example.com"
+    assert secrets == {"password": "smtp-pass"}
+    # Platform variant: a transactional email from the brand, not an alert, and no person named.
+    assert subject == "You've been invited to join Acme Ltd on Acme Security"
+    assert "[CNAPP]" not in subject and "INFO" not in subject
+    link = link_of(text)
+    assert link.startswith("https://cnapp.example.com/invite#token=cnv_")
+    assert "Acme Security invited you as admin to join Acme Ltd." in text
+    assert f'href="{link}"' in body_html and "Accept invitation" in body_html
+    assert "expires in 72 hours" in text and "ignore this email" in text and "please don't reply" in text
+    for part in (text, body_html):
+        assert ADMIN_EMAIL not in part and "severity" not in part.lower() and "notifications" not in part
+    # The emailed link works.
+    boss, r = accept(platform.app, token_of(link))
+    assert r.status_code == 200
+
+    # Organisation variant: the org admin invites a teammate; the email names them.
+    boss.headers["X-CSRF-Token"] = r.json()["csrf_token"]
+    assert boss.post("/api/organization/invitations", json={"email": "ann@acme.test", "role": "analyst"}).json()[
+        "emailed"] is True
+    cfg, _, (subject, text, body_html) = outbox[1]
+    assert cfg["to_addresses"] == ["ann@acme.test"]
+    assert subject == "You have been invited to join Acme Ltd on Acme Security"
+    assert "Boss (boss@acme.test) invited you as analyst to join Acme Ltd on Acme Security." in text
+    assert "Boss (boss@acme.test)" in body_html and "[CNAPP]" not in subject
+    assert accept(platform.app, token_of(link_of(text)), password="ann-password-1234", name="Ann")[1].status_code == 200
 
 
 def test_org_admin_invites_teammates(platform):

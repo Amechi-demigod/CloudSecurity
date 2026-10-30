@@ -86,7 +86,7 @@ def invite(body: InviteIn, request: Request, admin: User = Depends(require_admin
     org = db.get(Organization, tenancy.require_org(db))
     try:
         issued = svc.create(db, org, email=body.email, role=body.role, invited_by=admin.email,
-                            base_url=request_base(request))
+                            base_url=request_base(request), inviter=svc.Inviter(admin.email, admin.name or ""))
     except svc.InvitationError as e:
         raise HTTPException(e.status, str(e)) from None
     audit(db, "user_invited", actor=admin, target=issued.invitation.email, ip=client_ip(request), role=body.role,
@@ -108,7 +108,8 @@ def resend(request: Request, inv_id: str = Path(pattern=r"^[0-9a-f]{32}$"), admi
     inv = _get(db, inv_id)
     org = db.get(Organization, tenancy.require_org(db))
     try:
-        issued = svc.resend(db, org, inv, invited_by=admin.email, base_url=request_base(request))
+        issued = svc.resend(db, org, inv, invited_by=admin.email, base_url=request_base(request),
+                            inviter=svc.Inviter(admin.email, admin.name or ""))
     except svc.InvitationError as e:
         raise HTTPException(e.status, str(e)) from None
     audit(db, "user_invitation_resent", actor=admin, target=inv.email, ip=client_ip(request), emailed=issued.emailed)
