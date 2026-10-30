@@ -1014,6 +1014,183 @@ export interface ExposureSummary {
   by_method: Record<string, number>;
 }
 
+
+// --- Dashboards (/api/dashboards/*; backend/app/services/dashboards.py) ---
+export type DashRange = "7d" | "30d" | "90d";
+export type DashTab = "overview" | "vulnerabilities" | "exposure" | "identities" | "endpoints";
+export type SevCounts = { critical: number; high: number; medium: number; low: number };
+/** A composition part: an asset group, type or port (fixed order from the backend). */
+export interface DashPart {
+  key: string;
+  label: string;
+  count: number;
+  types?: string[];
+  port?: number;
+}
+/** `delta` is today minus the value one period ago; null when there is no history to compare with. */
+export interface DashKpi<P = SevCounts> {
+  value: number | null;
+  delta: number | null;
+  parts?: P;
+}
+export interface DashFrame {
+  range: DashRange;
+  days: number;
+  account: string | null;
+  generated_at: string;
+  bucket: "day" | "week";
+  compare_day: string;
+  history_since: string | null;
+}
+export interface DashMeta extends DashFrame {
+  tabs: { vulnerabilities: number; exposure: number; identities: number; endpoints: number };
+  accounts: { id: string; name: string; provider: string }[];
+  ranges: DashRange[];
+  sla_days: { critical: number; high: number };
+}
+export interface DashBucket {
+  start: string;
+  end: string;
+}
+export interface EndpointStats {
+  managed: number;
+  healthy: number;
+  failing: number;
+  suspended: number;
+  outdated: number;
+  latest_agent_version: string | null;
+  by_os: Record<string, number>;
+  by_health: { healthy: number; warning: number; critical: number; unknown: number };
+  connectivity: { active: number; stale: number; inactive: number; never: number };
+  issues: { code: string; title: string; severity: Severity; devices: number }[];
+  agent_versions: { version: string; devices: number }[];
+}
+export interface DashOverview extends DashFrame {
+  risk_score: { value: number; delta: number | null; severity: Severity; critical_findings: number; critical_paths: number };
+  kpis: {
+    open_issues: DashKpi;
+    critical_high: DashKpi<{ critical: number; high: number }>;
+    mttr: {
+      value: number | null;
+      delta: number | null;
+      resolved: number;
+      critical: number | null;
+      high: number | null;
+      sla_met_pct: number | null;
+      sla_days: { critical: number; high: number };
+    };
+    exposed_assets: DashKpi<DashPart[]>;
+    runtime_threats: DashKpi;
+    attack_paths: DashKpi;
+  };
+  issue_trend: { bucket: "day" | "week"; points: (DashBucket & { new: number; resolved: number })[] };
+  compliance: { framework: string; controls: number; passing: number; score: number; delta: number | null; failing_controls: string[] }[];
+  age: ({ bucket: string; label: string } & SevCounts)[];
+  categories: ({ category: string; total: number } & SevCounts)[];
+  top_assets: {
+    id: string;
+    name: string;
+    type: string;
+    type_label: string;
+    type_short: string;
+    risk: number;
+    critical: number;
+    high: number;
+    findings: number;
+    vulnerabilities: number;
+    internet_exposed: boolean;
+    sensitive_data: boolean;
+  }[];
+  endpoints: EndpointStats;
+}
+export interface DashCve {
+  cve_id: string;
+  package: string;
+  version: string;
+  severity: Severity;
+  epss: number | null;
+  kev: boolean;
+  runtime: boolean;
+  internet: boolean;
+  endpoint: boolean;
+  assets: number;
+  risk: number | null;
+  cvss: number | null;
+  fix_available: boolean;
+}
+export interface DashVulns extends DashFrame {
+  kpis: {
+    critical: DashKpi<never> & { fix_available: number; no_fix: number };
+    kev: DashKpi;
+    in_use: DashKpi;
+    fix_available: DashKpi<never> & { fixable: number; no_fix: number };
+  };
+  total: number;
+  over_time: { bucket: "day" | "week"; points: (DashBucket & { critical: number; high: number; prioritized: number | null })[] };
+  by_severity: { severity: Severity; vulns: number; cves: number; assets: number }[];
+  noise_reduction: { total: number; in_use: number; dormant: number; percent: number };
+  workloads: ({ key: string; label: string; types: string[]; total: number } & SevCounts)[];
+  top_cves: DashCve[];
+}
+export interface DashPath {
+  id: string;
+  title: string;
+  severity: Severity;
+  score: number;
+  confirmed: boolean;
+  entry: { id: string; name: string; detail: string | null };
+  target: { id: string; name: string };
+  steps: { id: string; name: string; type: string }[];
+  weaknesses: string[];
+}
+export interface DashExposure extends DashFrame {
+  kpis: {
+    exposed_assets: DashKpi<DashPart[]>;
+    mgmt_ports: DashKpi<DashPart[]>;
+    data_stores: DashKpi<DashPart[]>;
+    crown_jewels: DashKpi;
+  };
+  by_type: { type: string; label: string; group: string; count: number }[];
+  levels: { open: number; restricted: number };
+  trend: { bucket: "day" | "week"; points: (DashBucket & { exposed_assets: number | null; crown_jewel_paths: number | null })[] };
+  paths: DashPath[];
+  paths_total: number;
+}
+export interface DashIdentities extends DashFrame {
+  kpis: {
+    identities: DashKpi<DashPart[]>;
+    privileged: DashKpi<DashPart[]>;
+    findings: DashKpi;
+    on_paths: { value: number; parts: SevCounts };
+  };
+  findings_by_severity: SevCounts;
+  rules: { rule_id: string; title: string; severity: Severity; findings: number; identities: number }[];
+  identities: {
+    id: string;
+    name: string;
+    type: string;
+    type_label: string;
+    provider: string;
+    principal_type: string | null;
+    privileged: boolean;
+    roles: string[];
+    scope: string | null;
+    findings: number;
+    attack_path: Severity | null;
+  }[];
+  total: number;
+}
+export interface DashEndpoints extends DashFrame, EndpointStats {
+  kpis: {
+    managed: DashKpi<Record<string, number>>;
+    failing: DashKpi<never>;
+    suspended: DashKpi<never>;
+    outdated: DashKpi<never>;
+  };
+  vulnerabilities: { total: number; kev: number; by_severity: SevCounts };
+}
+export type DashParams = { range: DashRange; account?: string };
+
 export const api = {
   // --- auth ---
   me: () => request<SessionInfo>("/api/auth/me", { skipAuthHandling: true }),
@@ -1140,6 +1317,12 @@ export const api = {
   // --- platform ---
   health: () => request<Health>("/api/health"),
   dashboard: () => request<Dashboard>("/api/dashboard"),
+  dashboards: (p: DashParams) => request<DashMeta>(`/api/dashboards${qs(p)}`),
+  dashOverview: (p: DashParams) => request<DashOverview>(`/api/dashboards/overview${qs(p)}`),
+  dashVulns: (p: DashParams) => request<DashVulns>(`/api/dashboards/vulnerabilities${qs(p)}`),
+  dashExposure: (p: DashParams) => request<DashExposure>(`/api/dashboards/exposure${qs(p)}`),
+  dashIdentities: (p: DashParams) => request<DashIdentities>(`/api/dashboards/identities${qs(p)}`),
+  dashEndpoints: (p: DashParams) => request<DashEndpoints>(`/api/dashboards/endpoints${qs(p)}`),
   assets: (f: Record<string, string | boolean | undefined> = {}) => request<AssetSummary[]>(`/api/assets${qs(f)}`),
   facets: () =>
     request<{

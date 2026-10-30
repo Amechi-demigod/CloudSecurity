@@ -20,7 +20,9 @@ export default function Vulnerabilities() {
   const [runtime, setRuntime] = useUrlState("runtime", "all");
   const [severity, setSeverity] = useUrlState("severity");
   const [priority, setPriority] = useUrlState("priority");
-  const [kevOnly, setKevOnly] = useState(false);
+  const [kevParam, setKevParam] = useUrlState("kev"); // ?kev=1 (dashboard links)
+  const kevOnly = kevParam === "1";
+  const setKevOnly = (on: boolean) => setKevParam(on ? "1" : "");
   const [software, setSoftware] = useState("");
   const [status, setStatus] = useState("open");
   const [cve, setCve] = useState(params.get("cve") ?? "");

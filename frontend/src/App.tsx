@@ -8,6 +8,7 @@ import {
   Globe,
   Laptop,
   LayoutDashboard,
+  Menu,
   Moon,
   Network,
   Package,
@@ -19,7 +20,7 @@ import {
   Users2,
   type LucideIcon,
 } from "lucide-react";
-import { Fragment, type ReactNode } from "react";
+import { Fragment, useState, type ReactNode } from "react";
 import { NavLink, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { api, type Role } from "./api";
 import { useAuth } from "./auth/context";
@@ -59,7 +60,7 @@ type NavItem = { to: string; label: string; icon: LucideIcon; role?: Role; badge
 
 // Grouped by what the user is looking after; the order inside a group follows a typical triage.
 const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
-  { title: "", items: [{ to: "/", label: "Dashboard", icon: LayoutDashboard }] },
+  { title: "", items: [{ to: "/", label: "Dashboards", icon: LayoutDashboard }] },
   {
     title: "Cloud security",
     items: [
@@ -179,9 +180,17 @@ function Shell() {
   const { data: health, error } = useApi(api.health, [], 15000);
   const admin = can("admin");
   const { data: approvals } = useApi(() => (admin ? api.approvalSummary() : Promise.resolve(null)), [admin], admin ? 30000 : undefined);
+  // Below the md breakpoint the sidebar is an overlay opened from the header's menu button.
+  const [navOpen, setNavOpen] = useState(false);
   return (
-    <div className="flex h-full">
-      <nav aria-label="Main" className="flex w-60 shrink-0 flex-col border-r border-line bg-surface-1">
+    <div className="flex h-full" data-print="flow">
+      {navOpen && <div className="fixed inset-0 z-30 bg-black/50 md:hidden" onClick={() => setNavOpen(false)} aria-hidden data-print="hide" />}
+      <nav
+        aria-label="Main"
+        data-print="hide"
+        onClick={(e) => (e.target as HTMLElement).closest("a") && setNavOpen(false)}
+        className={`${navOpen ? "fixed inset-y-0 left-0 z-40 flex shadow-2xl" : "hidden"} w-60 shrink-0 flex-col border-r border-line bg-surface-1 md:static md:z-auto md:flex md:shadow-none`}
+      >
         <div className="flex items-center gap-2.5 px-5 py-4">
           <img src="/shield.svg" alt="" className="h-7 w-7" />
           <div>
@@ -269,13 +278,21 @@ function Shell() {
           )}
         </div>
       </nav>
-      <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex items-center justify-end gap-2 border-b border-line bg-surface-1 px-6 py-2">
+      <div className="flex min-w-0 flex-1 flex-col" data-print="flow">
+        <header className="flex items-center justify-end gap-2 border-b border-line bg-surface-1 px-4 py-2 md:px-6" data-print="hide">
+          <button
+            type="button"
+            onClick={() => setNavOpen(true)}
+            aria-label="Open the menu"
+            className="flex h-9 w-9 items-center justify-center rounded-lg text-ink-2 hover:bg-surface-2 hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent md:hidden"
+          >
+            <Menu aria-hidden className="h-5 w-5" />
+          </button>
           <OrgIndicator />
           <ThemeToggle />
           <UserMenu />
         </header>
-        <main className="min-w-0 flex-1 overflow-y-auto px-6 py-5">
+        <main className="min-w-0 flex-1 overflow-y-auto px-4 py-5 md:px-6" data-print="flow">
           {forbidden && (
             <div role="alert" className="mb-4 flex items-start justify-between gap-3 rounded border border-sev-high/60 bg-sev-high/10 px-3 py-2 text-sm">
               <span>{forbidden}</span>
