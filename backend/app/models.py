@@ -70,6 +70,9 @@ class Organization(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     suspended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     suspended_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # An admin dismissed the console's "Getting started" checklist (app/services/onboarding.py).
+    onboarding_dismissed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    onboarding_dismissed_by: Mapped[str | None] = mapped_column(String(320), nullable=True)
 
 
 class OrganizationMembership(TenantMixin, Base):

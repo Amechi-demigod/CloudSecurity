@@ -211,6 +211,18 @@ Sign-up is **invite-only**; there is no public registration.
 Accounts are platform-wide and belong to one organisation in this version, so
 an email address that already has an account cannot be invited.
 
+**Getting started checklist.** Until setup is complete, the Dashboards page of
+a new organisation shows a "Getting started" card with six steps, each detected
+from that organisation's own data (`GET /api/organization/onboarding`, any
+role): MFA enrolled for the signed-in user, another member or an open
+invitation, an enabled cloud connector, an active enrolled device (an
+enrollment token alone does not count), a succeeded scan, and an enabled
+notification channel. Each open step links to the page where it is done. The
+card disappears once every step is done; an organisation admin can also
+dismiss it for the whole organisation (`POST /api/organization/onboarding/dismiss`,
+recorded as `onboarding_dismissed` in the audit log). It is never shown in the
+default organisation.
+
 ## Email for invitations
 
 Invitations are sent with the same senders as the email notification channel

@@ -19,6 +19,7 @@ from ..db import get_db
 from ..models import IngestToken, Organization, User, utcnow
 from ..schemas import ORM, UTCDateTime
 from ..security import INGEST_TOKEN_PREFIX, hash_ingest_token
+from ..services import onboarding
 from ..services import organizations as orgs
 
 router = APIRouter(prefix="/api/organization", tags=["organization"], dependencies=[Depends(require_viewer)])
@@ -85,6 +86,49 @@ def get_usage(db: Session = Depends(get_db)):
     with tenancy.unscoped(db):
         counts = orgs.usage(db).get(oid)
     return counts or {"users": 0, "devices": 0, "assets": 0, "scans": 0}
+
+
+# ----------------------------------------------------------------------------- getting started
+class OnboardingStep(BaseModel):
+    key: str
+    done: bool
+
+
+class OnboardingOut(BaseModel):
+    steps: list[OnboardingStep]
+    completed: int
+    total: int
+    # The default organisation is the platform operator's own: the console shows no checklist for it.
+    is_default: bool
+    dismissed: bool
+    dismissed_at: UTCDateTime | None = None
+    dismissed_by: str | None = None
+
+
+def _onboarding(db: Session, org: Organization, user: User) -> OnboardingOut:
+    done = onboarding.steps(db, user)
+    return OnboardingOut(steps=[OnboardingStep(key=k, done=done[k]) for k in onboarding.STEPS],
+                         completed=sum(done.values()), total=len(done), is_default=org.is_default,
+                         dismissed=org.onboarding_dismissed_at is not None, dismissed_at=org.onboarding_dismissed_at,
+                         dismissed_by=org.onboarding_dismissed_by)
+
+
+@router.get("/onboarding", response_model=OnboardingOut)
+def get_onboarding(user: User = Depends(require_viewer), db: Session = Depends(get_db)):
+    """The "Getting started" checklist: each step's done flag from this organisation's data."""
+    return _onboarding(db, _org(db), user)
+
+
+@router.post("/onboarding/dismiss", response_model=OnboardingOut)
+def dismiss_onboarding(request: Request, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    """Hide the checklist for everyone in this organisation."""
+    org = _org(db)
+    if org.onboarding_dismissed_at is None:
+        org.onboarding_dismissed_at, org.onboarding_dismissed_by = utcnow(), admin.email
+        audit(db, "onboarding_dismissed", actor=admin, target=f"organization:{org.slug}", ip=client_ip(request),
+              completed=sum(onboarding.steps(db, admin).values()))
+        db.commit()
+    return _onboarding(db, org, admin)
 
 
 # ----------------------------------------------------------------------------- ingest tokens
