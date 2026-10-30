@@ -59,8 +59,17 @@ export function throttle(fn: () => void, ms: number): () => void {
   };
 }
 
-/** Normalised (0..1) position of a pointer event inside an element showing `w` x `h` pixels with object-fit: contain. */
-export function normalise(clientX: number, clientY: number, rect: DOMRect, w: number, h: number): [number, number] | null {
+/** Normalised (0..1) position of a pointer event inside an element showing
+ * `w` x `h` pixels with object-fit: contain. Null in the letterbox bars, unless
+ * `clamp` (a drag that left the image: its release goes to the nearest edge). */
+export function normalise(
+  clientX: number,
+  clientY: number,
+  rect: DOMRect,
+  w: number,
+  h: number,
+  clamp = false,
+): [number, number] | null {
   if (!w || !h || !rect.width || !rect.height) return null;
   const scale = Math.min(rect.width / w, rect.height / h);
   const dw = w * scale;
@@ -69,6 +78,7 @@ export function normalise(clientX: number, clientY: number, rect: DOMRect, w: nu
   const oy = rect.top + (rect.height - dh) / 2;
   const x = (clientX - ox) / dw;
   const y = (clientY - oy) / dh;
+  if (clamp) return [Math.min(1, Math.max(0, x)), Math.min(1, Math.max(0, y))];
   if (x < 0 || y < 0 || x > 1 || y > 1) return null;
   return [x, y];
 }

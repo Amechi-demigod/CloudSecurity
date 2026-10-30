@@ -60,13 +60,31 @@ export default function RemoteViewer() {
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const activeRef = useRef(0);
   const counters = useRef({ frames: 0, bytes: 0 });
+  // What the viewer holds down on the device: released on blur, on unmount
+  // and before the socket closes (the helper also releases them when it stops).
   const held = useRef(new Set<string>());
+  const heldButtons = useRef(new Set<number>());
+  const lastPos = useRef<[number, number] | null>(null);
   const reloadSession = session.reload;
 
   const send = useCallback((m: Record<string, unknown>) => {
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(m));
   }, []);
+
+  const releaseButtons = useCallback(() => {
+    const p = lastPos.current;
+    for (const button of heldButtons.current) {
+      if (p) send({ t: "input", kind: "button", button, down: false, x: p[0], y: p[1] });
+    }
+    heldButtons.current.clear();
+  }, [send]);
+
+  const releaseHeld = useCallback(() => {
+    for (const code of held.current) send({ t: "input", kind: "key", code, down: false });
+    held.current.clear();
+    releaseButtons();
+  }, [send, releaseButtons]);
 
   // The viewer socket: same-origin wss://, authenticated by the session cookie.
   useEffect(() => {
@@ -148,10 +166,11 @@ export default function RemoteViewer() {
     return () => {
       stopped = true;
       window.clearTimeout(timer);
+      releaseHeld(); // leaving the page: nothing stays pressed on the device
       wsRef.current?.close(1000, "viewer closed");
       wsRef.current = null;
     };
-  }, [sid, reloadSession]);
+  }, [sid, reloadSession, releaseHeld]);
 
   // Frame rate / throughput, and the "waiting for ..." clocks.
   useEffect(() => {
@@ -187,10 +206,10 @@ export default function RemoteViewer() {
     return () => mover.current?.dispose();
   }, [send]);
 
-  const position = useCallback((clientX: number, clientY: number) => {
+  const position = useCallback((clientX: number, clientY: number, clamp = false) => {
     const canvas = canvasRef.current;
     if (!canvas) return null;
-    return normalise(clientX, clientY, canvas.getBoundingClientRect(), canvas.width, canvas.height);
+    return normalise(clientX, clientY, canvas.getBoundingClientRect(), canvas.width, canvas.height, clamp);
   }, []);
 
   const releaseKeys = useCallback(() => {
@@ -224,7 +243,10 @@ export default function RemoteViewer() {
       held.current.delete(e.code);
       send({ t: "input", kind: "key", code: e.code, down: false });
     };
-    const blur = () => releaseKeys();
+    const blur = () => {
+      releaseKeys();
+      releaseButtons();
+    };
     window.addEventListener("keydown", down, true);
     window.addEventListener("keyup", up, true);
     window.addEventListener("blur", blur);
@@ -233,7 +255,7 @@ export default function RemoteViewer() {
       window.removeEventListener("keyup", up, true);
       window.removeEventListener("blur", blur);
     };
-  }, [captured, connected, control, send, releaseKeys]);
+  }, [captured, connected, control, send, releaseKeys, releaseButtons]);
 
   // Wheel needs a non-passive listener to stop the page from scrolling.
   useEffect(() => {
@@ -241,19 +263,25 @@ export default function RemoteViewer() {
     if (!canvas || !connected || !control) return;
     const wheel = (e: WheelEvent) => {
       e.preventDefault();
+      const p = position(e.clientX, e.clientY);
+      if (!p) return; // the letterbox bars are not the device's screen
       mover.current?.flush();
-      send({ t: "input", kind: "wheel", dx: wheelNotches(e.deltaX, e.deltaMode), dy: wheelNotches(e.deltaY, e.deltaMode) });
+      send({ t: "input", kind: "wheel", x: p[0], y: p[1], dx: wheelNotches(e.deltaX, e.deltaMode),
+        dy: wheelNotches(e.deltaY, e.deltaMode) });
       activity.current();
     };
     canvas.addEventListener("wheel", wheel, { passive: false });
     return () => canvas.removeEventListener("wheel", wheel);
-  }, [connected, control, send]);
+  }, [connected, control, send, position]);
 
   function onPointerMove(e: ReactPointerEvent<HTMLCanvasElement>) {
     activity.current();
     if (!connected || !control) return;
-    const p = position(e.clientX, e.clientY);
-    if (p) mover.current?.push(p[0], p[1]);
+    // While a button is held (pointer captured) a drag past the image edge stays on it.
+    const p = position(e.clientX, e.clientY, heldButtons.current.size > 0);
+    if (!p) return;
+    lastPos.current = p;
+    mover.current?.push(p[0], p[1]);
   }
 
   function onPointerButton(e: ReactPointerEvent<HTMLCanvasElement>, down: boolean) {
@@ -266,9 +294,27 @@ export default function RemoteViewer() {
       const kb = (navigator as Navigator & { keyboard?: { lock?: () => Promise<void> } }).keyboard;
       if (document.fullscreenElement) kb?.lock?.().catch(() => undefined);
     }
-    const p = position(e.clientX, e.clientY);
+    if (down) {
+      // A press in the letterbox bars is not a click on the device; one on the
+      // image captures the pointer, so its release arrives even outside it.
+      const p = position(e.clientX, e.clientY);
+      if (!p) return;
+      e.currentTarget.setPointerCapture?.(e.pointerId);
+      heldButtons.current.add(e.button);
+      lastPos.current = p;
+      mover.current?.flush();
+      send({ t: "input", kind: "button", button: e.button, down: true, x: p[0], y: p[1] });
+      return;
+    }
+    if (!heldButtons.current.delete(e.button)) return; // its press was not sent
+    const p = position(e.clientX, e.clientY, true) ?? lastPos.current;
+    if (heldButtons.current.size === 0 && e.currentTarget.hasPointerCapture?.(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+    if (!p) return;
+    lastPos.current = p;
     mover.current?.flush();
-    send({ t: "input", kind: "button", button: e.button, down, ...(p ? { x: p[0], y: p[1] } : {}) });
+    send({ t: "input", kind: "button", button: e.button, down: false, x: p[0], y: p[1] });
   }
 
   async function endSession() {
@@ -358,6 +404,7 @@ export default function RemoteViewer() {
             onPointerMove={onPointerMove}
             onPointerDown={(e) => onPointerButton(e, true)}
             onPointerUp={(e) => onPointerButton(e, false)}
+            onLostPointerCapture={() => releaseButtons()}
             onContextMenu={(e) => e.preventDefault()}
           />
           {!connected && (
