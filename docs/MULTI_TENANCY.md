@@ -232,6 +232,13 @@ same SSRF guard as notification email). **Without a mail server the invitation
 is still created and the console shows the link** for the inviter to copy and
 pass on securely.
 
+The invitation is a plain transactional email (`app/services/invitation_email.py`,
+plain text and HTML, no images or tracking), not the alert layout of
+notifications. Invitations sent from the platform console name only the brand
+(`BRAND_NAME`): "You've been invited to join {organisation} on {brand}".
+Invitations sent by an organisation admin name that admin (display name and
+email address): "You have been invited to join {organisation} on {brand}".
+
 ## Upgrading an existing installation
 
 Nothing to do: update as usual (`sudo cnapp-ctl update` on-prem, or the deploy

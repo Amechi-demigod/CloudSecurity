@@ -22,6 +22,8 @@ from sqlalchemy.orm import Session
 
 from .. import config, mailer, tenancy
 from ..models import ROLES, Organization, OrganizationInvitation, User, utcnow
+from . import invitation_email
+from .invitation_email import Inviter
 
 TOKEN_PREFIX = "cnv_"  # noqa: S105 (token prefix, not a secret)
 STATES = ("pending", "accepted", "expired", "revoked")
@@ -68,25 +70,23 @@ def _issue_token(inv: OrganizationInvitation, now: datetime) -> str:
     return raw
 
 
-def _send(org: Organization, inv: OrganizationInvitation, url: str, inviter: str | None, now: datetime) -> Issued:
-    hours = config.settings.invite_ttl_hours
-    msg = {"severity": "info", "source_label": "Invitation",
-           "title": f"You are invited to {org.name} on {config.settings.brand_name}",
-           "summary": (f"{inviter or 'An administrator'} invited you to join {org.name} on the {config.settings.brand_name} "
-                       f"platform as {inv.role}. Open the link to choose your password. It can be used once and "
-                       f"expires in {hours:g} hours. If you did not expect this invitation, ignore this email."),
-           "facts": [("Organisation", org.name), ("Role", inv.role), ("Email", inv.email)],
-           "link": url}
-    res = mailer.send(inv.email, msg)
+def _send(org: Organization, inv: OrganizationInvitation, url: str, inviter: Inviter | None, now: datetime) -> Issued:
+    subject, text, body_html = invitation_email.render(org_name=org.name, role=inv.role, link=url,
+                                                       ttl_hours=config.settings.invite_ttl_hours, inviter=inviter)
+    res = mailer.send(inv.email, subject, text, body_html)
     inv.last_sent_at = now
     inv.sent_count = (inv.sent_count or 0) + 1
     return Issued(inv, url, res.sent, res.error)
 
 
 def create(db: Session, org: Organization, *, email: str, role: str, invited_by: str | None,
-           base_url: str | None = None) -> Issued:
+           base_url: str | None = None, inviter: Inviter | None = None) -> Issued:
     """Invite `email` to `org` (any session mode; the caller audits and commits).
-    A pending invitation of the same address is replaced (its link stops working)."""
+    A pending invitation of the same address is replaced (its link stops working).
+
+    `inviter`: the organisation admin named in the email (organisation
+    variant); None sends the platform variant, which names only the brand
+    (a platform owner inviting into an organisation)."""
     from ..auth import normalize_email
 
     email = normalize_email(email)
@@ -110,19 +110,20 @@ def create(db: Session, org: Organization, *, email: str, role: str, invited_by:
     raw = _issue_token(inv, now)
     db.add(inv)
     db.flush()
-    return _send(org, inv, invite_url(raw, base_url), invited_by, now)
+    return _send(org, inv, invite_url(raw, base_url), inviter, now)
 
 
 def resend(db: Session, org: Organization, inv: OrganizationInvitation, *, invited_by: str | None,
-           base_url: str | None = None) -> Issued:
-    """New link and expiry for a pending or expired invitation (the old link stops working)."""
+           base_url: str | None = None, inviter: Inviter | None = None) -> Issued:
+    """New link and expiry for a pending or expired invitation (the old link
+    stops working). `inviter` as for `create`."""
     if inv.accepted_at or inv.revoked_at:
         raise InvitationError(f"the invitation is {state(inv)}", 409)
     if org.status != "active":
         raise InvitationError("the organisation is suspended", 409)
     now = utcnow()
     raw = _issue_token(inv, now)
-    return _send(org, inv, invite_url(raw, base_url), invited_by, now)
+    return _send(org, inv, invite_url(raw, base_url), inviter, now)
 
 
 def find(db: Session, token: str) -> tuple[OrganizationInvitation, Organization] | None:

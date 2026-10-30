@@ -39,9 +39,9 @@ def _channel() -> tuple[dict, dict]:
             {"connection_string": s.platform_acs_connection_string or ""})
 
 
-def send(to: str, msg: dict) -> MailResult:
-    """Send one message (the channel-neutral message dict of notifications:
-    title, summary, facts, link). Never raises."""
+def send(to: str, subject: str, text: str, html: str) -> MailResult:
+    """Send one transactional email (plain text + HTML alternative), not the
+    alert layout of the notification channel. Never raises."""
     from .notifications import channels as ch
 
     if not configured():
@@ -49,7 +49,7 @@ def send(to: str, msg: dict) -> MailResult:
     cfg, secrets = _channel()
     cfg["to_addresses"] = [to]
     try:
-        ch.send("email", cfg, secrets, msg, uuid.uuid4().hex)
+        ch.send("email", cfg, secrets, {}, uuid.uuid4().hex, rendered=(subject, text, html))
         return MailResult(True)
     except (ch.PermanentError, ch.TransientError) as e:
         log.warning("platform mail to %s failed: %s", to.split("@")[-1], e)
