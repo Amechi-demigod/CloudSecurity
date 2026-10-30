@@ -100,9 +100,18 @@ def test_every_tab_answers_in_one_response(seeded):
             d = _get(a, tab, range=rng)
             assert d["tab"] == tab and d["range"] == rng and d["days"] == int(rng[:-1])
     assert len(_get(a, "overview", range="7d")["issue_trend"]["points"]) == 7
-    assert len(_get(a, "overview", range="30d")["issue_trend"]["points"]) == 30
+    # bar charts (new vs resolved): daily at 7 days, weekly from 30 days
+    week = _get(a, "overview", range="7d")["issue_trend"]
+    assert week["bucket"] == "day" and len(week["points"]) == 7
+    month = _get(a, "overview", range="30d")["issue_trend"]
+    assert month["bucket"] == "week" and len(month["points"]) == 5
+    assert month["points"][0]["start"] == str(utcnow().date() - timedelta(days=29))  # oldest week clipped to the window
     ninety = _get(a, "overview", range="90d")["issue_trend"]
     assert ninety["bucket"] == "week" and len(ninety["points"]) == 13
+    # line charts stay daily up to 30 days
+    v = _get(a, "vulnerabilities", range="30d")["over_time"]
+    assert v["bucket"] == "day" and len(v["points"]) == 30
+    assert _get(a, "exposure", range="30d")["trend"]["bucket"] == "day"
 
 
 def test_overview_numbers(seeded):
@@ -130,6 +139,7 @@ def test_overview_numbers(seeded):
     assert [c["framework"] for c in d["compliance"]] and all(c["delta"] is None for c in d["compliance"])
     top = d["top_assets"]
     assert top[0]["name"] == "vm1" and top[0]["risk"] == 98  # riskiest open vulnerability
+    assert top[0]["critical"] == 1 and top[0]["high"] == 1 and top[0]["type_short"] == "VM"
     assert top[1]["name"] == "st1" and top[1]["risk"] == 85  # floor of its critical finding
     ep = d["endpoints"]
     assert (ep["managed"], ep["healthy"], ep["failing"], ep["suspended"], ep["outdated"]) == (2, 1, 1, 1, 1)
@@ -384,3 +394,21 @@ def test_findings_list_filters_by_dashboard_category(seeded):
     # the dashboard's category counts match the list behind them
     for c in _get(a, "overview")["categories"]:
         assert len(a.get("/api/findings", params={"category": c["category"]}).json()) == c["total"], c
+
+
+def test_top_risky_assets_break_ties_deterministically(seeded):
+    """Equal risk: more critical, then more high, then exposed, then sensitive, then name."""
+    now = utcnow()
+    with db.get_session(seeded.acme_id) as s:
+        s.add_all([_asset(n, "storage_account", SUB_B, internet_exposed=e, sensitive_data=sd)
+                   for n, e, sd in [("t-b", False, False), ("t-a", False, False), ("t-exp", True, False),
+                                    ("t-sens", False, True), ("t-high", False, False)]])
+        s.flush()
+        for n in ("t-b", "t-a", "t-exp", "t-sens", "t-high"):
+            s.add(Finding(rule_id="AZ-STG-009", asset_id=n, title="x", severity="critical", first_seen=now))
+        s.add(Finding(rule_id="AZ-STG-010", asset_id="t-high", title="y", severity="high", first_seen=now))
+        s.commit()
+        rows = svc._top_assets(s, svc.window("30d", SUB_B), limit=10)
+    names = [r["name"] for r in rows if r["name"].startswith("t-")]
+    assert names == ["t-high", "t-exp", "t-sens", "t-a", "t-b"]
+    assert all(r["risk"] == 85 for r in rows if r["name"].startswith("t-"))
