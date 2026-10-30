@@ -273,32 +273,7 @@ def sync_devices(db: Session, *, limit: int = 2000) -> int:
     devices = list(db.scalars(select(Device).where(Device.id.not_in(linked)).order_by(Device.enrolled_at).limit(limit)))
     created = 0
     for d in devices:
-        serial = (d.serial_number or "").strip()
-        asset = None
-        if serial:
-            asset = db.scalars(select(ItAsset).where(func.lower(ItAsset.serial_number) == serial.lower(),
-                                                     ItAsset.device_id.is_(None)).limit(1)).first()
-        try:
-            if asset is not None:
-                asset.device_id = d.id
-                asset.updated_at = utcnow()
-                _fill_from_device(asset, d)
-                record(db, asset, "device_linked", SYSTEM, notes=f"matched agent device {d.hostname} by serial number",
-                       device_id=d.id, hostname=d.hostname)
-            else:
-                asset = ItAsset(asset_tag=_auto_tag(db, d), device_id=d.id, source="agent", status="in_stock",
-                                asset_type=guess_type(d.manufacturer, d.model), serial_number=serial[:128],
-                                manufacturer=(d.manufacturer or "")[:128], model=(d.model or "")[:128],
-                                currency=get_settings(db)["default_currency"], custom_fields={},
-                                created_by=SYSTEM, created_at=utcnow(), updated_at=utcnow())
-                db.add(asset)
-                db.flush()
-                record(db, asset, "created", SYSTEM, to_status="in_stock",
-                       notes=f"created from agent device {d.hostname}", device_id=d.id, hostname=d.hostname)
-                created += 1
-            db.commit()
-        except IntegrityError:
-            db.rollback()  # another request linked it first
+        created += _link_or_create(db, d) == "created"
     # Fill blanks of linked assets (serial may only arrive with a later check-in).
     rows = db.execute(select(ItAsset, Device).join(Device, Device.id == ItAsset.device_id)
                       .where(or_(ItAsset.serial_number == "", ItAsset.manufacturer == "", ItAsset.model == ""))
@@ -310,6 +285,57 @@ def sync_devices(db: Session, *, limit: int = 2000) -> int:
         db.commit()
     sync_owners(db, limit=max(limit, 5000))
     return created
+
+
+def _link_or_create(db: Session, d: Device) -> str | None:
+    """Give an unlinked device an asset: link the unlinked asset with the same
+    serial number, else create one. Commits. Returns "linked", "created", or
+    None when another request linked it first."""
+    serial = (d.serial_number or "").strip()
+    asset = None
+    if serial:
+        asset = db.scalars(select(ItAsset).where(func.lower(ItAsset.serial_number) == serial.lower(),
+                                                 ItAsset.device_id.is_(None)).limit(1)).first()
+    try:
+        if asset is not None:
+            asset.device_id = d.id
+            asset.updated_at = utcnow()
+            _fill_from_device(asset, d)
+            record(db, asset, "device_linked", SYSTEM, notes=f"matched agent device {d.hostname} by serial number",
+                   device_id=d.id, hostname=d.hostname)
+            result = "linked"
+        else:
+            asset = ItAsset(asset_tag=_auto_tag(db, d), device_id=d.id, source="agent", status="in_stock",
+                            asset_type=guess_type(d.manufacturer, d.model), serial_number=serial[:128],
+                            manufacturer=(d.manufacturer or "")[:128], model=(d.model or "")[:128],
+                            currency=get_settings(db)["default_currency"], custom_fields={},
+                            created_by=SYSTEM, created_at=utcnow(), updated_at=utcnow())
+            db.add(asset)
+            db.flush()
+            record(db, asset, "created", SYSTEM, to_status="in_stock",
+                   notes=f"created from agent device {d.hostname}", device_id=d.id, hostname=d.hostname)
+            result = "created"
+        db.commit()
+        return result
+    except IntegrityError:
+        db.rollback()  # another request linked it first
+        return None
+
+
+def sync_device(db: Session, device: Device) -> int:
+    """One agent device after its check-in: make sure it has an asset record
+    (link by serial or create, as `sync_devices` does), fill blank serial / make /
+    model, and apply the signed-in user as owner (`sync_owners`). Commits.
+    Returns the number of owner changes (0 or 1)."""
+    asset = db.scalars(select(ItAsset).where(ItAsset.device_id == device.id)).first()
+    if asset is None:
+        _link_or_create(db, device)
+        asset = db.scalars(select(ItAsset).where(ItAsset.device_id == device.id)).first()
+        if asset is None:
+            return 0
+    elif _fill_from_device(asset, device):
+        db.commit()
+    return sync_owners(db, asset_id=asset.id)
 
 
 def _fill_from_device(asset: ItAsset, d: Device) -> bool:

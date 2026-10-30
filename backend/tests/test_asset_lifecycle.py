@@ -394,6 +394,67 @@ def test_owner_set_from_agent_signed_in_user(admin):
     assert [x["id"] for x in admin.get("/api/it-assets?assignee=MusaO").json()] == [a["id"]]
 
 
+def _enrolled_agent(admin, users: list[str]):
+    from tests.test_devices import agent_client, enroll, new_token, windows_checkin
+
+    agent = agent_client(admin.app)
+    r = enroll(agent, new_token(admin))
+    assert r.status_code == 200, r.text
+    agent.headers["Authorization"] = f"Bearer {r.json()['device_secret']}"
+
+    def checkin(users: list[str]):
+        body = windows_checkin()
+        body["device"]["logged_in_users"] = users
+        r = agent.post("/api/agent/checkin", json=body)
+        assert r.status_code == 200, r.text
+
+    checkin(users)
+    return r.json()["device_id"], checkin
+
+
+def _asset_for(device_id: str):
+    from app.asset_lifecycle.models import ItAsset
+
+    with db.get_session("default") as s:
+        a = s.scalars(select(ItAsset).where(ItAsset.device_id == device_id)).one()
+        return a.id, a.assignee_name, a.assignee_email, a.status
+
+
+def test_checkin_updates_owner(admin):
+    # no IT assets page is opened: the check-in alone creates the asset and sets the owner
+    device_id, checkin = _enrolled_agent(admin, ["CORP\\alice"])
+    asset_id, name, email, status = _asset_for(device_id)
+    assert (name, email, status) == ("alice", "", "assigned")
+    assert len(auto_events(admin, asset_id)) == 1
+    checkin(["CORP\\alice"])  # same user again: nothing recorded
+    checkin([])               # nobody signed in: last owner kept
+    assert _asset_for(device_id)[1] == "alice" and len(auto_events(admin, asset_id)) == 1
+    checkin(["CORP\\bob", "CORP\\alice"])  # new user: exactly one event
+    assert _asset_for(device_id)[1] == "bob"
+    ev = auto_events(admin, asset_id)
+    assert len(ev) == 2 and ev[0]["from_assignee"] == "alice" and ev[0]["to_assignee"] == "bob"
+    checkin(["CORP\\bob"])
+    assert len(auto_events(admin, asset_id)) == 2
+
+
+def test_checkin_survives_it_asset_errors(admin, monkeypatch):
+    from app.asset_lifecycle import service as svc
+
+    def boom(*a, **kw):
+        raise RuntimeError("asset sync broken")
+
+    monkeypatch.setattr(svc, "sync_device", boom)
+    device_id, checkin = _enrolled_agent(admin, ["CORP\\alice"])  # asserts 200
+    checkin(["CORP\\bob"])
+    d = admin.get(f"/api/devices/{device_id}").json()
+    assert d["logged_in_users"] == ["CORP\\bob"] and d["last_checkin_at"]
+    # an error inside the owner sync itself (after the asset exists) does not break it either
+    monkeypatch.undo()
+    monkeypatch.setattr(svc, "sync_owners", boom)
+    checkin(["CORP\\carol"])
+    assert admin.get(f"/api/devices/{device_id}").json()["logged_in_users"] == ["CORP\\carol"]
+
+
 def test_owner_username_strips_domain_and_skips_system_accounts(admin):
     from app.asset_lifecycle import service as svc
 

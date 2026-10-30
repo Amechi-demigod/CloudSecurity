@@ -65,7 +65,7 @@ Open **IT assets** in the navigation:
 
 ## Agent devices
 
-When someone opens the IT assets list or dashboard, any enrolled device without an asset record gets one:
+On every agent **check-in**, and when someone opens the IT assets list or dashboard, an enrolled device without an asset record gets one:
 
 1. If an asset without an agent has the **same serial number** (case-insensitive), the device is linked to it. This covers a laptop that IT recorded before it was enrolled, so no duplicate is created.
 2. Otherwise a new record is created with status *in stock*, source *agent*, tag `AGT-<first 8 hex digits of the device id>`, and a type guessed from the model ("MacBook", "ThinkPad", "Latitude" give *laptop*; "iMac", "OptiPlex" give *desktop*; anything else gives *computer*).
@@ -74,16 +74,16 @@ Blank serial, make and model fields are filled from the inventory later too, bec
 
 ### Owner from the signed-in user
 
-The agent reports the users signed in to the computer (`logged_in_users` in its inventory: OS usernames such as `musao`, `CORP\musao` or `AzureAD\AdaObi`; never an email). The sync (on the list, dashboard, asset page and before an offboarding) applies these rules:
+The agent reports the users signed in to the computer (`logged_in_users` in its inventory: OS usernames such as `musao`, `CORP\musao` or `AzureAD\AdaObi`; never an email). The owner is updated on **every check-in** of the device (scoped to that device's asset, after the asset record is created or linked). The same sync also runs when the list, dashboard or asset page is opened and before an offboarding; it is idempotent. Updating the IT asset never fails a check-in: an error is logged (`updating the IT asset of device ... failed`) and the check-in still succeeds. The rules:
 
 - **Which user.** The agent sends a plain list. The macOS agent puts the console user first and the Windows agent lists the owners of interactive sessions, so the **first** user is taken. Built-in accounts (`root`, `SYSTEM`, `_mbsetupuser`, `LOCAL SERVICE`, `NETWORK SERVICE`, `defaultuser0`, ...) are skipped.
 - **Username only.** The owner becomes that username, with any `DOMAIN\` prefix removed (`CORP\musao` becomes `musao`); the original form is kept in the custody note. The owner email and department are cleared. An *in stock* asset becomes *assigned*.
-- **The agent always wins.** When the reported user is different from the current owner (compared case-insensitively), it replaces that owner, including an owner set by hand. Reassigning an agent device by hand therefore lasts only until the agent next reports a different user.
+- **The agent always wins.** When the reported user is different from the current owner (compared case-insensitively), it replaces that owner, including an owner set by hand. Reassigning an agent device by hand therefore lasts only until the next check-in or page view while a different user is signed in.
 - **Nobody signed in:** the last owner stays.
 - **Only in stock or assigned assets** are changed. In repair, retrieval pending, retrieved, lost, stolen and disposed assets are never touched, so an offboarding is not undone by the leaver signing in again.
 - **History.** Each automatic change is a custody event *Assigned* by `system` with the note "assigned automatically from agent: signed-in user ...", the previous and new owner, and the reported user and hostname in the details. It is also audited (`it_asset_auto_assigned`). Nothing is recorded when the owner is already that user.
 
-The asset sync only reads device rows. It does not touch the agent API or the agent itself.
+The asset sync only reads device rows. It never sends anything to the agent, and the check-in response is unchanged.
 
 ## Owners without an email
 
