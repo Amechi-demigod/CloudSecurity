@@ -547,6 +547,7 @@ jobs:
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: frontend
+          build-contexts: website=website
           platforms: linux/amd64
           load: true
           tags: cnapp-frontend:ci
@@ -560,6 +561,11 @@ jobs:
             test "$uid" != "0"
           done
           docker run --rm --entrypoint test cnapp-backend:ci -s /etc/ssl/certs/ca-certificates.crt
+          # The public website ships in the frontend image (served on-prem for SITE_HOSTNAMES).
+          for f in index.html favicon.svg assets/site.css assets/site.js assets/console-overview.png \
+              assets/fonts/plus-jakarta-sans-latin.woff2 assets/fonts/OFL.txt; do
+            docker run --rm --entrypoint test cnapp-frontend:ci -s "/usr/share/nginx/site/$f"
+          done
           docker inspect --format '{{json .Config.Healthcheck}}' cnapp-backend:ci cnapp-frontend:ci
       - name: Smoke test (docker compose with PostgreSQL, production settings)
         env:
@@ -666,6 +672,7 @@ jobs:
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: frontend
+          build-contexts: website=website
           platforms: linux/amd64
           push: true
           tags: |
@@ -760,6 +767,7 @@ jobs:
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: frontend
+          build-contexts: website=website
           platforms: linux/amd64
           load: true
           tags: ${{ env.REG }}/cloudsecurity-frontend:ci-1
@@ -1023,6 +1031,51 @@ jobs:
           fi
           sudo ip netns exec okns curl -fsS --cacert "$CA" --resolve "$HOST:443:198.51.100.1" "https://$HOST/api/health"
           e2e get /api/devices/installers | tail -n1 | python3 -c "import json,sys; assert json.load(sys.stdin)['server_url'] == 'https://$HOST'"
+      - name: Public website - cnapp-ctl site enable / disable (site + POST /api/contact only on its names, console unaffected)
+        run: |
+          set -x
+          SITE=site.test
+          conf() { sudo grep "^$1=" /opt/cnapp/cnapp.env | tail -n1 | cut -d= -f2-; }
+          e2e() { python3 deploy/onprem/tests/onprem_e2e.py --base "https://$HOST" --ca "$CA" --email "$ADMIN" --password-file "$RUNNER_TEMP/admin.pw" "$@"; }
+          # Its own certificate (served by SNI), like a Let's Encrypt one for the apex + www.
+          openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 2 -subj "/CN=$SITE" \
+            -addext "subjectAltName=DNS:$SITE,DNS:www.$SITE" -keyout "$RUNNER_TEMP/site.key" -out "$RUNNER_TEMP/site.crt" 2>/dev/null
+          echo "127.0.0.1 $SITE www.$SITE" | sudo tee -a /etc/hosts
+          # Refused: a name the installed certificate does not cover, the console's own name, not a DNS name.
+          if sudo cnapp-ctl site enable --hostname "$SITE"; then echo "::error::accepted an uncovered name"; exit 1; fi
+          if sudo cnapp-ctl site enable --hostname "$HOST" --force; then echo "::error::accepted the console name"; exit 1; fi
+          if sudo cnapp-ctl site enable --hostname 'bad_name!' --force; then echo "::error::accepted an invalid name"; exit 1; fi
+          test -z "$(conf SITE_HOSTNAMES)"
+          sudo cnapp-ctl site enable --hostname "$SITE" --hostname "www.$SITE" --contact-to sales@example.com \
+            --cert "$RUNNER_TEMP/site.crt" --key "$RUNNER_TEMP/site.key"
+          sudo cnapp-ctl site status
+          sudo cnapp-ctl status | grep -E "^Website: +$SITE www.$SITE"
+          test "$(conf SITE_HOSTNAMES)" = "$SITE,www.$SITE" && test "$(conf CONTACT_TO)" = sales@example.com
+          test "$(docker exec cnapp-backend-1 printenv SITE_HOSTNAMES)" = "$SITE,www.$SITE"
+          sudo test -f /opt/cnapp/tls/site.crt && test "$(sudo stat -c %a /opt/cnapp/tls/site.key)" = 640
+          e2e site --site "$SITE" --alias "www.$SITE" --site-ca "$RUNNER_TEMP/site.crt"
+          # SNI: the site names get the site certificate, the console keeps its own.
+          echo | openssl s_client -connect 127.0.0.1:443 -servername "$SITE" 2>/dev/null | openssl x509 -noout -subject | grep -q "CN *= *$SITE"
+          echo | openssl s_client -connect 127.0.0.1:443 -servername "$HOST" 2>/dev/null | openssl x509 -noout -subject | grep -vq "CN *= *$SITE"
+          # From the internet (external namespace): the website and its http redirect; nothing of the console.
+          S=(--cacert "$RUNNER_TEMP/site.crt" --resolve "$SITE:443:203.0.113.1" --resolve "$SITE:80:203.0.113.1")
+          ext() { sudo ip netns exec badns curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "$@" || true; }
+          test "$(ext "${S[@]}" "https://$SITE/")" = 200
+          test "$(ext "${S[@]}" "http://$SITE/")" = 301
+          test "$(ext "${S[@]}" "https://$SITE/api/health")" = 404
+          test "$(ext --cacert "$CA" --resolve "$HOST:443:203.0.113.1" "https://$HOST/")" = 404
+          test "$(ext -k https://203.0.113.1/api/auth/me)" = 404
+          sudo tail -n 3 /var/log/cnapp/edge-access.log
+          if sudo grep "\"$SITE\"" /var/log/cnapp/edge-access.log | grep -q ' blocked$'; then echo "::error::website visitors logged as blocked (fail2ban)"; exit 1; fi
+          # Renewal: re-import (nginx reload), still served.
+          sudo cnapp-ctl tls import --for site --cert "$RUNNER_TEMP/site.crt" --key "$RUNNER_TEMP/site.key"
+          e2e site --site "$SITE" --alias "www.$SITE" --site-ca "$RUNNER_TEMP/site.crt"
+          # Disable: back to exactly the console (firewall included).
+          sudo cnapp-ctl site disable
+          test -z "$(conf SITE_HOSTNAMES)"
+          e2e site --site "$SITE" --site-ca "$RUNNER_TEMP/site.crt" --state disabled
+          if sudo ip netns exec badns curl -sS --max-time 8 "${S[@]}" "https://$SITE/"; then echo "::error::443 still open externally"; exit 1; fi
+          sudo cnapp-ctl status | grep -E "^Website: +off"
       - name: Backup, then restore (data written after the backup disappears)
         run: |
           e2e() { python3 deploy/onprem/tests/onprem_e2e.py --base "https://$HOST" --ca "$CA" --email "$ADMIN" --password-file "$RUNNER_TEMP/admin.pw" "$@"; }

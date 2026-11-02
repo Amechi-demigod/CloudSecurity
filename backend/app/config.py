@@ -242,6 +242,15 @@ class Settings:
     platform_acs_connection_string: str | None = field(
         default_factory=lambda: os.getenv("PLATFORM_ACS_CONNECTION_STRING") or None, repr=False)
     platform_acs_sender: str | None = field(default_factory=lambda: (os.getenv("PLATFORM_ACS_SENDER") or "").strip() or None)
+    # Public website (on-prem: cnapp-ctl site enable). "Request a demo" requests
+    # (POST /api/contact) are emailed to CONTACT_TO through the platform mail
+    # server above; unset = the form answers 503. Never returned by any API.
+    contact_to: str | None = field(default_factory=lambda: (os.getenv("CONTACT_TO") or "").strip() or None,
+                                   repr=False)
+    # Website hostnames (space / comma separated, e.g. "travound.com www.travound.com"):
+    # with PUBLIC_BASE_URL, the only Origins the contact form accepts.
+    site_hostnames: list[str] = field(default_factory=lambda: [
+        h.lower().rstrip(".") for h in (os.getenv("SITE_HOSTNAMES") or "").replace(",", " ").replace(";", " ").split()])
 
     # --- User authentication ------------------------------------------------
     # First admin, created on startup only when the users table is empty.

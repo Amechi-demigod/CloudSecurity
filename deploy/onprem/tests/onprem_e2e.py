@@ -16,6 +16,10 @@ Sub-commands:
   get PATH      print the JSON of an authenticated GET (e.g. /api/devices/installers)
   relay         the remote-session relay answers WebSocket upgrades through nginx: the viewer
                 path (session cookie + Origin) and the agent path, both reaching the relay's checks
+  site --site NAME --site-ca CERT --state enabled|disabled [--alias NAME]
+                the public website (cnapp-ctl site enable): served on NAME with strict headers,
+                nothing of the console there (only POST /api/contact reaches the backend), aliases
+                and http:// redirect to https://NAME, the console unaffected; or gone when disabled
 """
 from __future__ import annotations
 
@@ -237,6 +241,79 @@ def relay(a: argparse.Namespace) -> None:
     check(status in (400, 403, 404, 426), f"a plain GET of the viewer path is not served by the API ({status})")
 
 
+SITE_HEADERS = {
+    "content-security-policy": ("default-src 'self'", "script-src 'self'", "style-src 'self'", "frame-ancestors 'none'"),
+    "strict-transport-security": ("max-age=31536000",),
+    "x-content-type-options": ("nosniff",),
+    "referrer-policy": ("strict-origin-when-cross-origin",),
+    "permissions-policy": ("camera=()",),
+    "x-frame-options": ("DENY",),
+}
+
+
+def site(a: argparse.Namespace) -> None:
+    """The public website on its own names (cnapp-ctl site enable / disable)."""
+    console = Api(a.base, a.ca)
+    wait_health(console)
+    web = Api(f"https://{a.site}", a.site_ca)
+    console_host = a.base.split("://", 1)[1].rstrip("/")
+    if a.state == "disabled":
+        try:
+            status, _, _, content = web.req("GET", "/")
+            check(b"Request a demo" not in content, f"the website is no longer served on {a.site} (HTTP {status})")
+        except urllib.error.URLError as exc:
+            check(True, f"the website is no longer served on {a.site} ({str(exc)[:80]})")
+        status, _, _, content = console.req("GET", "/")
+        check(status == 200 and b'id="root"' in content, "the console is still served on its own name")
+        return
+    # 1. The site, with strict headers and the console URL of this install.
+    status, hdrs, _, content = web.req("GET", "/")
+    check(status == 200 and b"Travound Security" in content and b"Request a demo" in content,
+          f"website served on https://{a.site}/ (HTTP {status})")
+    for name, parts in SITE_HEADERS.items():
+        value = hdrs.get(name, "")
+        check(all(p in value for p in parts), f"website header {name}: {value}")
+    check("unsafe-inline" not in hdrs.get("content-security-policy", ""), "website CSP allows no inline script / style")
+    check(hdrs.get("cache-control") == "no-cache", f"page is revalidated ({hdrs.get('cache-control')})")
+    check(f"https://{console_host}".encode() in content, f"log-in links point to https://{console_host}")
+    check(b"fonts.googleapis.com" not in content and b"<style" not in content, "no third-party font / inline style")
+    for path, ctype, cache in (("/assets/site.css", "text/css", "max-age="), ("/assets/site.js", "javascript", "max-age="),
+                               ("/assets/fonts/plus-jakarta-sans-latin.woff2", "font/woff2", "immutable"),
+                               ("/favicon.svg", "image/svg+xml", "no-cache")):
+        status, hdrs, _, _ = web.req("GET", path)
+        check(status == 200 and ctype in hdrs.get("content-type", "") and cache in hdrs.get("cache-control", ""),
+              f"{path} served ({status} {hdrs.get('content-type')}; {hdrs.get('cache-control')})")
+    # 2. Nothing of the console on the website name.
+    for method, path in (("GET", "/devices"), ("GET", "/api/health"), ("GET", "/api/auth/me"), ("POST", "/api/auth/login"),
+                         ("GET", "/api/agent/commands"), ("GET", "/api/contact"), ("GET", "/api/docs"),
+                         ("GET", "/assets/index.js"), ("GET", "/healthz")):
+        status, _, _, content = web.req(method, path, {} if method == "POST" else None)
+        check(status == 404 and b'id="root"' not in content, f"{method} {path} is 404 on the website name ({status})")
+    # 3. POST /api/contact reaches the backend: the Origin check (403), then no mail server in CI (503).
+    form = {"name": "E2E", "email": "e2e@example.com", "company": "E2E Ltd", "interest": "Cloud security",
+            "message": "", "website": ""}
+    status, _, _, content = web.req("POST", "/api/contact", form, headers={"Origin": "https://evil.example"})
+    check(status == 403 and b"detail" in content, f"contact form refuses a foreign Origin ({status})")
+    status, _, cookies, content = web.req("POST", "/api/contact", form, headers={"Origin": f"https://{a.site}"})
+    check(status in (200, 503) and b"e2e@example.com" not in content and not cookies,
+          f"contact form answered by the backend ({status} {content[:120]!r})")
+    # 4. Redirects: aliases and http:// -> https://NAME (same path).
+    for alias in a.alias or []:
+        status, hdrs, _, _ = web.req("GET", f"https://{alias}/x?y=1")
+        check(status == 301 and hdrs.get("location") == f"https://{a.site}/x?y=1",
+              f"https://{alias}/ redirects to https://{a.site}/ ({status} {hdrs.get('location')})")
+    for name in [a.site, *(a.alias or [])]:
+        status, hdrs, _, _ = web.req("GET", f"http://{name}/x?y=1")
+        check(status == 301 and hdrs.get("location") == f"https://{a.site}/x?y=1",
+              f"http://{name}/ redirects to https://{a.site}/ ({status} {hdrs.get('location')})")
+    # 5. The console is unaffected (its own name and certificate, full UI and API).
+    status, hdrs, _, content = console.req("GET", "/")
+    check(status == 200 and b'id="root"' in content and "unsafe-inline" in hdrs.get("content-security-policy", ""),
+          "the console is still served on its own name, with its own headers")
+    status, _, _, content = console.req("GET", "/api/health")
+    check(status == 200, "console API unaffected")
+
+
 def compose_deps(a: argparse.Namespace) -> None:
     """The rendered compose project (`docker compose ... config --format json` on
     stdin): nothing waits for the backend to be *healthy*. cnapp-ctl runs
@@ -291,9 +368,14 @@ def main() -> None:
     sub.add_parser("token").add_argument("name")
     sub.add_parser("get").add_argument("name", metavar="PATH")
     sub.add_parser("relay")
+    st = sub.add_parser("site")
+    st.add_argument("--site", required=True, help="canonical website name")
+    st.add_argument("--site-ca", required=True, help="CA (or self-signed certificate) for the website name")
+    st.add_argument("--alias", action="append", help="other website names (redirect to --site)")
+    st.add_argument("--state", choices=["enabled", "disabled"], default="enabled")
     sub.add_parser("compose-deps", help="read `docker compose config --format json` on stdin")
     a = p.parse_args()
-    {"verify": verify, "relay": relay, "compose-deps": compose_deps}.get(a.cmd, marker)(a)
+    {"verify": verify, "relay": relay, "compose-deps": compose_deps, "site": site}.get(a.cmd, marker)(a)
 
 
 if __name__ == "__main__":

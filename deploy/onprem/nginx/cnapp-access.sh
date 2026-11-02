@@ -14,9 +14,16 @@
 #   CNAPP_PUBLIC_SENSOR_INGEST  true: POST /api/runtime/events is reachable from anywhere too
 #   RELAY_URL              the remote-session relay, agent listener (WebSockets; http://relay:8001)
 #   RELAY_VIEWER_URL       its viewer listener (used by onprem.conf.template; http://relay:8002)
+#   SITE_HOSTNAMES         optional public website names, e.g. "travound.com www.travound.com"
+#                          (cnapp-ctl site enable): the static site baked into the image
+#                          (/usr/share/nginx/site) plus POST /api/contact, for any client; the
+#                          first name is canonical (the others redirect to it);
+#                          tls/site.crt|key if present, else server.crt
+#   SITE_CONSOLE_URL       where the site's "Log in" links point (default https://CNAPP_HOSTNAME)
 #
 # Policy: /api/agent/* is reachable from anywhere (rate limited per external IP);
-# everything else answers 404 to clients outside CNAPP_INTERNAL_CIDRS.
+# everything else answers 404 to clients outside CNAPP_INTERNAL_CIDRS. The website
+# names (when set) serve only the website and POST /api/contact, to everyone.
 set -eu
 
 out=/etc/nginx/conf.d
@@ -43,6 +50,26 @@ agent_host=${CNAPP_AGENT_HOSTNAME:-}
 main_host=${CNAPP_HOSTNAME:-}
 if [ -n "$agent_host" ]; then
   echo "$agent_host" | grep -Eq '^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$' || fail "invalid CNAPP_AGENT_HOSTNAME"
+fi
+# Public website names: lower-cased, de-duplicated, never the console or agent name.
+lc() { echo "$1" | tr '[:upper:]' '[:lower:]'; }
+site_names=""
+set -f  # no globbing of the names
+for h in $(lc "${SITE_HOSTNAMES:-}" | tr ',;' '  '); do
+  echo "$h" | grep -Eq '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$' \
+    || fail "invalid name in SITE_HOSTNAMES: $h (DNS names only)"
+  echo "$h" | grep -Eq '^[0-9.]+$' && fail "invalid name in SITE_HOSTNAMES: $h (DNS names only)"
+  if [ "$h" = "$(lc "$main_host")" ] || [ "$h" = "$(lc "$agent_host")" ]; then
+    fail "SITE_HOSTNAMES must not contain the console or agent hostname ($h)"
+  fi
+  case " $site_names " in *" $h "*) continue ;; esac
+  site_names="${site_names:+$site_names }$h"
+done
+set +f
+console_url=${SITE_CONSOLE_URL:-https://$main_host}
+console_url=${console_url%/}
+if [ -n "$site_names" ]; then
+  echo "$console_url" | grep -Eq '^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?$' || fail "invalid SITE_CONSOLE_URL (https://NAME[:PORT])"
 fi
 
 # ---------------------------------------------------------------- http level
@@ -94,6 +121,10 @@ map $cnapp_internal $cnapp_log_external {
 }
 log_format cnapp_edge '$remote_addr - [$time_local] "$request_method $uri $server_protocol" $status '
                       '$body_bytes_sent "$host" "$http_user_agent" $cnapp_access';
+# Public website requests (SITE_HOSTNAMES): logged as "site", never as "blocked"
+# (fail2ban's cnapp-probe jail must not ban website visitors).
+log_format cnapp_edge_site '$remote_addr - [$time_local] "$request_method $uri $server_protocol" $status '
+                           '$body_bytes_sent "$host" "$http_user_agent" site';
 limit_req_status 429;
 limit_conn_status 429;
 # WebSocket upgrades (remote sessions: /api/remote/ and /api/agent/remote/ only).
@@ -220,5 +251,156 @@ server {
 }
 EOF
   echo "$me: dedicated agent host $agent_host (certificate: $cert.crt)"
+fi
+# ---------------------------------------------------------------- public website (SITE_HOSTNAMES)
+rm -f "$out/zz-cnapp-site.conf" "$out/cnapp-site-headers.inc"
+if [ -n "$site_names" ]; then
+  canonical=${site_names%% *}
+  aliases=""
+  [ "$canonical" != "$site_names" ] && aliases=${site_names#* }
+  cert=server
+  [ -r /etc/nginx/tls/site.crt ] && [ -r /etc/nginx/tls/site.key ] && cert=site
+  edge_log="# $log_dir is not writable: no edge log"
+  if [ -d "$log_dir" ] && [ -w "$log_dir" ]; then
+    edge_log="access_log $log_dir/edge-access.log cnapp_edge_site if=\$cnapp_log_external;"
+  fi
+  # The page links to https://console.travound.com; point it at this install's console.
+  sub=""
+  if [ "$console_url" != "https://console.travound.com" ]; then
+    sub="sub_filter 'https://console.travound.com' '$console_url';
+  sub_filter_once off;"
+  fi
+  tls_block="ssl_certificate     /etc/nginx/tls/$cert.crt;
+  ssl_certificate_key /etc/nginx/tls/$cert.key;
+  ssl_protocols TLSv1.2 TLSv1.3;
+  ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
+  ssl_prefer_server_ciphers off;
+  ssl_session_cache shared:SSL:10m;
+  ssl_session_timeout 1d;
+  ssl_session_tickets off;"
+  logs="access_log /var/log/nginx/access.log main;
+  $edge_log
+  client_header_timeout 15s;
+  keepalive_timeout 30s;"
+  # Strict headers for every website response (repeated in each location: nginx
+  # does not inherit add_header into a location that sets its own).
+  cat >"$out/cnapp-site-headers.inc" <<'EOF'
+# Generated by 25-cnapp-access.sh: public website security headers.
+add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'" always;
+add_header Strict-Transport-Security "max-age=31536000" always;
+add_header X-Content-Type-Options "nosniff" always;
+add_header X-Frame-Options "DENY" always;
+add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+add_header Permissions-Policy "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()" always;
+add_header Cross-Origin-Opener-Policy "same-origin" always;
+EOF
+  {
+    cat <<EOF
+# Generated by $me: public website for $site_names (static site + POST /api/contact
+# only, any client). Nothing else exists on these names: no console, no other API.
+limit_req_zone \$binary_remote_addr zone=cnapp_site:10m rate=30r/s;
+limit_req_zone \$binary_remote_addr zone=cnapp_contact:2m rate=6r/m;
+
+# Plain HTTP: redirect to https://$canonical (same path).
+server {
+  listen 8080;
+  server_name $site_names;
+  server_tokens off;
+  $logs
+  location / {
+    return 301 https://$canonical\$request_uri;
+  }
+}
+EOF
+    if [ -n "$aliases" ]; then
+      cat <<EOF
+
+# Other names: permanent redirect to https://$canonical.
+server {
+  listen 8443 ssl;
+  http2 on;
+  server_name $aliases;
+  server_tokens off;
+  $tls_block
+  $logs
+  add_header Strict-Transport-Security "max-age=31536000" always;
+  location / {
+    return 301 https://$canonical\$request_uri;
+  }
+}
+EOF
+    fi
+    cat <<EOF
+
+server {
+  listen 8443 ssl;
+  http2 on;
+  server_name $canonical;
+  server_tokens off;
+  root /usr/share/nginx/site;
+  index index.html;
+  $tls_block
+  $logs
+  limit_req zone=cnapp_site burst=200 nodelay;
+  client_max_body_size 32k;
+  gzip on;
+  gzip_types text/css application/javascript image/svg+xml;
+  $sub
+  include /etc/nginx/conf.d/cnapp-site-headers.inc;
+
+  # "Request a demo" form: the only API on this name, POST only. The backend
+  # always receives exactly /api/contact (never the client's raw path).
+  location = /api/contact {
+    include /etc/nginx/conf.d/cnapp-site-headers.inc;
+    if (\$request_method != POST) { return 404; }
+    limit_req zone=cnapp_contact burst=5 nodelay;
+    client_body_timeout 15s;
+    set \$site_contact_upstream "${backend%/}/api/contact";
+    proxy_pass \$site_contact_upstream;
+    proxy_http_version 1.1;
+    proxy_set_header Host \$host;
+    proxy_set_header X-Forwarded-Host \$host;
+    # nginx is the edge: overwrite (never append to) client-supplied values.
+    proxy_set_header X-Real-IP \$remote_addr;
+    proxy_set_header X-Forwarded-For \$remote_addr;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header Cookie "";
+    proxy_set_header Authorization "";
+    proxy_connect_timeout 10s;
+    proxy_read_timeout 60s;
+    proxy_hide_header Set-Cookie;
+    proxy_hide_header X-Content-Type-Options;
+    proxy_hide_header X-Frame-Options;
+    proxy_hide_header Referrer-Policy;
+    proxy_hide_header Strict-Transport-Security;
+    proxy_hide_header Content-Security-Policy;
+    proxy_hide_header Permissions-Policy;
+    proxy_hide_header Cross-Origin-Opener-Policy;
+  }
+  location /api/ {
+    return 404;
+  }
+
+  # Fonts never change under the same name; other assets are revalidated daily.
+  location /assets/fonts/ {
+    include /etc/nginx/conf.d/cnapp-site-headers.inc;
+    add_header Cache-Control "public, max-age=31536000, immutable" always;
+    try_files \$uri =404;
+  }
+  location /assets/ {
+    include /etc/nginx/conf.d/cnapp-site-headers.inc;
+    add_header Cache-Control "public, max-age=86400" always;
+    try_files \$uri =404;
+  }
+  # The page itself (and favicon.svg): always revalidated, so updates show at once.
+  location / {
+    include /etc/nginx/conf.d/cnapp-site-headers.inc;
+    add_header Cache-Control "no-cache" always;
+    try_files \$uri \$uri/ =404;
+  }
+}
+EOF
+  } >"$out/zz-cnapp-site.conf"
+  echo "$me: public website for $site_names (canonical https://$canonical, certificate: $cert.crt, console links: $console_url)"
 fi
 echo "$me: public agent endpoint: $public; internal: ${CNAPP_INTERNAL_CIDRS:-127.0.0.0/8 only}; agent rate $rate_v burst $burst_v"

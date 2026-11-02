@@ -19,6 +19,7 @@ from .api import agent_update_auto as agent_update_auto_api
 from .api import agent_updates as agent_updates_api
 from .api import approvals as approvals_api
 from .api import auth as auth_api
+from .api import contact as contact_api
 from .api import dashboards as dashboards_api
 from .api import device_scripts as device_scripts_api
 from .api import devices, inventory, platform, runtime, vulns
@@ -121,9 +122,12 @@ def create_app() -> FastAPI:
             log.critical("refusing to start: %s", p)
         kind = "insecure production" if s.is_production else "invalid"
         raise RuntimeError(f"{kind} configuration: " + "; ".join(problems))
+    if s.contact_to and not contact_api.EMAIL_RE.match(s.contact_to):
+        log.warning("CONTACT_TO is not a single email address: the website contact form answers 503")
     if "*" in s.cors_origins:
         log.warning("CORS_ORIGINS contains '*': any website can read this API from a browser")
     auth.login_limiter.reset()
+    contact_api.reset_limits()
     agent_api.device_limiter.reset()
     agent_api.enroll_limiter.reset()
     app = FastAPI(
@@ -169,6 +173,7 @@ def create_app() -> FastAPI:
     app.include_router(device_scripts_api.device_router)  # /api/agent/scripts/*: device credentials
     app.include_router(auth_api.router)  # /login is public; the others depend on the session
     app.include_router(mfa_sso_api.router)  # /login/mfa*, /providers and /sso/* are public
+    app.include_router(contact_api.router)  # POST /api/contact: the public website's demo request form
     # Everything else requires a logged-in user (viewer or higher). Write
     # endpoints additionally require analyst/admin via their own dependencies.
     session_required = [Depends(auth.require_viewer)]

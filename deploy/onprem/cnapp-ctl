@@ -9,6 +9,7 @@
 #   cnapp-ctl tls init|renew|show|import|import-pfx|export-ca
 #   cnapp-ctl set-hostname NAME
 #   cnapp-ctl public-agent enable --hostname agents.corp.com | disable | status
+#   cnapp-ctl site enable --hostname example.com --hostname www.example.com | disable | status
 #   cnapp-ctl create-admin --email E | reset-password --email E | delete-user --email E
 #   cnapp-ctl uninstall [--purge]
 #
@@ -217,10 +218,10 @@ tls_fix_perms() {
   tls_sync_legacy_cert
   run chown root:"$gid" "$TLS_DIR"; run chmod 0750 "$TLS_DIR"
   local f
-  for f in server.key legacy.key agent.key; do
+  for f in server.key legacy.key agent.key site.key; do
     [[ -f "$TLS_DIR/$f" ]] && { run chown root:"$gid" "$TLS_DIR/$f"; run chmod 0640 "$TLS_DIR/$f"; }
   done
-  for f in server.crt legacy.crt agent.crt ca-bundle.crt cnapp-root-ca.crt; do
+  for f in server.crt legacy.crt agent.crt site.crt ca-bundle.crt cnapp-root-ca.crt; do
     [[ -f "$TLS_DIR/$f" ]] && { run chown root:root "$TLS_DIR/$f"; run chmod 0644 "$TLS_DIR/$f"; }
   done
   agent_ca_sync || true
@@ -416,18 +417,25 @@ cmd_tls_renew() {
 }
 
 cmd_tls_import() {
-  local cert="" key="" chain="" ca=""
+  local cert="" key="" chain="" ca="" for=server
   while [[ $# -gt 0 ]]; do
     case $1 in
       --cert) cert=$2; shift 2 ;;
       --key) key=$2; shift 2 ;;
       --chain) chain=$2; shift 2 ;;
       --ca) ca=$2; shift 2 ;;
+      --for) for=$2; shift 2 ;;
       --dry-run) DRY_RUN=1; shift ;;
       *) die "tls import: unknown option $1" ;;
     esac
   done
   need_root tls import
+  case $for in
+    server) ;;
+    site) [[ -z $ca ]] || die "tls import --for site: --ca is not used (the website needs a publicly trusted certificate)"
+          site_cert_import "$cert" "$key" "$chain"; return ;;
+    *) die "tls import --for server|site (got $for)" ;;
+  esac
   [[ -f $cert && -f $key ]] || die "usage: cnapp-ctl tls import --cert server.crt --key server.key [--chain intermediates.pem] [--ca root-ca.pem]"
   local a b host
   a=$(openssl x509 -noout -pubkey -in "$cert" | openssl sha256) || die "$cert is not a PEM certificate"
@@ -464,6 +472,10 @@ cmd_tls_show() {
   openssl x509 -noout -subject -issuer -startdate -enddate -ext subjectAltName -in "$f" | sed 's/^/  /'
   if openssl x509 -checkend $(( 30 * 86400 )) -noout -in "$f" >/dev/null; then echo "  status: valid for more than 30 days"
   else echo "  status: ${C_Y}expires within 30 days - run: cnapp-ctl tls renew${C_0}"; fi
+  if [[ -f "$TLS_DIR/site.crt" ]]; then
+    echo "--- public website certificate ($TLS_DIR/site.crt; cnapp-ctl tls import --for site)"
+    openssl x509 -noout -subject -issuer -enddate -ext subjectAltName -in "$TLS_DIR/site.crt" | sed 's/^/  /'
+  fi
   if [[ -f "$TLS_DIR/cnapp-root-ca.crt" ]]; then
     echo "--- root CA to distribute to clients ($TLS_DIR/cnapp-root-ca.crt)"
     openssl x509 -noout -subject -enddate -fingerprint -sha256 -in "$TLS_DIR/cnapp-root-ca.crt" | sed 's/^/  /'
@@ -720,7 +732,7 @@ cmd_tls() {
     import) cmd_tls_import "$@" ;;
     import-pfx) cmd_tls_import_pfx "$@" ;;
     export-ca) cmd_tls_export_ca "$@" ;;
-    *) die "usage: cnapp-ctl tls init|renew|show|import|import-pfx|export-ca" ;;
+    *) die "usage: cnapp-ctl tls init|renew|show|import [--for site]|import-pfx|export-ca" ;;
   esac
 }
 
@@ -753,12 +765,18 @@ fw_configure_ufw() {
   while read -r c; do run ufw allow proto tcp from "$c" to any port "$port" comment 'cnapp-ssh' >/dev/null; done < <(csv_items "$ssh_cidrs")
   while read -r c; do run ufw allow proto tcp from "$c" to any port 80,443 comment 'cnapp-web' >/dev/null; done < <(csv_items "$allowed")
   while read -r c; do run ufw allow proto tcp from "$c" to any port 80,443 comment 'cnapp-admin' >/dev/null; done < <(csv_items "$(conf_get CNAPP_ADMIN_CIDRS)")
-  # Public agent endpoint: 443 from anywhere (nginx serves only /api/agent/ to
-  # non-internal clients); 80 and SSH stay restricted.
-  if [[ "$(conf_get CNAPP_PUBLIC_AGENT)" == true ]]; then
-    run ufw allow proto tcp to any port 443 comment 'cnapp-agent-public' >/dev/null
+  # Public agent endpoint / public website: 443 from anywhere (nginx serves only
+  # /api/agent/ and the website names to non-internal clients); SSH stays
+  # restricted, and 80 too unless the website is on (it only redirects to https://).
+  if [[ "$(conf_get CNAPP_PUBLIC_AGENT)" == true || -n "$(conf_get SITE_HOSTNAMES)" ]]; then
+    run ufw allow proto tcp to any port 443 comment 'cnapp-public' >/dev/null
   else
     run ufw delete allow proto tcp to any port 443 >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$(conf_get SITE_HOSTNAMES)" ]]; then
+    run ufw allow proto tcp to any port 80 comment 'cnapp-site-http' >/dev/null
+  else
+    run ufw delete allow proto tcp to any port 80 >/dev/null 2>&1 || true
   fi
   run ufw default deny incoming >/dev/null
   run ufw default allow outgoing >/dev/null
@@ -775,9 +793,11 @@ fw_apply_docker() { # idempotent; also run at boot by cnapp-firewall.service (be
   if (( DRY_RUN )); then echo "[dry-run] restrict published 80/443 to $allowed in DOCKER-USER"; return 0; fi
   iptables -w -N DOCKER-USER 2>/dev/null || true
   iptables -w -N "$FW_CHAIN" 2>/dev/null || iptables -w -F "$FW_CHAIN"
-  local public; public=$(conf_get CNAPP_PUBLIC_AGENT)
-  # Public agent endpoint: new connections to 443 (container 8443) from anywhere.
-  [[ $public == true ]] && iptables -w -A "$FW_CHAIN" -p tcp --dport 8443 -j RETURN
+  local public site; public=$(conf_get CNAPP_PUBLIC_AGENT); site=$(conf_get SITE_HOSTNAMES)
+  # Public agent endpoint / website: new connections to 443 (container 8443) from
+  # anywhere; with the website also 80 (container 8080: redirects to https only).
+  [[ $public == true || -n $site ]] && iptables -w -A "$FW_CHAIN" -p tcp --dport 8443 -j RETURN
+  [[ -n $site ]] && iptables -w -A "$FW_CHAIN" -p tcp --dport 8080 -j RETURN
   while read -r c; do iptables -w -A "$FW_CHAIN" -s "$c" -j RETURN; done < <(csv_items "$allowed")
   while read -r c; do iptables -w -A "$FW_CHAIN" -s "$c" -j RETURN; done < <(csv_items "$(conf_get CNAPP_ADMIN_CIDRS)")
   iptables -w -A "$FW_CHAIN" -j DROP
@@ -793,7 +813,8 @@ fw_apply_docker() { # idempotent; also run at boot by cnapp-firewall.service (be
   # Docker creates DOCKER-USER with a trailing RETURN; keep one at the end.
   iptables -w -D DOCKER-USER -j RETURN 2>/dev/null || true
   iptables -w -A DOCKER-USER -j RETURN
-  if [[ $public == true ]]; then ok "published port 443 open to any address (public agent endpoint); 80 restricted to: $allowed"
+  if [[ -n $site ]]; then ok "published ports 80/443 open to any address (public website$([[ $public == true ]] && echo ' and agent endpoint'))"
+  elif [[ $public == true ]]; then ok "published port 443 open to any address (public agent endpoint); 80 restricted to: $allowed"
   else ok "published ports 80/443 restricted to: $allowed"; fi
 }
 
@@ -810,6 +831,7 @@ fw_remove() {
     while read -r c; do run ufw delete allow proto tcp from "$c" to any port 80,443 >/dev/null 2>&1 || true; done < <(csv_items "$allowed")
     while read -r c; do run ufw delete allow proto tcp from "$c" to any port 80,443 >/dev/null 2>&1 || true; done < <(csv_items "$(conf_get CNAPP_ADMIN_CIDRS)")
     run ufw delete allow proto tcp to any port 443 >/dev/null 2>&1 || true
+    run ufw delete allow proto tcp to any port 80 >/dev/null 2>&1 || true
     warn "UFW stays enabled and the SSH rules (port $port from $ssh_cidrs) are kept so you are not locked out"
   fi
 }
@@ -1083,6 +1105,178 @@ cmd_public_agent() {
   esac
 }
 
+# ============================================================================ public website
+# Serve the marketing website baked into the frontend image (repo website/) for
+# SITE_HOSTNAMES, to any client: nginx (nginx/cnapp-access.sh) answers only the
+# static site and POST /api/contact on those names, the console keeps its own
+# name, certificate and access rules. See docs/DEPLOY_ONPREM.md, "Public website".
+site_names_list() { csv_items "$(conf_get SITE_HOSTNAMES)"; }
+
+site_probe() { # site_probe NAME PATH -> "HTTP_CODE LOCATION" of a request via the local nginx (-k: cert checked separately)
+  curl -k -sS -o /dev/null -w '%{http_code} %{redirect_url}' --max-time 10 --resolve "${1}:443:127.0.0.1" \
+    "https://${1}${2}" 2>/dev/null || true
+}
+
+site_cert_import() { # site_cert_import CERT KEY [CHAIN] [NAMES] [APPLY] -> tls/site.crt|key (+ nginx picks it up if APPLY=1)
+  local cert=$1 key=$2 chain=${3:-} names=${4:-$(conf_get SITE_HOSTNAMES)} apply=${5:-1} a b h had=0
+  [[ -f $cert && -f $key ]] || die "usage: cnapp-ctl tls import --for site --cert fullchain.pem --key privkey.pem [--chain chain.pem]"
+  a=$(openssl x509 -noout -pubkey -in "$cert" | openssl sha256) || die "$cert is not a PEM certificate"
+  b=$(openssl pkey -pubout -in "$key" | openssl sha256) || die "$key is not a PEM private key (an encrypted key is not supported)"
+  [[ $a == "$b" ]] || die "the private key does not match the certificate"
+  openssl x509 -checkend 0 -noout -in "$cert" >/dev/null || die "the certificate has expired"
+  while read -r h; do
+    cert_covers "$cert" "$h" || warn "the certificate is not valid for $h (check its Subject Alternative Names)"
+  done < <(csv_items "$names")
+  if (( DRY_RUN )); then echo "[dry-run] install $cert (+chain) and $key as $TLS_DIR/site.crt|key"; return 0; fi
+  [[ -f "$TLS_DIR/site.crt" ]] && had=1
+  install -d -m 0750 -o root -g "$(tls_gid)" "$TLS_DIR"
+  { cat "$cert"; [[ -n $chain ]] && cat "$chain"; } >"$TLS_DIR/site.crt.new"
+  install -m 0640 -o root -g "$(tls_gid)" "$key" "$TLS_DIR/site.key"
+  mv -f "$TLS_DIR/site.crt.new" "$TLS_DIR/site.crt"
+  tls_fix_perms
+  ok "imported the website certificate: $(openssl x509 -noout -subject -enddate -in "$TLS_DIR/site.crt" | tr '\n' ' ')"
+  [[ $apply == 1 && -n "$(conf_get SITE_HOSTNAMES)" ]] || return 0
+  if (( had )); then tls_reload_nginx  # renewal: same file names, a reload is enough
+  elif [[ "$(container_health frontend)" != missing ]]; then
+    # nginx chose server.crt for the website when it started: re-render (recreate the frontend).
+    run compose up -d --force-recreate frontend
+    wait_healthy 300 || die "not healthy after the change (cnapp-ctl logs frontend)"
+  fi
+}
+
+cmd_site_enable() {
+  local names=() console="" contact="" cert="" key="" chain="" force=0 h x canonical
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --hostname) while read -r x; do names+=("$x"); done < <(csv_items "$2"); shift 2 ;;
+      --console-url) console=$2; shift 2 ;;
+      --contact-to) contact=$2; shift 2 ;;
+      --cert) cert=$2; shift 2 ;;
+      --key) key=$2; shift 2 ;;
+      --chain) chain=$2; shift 2 ;;
+      --force) force=1; shift ;;
+      --dry-run) DRY_RUN=1; shift ;;
+      *) die "site enable: unknown option $1" ;;
+    esac
+  done
+  need_root site; require_installed
+  (( ${#names[@]} )) || while read -r x; do names+=("$x"); done < <(site_names_list)
+  (( ${#names[@]} )) || die "usage: cnapp-ctl site enable --hostname example.com [--hostname www.example.com] (the first name is canonical)"
+  local list="" main agent
+  main=$(conf_get CNAPP_HOSTNAME); main=${main,,}; agent=$(conf_get CNAPP_AGENT_HOSTNAME); agent=${agent,,}
+  for h in "${names[@]}"; do
+    h=${h,,}; h=${h%.}
+    [[ $h =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$ ]] && ! is_ip "$h" \
+      || die "--hostname: '$h' is not a DNS name (e.g. example.com)"
+    [[ $h != "$main" ]] || die "--hostname: $h is the console's hostname; the website needs its own name(s)"
+    [[ -z $agent || $h != "$agent" ]] || die "--hostname: $h is the public agent hostname"
+    [[ ",$list," == *",$h,"* ]] || list+="${list:+,}$h"
+  done
+  canonical=${list%%,*}
+  if [[ -n $console ]]; then
+    console=${console%/}
+    [[ $console =~ ^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?$ ]] || die "--console-url must be https://NAME[:PORT] (got $console)"
+  fi
+  if [[ -n $contact ]]; then
+    [[ $contact =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$ ]] || die "--contact-to: one email address expected"
+  fi
+  [[ "$(conf_get CNAPP_FIREWALL)" == false ]] && warn "CNAPP_FIREWALL=false: cnapp-ctl does not manage the firewall here; allow 80/443 from anywhere yourself"
+
+  # A certificate given here is applied with everything else below.
+  local imported=0
+  if [[ -n $cert || -n $key ]]; then site_cert_import "$cert" "$key" "$chain" "$list" 0; imported=1; fi
+  local crt=$TLS_DIR/server.crt
+  [[ -f "$TLS_DIR/site.crt" ]] && crt=$TLS_DIR/site.crt
+  if (( ! DRY_RUN )); then
+    local bad=""
+    while read -r h; do cert_covers "$crt" "$h" || bad+=" $h"; done < <(csv_items "$list")
+    if [[ -n $bad ]]; then
+      (( force )) || die "$(basename "$crt") is not valid for:$bad. Import a certificate for the website first
+  (cnapp-ctl tls import --for site --cert fullchain.pem --key privkey.pem), pass --cert/--key here, or --force"
+      warn "$(basename "$crt") is not valid for:$bad (--force)"
+    fi
+  fi
+
+  conf_set SITE_HOSTNAMES "$list"
+  [[ -n $console ]] && conf_set SITE_CONSOLE_URL "$console"
+  [[ -n $contact ]] && conf_set CONTACT_TO "$contact"
+  ensure_log_dir
+  if [[ "$(conf_get CNAPP_FIREWALL)" != false ]]; then fw_configure_ufw; fw_apply_docker; fi
+  log "Applying (frontend and backend are recreated with the new settings)"
+  apply_changes
+  (( DRY_RUN )) && return 0
+  if (( imported )) && [[ "$(container_health frontend)" != missing ]]; then
+    # nginx picks the website certificate when it starts.
+    run compose up -d --force-recreate frontend
+    wait_healthy 300 || die "not healthy after the change (cnapp-ctl logs frontend)"
+  fi
+  local r; r=$(site_probe "$canonical" /)
+  [[ $r == "200 "* ]] && ok "https://$canonical/ answers through nginx (200)" \
+    || warn "https://$canonical/ returned '$r' locally (expected 200): cnapp-ctl logs frontend"
+  for h in $(csv_items "$list" | tail -n +2); do
+    r=$(site_probe "$h" /)
+    [[ $r == "301 https://$canonical/" ]] && ok "https://$h/ redirects to https://$canonical/" \
+      || warn "https://$h/ returned '$r' locally (expected 301 to https://$canonical/)"
+  done
+  [[ -n "$(conf_get CONTACT_TO)" ]] || warn "CONTACT_TO is not set: the demo request form answers 503 (cnapp-ctl site enable --contact-to ADDRESS)"
+  [[ -n "$(conf_get PLATFORM_SMTP_HOST)$(conf_get PLATFORM_ACS_SENDER)" ]] \
+    || warn "no platform mail server (PLATFORM_SMTP_*): the demo request form answers 503"
+  cat <<EOF
+${C_G}Public website enabled:${C_0} https://$canonical  (names: ${list//,/ }; the console stays at $(public_url))
+  Only the website and POST /api/contact are served on these names, to any client; 80 redirects to https.
+  Next: public DNS A records for every name -> this server's public IP, ports 80/443 open in any cloud
+        security group / perimeter firewall, and a certificate covering every name (tls import --for site).
+EOF
+}
+
+cmd_site_disable() {
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --dry-run) DRY_RUN=1; shift ;;
+      *) die "site disable: unknown option $1" ;;
+    esac
+  done
+  need_root site; require_installed
+  conf_set SITE_HOSTNAMES ""
+  if [[ "$(conf_get CNAPP_FIREWALL)" != false ]]; then fw_configure_ufw; fw_apply_docker; fi
+  apply_changes
+  ok "public website disabled: only the console (and the agent API, if public) is served"
+  [[ -f "$TLS_DIR/site.crt" ]] && echo "  $TLS_DIR/site.crt is kept (used again by: cnapp-ctl site enable)."
+  echo "  Remove the website's DNS records, or point them elsewhere."
+  return 0
+}
+
+cmd_site_status() {
+  require_installed
+  local names; names=$(conf_get SITE_HOSTNAMES)
+  if [[ -z $names ]]; then echo "Public website: off (cnapp-ctl site enable --hostname NAME ...)"; return 0; fi
+  echo "Public website: on"
+  echo "  Names:        ${names//,/ }   (canonical: ${names%%,*})"
+  local console; console=$(conf_get SITE_CONSOLE_URL)
+  echo "  Log in links: ${console:-$(public_url)}"
+  echo "  CONTACT_TO:   $(conf_get CONTACT_TO)$([[ -z "$(conf_get CONTACT_TO)" ]] && echo '(not set: the form answers 503)')"
+  local crt=$TLS_DIR/server.crt h
+  [[ -f "$TLS_DIR/site.crt" ]] && crt=$TLS_DIR/site.crt
+  echo "  Certificate:  $crt, expires $(openssl x509 -noout -enddate -in "$crt" 2>/dev/null | cut -d= -f2)"
+  while read -r h; do
+    cert_covers "$crt" "$h" || echo "    ${C_Y}not valid for $h${C_0}"
+  done < <(site_names_list)
+  if [[ $EUID -eq 0 ]] && [[ "$(container_health frontend)" != missing ]]; then
+    echo "  Local check:  https://${names%%,*}/ -> $(site_probe "${names%%,*}" /)"
+  fi
+  return 0
+}
+
+cmd_site() {
+  local sub=${1:-status}; shift || true
+  case $sub in
+    enable) cmd_site_enable "$@" ;;
+    disable) cmd_site_disable "$@" ;;
+    status) cmd_site_status "$@" ;;
+    *) die "usage: cnapp-ctl site enable --hostname NAME [--hostname NAME ...] [--console-url URL] [--contact-to EMAIL] [--cert C --key K [--chain I]] | disable | status" ;;
+  esac
+}
+
 # ============================================================================ install
 os_field() { # os_field KEY -> value from /etc/os-release (parsed, not sourced)
   { sed -n "s/^$1=//p" /etc/os-release 2>/dev/null | tr -d '"' | head -n1; } || true
@@ -1228,6 +1422,12 @@ CNAPP_ADMIN_CIDRS=
 CNAPP_PUBLIC_AGENT=false
 CNAPP_AGENT_HOSTNAME=
 PUBLIC_AGENT_URL=
+# Public website (repo website/) for these names, e.g. example.com,www.example.com:
+# managed by cnapp-ctl site enable|disable. CONTACT_TO receives its demo requests
+# (sent through PLATFORM_SMTP_*; never shown on the site or by any API).
+SITE_HOSTNAMES=
+SITE_CONSOLE_URL=
+CONTACT_TO=
 
 # --- Sizing (defaults for 2 vCPU / 4 GB; see docs/DEPLOY_ONPREM.md) ------------
 WEB_CONCURRENCY=2
@@ -2104,6 +2304,11 @@ cmd_status() {
   if [[ "$(conf_get CNAPP_PUBLIC_AGENT)" == true ]]; then
     echo "Public:    agent API only, at $(conf_get PUBLIC_AGENT_URL) (cnapp-ctl public-agent status)"
   fi
+  if [[ -n "$(conf_get SITE_HOSTNAMES)" ]]; then
+    echo "Website:   $(site_names_list | tr '\n' ' ')(contact form: $([[ -n "$(conf_get CONTACT_TO)" ]] && echo "to CONTACT_TO" || echo "CONTACT_TO not set, answers 503"); cnapp-ctl site status)"
+  else
+    echo "Website:   off (cnapp-ctl site enable)"
+  fi
   local last; last=$(find "$BACKUP_DIR" -maxdepth 1 -name '*.dump.gz' -printf '%T@ %f\n' 2>/dev/null | sort -rn | head -n1 | cut -d' ' -f2 || true)
   echo "Backups:   $(find "$BACKUP_DIR" -maxdepth 1 -name '*.dump.gz' 2>/dev/null | wc -l) in $BACKUP_DIR, newest: ${last:-none}"
   echo "Timers:    backup=$(systemctl is-enabled cnapp-backup.timer 2>/dev/null || echo n/a) auto-update=$(systemctl is-enabled cnapp-update.timer 2>/dev/null || echo n/a)"
@@ -2543,6 +2748,13 @@ Operations
                                 nginx (404 for everything else from non-internal clients), fail2ban,
                                 PUBLIC_AGENT_URL for installers
   public-agent disable [--forget-hostname] | status
+  site enable --hostname NAME [--hostname NAME ...] [--console-url URL] [--contact-to EMAIL]
+              [--cert C --key K [--chain I]] [--force]
+                                serve the public website (website/) for these names, any client: first name
+                                canonical (others 301 to it), http -> https, only the site and POST /api/contact
+                                (demo requests emailed to CONTACT_TO); opens 80/443 to everyone in the firewall
+  site disable | status         back to the console only (keeps tls/site.crt)
+  tls import --for site --cert C --key K [--chain I]    the website's own certificate (SNI), e.g. Let's Encrypt
   create-admin --email E [--role admin|analyst|viewer] [--generate]
   reset-password --email E [--generate]   reset-mfa --email E
   delete-user --email E [--yes]           permanently delete a deactivated user (asks to type the email)
@@ -2605,6 +2817,7 @@ main() {
     approvals) cmd_approvals "$@" ;;
     set-hostname) cmd_set_hostname "$@" ;;
     public-agent) cmd_public_agent "$@" ;;
+    site) cmd_site "$@" ;;
     version|--version) echo "$VERSION" ;;
     help|-h|--help) usage ;;
     *) usage >&2; die "unknown command '$cmd'" ;;
