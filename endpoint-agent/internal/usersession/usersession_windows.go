@@ -81,9 +81,13 @@ func Attended() (uint32, error) {
 }
 
 // wtsInfoExLevel1 is the start of WTSINFOEXW (Level, then WTSINFOEX_LEVEL1_W);
-// only the fields read here.
+// only the fields read here. The union holding WTSINFOEX_LEVEL1_W contains
+// LARGE_INTEGERs, so it is 8-byte aligned and starts at offset 8, not 4: without
+// the padding SessionState would read the session id (never 0 = WTSActive for a
+// user session) and every signed-in user looked "disconnected".
 type wtsInfoExLevel1 struct {
 	Level        uint32
+	_            uint32
 	SessionID    uint32
 	SessionState uint32
 	SessionFlags int32
@@ -99,6 +103,10 @@ func State(session uint32) (active, locked bool, err error) {
 		return false, false, fmt.Errorf("WTSQuerySessionInformation(%d): %v", session, e)
 	}
 	defer func() { _, _, _ = procWTSFreeMemory.Call(uintptr(unsafe.Pointer(info))) }()
+	if info.Level != 1 || info.SessionID != session {
+		return false, false, fmt.Errorf("WTSQuerySessionInformation(%d): unexpected WTSINFOEX (level %d, session %d)",
+			session, info.Level, info.SessionID)
+	}
 	return info.SessionState == wtsActive, info.SessionFlags == wtsSessionStateLock, nil
 }
 
