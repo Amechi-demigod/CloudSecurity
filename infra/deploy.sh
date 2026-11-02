@@ -88,7 +88,9 @@ for app in backend frontend; do
   else
     echo "::warning::ghcr.io/${owner_lc}/cloudsecurity-${app}:${SHA} not found; building it here"
     az acr login -n "$acr"
-    docker build --platform linux/amd64 -t "${login_server}/cnapp-${app}:${SHA}" "${app}"
+    extra=()  # the frontend image also bundles the public website (frontend/Dockerfile)
+    [ "$app" = frontend ] && extra=(--build-context website=website)
+    docker build --platform linux/amd64 ${extra[@]+"${extra[@]}"} -t "${login_server}/cnapp-${app}:${SHA}" "${app}"
     docker push "${login_server}/cnapp-${app}:${SHA}"
   fi
 done

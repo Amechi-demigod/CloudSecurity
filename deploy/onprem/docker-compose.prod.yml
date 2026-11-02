@@ -18,6 +18,8 @@
 # Only 80 and 443 are published. PostgreSQL is reachable on the internal network only.
 # With CNAPP_PUBLIC_AGENT=true (cnapp-ctl public-agent enable) 443 is reachable
 # from the internet, but nginx serves only /api/agent/ to non-internal clients.
+# With SITE_HOSTNAMES (cnapp-ctl site enable) 80/443 are reachable from the
+# internet for the public website (static site + POST /api/contact on those names).
 
 name: cnapp
 
@@ -227,6 +229,10 @@ services:
       CNAPP_AGENT_ENROLL_RATE: ${CNAPP_AGENT_ENROLL_RATE:-60r/m}
       CNAPP_AGENT_ENROLL_BURST: ${CNAPP_AGENT_ENROLL_BURST:-100}
       CNAPP_AGENT_CONN_LIMIT: ${CNAPP_AGENT_CONN_LIMIT:-200}
+      # Public website (cnapp-ctl site enable): its names (empty = off) and where
+      # its "Log in" links point (empty = https://CNAPP_HOSTNAME).
+      SITE_HOSTNAMES: ${SITE_HOSTNAMES:-}
+      SITE_CONSOLE_URL: ${SITE_CONSOLE_URL:-}
     # nginx (uid 101) reads the TLS key through this group (key: root:cnapp-tls 0640).
     group_add:
       - "${CNAPP_TLS_GID:?run cnapp-ctl install (CNAPP_TLS_GID missing)}"

@@ -454,6 +454,8 @@ def send_acs(config: dict[str, Any], secrets: dict[str, str], msg: dict[str, Any
                "recipients": {"to": [{"address": a} for a in config["to_addresses"]]},
                "content": {"subject": _clip(_header_safe(subject), 200), "plainText": text, "html": body_html},
                "userEngagementTrackingDisabled": True}
+    if config.get("reply_to"):  # platform mail only (app/mailer.py)
+        payload["replyTo"] = [{"address": _header_safe(config["reply_to"])}]
     body = json.dumps(payload, separators=(",", ":")).encode()
     headers = acs_headers(endpoint, key, ACS_PATH, body, formatdate(usegmt=True))
     # Idempotent retries: ACS de-duplicates on the operation id.
@@ -519,6 +521,8 @@ def send_smtp(config: dict[str, Any], secrets: dict[str, str], msg: dict[str, An
     em["Subject"] = _clip(_header_safe(subject), 200)
     em["From"] = config["from_address"]
     em["To"] = ", ".join(config["to_addresses"])
+    if config.get("reply_to"):  # platform mail only (app/mailer.py)
+        em["Reply-To"] = _header_safe(config["reply_to"])
     em["Date"] = formatdate(localtime=False, usegmt=True)
     em["Message-ID"] = make_msgid(idstring=delivery_id[:16], domain=parseaddr(config["from_address"])[1].split("@")[-1])
     em["X-CNAPP-Delivery"] = delivery_id

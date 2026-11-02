@@ -507,6 +507,93 @@ certificate for the agent name is stored as `/opt/cnapp/tls/agent.crt|key` and s
 generated at container start by `deploy/onprem/nginx/cnapp-access.sh`; the edge log
 (`/var/log/cnapp/edge-access.log`, external clients only) is rotated daily by logrotate (14 days).
 
+### Public website (optional)
+
+The frontend image also ships the public marketing website (repo `website/`: one static page, self-hosted font, no
+third-party requests). `cnapp-ctl site enable` serves it on its own hostnames (e.g. `travound.com` and
+`www.travound.com`) from the same nginx, on the same ports 80/443, **to any client**:
+
+* The first name is canonical: other names answer `301` to `https://<first name><path>`; `http://` on every website
+  name answers `301` to `https://<first name><path>` as well.
+* On the website names nginx serves **only** the static site (`/`, `/assets/*`, `/favicon.svg`) and `POST /api/contact`.
+  Everything else is `404`: no console, no `/api/*` (also not for internal clients), no `/healthz`. The console keeps
+  its own name (`CNAPP_HOSTNAME`), certificate and access rules (`CNAPP_ALLOWED_CIDRS`), unchanged.
+* Strict headers: `Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:;
+  font-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'`,
+  `Strict-Transport-Security: max-age=31536000` (deliberately without `includeSubDomains` on the apex: it would force
+  HTTPS on every subdomain of the domain), `X-Frame-Options: DENY`, `Referrer-Policy: strict-origin-when-cross-origin`,
+  `X-Content-Type-Options: nosniff`, `Permissions-Policy`, `Cross-Origin-Opener-Policy`. The page is revalidated on
+  every visit (`no-cache`); assets are cached for a day, fonts for a year.
+* The page's "Log in" links point to `https://<CNAPP_HOSTNAME>` (rewritten by nginx; override with `--console-url`).
+* Per client IP nginx allows 30 requests/s to the site and 6/min (burst 5) to `POST /api/contact`. Website requests
+  are logged in the edge log with the marker `site`, never `blocked`, so fail2ban's probe jail does not ban visitors.
+* **"Request a demo" form** (`POST /api/contact`, backend `app/api/contact.py`): public, no session. The browser's
+  `Origin` (else `Referer`) must be `https://<one of SITE_HOSTNAMES>` or the console (`PUBLIC_BASE_URL`); 3 requests per
+  10 minutes and 10 per day per client IP, at most 50 emails per hour in total; a hidden honeypot field; strict
+  validation; nothing the visitor typed is echoed in errors or written to the logs (only `contact request accepted` /
+  `rejected (<reason>)`). Each request sends **one** email through the platform mail server (`PLATFORM_SMTP_*`, the
+  same as invitations, e.g. Brevo) to **`CONTACT_TO`**, subject `Demo request: <company>`, `Reply-To` the requester.
+  `CONTACT_TO` is never shown on the page or returned by any API. Without `CONTACT_TO` or a platform mail server the
+  form answers `503` ("temporarily unavailable"). Without JavaScript the form still works (plain POST, redirect to
+  `/#contact-sent` or `/#contact-error`).
+* Firewall (when `cnapp-ctl` manages it): while the website is on, 80 and 443 are open to any address (UFW +
+  `DOCKER-USER`); `site disable` restores the previous rules. A cloud security group / perimeter firewall must allow
+  80 and 443 from anywhere as well.
+
+#### Step by step (example: travound.com + www.travound.com)
+
+1. **DNS**: `A` records for `travound.com` and `www.travound.com` -> the server's public IP (same IP as the console).
+   Check: `dig +short travound.com www.travound.com`.
+2. **Certificate** (Let's Encrypt, certbot standalone; certbot needs port 80, so the frontend is stopped for a few
+   seconds by the hooks, exactly like the renewal of the console certificate):
+
+   ```bash
+   sudo certbot certonly --standalone -d travound.com -d www.travound.com \
+     --pre-hook  "docker stop cnapp-frontend-1" \
+     --post-hook "docker start cnapp-frontend-1"
+   sudo cnapp-ctl tls import --for site \
+     --cert /etc/letsencrypt/live/travound.com/fullchain.pem --key /etc/letsencrypt/live/travound.com/privkey.pem
+   ```
+
+   The site certificate is stored as `/opt/cnapp/tls/site.crt|key` and served by SNI for the website names only; the
+   console keeps `server.crt`. Renewal: if your console certificate is renewed with hooks in
+   `/etc/letsencrypt/renewal-hooks/` (`pre/` stops and `post/` starts `cnapp-frontend-1`), the website certificate
+   uses the same pre/post hooks; add a deploy hook that imports each renewed lineage into the right slot, e.g.
+   `/etc/letsencrypt/renewal-hooks/deploy/cnapp-import.sh` (mode 0755):
+
+   ```bash
+   #!/bin/sh
+   # certbot sets RENEWED_LINEAGE (e.g. /etc/letsencrypt/live/travound.com) for each renewed certificate.
+   set -e
+   case "$RENEWED_LINEAGE" in
+     */live/travound.com) cnapp-ctl tls import --for site --cert "$RENEWED_LINEAGE/fullchain.pem" --key "$RENEWED_LINEAGE/privkey.pem" ;;
+     */live/console.travound.com) cnapp-ctl tls import --cert "$RENEWED_LINEAGE/fullchain.pem" --key "$RENEWED_LINEAGE/privkey.pem" ;;
+   esac
+   ```
+
+   (If a deploy hook for the console already exists, add only the `travound.com` case to it.) Test with
+   `sudo certbot renew --dry-run`.
+3. **Mail**: the platform mail server must be configured (`PLATFORM_SMTP_HOST`, `PLATFORM_SMTP_FROM`, ...; also used
+   for invitations). Choose the private address that receives demo requests (`CONTACT_TO`).
+4. **Enable**:
+
+   ```bash
+   sudo cnapp-ctl site enable --hostname travound.com --hostname www.travound.com --contact-to sales@your-domain
+   sudo cnapp-ctl site status
+   ```
+
+   It refuses names the installed certificate does not cover (`--force` overrides), the console's or agent's own name,
+   and IP addresses; then writes `SITE_HOSTNAMES` (and `CONTACT_TO`) to `cnapp.env`, opens 80/443, recreates the
+   frontend and backend, and checks the site through the local nginx. `cnapp-ctl status` shows a `Website:` line.
+5. **Verify from outside**: `curl -sI https://travound.com/` (200 and the headers above),
+   `curl -sI https://www.travound.com/` and `curl -sI http://travound.com/` (301 to `https://travound.com/`),
+   `curl -s -o /dev/null -w '%{http_code}\n' https://travound.com/api/health` (404), then send one test request from
+   the page and check the `CONTACT_TO` inbox (`cnapp-ctl logs backend | grep 'contact request'`).
+
+Disable: `sudo cnapp-ctl site disable` (keeps `tls/site.crt`). **Settings** (`cnapp.env`): `SITE_HOSTNAMES`
+(comma-separated, empty = off), `SITE_CONSOLE_URL` (optional), `CONTACT_TO`. The nginx server blocks are generated at
+container start by `deploy/onprem/nginx/cnapp-access.sh` (`zz-cnapp-site.conf`).
+
 ## 6. Updates (pull-based)
 
 The server pulls images from ghcr.io; nothing connects to it from outside. CI pushes `:<commit-sha>` and `:latest` for
@@ -765,6 +852,9 @@ the server before `--purge`.
 | `tls init / renew / show / import / import-pfx / export-ca` | certificates (`import-pfx` prompts for the password, supports legacy RC2 PFX) |
 | `set-hostname NAME` | change the URL (PUBLIC_BASE_URL, redirects, Entra redirect URI) |
 | `firewall status / configure` | UFW + DOCKER-USER rules |
+| `public-agent enable / disable / status` | publish only the agent API to the internet |
+| `site enable --hostname N [--hostname N2] [--contact-to E] / disable / status` | public website on its own names (section 5) |
+| `tls import --for site --cert C --key K` | the website's certificate (SNI), e.g. Let's Encrypt |
 | `create-admin`, `reset-password`, `reset-mfa`, `show-secret` | account recovery, secrets |
 | `delete-user --email E [--yes]` | permanently delete a deactivated user (same checks as the console; asks to type the email) |
 | `uninstall [--purge]` | removal |
