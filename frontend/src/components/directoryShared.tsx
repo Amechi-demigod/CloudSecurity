@@ -177,7 +177,10 @@ const PART_STATUS: Record<string, string> = {
 
 /** Outcome of each part of the last server-side sync, e.g. "Intune · not licensed". */
 export function ScopeChips({ status }: { status: Record<string, ScopeStatus> }) {
-  const entries = Object.entries(status);
+  // Fixed order (JSON key order is not preserved by every database).
+  const order = Object.keys(PART_LABEL);
+  const rank = (k: string) => (order.includes(k) ? order.indexOf(k) : order.length);
+  const entries = Object.entries(status).sort((a, b) => rank(a[0]) - rank(b[0]));
   if (entries.length === 0) return null;
   return (
     <div className="flex flex-wrap gap-1.5" aria-label="Last sync by part">
