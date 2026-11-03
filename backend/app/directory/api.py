@@ -124,6 +124,25 @@ def azure_connectors(db: Session = Depends(get_db)):
             "privileged_roles": sorted(graph.PRIVILEGED_ROLES.values())}
 
 
+@router.get("/google-scopes")
+def google_scopes():
+    """The read-only OAuth scopes a Google Workspace source uses (for the
+    domain-wide delegation setup) and the admin roles treated as privileged."""
+    from . import google
+
+    return {"scopes": list(google.SCOPES), "privileged_roles": sorted(set(google.PRIVILEGED_ROLES.values()))}
+
+
+def _set_google_key(src: DirectorySource, raw: str) -> None:
+    """Validate and store an uploaded service-account key (encrypted); only its
+    public facts (client email, client id, key id) go into the config."""
+    from . import google
+
+    facts = google.parse_key(raw)
+    svc.store_secret(src, {"key_json": raw}, google.key_hint(facts))
+    src.config = {**(src.config or {}), **facts}
+
+
 @router.post("/sources", response_model=SourceOut, status_code=201)
 def create_source(body: SourceCreate, request: Request, admin: User = Depends(require_admin),
                   db: Session = Depends(get_db)):
@@ -134,6 +153,10 @@ def create_source(body: SourceCreate, request: Request, admin: User = Depends(re
     try:
         if body.credential is not None:
             svc.set_credential(src, body.credential.username, body.credential.password)
+        if src.type == "google":
+            src.config = {**src.config, "service_account_email": "", "client_id": "", "key_id": ""}
+            if body.google_key is not None:
+                _set_google_key(src, body.google_key)
         _check_cloud(db, src)
         svc.validate_source(db, src)
     except svc.DirectoryError as e:
@@ -142,7 +165,7 @@ def create_source(body: SourceCreate, request: Request, admin: User = Depends(re
     db.flush()
     audit(db, "directory_source_created", actor=admin, target=_target(src), ip=client_ip(request), name=src.name,
           type=src.type, enabled=src.enabled, config=_public_config(src.config),
-          collectors=src.collector_device_ids, credential_set=body.credential is not None)
+          collectors=src.collector_device_ids, credential_set=body.credential is not None or body.google_key is not None)
     db.commit()
     return svc.source_out(db, src, now)
 
@@ -166,6 +189,9 @@ def update_source(body: SourceUpdate, request: Request, source_id: str = Id32(),
         if src.type == "entra":  # server-set from the connector
             new["tenant_id"], new["client_id"] = (src.config or {}).get("tenant_id", ""), (src.config or {}).get(
                 "client_id", "")
+        elif src.type == "google":  # server-set from the uploaded key
+            for k in ("service_account_email", "client_id", "key_id"):
+                new[k] = (src.config or {}).get(k, "")
         if new != src.config:
             changes["config"] = [_public_config(src.config or {}), _public_config(new)]
             src.config = new
@@ -183,6 +209,11 @@ def update_source(body: SourceUpdate, request: Request, source_id: str = Id32(),
                 raise svc.DirectoryError(422, "an AD service account only applies to Active Directory sources")
             svc.set_credential(src, body.credential.username, body.credential.password)
             changes["credential"] = "replaced"
+        if body.google_key is not None:
+            if src.type != "google":
+                raise svc.DirectoryError(422, "google_key only applies to Google Workspace sources")
+            _set_google_key(src, body.google_key)
+            changes["credential"] = f"key replaced ({src.credential_hint})"
         if "config" in changes:
             _check_cloud(db, src)
         if changes:

@@ -1,4 +1,4 @@
-# Directory discovery (Active Directory, Microsoft Entra ID + Intune)
+# Directory discovery (Active Directory, Microsoft Entra ID + Intune, Google Workspace)
 
 Directory discovery compares what your directories know with what the platform
 manages. Two kinds of source exist:
@@ -7,7 +7,8 @@ manages. Two kinds of source exist:
   your network (the platform never connects to a domain controller).
 * **Cloud directories** are read by the platform server itself over HTTPS:
   **Microsoft Entra ID + Intune** through Microsoft Graph, with the app
-  registration of one of your Azure cloud connectors
+  registration of one of your Azure cloud connectors, and **Google Workspace**
+  through the Admin SDK and Cloud Identity APIs, with a service account
   ([server-side collection](#server-side-collection)).
 
 The results answer:
@@ -31,7 +32,7 @@ It also adds the owner's directory identity (display name, email, department)
 to IT assets, and lets admins **add directory computers to IT assets**.
 
 Phase 1 shipped the framework and on-prem Active Directory; phase 2 adds
-server-side collection and Microsoft Entra ID + Intune. The source `type`, the
+server-side collection, Microsoft Entra ID + Intune and Google Workspace. The source `type`, the
 provider-neutral object model (stable `external_id` per source, provider
 attributes in JSON) and the matching tiers are shared by every source type.
 
@@ -45,6 +46,7 @@ attributes in JSON) and the matching tiers are shared by every source type.
 - [Setting up a source](#setting-up-a-source)
 - [Server-side collection](#server-side-collection)
 - [Microsoft Entra ID + Intune](#microsoft-entra-id--intune)
+- [Google Workspace](#google-workspace)
 - [Scheduling](#scheduling)
 - [Domain-join facts](#domain-join-facts)
 - [Matching](#matching)
@@ -58,6 +60,7 @@ attributes in JSON) and the matching tiers are shared by every source type.
 - [Troubleshooting](#troubleshooting)
 - [Manual test checklist (real domain)](#manual-test-checklist-real-domain)
 - [Manual test checklist (real Entra ID tenant)](#manual-test-checklist-real-entra-id-tenant)
+- [Manual test checklist (real Google Workspace)](#manual-test-checklist-real-google-workspace)
 - [Limitations and future work](#limitations-and-future-work)
 
 ## Architecture
@@ -98,7 +101,7 @@ attributes in JSON) and the matching tiers are shared by every source type.
   `DIRECTORY_MISSING_PURGE_DAYS` (30). A failed or truncated run never removes anything.
 
 Code: `backend/app/directory/` (models, schemas, service, matching, reconcile,
-scheduler, api, agent_api; cloud, cloud_http, graph for server-side sources),
+scheduler, api, agent_api; cloud, cloud_http, graph, google for server-side sources),
 `endpoint-agent/internal/directory/` (LDAP client, decoding, batching),
 `endpoint-agent/internal/collect/join*.go` (domain-join facts).
 
@@ -212,7 +215,8 @@ audit, RBAC and tenancy.
 ```
 
 * **Read-only.** Only GET requests (plus the OAuth token request) to a fixed
-  allow-list of hosts (`login.microsoftonline.com`, `graph.microsoft.com`);
+  allow-list of hosts (`login.microsoftonline.com`, `graph.microsoft.com`,
+  `oauth2.googleapis.com`, `admin.googleapis.com`, `cloudidentity.googleapis.com`);
   a paging link to any other host is refused.
 * **Parts degrade independently.** Each part (users, admin roles, Entra
   devices, Intune) is skipped with a status (`missing_permission`,
@@ -322,6 +326,65 @@ devices owned `personal`, phones and anything not Windows / macOS / Linux are
 kept and listed, but **no agent is expected** on them: they are never "no
 agent" and are not in coverage.
 
+## Google Workspace
+
+The server reads Google Workspace with a **service account with domain-wide
+delegation** that impersonates a named Workspace admin, requesting **read-only
+scopes only**. The admin uploads the service account's JSON key in the
+console: it is stored Fernet-encrypted (`NOTIFICATIONS_ENCRYPTION_KEY`, like
+the AD service-account credential), never returned, logged or audited; the
+console shows only the client email and key id. The JWT assertion is signed
+locally (RS256, `joserfc`, already a dependency) and exchanged at the fixed
+endpoint `https://oauth2.googleapis.com/token` (the key file's `token_uri` is
+ignored). Each part requests a token for its own scope, so one scope missing
+from the delegation only skips that part.
+
+### Setup
+
+1. **Create the service account and key** (Google Cloud Shell, any project you
+   administer; the console shows the commands): enable `admin.googleapis.com`
+   and `cloudidentity.googleapis.com`, create `cnapp-directory` (no IAM roles),
+   create a JSON key, print its OAuth client ID. If your organisation blocks key
+   creation (`iam.disableServiceAccountKeyCreation`), ask for an exception on
+   this project.
+2. **Authorise it** in the Admin console: Security → Access and data control →
+   API controls → **Manage domain-wide delegation** → Add new: paste the client
+   ID and the comma-separated scope string the console shows (only the parts
+   you selected).
+3. **Directories → Add directory → Google Workspace.** Enter the admin to
+   impersonate (a Super Admin, or an admin with a custom role that can read
+   users, devices and admin roles), choose the parts, upload the key,
+   **Test & save**: each scope is checked with a token request and a 1-object
+   read; missing delegation, an API that is not enabled, or a wrong admin
+   email are reported per scope. Delegation changes can take minutes to apply.
+4. Advanced: the customer ID (default `my_customer`, the admin's own account).
+
+### Scopes (all read-only)
+
+| Scope | Needed for | Without it |
+|---|---|---|
+| `admin.directory.user.readonly` | Users: suspended / archived, last login, department, org unit, super admin flag | users part skipped |
+| `admin.directory.rolemanagement.readonly` | Admin role assignments | only super admins (from the user list) are flagged |
+| `admin.directory.group.member.readonly` | Members of groups an admin role is assigned to (optional) | roles held through groups are not expanded |
+| `admin.directory.device.chromeos.readonly` | ChromeOS devices: status, last sync, serial, user | ChromeOS part skipped |
+| `admin.directory.device.mobile.readonly` | Android / iOS devices: status, last sync, serial, user | mobile part skipped |
+| `cloud-identity.devices.readonly` | Windows / macOS / Linux endpoints (Google endpoint management): host name, serial, encryption, owner, last sync, device users | endpoints part skipped |
+
+**Privileged roles:** every role flagged `isSuperAdminRole` (Super Admin) and
+the pre-built User Management Admin, Groups Admin, Help Desk Admin, Services
+Admin and Mobile Admin; custom roles are not treated as privileged.
+
+**Device records.** Endpoints (`endpoint`, `external_id` `ci:<device>`) are
+matched to agents by serial number, then host name; `BYOD`-owned endpoints,
+ChromeOS (`chromeos`) and mobile (`mobile`) devices are listed but no agent
+is expected on them. The endpoints part only takes Windows / macOS / Linux
+records (Android / iOS / ChromeOS records of Cloud Identity belong to the
+mobile and ChromeOS parts). The primary user of an endpoint is the user who
+synced it most recently.
+
+**Last login** comes from the user list (`lastLoginTime`), so it is always
+known for Google users (never-logged-in users have none).
+
 ## Scheduling
 
 The leader-elected scheduler (one per deployment) checks every minute:
@@ -428,7 +491,7 @@ sign-in or the Intune last check-in, whichever is newest.
 | `stale_user_signed_in` | User | A signed-in user has no sign-in for `stale_days`; skipped when last sign-in is unknown (Entra ID without P1/P2 or `AuditLog.Read.All`) |
 | `privileged_disabled` | User | A disabled account still holds a privileged admin role (assignment left behind) |
 | `privileged_stale` | User | An enabled privileged admin has not signed in for `stale_days` (skipped when last sign-in is unknown) |
-| `privileged_no_agent` | User | An enabled privileged admin's primary device (Intune primary user) is a machine the agent belongs on but has no agent; one issue per device |
+| `privileged_no_agent` | User | An enabled privileged admin's primary device (Intune primary user, Google endpoint / ChromeOS / mobile user) is a machine the agent belongs on but has no agent; one issue per device |
 
 `lastLogonTimestamp` replicates with up to ~14 days of lag by design, and Entra
 `approximateLastSignInDateTime` is updated about weekly, which is why the stale
@@ -478,7 +541,10 @@ computer, or same short name and domain) instead of creating a duplicate.
   records never contain passwords. An Entra source holds no secret: the Azure
   connector's client secret is decrypted only in memory for the token request
   (form body, never logged; provider errors keep only the error code and
-  message). `python -m app.cli rotate-notification-key` re-encrypts directory credentials too.
+  message). A Google service-account key is stored encrypted, decrypted only in
+  memory to sign the token request, and never returned (only its client email
+  and key id). `python -m app.cli rotate-notification-key` re-encrypts
+  directory credentials too.
 * **Cloud sources are organisation-scoped like everything else:** another
   organisation never sees the source, and organisations other than the default
   can never use the server environment's Azure credentials.
@@ -518,6 +584,7 @@ Session-authenticated (`viewer` reads, `admin` writes), under `/api/directory`:
 | GET | `/sources/{id}/runs`, `/runs/{id}` (cloud runs: `scope_status` per part) | viewer |
 | GET | `/collectors` | viewer |
 | GET | `/azure-connectors` (usable connectors, Graph permissions with app role ids, privileged roles; no secrets) | viewer |
+| GET | `/google-scopes` (OAuth scopes per part, privileged roles) | viewer |
 | GET | `/summary` (issue counts, coverage, source types) | viewer |
 | GET | `/issues`, `/issues/export.csv` (type, kind, source_id, q, domain, limit, offset; rows carry `sources`, `privileged`) | viewer |
 | GET | `/computers` (one row per machine with its `sources`; status: all, not_in_assets, matched, unmatched, ambiguous, missing), `/users` (privileged, enabled) | viewer |
@@ -526,7 +593,11 @@ Session-authenticated (`viewer` reads, `admin` writes), under `/api/directory`:
 Source bodies: `{"type": "ad", "config": {...AD...}, "collector_device_ids": [...]}` or
 `{"type": "entra", "config": {"connector_id": "org" | "env", "scopes": ["users",
 "roles", "devices", "intune"], "stale_days": 90, "interval_hours": 6}}`
-(`tenant_id` / `client_id` are copied from the connector by the server).
+(`tenant_id` / `client_id` are copied from the connector by the server), or
+`{"type": "google", "config": {"admin_email": "...", "customer_id": "my_customer",
+"scopes": ["users", "roles", "chromeos", "mobile", "endpoints"]}, "google_key":
+"<service-account JSON>"}` (the key is write-only; PATCH with `google_key`
+replaces it; `service_account_email`, `client_id` and `key_id` are set by the server).
 
 Agent: `POST /api/agent/directory/runs/{run_id}/batches` (device credential +
 `X-Directory-Sync-Token`, `Content-Encoding: gzip`, JSON `{seq, final,
@@ -559,6 +630,10 @@ computers[], users[], status, error, truncated, totals, duration_ms, server}`).
 | Entra: "Last sign-in · not licensed" | The tenant has no Entra ID P1/P2: last sign-in stays unknown; stale checks are skipped. |
 | Entra: "Intune · not licensed" | No Intune licence (or the service is not set up): Intune is skipped, other parts sync. |
 | Entra: run "throttled Nx" | Graph throttled the app; the sync backs off and continues. Persistent throttling: lengthen the interval. |
+| Google: scope "not authorised ... in domain-wide delegation" | Add the client ID with exactly the scope string shown (no spaces); wait a few minutes. |
+| Google: "Google refused the service account (Invalid email or User ID)" | The admin to impersonate is wrong or not an admin; or the key was deleted in Google Cloud. |
+| Google: "the API is not enabled" | Enable `admin.googleapis.com` / `cloudidentity.googleapis.com` in the service account's project. |
+| Google: endpoints empty | Google endpoint management (basic or advanced) must be on, and devices must have synced (Endpoint Verification / Drive for desktop). |
 
 Agent logs (`collect_logs`) contain "directory sync started / finished" lines
 with counts and errors, never credentials or tokens.
@@ -631,9 +706,34 @@ against a test tenant (read-only):
 12. [ ] The client secret never appears in the console, API responses, audit log or server logs.
 13. [ ] Disable the source during a sync: the run is cancelled, nothing is marked missing.
 
+## Manual test checklist (real Google Workspace)
+
+Nothing in the test suite talks to Google (faked). Before go-live, against a
+test Workspace (read-only):
+
+1. [ ] Run the gcloud commands in Cloud Shell: APIs enabled, service account created with
+   no IAM roles, key downloaded, client ID printed.
+2. [ ] Add the domain-wide delegation with the console's scope string; **Test & save**: every
+   selected scope passes. Remove one scope from the delegation: that scope shows *missing*.
+3. [ ] Wrong admin email: one clear "refused" error; the key never appears in the console,
+   API responses, audit log or server logs (search for `BEGIN PRIVATE KEY`).
+4. [ ] **Sync now**: user count matches Admin console → Users; ChromeOS / mobile / endpoint
+   counts match Devices; a 1000+ user domain pages through completely.
+5. [ ] A Windows laptop in endpoint management with the agent: matched by serial; one
+   without the agent: *No agent*; a BYOD endpoint and phones: listed, no issue.
+6. [ ] A suspended Super Admin: *Disabled admin*; a delegated Help Desk Admin who has not
+   logged in for 90+ days: *Stale admin*; an admin whose endpoint has no agent: *Admin device
+   without agent*; a role assigned to a group: its members appear "(via group)".
+7. [ ] Turn off the Cloud Identity API: the endpoints part is skipped (*not enabled*), the
+   rest syncs and existing endpoint records are kept.
+8. [ ] Replace the key (PATCH with a new key, delete the old one in Google Cloud): the next
+   sync uses the new key.
+
 ## Limitations and future work
 
-* Google Workspace and Okta sources.
+* Okta sources.
+* Google: custom admin roles are not treated as privileged; Cloud Identity
+  device users give the primary user only for endpoints that report one.
 * Entra: PIM for *groups* (eligible membership of a group via PIM for Groups)
   is not read, only eligible role assignments; only the global Azure cloud
   (no national clouds); the connector must use a client secret (certificate /

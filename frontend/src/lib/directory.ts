@@ -67,6 +67,26 @@ export function useRun(runId: string | null) {
   return { run, error };
 }
 
+// ----------------------------------------------------------------------------- Google Workspace service account
+/** Google Cloud Shell: a key-holding service account with no IAM roles, the two APIs, and its DWD client ID. */
+export function googleServiceAccountScript(): string {
+  return [
+    "# Creates the service account directory discovery signs in with, and a JSON key for it.",
+    "# Run in Google Cloud Shell in any project you administer (no Workspace data is stored there).",
+    "# The service account gets NO Google Cloud roles: all access comes from domain-wide delegation",
+    "# (read-only scopes) and the Workspace admin it impersonates.",
+    'P=$(gcloud config get-value project)',
+    'gcloud services enable admin.googleapis.com cloudidentity.googleapis.com --project "$P"',
+    'gcloud iam service-accounts create cnapp-directory --project "$P" \\',
+    '  --display-name "Directory discovery (read-only)"',
+    'SA="cnapp-directory@$P.iam.gserviceaccount.com"',
+    'gcloud iam service-accounts keys create cnapp-directory-key.json --iam-account "$SA"',
+    'echo "Client ID for domain-wide delegation: $(gcloud iam service-accounts describe "$SA" --format="value(oauth2ClientId)")"',
+    "# Download cnapp-directory-key.json (Cloud Shell: More → Download), upload it here, then delete it:",
+    "#   rm cnapp-directory-key.json",
+  ].join("\n");
+}
+
 // ----------------------------------------------------------------------------- Entra ID permission scripts
 const GRAPH_APP_ID = "00000003-0000-0000-c000-000000000000";
 

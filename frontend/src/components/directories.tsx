@@ -1,5 +1,5 @@
 // Connectors & scans -> Directories: add / edit / monitor directory sources (on-prem Active Directory read by a
-// collector agent; Microsoft Entra ID + Intune read by the server through Microsoft Graph).
+// collector agent; Microsoft Entra ID + Intune and Google Workspace read by the server).
 import { RefreshCw } from "lucide-react";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import {
@@ -17,6 +17,7 @@ import { FINAL, RUN_COLOR, RUN_TEXT, RUN_TEXT_SERVER, TRIGGER_TEXT, errMsg, inpu
 import { fmtAgo, fmtHours, fmtTime, fmtUntil } from "../lib/format";
 import { useApi } from "../lib/useApi";
 import { EntraForm } from "./directoryEntra";
+import { GoogleForm } from "./directoryGoogle";
 import { CodeBox, DirectoryMark, RunResult, ScopeChips, StatCell } from "./directoryShared";
 import { Button, Card, ErrorNote, Field, Tag } from "./ui";
 
@@ -408,6 +409,10 @@ function sourceSubtitle(src: DirectorySource): string {
     const parts = src.config.scopes.map((s) => ({ users: "users", devices: "devices", intune: "Intune", roles: "admin roles" })[s]).join(", ");
     return `${DIRECTORY_NAME.entra} · tenant ${src.config.tenant_id} · ${state} · read by the server via Microsoft Graph · ${parts}`;
   }
+  if (src.type === "google") {
+    const parts = src.config.scopes.join(", ");
+    return `${DIRECTORY_NAME.google} · impersonating ${src.config.admin_email} · ${state} · read by the server · ${parts}`;
+  }
   const c = src.config;
   return (
     `${DIRECTORY_NAME.ad} · ${c.domain} · ${state} · ` +
@@ -442,7 +447,7 @@ function SourceCard({ src, isAdmin, onChanged }: { src: DirectorySource; isAdmin
 
   const lastValue = active ? runText[active.status] : src.last_sync_status ? runText[src.last_sync_status] : "Not yet";
   const lastClass = active ? RUN_COLOR[active.status] : src.last_sync_status ? RUN_COLOR[src.last_sync_status] : "text-ink-3";
-  const objectsSub = src.type === "entra" ? `${src.computers_count.toLocaleString()} device records · ${src.users_count.toLocaleString()} users` : `${src.computers_count.toLocaleString()} computers · ${src.users_count.toLocaleString()} users`;
+  const objectsSub = server ? `${src.computers_count.toLocaleString()} device records · ${src.users_count.toLocaleString()} users` : `${src.computers_count.toLocaleString()} computers · ${src.users_count.toLocaleString()} users`;
 
   return (
     <Card className="mb-4">
@@ -509,7 +514,11 @@ function SourceCard({ src, isAdmin, onChanged }: { src: DirectorySource; isAdmin
           sub={src.enabled ? `every ${fmtHours(src.config.interval_hours)}` : "source disabled"}
         />
         {server ? (
-          <StatCell label="Collection" value="Server-side" sub={src.type === "entra" ? `app ${src.config.client_id}` : undefined} />
+          <StatCell
+            label="Collection"
+            value="Server-side"
+            sub={src.type === "entra" ? `app ${src.config.client_id}` : src.type === "google" ? `key ${src.config.key_id}… · ${src.config.service_account_email}` : undefined}
+          />
         ) : (
           <StatCell
             label="Collectors"
@@ -575,6 +584,7 @@ function SourceCard({ src, isAdmin, onChanged }: { src: DirectorySource; isAdmin
 
 function SourceForm({ type, source, onDone, onCancel }: { type: DirectoryType; source: DirectorySource | null; onDone: (s: DirectorySource) => void; onCancel: () => void }) {
   if (type === "entra") return <EntraForm source={source?.type === "entra" ? source : null} onDone={onDone} onCancel={onCancel} />;
+  if (type === "google") return <GoogleForm source={source?.type === "google" ? source : null} onDone={onDone} onCancel={onCancel} />;
   return <DirectoryForm source={source?.type === "ad" ? source : null} onDone={onDone} onCancel={onCancel} />;
 }
 
@@ -601,6 +611,13 @@ const CHOICES: DirectoryChoice[] = [
     blurb: "Cloud users, joined / hybrid / registered devices, Intune compliance and admin roles.",
     how: "Read by the server through Microsoft Graph, with your Azure connector's app",
     steps: ["Choose the Azure connector", "Run the permission script", "Test & save"],
+  },
+  {
+    type: "google",
+    title: "Google Workspace",
+    blurb: "Users, admin roles, Windows / macOS / Linux endpoints, ChromeOS and mobile devices.",
+    how: "Read by the server with a service account (domain-wide delegation, read-only scopes)",
+    steps: ["Create the service account", "Authorise its client ID in the Admin console", "Upload the key, Test & save"],
   },
 ];
 
@@ -661,8 +678,8 @@ export function DirectoriesSection({ isAdmin }: { isAdmin: boolean }) {
               <div className="min-w-0">
                 <h3 className="text-base font-semibold text-ink">No directory connected</h3>
                 <p className="mt-1 max-w-2xl text-sm text-ink-3">
-                  Connect on-prem Active Directory (read by one of your agents over LDAPS) or Microsoft Entra ID + Intune (read by the server
-                  through Microsoft Graph). Everything is read-only. Discovery then shows machines without an agent, stale and disabled
+                  Connect on-prem Active Directory (read by one of your agents over LDAPS), Microsoft Entra ID + Intune or Google Workspace
+                  (read by the server over their APIs). Everything is read-only. Discovery then shows machines without an agent, stale and disabled
                   accounts, and admins at risk.
                 </p>
               </div>
