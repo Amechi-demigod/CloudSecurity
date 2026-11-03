@@ -242,14 +242,16 @@ def summary(db: Session = Depends(get_db)):
 
 
 IssueType = Query(None, pattern="^(" + "|".join(FINDING_TYPES) + ")$")
-Kind = Query(None, pattern="^(computer|user|device)$")
+Kind = Query(None, pattern="^(computer|user|device|machine)$")  # machine = computer or device
 
 
 def _issue_stmt(type_: str | None, kind: str | None, source_id: str | None, q: str | None, domain: str | None):
     stmt = select(DirectoryFinding)
     if type_:
         stmt = stmt.where(DirectoryFinding.type == type_)
-    if kind:
+    if kind == "machine":
+        stmt = stmt.where(DirectoryFinding.kind.in_(("computer", "device")))
+    elif kind:
         stmt = stmt.where(DirectoryFinding.kind == kind)
     if source_id:
         stmt = stmt.where(DirectoryFinding.source_id == source_id)

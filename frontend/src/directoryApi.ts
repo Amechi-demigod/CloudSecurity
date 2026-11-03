@@ -224,7 +224,7 @@ export interface DirectorySummary {
 
 export interface IssueFilters {
   type?: IssueType | "";
-  kind?: "computer" | "user" | "device" | "";
+  kind?: "computer" | "user" | "device" | "machine" | "";
   source_id?: string;
   q?: string;
   domain?: string;

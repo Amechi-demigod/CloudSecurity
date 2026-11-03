@@ -15,6 +15,8 @@ const OS_LABEL: Record<string, string> = { windows: "Windows", macos: "macOS", l
 /** Directory computers that have an agent (directory discovery). */
 function CoverageTile({ cov, unmanaged, days }: { cov: DirectorySummary["coverage"]; unmanaged: number; days: number }) {
   const without = Math.max(0, cov.directory_computers - cov.managed);
+  // "No agent" matches the Discovery page (computers in use); the rest are stale.
+  const noAgent = Math.min(unmanaged, without);
   return (
     <KpiTile
       label="Agent coverage"
@@ -25,9 +27,10 @@ function CoverageTile({ cov, unmanaged, days }: { cov: DirectorySummary["coverag
       days={days}
       segments={[
         { key: "managed", label: "With agent", count: cov.managed, color: "var(--color-good)" },
-        { key: "unmanaged", label: "No agent", count: without, color: SEV_COLOR.high, to: "/it-assets/discovery?type=not_managed" },
+        { key: "unmanaged", label: "No agent", count: noAgent, color: SEV_COLOR.high, to: "/it-assets/discovery?type=not_managed" },
+        { key: "inactive", label: "Stale", count: without - noAgent, color: "var(--color-ink-3)", to: "/it-assets/discovery?type=stale_computer" },
       ].filter((s) => s.count > 0)}
-      footer={`${cov.managed.toLocaleString()} of ${cov.directory_computers.toLocaleString()} directory computers · ${unmanaged.toLocaleString()} in use without an agent`}
+      footer={`${cov.managed.toLocaleString()} of ${cov.directory_computers.toLocaleString()} directory computers have an agent`}
     />
   );
 }

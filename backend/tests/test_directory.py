@@ -417,6 +417,9 @@ def test_matching_findings_and_notifications(admin, collector):
     # Filters, search, paging and CSV export.
     assert admin.get("/api/directory/issues?type=stale_computer").json()["total"] == 2
     assert admin.get("/api/directory/issues?kind=user").json()["total"] == 2
+    machines = admin.get("/api/directory/issues?kind=machine&limit=1000").json()
+    assert machines["total"] == page["total"] - 2
+    assert {i["kind"] for i in machines["items"]} <= {"computer", "device"}
     assert admin.get("/api/directory/issues?q=oldbox").json()["total"] == 1
     p1 = admin.get("/api/directory/issues?limit=2&offset=0").json()
     p2 = admin.get("/api/directory/issues?limit=2&offset=2").json()

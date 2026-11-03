@@ -131,7 +131,7 @@ export default function Discovery() {
   const issueType = view === "users" ? (USER_ISSUES.includes(type as IssueType) ? type : "") : COMPUTER_ISSUES.includes(type as IssueType) ? type : "";
   const issueFilters = {
     type: issueType as IssueType | "",
-    kind: view === "users" ? ("user" as const) : undefined,
+    kind: view === "users" ? ("user" as const) : ("machine" as const),
     q: dq,
     domain: dDomain,
     source_id: sourceId,
