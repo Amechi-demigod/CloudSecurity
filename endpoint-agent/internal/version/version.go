@@ -15,8 +15,10 @@ var Version = "0.1.0-dev"
 // understands (e.g. check_for_update; older agents get recheck_posture instead).
 // host_isolation marks Suspend sign-in / Restore sign-in support (internal
 // names kept for backend compatibility - see internal/signin); remote_session
-// marks attended remote sessions (Windows only for now, internal/remote).
-const Features = "check_for_update,host_isolation" + platformFeatures
+// marks attended remote sessions (Windows only for now, internal/remote);
+// directory_collector marks the directory_sync command (internal/directory;
+// all OSes: Kerberos on Windows, a service account everywhere).
+const Features = "check_for_update,host_isolation,directory_collector" + platformFeatures
 
 // UserAgent is sent on every request to the server.
 func UserAgent() string {

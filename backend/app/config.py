@@ -171,6 +171,19 @@ class Settings:
     dashboard_snapshot_worker_enabled: bool = field(
         default_factory=lambda: _bool("DASHBOARD_SNAPSHOT_WORKER_ENABLED", True))
 
+    # Directory discovery (docs/DIRECTORY_DISCOVERY.md). Safety cap on the objects
+    # one sync may return (all scopes together); a run that hits it is kept but
+    # does not mark missing objects.
+    directory_max_objects: int = field(
+        default_factory=lambda: max(100, min(int(os.getenv("DIRECTORY_MAX_OBJECTS") or 500000), 2_000_000)))
+    # Objects missing from complete syncs for this many days are deleted.
+    directory_missing_purge_days: int = field(
+        default_factory=lambda: max(1, int(os.getenv("DIRECTORY_MISSING_PURGE_DAYS") or 30)))
+    # Internal: run the (leader-elected) directory sync scheduler in this process.
+    # Tests turn it off and drive it explicitly.
+    directory_scheduler_worker_enabled: bool = field(
+        default_factory=lambda: _bool("DIRECTORY_SCHEDULER_WORKER_ENABLED", True))
+
     # AWS read-only posture connector (opt-in, docs/CONNECT_AWS.md). Needs the
     # AWS managed policies SecurityAudit + ViewOnlyAccess on every scanned account.
     # How the scanner authenticates:

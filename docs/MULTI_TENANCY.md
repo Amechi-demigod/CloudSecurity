@@ -131,6 +131,10 @@ organisations, each in a session scoped to it:
 - **Dashboard snapshots**: once a day, each organisation's point-in-time
   dashboard metrics (all accounts and each cloud account), stored in its own
   rows of `dashboard_snapshots` ([DASHBOARDS.md](DASHBOARDS.md)).
+- **Directory discovery**: each organisation's directory sources are synced
+  through its own collector agents; runs, objects, matches and findings are
+  organisation-scoped, and an agent can only upload into its own
+  organisation's runs ([DIRECTORY_DISCOVERY.md](DIRECTORY_DISCOVERY.md)).
 - **Agent update automation**: each organisation's mode, rings and rollout. The
   GitHub Releases auto-import is platform-wide (releases are shared) and
   configured on, audited to and notified to the default organisation.

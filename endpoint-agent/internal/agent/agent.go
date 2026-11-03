@@ -9,12 +9,14 @@ import (
 	"math/rand/v2"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/backoff"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/client"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/collect"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/commands"
+	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/directory"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/lostmode"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/model"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/remote"
@@ -66,6 +68,15 @@ type Agent struct {
 	Signin       *signin.Manager
 	// Remote runs attended remote sessions (nil: not available).
 	Remote *remote.Controller
+	// DirectoryConnect connects to the directory for directory_sync
+	// (nil: the real LDAP backend; replaced in tests).
+	DirectoryConnect     directory.Connector
+	directoryRetryDelays []time.Duration
+	dirRunning           atomic.Bool
+	dirWG                sync.WaitGroup
+	// baseCtx is Run's context: background work (directory syncs) outlives
+	// the command poll that started it but stops with the agent.
+	baseCtx context.Context
 
 	hostname            string
 	probe               *wipe.Readiness
@@ -224,6 +235,7 @@ func (a *Agent) handle(ctx context.Context, c model.Command) {
 		IsolateHost:    a.isolateHost,
 		RestoreHost:    a.restoreHost,
 		RemoteSession:  a.remoteSession,
+		DirectorySync:  a.directorySync,
 	}, a.Restart)
 	log.Info("command finished", "status", out.Status, "output", out.Output)
 	if err := a.client.ResultFull(ctx, c, out.Status, out.Output, out.ExitCode, out.ResultData); err != nil {
@@ -360,6 +372,11 @@ func (a *Agent) setInterval(seconds int) error {
 func (a *Agent) Run(ctx context.Context) error {
 	st := a.State()
 	slog.Info("agent started", "device_id", st.DeviceID, "server", st.ServerURL, "interval", a.interval())
+	a.mu.Lock()
+	a.baseCtx = ctx
+	a.mu.Unlock()
+	// On shutdown give a running directory sync time to report its final batch.
+	defer a.WaitDirectorySync(20 * time.Second)
 	nextCheckIn := time.Now()
 	nextPoll := time.Now().Add(5 * time.Second)
 	checkInFailures, pollFailures := 0, 0

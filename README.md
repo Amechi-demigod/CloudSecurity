@@ -13,6 +13,7 @@ A cloud security platform MVP inspired by runtime-first CNAPPs such as Upwind. I
 - **Real cloud posture connectors (opt-in, read-only)**: Azure (azure-mgmt-* SDKs), AWS (boto3, SecurityAudit + ViewOnlyAccess, cross-account roles) and GCP (Google REST APIs via google-auth, Viewer + Security Reviewer). A "Run scan" button merges the results into the same model with `source="azure"`, `"aws"` or `"gcp"`; see [Cloud connectors](#cloud-connectors-read-only).
 - **Login, sessions and role-based access control**: every API endpoint and page requires sign-in (viewer, analyst or admin roles), with an admin Users page and an audit log. See [Authentication & access control](#authentication--access-control).
 - **IT asset lifecycle**: hardware records for every agent-enrolled device plus monitors, phones, docks and laptops without an agent; assignment and chain-of-custody history, offboarding with retrieval tracking and overdue reminders, warranties, disposal with wipe/destruction certificates, idle-device detection, CSV import/export. See **[docs/ASSET_MANAGEMENT.md](docs/ASSET_MANAGEMENT.md)**.
+- **Directory discovery (on-prem Active Directory)**: your own enrolled agents read AD from inside your network (LDAPS/StartTLS, Kerberos with the collector's computer account or an encrypted read-only service account) and the console shows computers without an agent, stale and disabled-but-active computers, agent devices unknown to the directory, and disabled/stale users signed in on managed devices; agent coverage on the Endpoints dashboard and "Add to IT assets". See **[docs/DIRECTORY_DISCOVERY.md](docs/DIRECTORY_DISCOVERY.md)**.
 - **Multi-tenant organisations**: one deployment serves many organisations with strict data isolation (enforced centrally in the ORM, composite keys for cloud resource ids, per-organisation agent, sensor and cloud credentials). Invite-only onboarding (platform owners create organisations and invite their first admin by email; admins invite their team), a platform console to list, create and suspend organisations, and per-organisation settings. Existing installations are migrated into a default organisation automatically. See **[docs/MULTI_TENANCY.md](docs/MULTI_TENANCY.md)**.
 - **Pluggable connectors** and a documented **runtime sensor ingest API** for the runtime sensor.
 
@@ -98,6 +99,7 @@ docs/DEVICE_SCRIPTS.md   approved (signed) device scripts; ADR-0001 explains why
 device-scripts/          the reviewed script library (signed by .github/workflows/device-scripts-release.yml)
 docs/NOTIFICATIONS.md    alert notifications: Teams, Slack, email, signed webhooks, rules
 docs/ASSET_MANAGEMENT.md IT asset lifecycle: asset records, custody, offboarding, disposal, CSV, notifications
+docs/DIRECTORY_DISCOVERY.md directory discovery: AD collectors, auth, ports, matching, discovery issues
 docs/AUTH.md             MFA (TOTP) and Microsoft Entra ID sign-in, break-glass accounts
 docs/VULNERABILITIES.md  CVE matching: sources, CPE mapping table, limits, egress, adding mappings
 docs/MULTI_TENANCY.md    organisations: data model, isolation guarantees, machine credentials, platform owners

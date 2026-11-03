@@ -36,6 +36,9 @@ type HTTPError struct {
 
 func (e *HTTPError) Error() string { return fmt.Sprintf("server returned %d: %s", e.Status, e.Detail) }
 
+// StatusCode is the HTTP status (used by internal/directory's retry policy).
+func (e *HTTPError) StatusCode() int { return e.Status }
+
 // IsUnauthorized reports a rejected or superseded credential (401) or a revoked device (403).
 func IsUnauthorized(err error) bool {
 	var he *HTTPError
@@ -283,6 +286,19 @@ func (c *Client) Ack(ctx context.Context, cmd model.Command) error {
 func (c *Client) UploadLogs(ctx context.Context, cmd model.Command, gz []byte) error {
 	return c.do(ctx, http.MethodPost, "/api/agent/commands/"+cmd.ID+"/logs", "application/gzip", gz,
 		map[string]string{"X-Command-Nonce": cmd.Nonce}, nil)
+}
+
+// UploadDirectoryBatch posts one gzip-compressed JSON batch of a
+// directory_sync run (internal/directory). Only /api/agent/directory/runs/...
+// on the enrolled server is accepted; the single-use sync token travels in
+// X-Directory-Sync-Token next to the device credential.
+func (c *Client) UploadDirectoryBatch(ctx context.Context, path, token string, gz []byte) error {
+	if !strings.HasPrefix(path, "/api/agent/directory/runs/") || strings.Contains(path, "..") ||
+		strings.ContainsAny(path, "?# ") || strings.ContainsRune(path, '\\') {
+		return fmt.Errorf("refusing to upload to %q", path)
+	}
+	return c.do(ctx, http.MethodPost, path, "application/json", gz,
+		map[string]string{"Content-Encoding": "gzip", "X-Directory-Sync-Token": token}, nil)
 }
 
 // Fetch downloads an /api/agent/updates/ or /api/agent/scripts/ resource into

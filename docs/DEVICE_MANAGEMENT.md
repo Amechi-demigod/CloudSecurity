@@ -289,6 +289,8 @@ Everything is **read-only** and uses OS-native tools with timeouts, so the user 
 | Local admins | members of the Administrators group (by SID, so it works in any language) | members of the `admin` group |
 | Software | uninstall registry keys: HKLM 64-bit, HKLM 32-bit and loaded user hives (name, version, publisher, install date; system components and updates excluded) | `.app` bundles in `/Applications` (2 levels) and `~/Applications` (name, version, bundle id) |
 
+**Directory membership** (agent 1.3.0+): the AD domain, NetBIOS name, forest, domain and computer-account SIDs, DNS host name, Entra ID device / tenant id and join type, and Intune enrollment id, all read locally (LSA, `NetGetAadJoinInformation`, registry; `dsconfigad -show` on macOS, `realm list` on Linux). See [DIRECTORY_DISCOVERY.md](DIRECTORY_DISCOVERY.md#domain-join-facts).
+
 **Privacy note.** The agent does **not** collect files, documents, browsing data, screenshots, keystrokes, location, process lists or network traffic. It records the user names of signed-in users and local administrators, IP and MAC addresses, the serial number and the installed applications. Tell your users about it as your policies require. Data is kept until the device is deleted. Posture history is capped per device (`DEVICE_HISTORY_LIMIT`, default 200 snapshots).
 
 ## Device health and issues
@@ -328,6 +330,7 @@ There is no generic "run command". Only the following actions exist, and each on
 | `isolate_host` / `restore_host` | analyst / admin | blocks standard interactive sign-in while local admin access keeps working, then restores it exactly ([Suspend sign-in](#suspend-sign-in)). Internal names kept for API compatibility; the UI only ever says "Suspend sign-in" / "Restore sign-in". Typed hostname to suspend; no second approval (reversible) |
 | `wipe_device` | admin **+ a second admin** | Windows only, device opted in at install time: factory-resets the device through `MDM_RemoteWipe` ([Remote wipe](#remote-wipe-windows)). Never queued directly: `POST /api/devices/{id}/wipe` creates an approval request |
 | `run_script` | admin (**+ a second admin** unless the signed manifest says `risk: low`) | runs one approved, signed script with validated parameters ([Approved scripts](#approved-scripts)) |
+| `directory_sync` | admin | Agent 1.3.0+ designated as a **directory collector** only: reads Active Directory over LDAPS / StartTLS (never plain LDAP) with fixed filters and attributes and uploads the objects in batches to the server ([Directory discovery](DIRECTORY_DISCOVERY.md)). Never queued directly: directory sources queue it on schedule or with Sync now. Read-only: it changes nothing in the directory |
 | `start_remote_session` | analyst (View only) / admin (View and control) | Windows only: opens an attended remote session after the signed-in user allows it ([Remote sessions](#remote-sessions-windows)). Never queued directly: `POST /api/devices/{id}/remote-sessions` |
 
 Every action requires a **reason**. Creating one is written to the audit log (`device_command_created`, with actor, device, type, parameters and reason), and so are cancellation, completion (reported by the device), log-bundle downloads, token creation and revocation, enrollment, re-enrollment, revocation and deletion.

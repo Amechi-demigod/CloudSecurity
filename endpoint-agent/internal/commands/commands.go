@@ -20,6 +20,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/directory"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/model"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/remote"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/scripts"
@@ -50,6 +51,10 @@ const (
 	// StartRemoteSession opens an attended remote session (internal/remote):
 	// nothing is captured until the signed-in user allows it.
 	StartRemoteSession = remote.CommandType
+	// DirectorySync exports computer / user objects from Active Directory
+	// (read-only LDAP over TLS) to the server (internal/directory). It runs in
+	// the background; the result only says whether it started.
+	DirectorySync = directory.CommandType
 )
 
 // Lost-mode message limits (also enforced server-side).
@@ -78,6 +83,7 @@ var allowedParams = map[string][]string{
 	IsolateHost:           {"incident_id"},
 	RestoreHost:           {},
 	StartRemoteSession:    remote.AllowedParams,
+	DirectorySync:         directory.AllowedParams,
 }
 
 // incidentIDRe matches an optional, operator-supplied incident reference
@@ -153,6 +159,8 @@ func Validate(c model.Command, deviceID string, now time.Time) error {
 		_, err = IncidentIDParam(c.Params)
 	case StartRemoteSession:
 		_, err = remote.ParseParams(c.Params)
+	case DirectorySync:
+		_, err = directory.ParseParams(c.Params)
 	}
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrRejected, err)
@@ -213,6 +221,10 @@ type Deps struct {
 	// RemoteSession returns once the session is connected (it then runs in
 	// the background) or could not start; ResultData carries the error_code.
 	RemoteSession func(ctx context.Context, c model.Command) Outcome
+	// DirectorySync starts a directory export in the background and returns
+	// at once (succeeded = started). Its output must never contain the
+	// command's credential or upload token.
+	DirectorySync func(ctx context.Context, c model.Command) Outcome
 }
 
 // Outcome of an executed command. After (if set) runs once the result has been
@@ -313,6 +325,11 @@ func Execute(ctx context.Context, c model.Command, d Deps, restart func()) Outco
 				ResultData: map[string]any{"error_code": remote.ErrHelper}}
 		}
 		return d.RemoteSession(ctx, c)
+	case DirectorySync:
+		if d.DirectorySync == nil {
+			return Outcome{Status: "rejected", Output: "directory sync is not available in this agent mode"}
+		}
+		return d.DirectorySync(ctx, c)
 	}
 	return Outcome{Status: "rejected", Output: "command type not in allowlist"}
 }

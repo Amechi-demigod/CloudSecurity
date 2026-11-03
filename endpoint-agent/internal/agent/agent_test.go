@@ -40,8 +40,9 @@ type fakeServer struct {
 	exitCode   map[string]any
 	resultData map[string]map[string]any // result_data sent with each command's result, by command id
 	checkin    *model.Report
-	offer      string // JSON of the "update" field of check-in responses ("" = none)
-	features   string // X-CNAPP-Agent-Features of the last check-in
+	offer      string   // JSON of the "update" field of check-in responses ("" = none)
+	features   string   // X-CNAPP-Agent-Features of the last check-in
+	dirBatches []string // directory_sync uploads: "path|token|encoding"
 }
 
 func (f *fakeServer) handler(t *testing.T) http.Handler {
@@ -112,6 +113,10 @@ func (f *fakeServer) handler(t *testing.T) http.Handler {
 				return
 			}
 			_, _ = w.Write(b)
+		case strings.HasPrefix(r.URL.Path, "/api/agent/directory/runs/"):
+			f.dirBatches = append(f.dirBatches, r.URL.Path+"|"+r.Header.Get("X-Directory-Sync-Token")+"|"+
+				r.Header.Get("Content-Encoding"))
+			_, _ = io.WriteString(w, `{"accepted":0,"duplicate":false}`)
 		case strings.HasSuffix(r.URL.Path, "/logs"):
 			f.bundle, _ = io.ReadAll(r.Body)
 			w.WriteHeader(201)

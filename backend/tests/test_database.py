@@ -64,7 +64,7 @@ MIGRATION_CHAIN = ["0001_baseline", "0002_device_management", "0003_notification
                    "0008_agent_update_automation", "0009_device_approvals_scripts", "0010_scheduled_scans",
                    "0011_vulnerability_matching", "0013_organizations", "0014_host_isolation",
                    "0015_command_result_data", "0016_dashboard_snapshots", "0017_onboarding_dismissed",
-                   "0018_remote_sessions", "0019_offboarding_username"]
+                   "0018_remote_sessions", "0019_offboarding_username", "0020_directory_discovery"]
 
 
 def test_migration_history_is_linear():
@@ -538,5 +538,33 @@ def test_offboarding_username_migration(tmp_path):
 
         command.downgrade(db.alembic_config(eng), "0018_remote_sessions")
         assert "person_username" not in {c["name"] for c in inspect(eng).get_columns("it_asset_offboardings")}
+    finally:
+        eng.dispose()
+
+
+def test_directory_discovery_migration(tmp_path):
+    """0020 adds the directory discovery tables and the (nullable) domain-join
+    columns of devices on top of 0019; downgrading removes them again."""
+    if IS_POSTGRES:
+        reset_database()
+        eng = db.create_db_engine(TEST_DATABASE_URL)
+    else:
+        eng = db.create_db_engine(f"sqlite:///{tmp_path / 'directory.db'}")
+    tables = ("directory_sources", "directory_sync_runs", "directory_computers", "directory_users",
+              "directory_findings")
+    try:
+        db.run_migrations(eng, "0019_offboarding_username")
+        assert not any(inspect(eng).has_table(t) for t in tables)
+        db.run_migrations(eng)
+        assert all(inspect(eng).has_table(t) for t in tables)
+        cols = {c["name"]: c for c in inspect(eng).get_columns("devices")}
+        assert all(cols[c]["nullable"] for c in ("directory_join", "ad_domain", "ad_computer_sid", "entra_device_id"))
+        assert _schema_diff(eng) == []
+
+        from alembic import command
+
+        command.downgrade(db.alembic_config(eng), "0019_offboarding_username")
+        assert not any(inspect(eng).has_table(t) for t in tables)
+        assert "ad_domain" not in {c["name"] for c in inspect(eng).get_columns("devices")}
     finally:
         eng.dispose()

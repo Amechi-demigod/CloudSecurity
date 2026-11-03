@@ -619,6 +619,11 @@ func cmdCheckin(args []string) error {
 		fmt.Println("A remote session started; waiting until it ends.")
 		a.Remote.Wait()
 	}
+	if a.DirectorySyncBusy() {
+		// The sync runs in this process: exiting now would cancel it.
+		fmt.Println("A directory sync started; waiting until it finishes.")
+		a.WaitDirectorySync(6 * time.Hour)
+	}
 	fmt.Println("Check-in and command poll completed.")
 	return nil
 }

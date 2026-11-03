@@ -31,6 +31,9 @@ COMMAND_ROLES: dict[str, str] = {
     # scripts go through /api/scripts/run (approval unless the signed risk is low).
     "wipe_device": "admin",
     "run_script": "admin",
+    # Never queued through POST /commands: directory sources (admin) queue it
+    # for their designated collectors (app/directory/service.py).
+    "directory_sync": "admin",
 }
 CommandType = Literal["recheck_posture", "collect_logs", "lock_device", "restart_agent", "update_check_in_interval",
                       "enable_lost_mode", "disable_lost_mode", "check_for_update", "isolate_host", "restore_host"]
@@ -92,6 +95,32 @@ class NetInterface(Strict):
     ips: list[Str64] = Field(default_factory=list, max_length=32)
 
 
+_GUID = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+_SID = r"^S-1-[0-9-]{1,180}$"
+_DNS = r"^[a-z0-9._-]{1,255}$"
+Guid = Annotated[str, StringConstraints(pattern=_GUID, to_lower=True)] | Literal[""]
+Sid = Annotated[str, StringConstraints(pattern=_SID)] | Literal[""]
+DnsName = Annotated[str, StringConstraints(pattern=_DNS, to_lower=True)] | Literal[""]
+
+
+class DirectoryJoin(Strict):
+    """Directory membership of the device (docs/DIRECTORY_DISCOVERY.md#domain-join-facts):
+    the AD domain it is joined to, its computer account SID, its Entra ID device
+    and Intune enrollment. Every field is optional ("" = unknown)."""
+    ad_domain: DnsName = ""
+    ad_netbios: Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9._ -]{0,64}$")] = ""
+    ad_forest: DnsName = ""
+    ad_domain_sid: Sid = ""
+    ad_computer_sid: Sid = ""
+    ad_object_guid: Guid = ""
+    dns_hostname: DnsName = ""
+    entra_device_id: Guid = ""
+    entra_tenant_id: Guid = ""
+    entra_join_type: Literal["joined", "registered", ""] = ""
+    intune_enrollment_id: Guid = ""
+    source: Annotated[str, StringConstraints(pattern=r"^[a-z_]{0,16}$")] = ""
+
+
 class DeviceInfo(Strict):
     hostname: Str255 = Field(min_length=1)
     os_family: OsFamily
@@ -112,6 +141,8 @@ class DeviceInfo(Strict):
     network: list[NetInterface] = Field(default_factory=list, max_length=64)
     timezone: Str64 = ""
     agent_version: Annotated[str, StringConstraints(max_length=32)] = ""
+    # Agents >= 1.3.0; omitted when the device is not joined to any directory.
+    directory_join: DirectoryJoin | None = None
 
 
 class PostureCheck(Strict):
@@ -277,6 +308,8 @@ class DeviceDetailOut(DeviceSummaryOut):
     lost_mode: dict[str, Any] = {}
     wipe: dict[str, Any] = {}
     isolation: dict[str, Any] = {}
+    # Directory membership reported by the agent (docs/DIRECTORY_DISCOVERY.md).
+    directory_join: dict[str, Any] = {}
 
 
 class SoftwareOut(ORM):

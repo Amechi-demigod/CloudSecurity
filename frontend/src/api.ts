@@ -540,6 +540,23 @@ export interface DeviceDetail extends DeviceSummary {
   lost_mode: LostModeState;
   wipe: WipeState;
   isolation: IsolationState;
+  /** Directory membership reported by the agent (1.3.0+); {} when not joined / older agents. */
+  directory_join?: DirectoryJoin;
+}
+
+export interface DirectoryJoin {
+  ad_domain?: string;
+  ad_netbios?: string;
+  ad_forest?: string;
+  ad_domain_sid?: string;
+  ad_computer_sid?: string;
+  ad_object_guid?: string;
+  dns_hostname?: string;
+  entra_device_id?: string;
+  entra_tenant_id?: string;
+  entra_join_type?: string;
+  intune_enrollment_id?: string;
+  source?: string;
 }
 
 export interface DeviceSoftware {

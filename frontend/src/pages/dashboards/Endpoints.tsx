@@ -1,6 +1,7 @@
 import { Laptop } from "lucide-react";
 import { Link } from "react-router-dom";
 import { api } from "../../api";
+import { directoryApi, type DirectorySummary } from "../../directoryApi";
 import { BarRows, ChartEmpty, Composition, DashCard, KpiTile, ViewLink } from "../../components/dash";
 import { Empty, ErrorNote } from "../../components/ui";
 import { CAT_COLORS, href, OTHER_COLOR, sevSegments } from "../../lib/dash";
@@ -11,9 +12,31 @@ import { TabSkeleton } from "./Skeleton";
 
 const OS_LABEL: Record<string, string> = { windows: "Windows", macos: "macOS", linux: "Linux" };
 
+/** Directory computers that have an agent (directory discovery). */
+function CoverageTile({ cov, unmanaged, days }: { cov: DirectorySummary["coverage"]; unmanaged: number; days: number }) {
+  const without = Math.max(0, cov.directory_computers - cov.managed);
+  return (
+    <KpiTile
+      label="Agent coverage"
+      value={cov.pct != null ? cov.pct : "—"}
+      unit={cov.pct != null ? "%" : undefined}
+      to="/it-assets/discovery?type=not_managed"
+      hint="Enabled directory computers matched to an active agent device; open the computers without an agent"
+      days={days}
+      segments={[
+        { key: "managed", label: "With agent", count: cov.managed, color: "var(--color-good)" },
+        { key: "unmanaged", label: "No agent", count: without, color: SEV_COLOR.high, to: "/it-assets/discovery?type=not_managed" },
+      ].filter((s) => s.count > 0)}
+      footer={`${cov.managed.toLocaleString()} of ${cov.directory_computers.toLocaleString()} directory computers · ${unmanaged.toLocaleString()} in use without an agent`}
+    />
+  );
+}
+
 export default function EndpointsTab({ range }: TabProps) {
   // Devices are not tied to a cloud account, so the account filter does not apply here.
   const { data: d, error } = useApi(() => api.dashEndpoints({ range }), [range], 60000);
+  // Directory discovery: shown only when a directory source exists (errors just hide the tile).
+  const { data: dir } = useApi(() => directoryApi.summary().catch(() => null), [], 120000);
   if (!d) return error ? <ErrorNote error={error} /> : <TabSkeleton />;
   const k = d.kpis;
   const days = d.days;
@@ -36,7 +59,8 @@ export default function EndpointsTab({ range }: TabProps) {
 
   return (
     <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:col-span-12 xl:grid-cols-4">
+      <div className={`grid grid-cols-1 gap-4 sm:grid-cols-2 lg:col-span-12 ${dir && dir.sources > 0 ? "xl:grid-cols-5" : "xl:grid-cols-4"}`}>
+        {dir && dir.sources > 0 && <CoverageTile cov={dir.coverage} unmanaged={dir.counts.not_managed ?? 0} days={days} />}
         <KpiTile label="Managed devices" value={k.managed.value} to="/devices" delta={k.managed.delta} better="up" days={days} segments={osParts} />
         <KpiTile
           label="Failing posture checks"

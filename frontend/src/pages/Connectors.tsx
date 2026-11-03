@@ -4,6 +4,7 @@ import { api } from "../api";
 import type { Connector, ConnectorSchedule, ScanRun, ScanSchedule } from "../api";
 import { useAuth } from "../auth/context";
 import { ConnectCloud, ConnectionForm, ProviderMark } from "../components/cloudConnect";
+import { DirectoriesSection } from "../components/directories";
 import { Button, Card, ErrorNote, PageHeader, SeverityBadge, Table, Tag } from "../components/ui";
 import { CLOUD_NAME, CLOUD_PROVIDERS, CLOUD_ROLE, CLOUD_SCOPE } from "../lib/cloudSetup";
 import { fmtAgo, fmtHours, fmtTime, fmtUntil } from "../lib/format";
@@ -355,7 +356,7 @@ export default function Connectors() {
 
   return (
     <div>
-      <PageHeader title="Connectors & scans" subtitle="Cloud connectors are strictly read-only. Scan results merge into the same inventory and findings." />
+      <PageHeader title="Connectors & scans" subtitle="Cloud connectors and directories are strictly read-only. Scan results merge into the same inventory and findings." />
       <ErrorNote error={connectors.error ?? scanError} />
       {notice && (
         <div role="status" className="mb-4 flex items-start justify-between gap-3 rounded border border-good/60 bg-good/10 px-3 py-2 text-sm text-ink">
@@ -450,6 +451,8 @@ export default function Connectors() {
           )}
         </div>
       )}
+
+      <DirectoriesSection isAdmin={isAdmin} />
 
       <Card title="Scan history" className="mt-4">
         {scans.data?.length === 0 ? (

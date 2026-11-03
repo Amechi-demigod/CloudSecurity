@@ -19,7 +19,7 @@ export interface ItAsset {
   manufacturer: string;
   model: string;
   status: AssetStatus;
-  source: "manual" | "agent" | "import";
+  source: "manual" | "agent" | "import" | "directory";
   device_id: string | null;
   device_hostname: string | null;
   /** Main name: the computer name for agent devices, else the asset tag. */
@@ -29,6 +29,8 @@ export interface ItAsset {
   assignee_name: string;
   assignee_email: string;
   assignee_department: string;
+  /** Directory identity of the owner (display only; the owner key stays the username / email). */
+  owner_directory?: OwnerDirectory | null;
   assigned_at: string | null;
   location: string;
   purchase_date: string | null;
@@ -50,6 +52,15 @@ export interface ItAsset {
   created_by: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface OwnerDirectory {
+  user_id: string;
+  display_name: string;
+  mail: string;
+  department: string;
+  title: string;
+  enabled: boolean;
 }
 
 export interface AssetBrief {
