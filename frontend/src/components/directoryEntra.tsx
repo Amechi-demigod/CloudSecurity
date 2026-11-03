@@ -146,9 +146,11 @@ export function EntraForm({ source, onDone, onCancel }: { source: EntraSource | 
           <Button type="submit" variant="primary" disabled={busy || !chosen?.usable}>
             {busy ? "Testing…" : "Test & save"}
           </Button>
-          <Button disabled={busy} onClick={() => (saved && !source ? onDone(saved) : onCancel())}>
-            {saved && !source ? "Done" : "Cancel"}
-          </Button>
+          {!(saved && run) && (
+            <Button disabled={busy} onClick={() => (saved && !source ? onDone(saved) : onCancel())}>
+              {saved && !source ? "Done" : "Cancel"}
+            </Button>
+          )}
           {saved && run && <Button onClick={() => onDone(saved)}>{run.status === "succeeded" ? "Finish" : "Close (keep settings)"}</Button>}
         </div>
         {run && (
