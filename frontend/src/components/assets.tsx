@@ -1,7 +1,29 @@
 import { useState, type FormEvent, type ReactNode } from "react";
-import { assetsApi, type AssetInput, type AssetSettings, type AssetStatus, type ItAsset } from "../assetsApi";
+import { assetsApi, type AssetInput, type AssetSettings, type AssetStatus, type ItAsset, type OwnerDirectory as OwnerDir } from "../assetsApi";
 import { STATUS_LABEL, TYPE_LABEL, errMsg } from "../lib/assets";
-import { Button, Field, Modal } from "./ui";
+import { Button, Field, Modal, Tag } from "./ui";
+
+/**
+ * The owner's directory identity (directory discovery), shown under the owner. Display only: the
+ * owner itself stays the username / email (the agent's signed-in user still wins).
+ */
+export function OwnerDirectory({ a, detail = false }: { a: { assignee_department: string; owner_directory?: OwnerDir | null }; detail?: boolean }) {
+  const d = a.owner_directory;
+  if (!d) return a.assignee_department && !detail ? <div className="text-ink-3">{a.assignee_department}</div> : null;
+  const dept = a.assignee_department || d.department;
+  if (!detail)
+    return (
+      <div className="text-ink-3">
+        {[d.display_name, dept].filter(Boolean).join(" · ")} {!d.enabled && <Tag tone="critical">disabled in directory</Tag>}
+      </div>
+    );
+  return (
+    <div className="mt-0.5 text-xs text-ink-2">
+      <span className="text-ink-3">Directory:</span> {[d.display_name, d.mail, [d.title, d.department].filter(Boolean).join(", ")].filter(Boolean).join(" · ")}{" "}
+      {!d.enabled && <Tag tone="critical">disabled in directory</Tag>}
+    </div>
+  );
+}
 
 const STATUS_STYLE: Record<AssetStatus, { cls: string; icon: string }> = {
   in_stock: { cls: "border-line text-ink-2", icon: "□" },

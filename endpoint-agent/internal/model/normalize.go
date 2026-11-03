@@ -1,6 +1,7 @@
 package model
 
 import (
+	"regexp"
 	"strings"
 	"unicode/utf8"
 )
@@ -70,6 +71,7 @@ func (r *Report) Normalize() {
 			n.IPs[j] = Trunc(n.IPs[j], 64)
 		}
 	}
+	d.DirectoryJoin = normalizeJoin(d.DirectoryJoin)
 	if r.Posture == nil {
 		r.Posture = map[string]PostureCheck{}
 	}
@@ -107,4 +109,53 @@ func (r *Report) Normalize() {
 	for k, v := range r.Errors {
 		r.Errors[k] = Trunc(v, 1000)
 	}
+}
+
+var (
+	sidRe     = regexp.MustCompile(`^S-1-[0-9-]{1,180}$`)
+	guidRe    = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+	dnsNameRe = regexp.MustCompile(`^[a-z0-9_.-]{1,255}$`)
+	netbiosRe = regexp.MustCompile(`^[A-Za-z0-9 !#$%&'()._@^{}~-]{1,64}$`)
+)
+
+func keep(s string, re *regexp.Regexp) string {
+	if re.MatchString(s) {
+		return s
+	}
+	return ""
+}
+
+// normalizeJoin lower-cases DNS names and GUIDs and drops values the server
+// would reject (so one odd value never fails the whole check-in). nil when empty.
+func normalizeJoin(j *DirectoryJoin) *DirectoryJoin {
+	if j == nil {
+		return nil
+	}
+	lowerDNS := func(s string) string {
+		return keep(strings.TrimSuffix(strings.ToLower(Trunc(s, 255)), "."), dnsNameRe)
+	}
+	guid := func(s string) string {
+		return keep(strings.Trim(strings.ToLower(Trunc(s, 64)), "{}"), guidRe)
+	}
+	out := &DirectoryJoin{
+		ADDomain:           lowerDNS(j.ADDomain),
+		ADNetbios:          keep(Trunc(j.ADNetbios, 64), netbiosRe),
+		ADForest:           lowerDNS(j.ADForest),
+		ADDomainSID:        keep(strings.ToUpper(Trunc(j.ADDomainSID, 184)), sidRe),
+		ADComputerSID:      keep(strings.ToUpper(Trunc(j.ADComputerSID, 184)), sidRe),
+		ADObjectGUID:       guid(j.ADObjectGUID),
+		DNSHostname:        lowerDNS(j.DNSHostname),
+		EntraDeviceID:      guid(j.EntraDeviceID),
+		EntraTenantID:      guid(j.EntraTenantID),
+		IntuneEnrollmentID: guid(j.IntuneEnrollmentID),
+		Source:             Trunc(j.Source, 16),
+	}
+	switch j.EntraJoinType {
+	case "joined", "registered":
+		out.EntraJoinType = j.EntraJoinType
+	}
+	if out.Empty() {
+		return nil
+	}
+	return out
 }

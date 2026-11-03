@@ -307,3 +307,21 @@ func TestStartRemoteSessionWithoutBackend(t *testing.T) {
 		t.Fatalf("got %+v", out)
 	}
 }
+
+func TestDirectorySyncValidation(t *testing.T) {
+	p := map[string]any{"source_id": "fedcba9876543210fedcba9876543210", "run_id": "0123456789abcdef0123456789abcdef",
+		"domain": "corp.example.com", "scopes": []any{"users"}, "auth": "simple",
+		"upload_path":  "/api/agent/directory/runs/0123456789abcdef0123456789abcdef/batches",
+		"upload_token": "tok_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+		"credential":   map[string]any{"username": "svc", "password": "pw-123456"}}
+	if err := Validate(cmd(DirectorySync, p), "dev", now); err != nil {
+		t.Fatal(err)
+	}
+	p["filter"] = "(objectClass=*)"
+	if err := Validate(cmd(DirectorySync, p), "dev", now); !errors.Is(err, ErrRejected) {
+		t.Errorf("custom filter accepted: %v", err)
+	}
+	if out := Execute(context.Background(), cmd(DirectorySync, nil), Deps{}, nil); out.Status != "rejected" {
+		t.Errorf("%+v", out)
+	}
+}

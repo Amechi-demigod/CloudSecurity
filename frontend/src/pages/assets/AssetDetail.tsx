@@ -2,9 +2,9 @@ import { useState, type FormEvent, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { assetsApi, type AssetEvent, type ItAsset } from "../../assetsApi";
 import { useAuth } from "../../auth/context";
-import { AssetFormModal, AssetStatusBadge, FormError, SelectField, TextArea } from "../../components/assets";
+import { AssetFormModal, AssetStatusBadge, FormError, OwnerDirectory, SelectField, TextArea } from "../../components/assets";
 import { Button, Card, Empty, ErrorNote, Field, Modal, PageHeader, Tag } from "../../components/ui";
-import { DISPOSAL_LABEL, EVENT_LABEL, STATUS_LABEL, TYPE_LABEL, errMsg, fmtDate, fmtMoney, namedByHost, ownerLabel, todayIso } from "../../lib/assets";
+import { DISPOSAL_LABEL, EVENT_LABEL, SOURCE_LABEL, STATUS_LABEL, TYPE_LABEL, errMsg, fmtDate, fmtMoney, namedByHost, ownerLabel, todayIso } from "../../lib/assets";
 import { fmtBytes } from "../../lib/devices";
 import { fmtAgo, fmtTime } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
@@ -340,6 +340,7 @@ export default function AssetDetail() {
                   {ownerLabel(asset)} <span className="text-ink-3">{asset.assignee_name && asset.assignee_email}</span>
                   {!asset.assignee_email && asset.device_id && <span className="text-xs text-ink-3"> (signed-in user from the agent)</span>}
                   {asset.assigned_at && <div className="text-xs text-ink-3">since {fmtTime(asset.assigned_at)}</div>}
+                  <OwnerDirectory a={asset} detail />
                 </>
               )}
             </Row>
@@ -358,7 +359,7 @@ export default function AssetDetail() {
             <Row label="Asset tag">
               <span className="font-mono">{asset.asset_tag}</span>
             </Row>
-            <Row label="Source">{asset.source === "agent" ? "Agent enrollment" : asset.source === "import" ? "CSV import" : "Added manually"}</Row>
+            <Row label="Source">{SOURCE_LABEL[asset.source] ?? asset.source}</Row>
             {Object.entries(asset.custom_fields).map(([k, v]) => (
               <Row key={k} label={labelFor(k)}>
                 {v}

@@ -69,9 +69,24 @@ def _get(db: Session, asset_id: str) -> ItAsset:
     return a
 
 
+def _enrich_owners(db: Session, assets: list[ItAsset], devices: dict[str, Device], rows: list[dict[str, Any]]) -> None:
+    """Add the owner's directory identity (directory discovery), never failing the listing."""
+    from ..directory.reconcile import owner_enrichment
+
+    try:
+        found = owner_enrichment(db, assets, devices)
+    except Exception:
+        log.exception("directory owner enrichment failed")
+        return
+    for r in rows:
+        r["owner_directory"] = found.get(r["id"])
+
+
 def _out(db: Session, a: ItAsset) -> dict[str, Any]:
     device = db.get(Device, a.device_id) if a.device_id else None
-    return svc.to_out(a, device, svc.get_settings(db))
+    out = svc.to_out(a, device, svc.get_settings(db))
+    _enrich_owners(db, [a], {device.id: device} if device is not None else {}, [out])
+    return out
 
 
 def _conflict(e: Exception) -> HTTPException:
@@ -134,6 +149,7 @@ def _rows(db: Session, f: dict) -> list[dict[str, Any]]:
     st = svc.get_settings(db)
     now = utcnow()
     out = [svc.to_out(a, devices.get(a.device_id or ""), st, now) for a in assets]
+    _enrich_owners(db, assets, devices, out)
     # By name: the computer name for agent devices, else the tag.
     out.sort(key=lambda r: (r["display_name"].casefold(), r["asset_tag"].casefold()))
     if flag:

@@ -48,6 +48,33 @@ type DeviceInfo struct {
 	Network       []NetInterface `json:"network"`
 	Timezone      string         `json:"timezone"`
 	AgentVersion  string         `json:"agent_version"`
+	// DirectoryJoin: domain / cloud-directory membership facts (nil when the
+	// machine is not joined to anything this agent can detect).
+	DirectoryJoin *DirectoryJoin `json:"directory_join,omitempty"`
+}
+
+// DirectoryJoin describes the directories this computer is joined to, used by
+// the server to match the device to directory (AD / Entra) computer objects.
+// Every field is optional ("" when unknown); GUIDs are lower-case 8-4-4-4-12.
+type DirectoryJoin struct {
+	ADDomain           string `json:"ad_domain"`
+	ADNetbios          string `json:"ad_netbios"`
+	ADForest           string `json:"ad_forest"`
+	ADDomainSID        string `json:"ad_domain_sid"`
+	ADComputerSID      string `json:"ad_computer_sid"`
+	ADObjectGUID       string `json:"ad_object_guid"`
+	DNSHostname        string `json:"dns_hostname"`
+	EntraDeviceID      string `json:"entra_device_id"`
+	EntraTenantID      string `json:"entra_tenant_id"`
+	EntraJoinType      string `json:"entra_join_type"`
+	IntuneEnrollmentID string `json:"intune_enrollment_id"`
+	Source             string `json:"source"`
+}
+
+// Empty reports whether nothing is known.
+func (j *DirectoryJoin) Empty() bool {
+	return j == nil || (j.ADDomain == "" && j.ADNetbios == "" && j.ADComputerSID == "" && j.EntraDeviceID == "" &&
+		j.EntraTenantID == "" && j.IntuneEnrollmentID == "" && j.ADObjectGUID == "")
 }
 
 // PostureCheck is the result of one security posture check.

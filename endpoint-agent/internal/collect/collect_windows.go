@@ -117,6 +117,7 @@ func ps(ctx context.Context, timeout time.Duration, script string, v any) error 
 func platformCollect(ctx context.Context, c collector, o Options) {
 	d := &c.r.Device
 	d.Architecture = nativeArch()
+	d.DirectoryJoin = windowsJoin()
 	c.guard("system", func() error {
 		var s winSysInfo
 		if err := ps(ctx, 90*time.Second, psSysInfo, &s); err != nil {

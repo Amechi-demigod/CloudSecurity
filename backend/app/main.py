@@ -31,6 +31,9 @@ from .api import platform_admin as platform_admin_api
 from .api import remote_relay as remote_relay_api
 from .api import remote_sessions as remote_sessions_api
 from .asset_lifecycle import api as it_assets_api
+from .directory import agent_api as directory_agent_api
+from .directory import api as directory_api
+from .directory.scheduler import DirectoryScheduler
 from .notifications import api as notifications_api
 from .notifications import settings as notification_settings
 from .notifications.worker import NotificationWorker, set_worker
@@ -83,6 +86,11 @@ async def lifespan(app: FastAPI):
     if s.scan_scheduler_worker_enabled:
         app.state.scan_scheduler = ScanScheduler()
         app.state.scan_scheduler.start()
+    # Directory discovery syncs, failover and re-evaluation (leader-elected).
+    app.state.directory_scheduler = None
+    if s.directory_scheduler_worker_enabled:
+        app.state.directory_scheduler = DirectoryScheduler()
+        app.state.directory_scheduler.start()
     # Daily dashboard metric snapshots ("vs previous period" changes; leader-elected).
     app.state.dashboard_snapshots = None
     if s.dashboard_snapshot_worker_enabled:
@@ -102,6 +110,8 @@ async def lifespan(app: FastAPI):
         vuln_worker.set_worker(None)
     if app.state.scan_scheduler:
         app.state.scan_scheduler.stop()
+    if app.state.directory_scheduler:
+        app.state.directory_scheduler.stop()
     if app.state.dashboard_snapshots:
         app.state.dashboard_snapshots.stop()
     if app.state.simulator:
@@ -153,6 +163,9 @@ def create_app() -> FastAPI:
     )
     app.add_middleware(BodySizeLimitMiddleware, max_bytes=s.max_request_bytes,
                        path_limits={"/api/agent/": max(s.agent_max_request_bytes, s.max_request_bytes),
+                                    # directory collectors: gzip JSON batches of up to 5000 objects
+                                    "/api/agent/directory/": max(directory_agent_api.MAX_COMPRESSED,
+                                                                 s.max_request_bytes),
                                     "/api/updates/releases": max(s.agent_update_max_bundle_bytes, s.max_request_bytes),
                                     # IT assets: CSV import and wipe / destruction certificate uploads
                                     it_assets_api.UPLOAD_PREFIXES[0]: max(s.asset_import_max_bytes,
@@ -171,6 +184,7 @@ def create_app() -> FastAPI:
     app.include_router(agent_api.router)
     app.include_router(agent_updates_api.device_router)  # /api/agent/updates/*: device credentials
     app.include_router(device_scripts_api.device_router)  # /api/agent/scripts/*: device credentials
+    app.include_router(directory_agent_api.router)  # /api/agent/directory/*: device credential + sync token
     app.include_router(auth_api.router)  # /login is public; the others depend on the session
     app.include_router(mfa_sso_api.router)  # /login/mfa*, /providers and /sso/* are public
     app.include_router(contact_api.router)  # POST /api/contact: the public website's demo request form
@@ -190,6 +204,7 @@ def create_app() -> FastAPI:
     app.include_router(notifications_api.router)  # analyst read-only, admin writes
     app.include_router(mfa_sso_api.admin_router)
     app.include_router(it_assets_api.router)  # /api/it-assets/*: viewer reads, analyst/admin writes
+    app.include_router(directory_api.router)  # /api/directory/*: viewer reads, admin writes
     app.include_router(agent_updates_api.router)  # /api/updates/*: viewer reads, admin writes (all audited)
     app.include_router(approvals_api.router)  # /api/approvals/*: admin only (two-person rule)
     app.include_router(device_scripts_api.router)  # /api/scripts/*: viewer reads, admin imports / runs

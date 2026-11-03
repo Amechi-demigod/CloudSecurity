@@ -15,6 +15,7 @@ from . import (
     asset_lifecycle_source,  # noqa: F401  (IT assets: overdue retrievals, warranties, unseen devices)
     builtin,  # noqa: F401  (registers the built-in sources)
     device_source,  # noqa: F401  (endpoint devices: posture issues, connectivity, remote actions)
+    directory_source,  # noqa: F401  (directory discovery: failed syncs, unmanaged computers)
     host_isolation_source,  # noqa: F401  (host isolation: sign-in suspension and restore)
     remote_session_source,  # noqa: F401  (attended remote desktop sessions)
     server_update_source,  # noqa: F401  (on-prem server updates: failures and automatic rollbacks)

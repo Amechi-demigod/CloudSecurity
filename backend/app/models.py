@@ -665,6 +665,12 @@ class Device(TenantMixin, Base):
     # Optional capabilities the agent advertises (X-CNAPP-Agent-Features), e.g.
     # "check_for_update"; older agents send nothing.
     agent_features: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # Directory membership the agent reports (check-in `directory_join`, docs/DIRECTORY_DISCOVERY.md):
+    # the full validated document, plus the identifiers directory matching looks up, indexed.
+    directory_join: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    ad_domain: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    ad_computer_sid: Mapped[str | None] = mapped_column(String(184), nullable=True, index=True)
+    entra_device_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
 
 
 class DeviceCredential(TenantMixin, Base):
@@ -1086,6 +1092,8 @@ class OidcAuthRequest(Base):
 
 # Notification tables live in their own module; import them so they are part of
 # Base.metadata (create_all on SQLite, Alembic autogenerate / schema checks).
-# Same for the IT asset lifecycle tables (hardware assets, custody, offboarding, certificates).
+# Same for the IT asset lifecycle tables (hardware assets, custody, offboarding, certificates)
+# and directory discovery (docs/DIRECTORY_DISCOVERY.md).
 from .asset_lifecycle import models as _asset_lifecycle_models  # noqa: E402, F401
+from .directory import models as _directory_models  # noqa: E402, F401
 from .notifications import models as _notification_models  # noqa: E402, F401

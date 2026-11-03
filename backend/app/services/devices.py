@@ -130,7 +130,8 @@ def apply_checkin(db: Session, device: Device, body: CheckinRequest, ip: str | N
     device.manufacturer, device.model = info.manufacturer, info.model
     if info.agent_version:
         device.agent_version = info.agent_version
-    device.inventory = info.model_dump(mode="json")
+    device.inventory = info.model_dump(mode="json", exclude={"directory_join"})
+    apply_directory_join(device, info.directory_join)
     posture = {k: v.model_dump(mode="json") for k, v in body.posture.items()}
     device.posture = posture
     device.collection_errors = dict(body.errors)
@@ -179,6 +180,16 @@ def apply_checkin(db: Session, device: Device, body: CheckinRequest, ip: str | N
     db.flush()
     _prune_history(db, device.id, s.device_history_limit)
     return issues
+
+
+def apply_directory_join(device: Device, join: Any) -> None:
+    """Store the directory membership an agent reports (None: not joined / older agent)."""
+    data = join.model_dump(mode="json") if join is not None else {}
+    data = {k: v for k, v in data.items() if v}
+    device.directory_join = data or None
+    device.ad_domain = data.get("ad_domain") or None
+    device.ad_computer_sid = (data.get("ad_computer_sid") or "").upper() or None
+    device.entra_device_id = data.get("entra_device_id") or None
 
 
 def _reconcile_lost_mode(device: Device, posture: dict[str, Any], now: datetime) -> None:

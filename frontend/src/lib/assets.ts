@@ -29,6 +29,14 @@ export const TYPE_LABEL: Record<string, string> = {
   other: "Other",
 };
 
+/** Where an IT asset record came from. */
+export const SOURCE_LABEL: Record<string, string> = {
+  agent: "Agent enrollment",
+  import: "CSV import",
+  manual: "Added manually",
+  directory: "Directory discovery",
+};
+
 export const DISPOSAL_LABEL: Record<string, string> = {
   recycled: "Recycled",
   destroyed: "Destroyed",

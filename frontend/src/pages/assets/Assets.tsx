@@ -3,7 +3,7 @@ import { useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { assetsApi, type AssetBrief, type ImportResult } from "../../assetsApi";
 import { useAuth } from "../../auth/context";
-import { AssetFormModal, AssetStatusBadge, FormError } from "../../components/assets";
+import { AssetFormModal, AssetStatusBadge, FormError, OwnerDirectory } from "../../components/assets";
 import { Button, Card, Empty, ErrorNote, Modal, PageHeader, Select, Stat, Table, Tag } from "../../components/ui";
 import { STATUS_LABEL, STATUS_ORDER, TYPE_LABEL, errMsg, fmtDate, fmtMoney, namedByHost, ownerLabel } from "../../lib/assets";
 import { fmtAgo } from "../../lib/format";
@@ -151,6 +151,9 @@ export default function Assets() {
         subtitle="Hardware lifecycle: who has what, custody history, leavers' retrievals, warranties and disposal. Agent devices get a record automatically."
         actions={
           <div className="flex flex-wrap items-center gap-2">
+            <Link to="/it-assets/discovery" className="rounded border border-line bg-surface-2 px-3 py-1.5 text-sm font-medium text-ink hover:bg-line">
+              Discovery
+            </Link>
             <Link to="/it-assets/offboarding" className="rounded border border-line bg-surface-2 px-3 py-1.5 text-sm font-medium text-ink hover:bg-line">
               Offboarding
             </Link>
@@ -292,7 +295,7 @@ export default function Assets() {
                   {ownerLabel(a) ? (
                     <>
                       <div className="text-ink">{ownerLabel(a)}</div>
-                      <div className="text-ink-3">{a.assignee_department}</div>
+                      <OwnerDirectory a={a} />
                     </>
                   ) : (
                     <span className="text-ink-3">—</span>

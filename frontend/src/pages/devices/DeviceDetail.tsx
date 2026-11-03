@@ -338,7 +338,39 @@ function Overview({ device }: { device: Device }) {
           </details>
         )}
       </Card>
+      <DirectoryCard device={device} />
     </div>
+  );
+}
+
+const JOIN_ROWS: [keyof NonNullable<Device["directory_join"]>, string][] = [
+  ["ad_domain", "AD domain"],
+  ["ad_netbios", "NetBIOS domain"],
+  ["ad_forest", "Forest"],
+  ["dns_hostname", "DNS host name"],
+  ["ad_computer_sid", "Computer SID"],
+  ["ad_object_guid", "Object GUID"],
+  ["entra_join_type", "Entra ID join"],
+  ["entra_device_id", "Entra device ID"],
+  ["entra_tenant_id", "Entra tenant ID"],
+  ["intune_enrollment_id", "Intune enrollment"],
+];
+
+/** Directory membership the agent reports (domain join, Entra ID, Intune). */
+function DirectoryCard({ device }: { device: Device }) {
+  const j = device.directory_join ?? {};
+  const rows = JOIN_ROWS.filter(([k]) => j[k]);
+  if (rows.length === 0) return null;
+  return (
+    <Card title="Directory">
+      <dl>
+        {rows.map(([k, label]) => (
+          <Row key={k} label={label}>
+            <span className={k.endsWith("_id") || k.endsWith("sid") || k.endsWith("guid") ? "font-mono text-xs" : undefined}>{j[k]}</span>
+          </Row>
+        ))}
+      </dl>
+    </Card>
   );
 }
 

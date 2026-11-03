@@ -264,7 +264,8 @@ def sync_devices(db: Session, *, limit: int = 2000) -> int:
     """Give every enrolled agent device an asset record and fill blanks from its inventory.
 
     * A device without an asset is linked to an existing unlinked asset with the
-      same serial number (e.g. a laptop added by hand before it was enrolled),
+      same serial number (e.g. a laptop added by hand before it was enrolled), or
+      to the asset added from its directory computer (directory discovery),
       otherwise a new asset is created (status in_stock, source agent).
     * Serial, make and model are copied into empty asset fields.
     * The signed-in user becomes the owner (`sync_owners`).
@@ -296,12 +297,19 @@ def _link_or_create(db: Session, d: Device) -> str | None:
     if serial:
         asset = db.scalars(select(ItAsset).where(func.lower(ItAsset.serial_number) == serial.lower(),
                                                  ItAsset.device_id.is_(None)).limit(1)).first()
+    how = "serial number"
+    if asset is None:
+        # An asset an admin added from directory discovery for this computer.
+        from ..directory.service import discovery_asset_for
+
+        asset = discovery_asset_for(db, d)
+        how = "directory computer"
     try:
         if asset is not None:
             asset.device_id = d.id
             asset.updated_at = utcnow()
             _fill_from_device(asset, d)
-            record(db, asset, "device_linked", SYSTEM, notes=f"matched agent device {d.hostname} by serial number",
+            record(db, asset, "device_linked", SYSTEM, notes=f"matched agent device {d.hostname} by {how}",
                    device_id=d.id, hostname=d.hostname)
             result = "linked"
         else:

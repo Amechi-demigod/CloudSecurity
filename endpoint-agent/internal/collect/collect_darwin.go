@@ -33,6 +33,7 @@ const (
 	plutilBin      = "/usr/bin/plutil"
 	xprotectBin    = "/usr/bin/xprotect"
 	sudoBin        = "/usr/bin/sudo"
+	dsconfigadBin  = "/usr/sbin/dsconfigad"
 	shortTimeout   = 20 * time.Second
 )
 
@@ -68,6 +69,10 @@ func readPlist(ctx context.Context, path string) (map[string]any, error) {
 
 func platformCollect(ctx context.Context, c collector, o Options) {
 	d := &c.r.Device
+	// Active Directory binding (informational: never an error entry).
+	if out, err := run(ctx, dsconfigadBin, "-show"); err == nil {
+		d.DirectoryJoin = ParseDsconfigad(out)
+	}
 	c.guard("os", func() error {
 		out, err := run(ctx, swVers)
 		d.OSName, d.OSVersion, d.OSBuild = parseSwVers(out)

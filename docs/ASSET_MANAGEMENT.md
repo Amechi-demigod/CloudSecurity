@@ -68,7 +68,10 @@ Open **IT assets** in the navigation:
 On every agent **check-in**, and when someone opens the IT assets list or dashboard, an enrolled device without an asset record gets one:
 
 1. If an asset without an agent has the **same serial number** (case-insensitive), the device is linked to it. This covers a laptop that IT recorded before it was enrolled, so no duplicate is created.
-2. Otherwise a new record is created with status *in stock*, source *agent*, tag `AGT-<first 8 hex digits of the device id>`, and a type guessed from the model ("MacBook", "ThinkPad", "Latitude" give *laptop*; "iMac", "OptiPlex" give *desktop*; anything else gives *computer*).
+2. If an admin added the device's **directory computer** to IT assets (source *directory*, [Directory discovery](DIRECTORY_DISCOVERY.md#adding-computers-to-it-assets)), the device is linked to that asset.
+3. Otherwise a new record is created with status *in stock*, source *agent*, tag `AGT-<first 8 hex digits of the device id>`, and a type guessed from the model ("MacBook", "ThinkPad", "Latitude" give *laptop*; "iMac", "OptiPlex" give *desktop*; anything else gives *computer*).
+
+With a directory source, IT asset owners also show their **directory identity** (display name, email, department, disabled) next to the username, as display-only enrichment: the agent-always-wins username owner rule below is unchanged. Directory computers without an agent are listed under **IT assets → Discovery** ([DIRECTORY_DISCOVERY.md](DIRECTORY_DISCOVERY.md)).
 
 Blank serial, make and model fields are filled from the inventory later too, because the serial number may only arrive with a later check-in. Values you type are never overwritten. Analysts can link or unlink a device by hand (`PATCH device_id`); a device can only be linked to one asset. If a device record is deleted under Devices, the asset and its history stay and only the link is cleared (the asset is then named by its tag again).
 

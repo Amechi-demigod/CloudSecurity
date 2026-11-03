@@ -22,6 +22,7 @@ from .. import config, tenancy
 from ..asset_lifecycle import service as asset_svc
 from ..auth import RateLimiter, audit, client_ip
 from ..db import get_db
+from ..directory import service as directory_svc
 from ..models import Device, DeviceCommand, DeviceCredential, DeviceLogBundle, EnrollmentToken, utcnow
 from ..notifications import agent_security, approval_source, device_source, host_isolation_source
 from ..schemas_devices import (
@@ -230,6 +231,15 @@ def fetch_commands(device: Device = Depends(current_device), db: Session = Depen
                 c.status, c.completed_at, c.output = "cancelled", utcnow(), "remote session no longer open"
                 continue
             params = {**params, "token": token}
+        elif c.type == directory_svc.COMMAND_TYPE:
+            # The single-use upload token (and, for service-account auth, the
+            # decrypted credential) only exist in this response, never in the
+            # stored params.
+            delivered = directory_svc.delivery_params(db, c)
+            if delivered is None:
+                c.status, c.completed_at, c.output = "cancelled", utcnow(), "directory sync no longer queued"
+                continue
+            params = delivered
         out.append(AgentCommand(id=c.id, device_id=c.device_id, type=c.type, params=params, nonce=c.nonce,
                                 issued_at=c.created_at, expires_at=c.expires_at))
     db.commit()
@@ -285,6 +295,8 @@ def command_result(body: CommandResultIn, command_id: str = CommandId, device: D
                 db, device, "host_isolated" if body.status == "succeeded" else "isolation_failed",
                 actor=cmd.requested_by_email, detail=body.output, data=result_data, incident_id=incident_id,
             )
+    elif cmd.type == directory_svc.COMMAND_TYPE and body.status != "succeeded":
+        directory_svc.command_failed(db, cmd, body.output)
     elif cmd.type == remote_sessions.COMMAND_TYPE and body.status != "succeeded":
         remote_sessions.command_failed(db, device, cmd, result_data.get("error_code"), body.output)
     elif cmd.type == "restore_host":

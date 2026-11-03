@@ -283,6 +283,9 @@ class AssetOut(BaseModel):
     assignee_name: str
     assignee_email: str
     assignee_department: str
+    # Directory identity of the owner (display only; the owner key stays the
+    # username / email): display_name, mail, department, title, enabled, user_id.
+    owner_directory: dict | None = None
     assigned_at: datetime | None
     location: str
     purchase_date: date | None

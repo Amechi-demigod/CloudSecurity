@@ -33,6 +33,7 @@ import Approvals from "./pages/Approvals";
 import AssetDetail from "./pages/assets/AssetDetail";
 import Assets from "./pages/assets/Assets";
 import AssetSettings from "./pages/assets/AssetSettings";
+import Discovery from "./pages/assets/Discovery";
 import Offboarding from "./pages/assets/Offboarding";
 import AttackPaths from "./pages/AttackPaths";
 import Connectors from "./pages/Connectors";
@@ -320,6 +321,7 @@ function Shell() {
             <Route path="/devices/:id/remote/:sid" element={<RequireRole role="analyst"><RemoteViewer /></RequireRole>} />
             <Route path="/it-assets" element={<Assets />} />
             <Route path="/it-assets/offboarding" element={<Offboarding />} />
+            <Route path="/it-assets/discovery" element={<Discovery />} />
             <Route path="/it-assets/settings" element={<RequireRole role="admin"><AssetSettings /></RequireRole>} />
             <Route path="/it-assets/:id" element={<AssetDetail />} />
             <Route path="/notifications" element={<RequireRole role="analyst"><Notifications /></RequireRole>} />

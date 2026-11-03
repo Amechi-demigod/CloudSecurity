@@ -39,6 +39,8 @@ os.environ.update({
     "SCAN_SCHEDULER_WORKER_ENABLED": "false",
     # Dashboard snapshots: tests drive the daily job explicitly (no background thread).
     "DASHBOARD_SNAPSHOT_WORKER_ENABLED": "false",
+    # Directory discovery: tests drive the sync scheduler explicitly.
+    "DIRECTORY_SCHEDULER_WORKER_ENABLED": "false",
     # Vulnerability matching: tests drive the worker explicitly with fake feeds
     # (no background thread, never any NVD / OSV / KEV / EPSS network access).
     "VULN_WORKER_ENABLED": "false",
