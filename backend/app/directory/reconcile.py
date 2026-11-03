@@ -402,6 +402,19 @@ def _user_findings(db: Session, now: datetime, devices: list[Any], recent_dev: s
     return out
 
 
+ELIGIBLE_PREFIX = "Eligible: "  # graph.ELIGIBLE_PREFIX (PIM eligible, not active)
+
+
+def _holds(roles: list[str]) -> str:
+    """'holds Global Administrator; eligible (PIM) for Security Administrator'."""
+    active = [r for r in roles if not r.startswith(ELIGIBLE_PREFIX)]
+    eligible = [r.removeprefix(ELIGIBLE_PREFIX).replace(" (PIM, via group)", " (via group)").removesuffix(" (PIM)")
+                for r in roles if r.startswith(ELIGIBLE_PREFIX)]
+    parts = ([f"holds {', '.join(active)}"] if active else []) + (
+        [f"is eligible (PIM) for {', '.join(eligible)}"] if eligible else [])
+    return "; ".join(parts) or "holds a privileged role"
+
+
 def _privileged_findings(db: Session, now: datetime, src: _Sources, active_dev: set[str]) -> list[_F]:
     """Privileged role holders: disabled but still assigned, stale, primary device without an agent."""
     users = db.execute(select(DirectoryUser.id, DirectoryUser.source_id, DirectoryUser.user_principal_name,
@@ -422,12 +435,13 @@ def _privileged_findings(db: Session, now: datetime, src: _Sources, active_dev: 
                             .where(DirectoryComputer.primary_user.in_(chunk), DirectoryComputer.missing_since.is_(None))):
             devices[c.primary_user].append(c)
     for u in users:
-        roles = ", ".join(u.privileged_roles or []) or "a privileged role"
+        holds = _holds(u.privileged_roles or [])
+        holds_cap = holds[0].upper() + holds[1:]
         base = {"kind": "user", "source_id": u.source_id, "user_id": u.id,
                 "name": u.user_principal_name or u.sam_account_name, "domain": u.domain, "ou": u.ou,
                 "last_logon_at": u.last_logon_at, "enabled": u.enabled}
         if not u.enabled:
-            out.append(_F("privileged_disabled", **base, detail=f"Disabled, but still holds {roles}"))
+            out.append(_F("privileged_disabled", **base, detail=f"Disabled, but {holds}"))
             continue
         days = src.stale_days.get(u.source_id, 90)
         cutoff = now - timedelta(days=days)
@@ -435,7 +449,7 @@ def _privileged_findings(db: Session, now: datetime, src: _Sources, active_dev: 
                 (u.last_logon_at is not None and u.last_logon_at < cutoff)
                 or (u.last_logon_at is None and (u.when_created is None or u.when_created < cutoff))):
             out.append(_F("privileged_stale", **base,
-                          detail=f"Holds {roles}, but no sign-in for {days}+ days (last {_fmt(u.last_logon_at)})"))
+                          detail=f"{holds_cap}, but no sign-in for {days}+ days (last {_fmt(u.last_logon_at)})"))
         seen: set[str] = set()
         for c in devices.get(u.user_principal_name, []) + devices.get(u.mail, []):
             machine = c.machine_id or c.id
@@ -445,8 +459,8 @@ def _privileged_findings(db: Session, now: datetime, src: _Sources, active_dev: 
             if c.device_id and c.device_id in active_dev:
                 continue
             out.append(_F("privileged_no_agent", **{**base, "computer_id": machine},
-                          detail=f"Holds {roles}; their primary device {c.name} ({c.operating_system or 'unknown OS'}) "
-                                 "has no agent"))
+                          detail=f"{holds_cap}; their primary device {c.name} "
+                                 f"({c.operating_system or 'unknown OS'}) has no agent"))
     return out
 
 

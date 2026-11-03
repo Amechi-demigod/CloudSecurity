@@ -441,7 +441,19 @@ export default function Discovery() {
                     {u.privileged ? (
                       <div className="space-y-1">
                         <PrivilegedBadge roles={u.privileged_roles} />
-                        <div className="text-ink-3">{u.privileged_roles.join(", ")}</div>
+                        <ul className="space-y-0.5">
+                          {u.privileged_roles.map((r) =>
+                            r.startsWith("Eligible: ") ? (
+                              <li key={r} className="text-ink-3">
+                                <Tag>eligible (PIM)</Tag> {r.replace("Eligible: ", "").replace(/ \(PIM(, via group)?\)$/, (_m, g) => (g ? " (via group)" : ""))}
+                              </li>
+                            ) : (
+                              <li key={r} className="text-ink-2">
+                                <Tag tone="critical">active</Tag> {r}
+                              </li>
+                            ),
+                          )}
+                        </ul>
                       </div>
                     ) : (
                       <span className="text-ink-3">—</span>

@@ -154,7 +154,7 @@ class SyncContext:
         source not in `roles` lose their privileged flag (the role listing was
         complete); otherwise flags are only added. Returns privileged users."""
         self._check_running()
-        want = {k: sorted(set(v)) for k, v in roles.items() if v}
+        want = {k: list(dict.fromkeys(v)) if isinstance(v, list) else sorted(set(v)) for k, v in roles.items() if v}
         rows: dict[str, DirectoryUser] = {}
         keys = list(want)
         for i in range(0, len(keys), 500):

@@ -15,6 +15,7 @@ read-only, granted with admin consent (the console shows a script):
 | DeviceManagementManagedDevices.Read.All | Intune managed devices, compliance | Intune part skipped |
 | RoleManagement.Read.Directory | privileged directory role assignments | roles part skipped |
 | GroupMember.Read.All | members of role-assignable groups holding a role | group-held roles ignored |
+| RoleEligibilitySchedule.Read.Directory | PIM eligible assignments (needs Entra ID P2) | only active admins |
 
 Every call is a GET (plus the client-credentials token request); requests
 are paged (@odata.nextLink) and throttling is retried (directory/cloud_http.py).
@@ -29,6 +30,7 @@ from collections import defaultdict
 from datetime import UTC, datetime
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import config, tenancy
@@ -60,6 +62,8 @@ PERMISSIONS: tuple[dict[str, Any], ...] = (
      "why": "Privileged directory role assignments (Global Administrator, ...)"},
     {"name": "GroupMember.Read.All", "id": "98830695-27a2-44f7-8c18-0c3ebc9698f6", "scope": None,
      "why": "Members of role-assignable groups that hold a privileged role"},
+    {"name": "RoleEligibilitySchedule.Read.Directory", "id": "ff278e11-4a33-4d0c-83d2-d01dc58929a5", "scope": None,
+     "why": "PIM eligible assignments of privileged roles (needs Entra ID P2). Without it only active admins are read"},
 )
 PERMISSION_BY_SCOPE = {p["scope"]: p["name"] for p in PERMISSIONS if p["scope"]}
 
@@ -93,6 +97,32 @@ INTUNE_SELECT = ("id,deviceName,azureADDeviceId,serialNumber,complianceState,isE
                  "manufacturer")
 # Graph's answer when signInActivity is read in a tenant without Entra ID P1/P2.
 NO_PREMIUM = "Authentication_RequestFromNonPremiumTenantOrB2CTenant"
+# Graph's answer when PIM (roleEligibilitySchedule*) is read in a tenant without Entra ID P2.
+PIM_NO_LICENCE = "AadPremiumLicenseRequired"
+# Display form of a PIM eligible (not active) role: "Eligible: Global Administrator (PIM)".
+ELIGIBLE_PREFIX = "Eligible: "
+
+
+def eligible_label(role: str, *, via_group: bool = False) -> str:
+    return f"{ELIGIBLE_PREFIX}{role} (PIM{', via group' if via_group else ''})"
+
+
+def _role_base(label: str) -> str:
+    base = label.removeprefix(ELIGIBLE_PREFIX)
+    for suffix in (" (PIM, via group)", " (PIM)", " (via group)"):
+        base = base.removesuffix(suffix)
+    return base
+
+
+def dedupe_roles(holders: dict[str, set[str]]) -> dict[str, list[str]]:
+    """Active roles first; an eligible role the user also holds actively is dropped."""
+    out: dict[str, list[str]] = {}
+    for user, labels in holders.items():
+        active = {lb for lb in labels if not lb.startswith(ELIGIBLE_PREFIX)}
+        active_bases = {_role_base(lb) for lb in active}
+        eligible = {lb for lb in labels - active if _role_base(lb) not in active_bases}
+        out[user] = sorted(active) + sorted(eligible)
+    return out
 TOKEN_REFRESH_MARGIN = 300
 
 
@@ -345,32 +375,81 @@ class EntraProvider(Provider):
                     if tid in PRIVILEGED_ROLES or name.lower() in _PRIVILEGED_NAMES:
                         defs[_s(d.get("id"), 64)] = name or PRIVILEGED_ROLES.get(tid or "", "")
             for rid, name in sorted(defs.items()):
-                for page in self.http.pages(f"{GRAPH}/roleManagement/directory/roleAssignments", self.token,
-                                            {"$filter": f"roleDefinitionId eq '{rid}'", "$expand": "principal"}):
-                    for a in page:
-                        pid = _guid(a.get("principalId"))
-                        kind = _s((a.get("principal") or {}).get("@odata.type"), 64).lower()
-                        if not pid or "serviceprincipal" in kind:
-                            continue
-                        (groups if kind.endswith(".group") else holders)[pid].add(name)
+                self._principals("roleAssignments", rid, holders, groups, name, f"{name} (via group)")
         except CloudApiError as e:
             raise self._skip(e, "RoleManagement.Read.Directory") from None
+        ctx.status["eligible"] = self._eligible(defs, holders, groups)
         note, complete = "", True
-        for gid, names in sorted(groups.items()):
+        for gid, labels in sorted(groups.items()):
             try:
                 for page in self.http.pages(f"{GRAPH}/groups/{gid}/transitiveMembers/microsoft.graph.user",
                                             self.token, {"$select": "id", "$top": "999"}):
                     for m in page:
                         if _guid(m.get("id")):
-                            holders[_guid(m.get("id"))].update(f"{n} (via group)" for n in names)
+                            holders[_guid(m.get("id"))].update(labels)
             except CloudApiError as e:
                 if e.status not in (401, 403):
                     raise
                 note, complete = ("roles held through role-assignable groups were not expanded: "
                                   "GroupMember.Read.All is not granted"), False
                 break
-        n = ctx.set_privileged(holders, complete=complete)
+        n = ctx.set_privileged(dedupe_roles(holders), complete=complete)
         return {"count": n, **({"detail": note} if note else {})}
+
+    def _principals(self, collection: str, rid: str, holders: dict[str, set[str]], groups: dict[str, set[str]],
+                    label: str, group_label: str) -> None:
+        """Users / role-assignable groups of one privileged role in roleAssignments or
+        roleEligibilityScheduleInstances (service principals are ignored)."""
+        for page in self.http.pages(f"{GRAPH}/roleManagement/directory/{collection}", self.token,
+                                    {"$filter": f"roleDefinitionId eq '{rid}'", "$expand": "principal"}):
+            for a in page:
+                pid = _guid(a.get("principalId"))
+                kind = _s((a.get("principal") or {}).get("@odata.type"), 64).lower()
+                if not pid or "serviceprincipal" in kind:
+                    continue
+                if kind.endswith(".group"):
+                    groups[pid].add(group_label)
+                else:
+                    holders[pid].add(label)
+
+    def _eligible(self, defs: dict[str, str], holders: dict[str, set[str]],
+                  groups: dict[str, set[str]]) -> dict[str, Any]:
+        """PIM eligible assignments of the privileged roles (current schedule
+        instances). Optional: without RoleEligibilitySchedule.Read.Directory or
+        Entra ID P2 the eligibility seen by the last successful read is kept,
+        never dropped, and the status says why."""
+        why = ""
+        if self.granted is not None and "RoleEligibilitySchedule.Read.Directory" not in self.granted:
+            status, why = "missing_permission", ("RoleEligibilitySchedule.Read.Directory is not granted: PIM eligible "
+                                                 "admins are not read")
+        else:
+            found: dict[str, set[str]] = defaultdict(set)
+            found_groups: dict[str, set[str]] = defaultdict(set)
+            try:
+                for rid, name in sorted(defs.items()):
+                    self._principals("roleEligibilityScheduleInstances", rid, found, found_groups,
+                                     eligible_label(name), eligible_label(name, via_group=True))
+            except CloudApiError as e:
+                if e.status not in (400, 401, 403):
+                    raise
+                if e.code == PIM_NO_LICENCE or "license" in e.message.lower() or "licence" in e.message.lower():
+                    status, why = "unlicensed", ("PIM eligible assignments need Microsoft Entra ID P2: eligible "
+                                                 f"admins are not read ({e.code or e.status})")
+                else:
+                    status, why = "missing_permission", f"PIM eligible assignments cannot be read ({e.code or e.status})"
+            else:
+                for k, v in found.items():
+                    holders[k] |= v
+                for k, v in found_groups.items():
+                    groups[k] |= v
+                return {"status": "ok", "count": len(found)}
+        # Keep what the last successful read found (a skipped part never removes anything).
+        for u in self.db.scalars(select(DirectoryUser).where(DirectoryUser.source_id == self.src.id,
+                                                             DirectoryUser.privileged.is_(True))):
+            kept = {r for r in (u.privileged_roles or []) if r.startswith(ELIGIBLE_PREFIX)}
+            if kept:
+                holders[u.external_id] |= kept
+        return {"status": status, "detail": why}
 
     def _devices(self, ctx: SyncContext) -> dict[str, Any]:
         self._require("Device.Read.All")
@@ -471,6 +550,16 @@ class EntraProvider(Provider):
                                  why or "available", required=False))
             except CloudApiError as e:
                 out.append(check("error", "users", "Read users", str(e)))
+        if "roles" in scopes and (granted is None or "RoleEligibilitySchedule.Read.Directory" in granted):
+            try:
+                self.http.get_json(f"{GRAPH}/roleManagement/directory/roleEligibilityScheduleInstances", self.token,
+                                   {"$top": "1"})
+                out.append(check("ok", "pim", "PIM eligible admins (Entra ID P2)", "available", required=False))
+            except CloudApiError as e:
+                out.append(check("unlicensed" if e.status in (400, 403) else "error", "pim",
+                                 "PIM eligible admins (Entra ID P2)",
+                                 f"not available (no Entra ID P2?): only active admins will be read. {e.message}",
+                                 required=False))
         if "intune" in scopes and (granted is None or "DeviceManagementManagedDevices.Read.All" in granted):
             try:
                 self.http.get_json(f"{GRAPH}/deviceManagement/managedDevices", self.token,

@@ -74,7 +74,7 @@ const GRAPH_APP_ID = "00000003-0000-0000-c000-000000000000";
 export function neededPermissions(perms: GraphPermission[], scopes: string[]): GraphPermission[] {
   const s = new Set(scopes);
   return perms.filter((p) =>
-    p.scope ? s.has(p.scope) : p.name === "AuditLog.Read.All" ? s.has("users") : p.name === "GroupMember.Read.All" ? s.has("roles") : true,
+    p.scope ? s.has(p.scope) : p.name === "AuditLog.Read.All" ? s.has("users") : s.has("roles"),
   );
 }
 
