@@ -78,6 +78,38 @@ class AdConfig(_Strict):
         return self
 
 
+EntraScope = Literal["users", "devices", "intune", "roles"]
+
+
+class EntraConfig(_Strict):
+    """Settings of a Microsoft Entra ID (+ Intune) source. `tenant_id` and
+    `client_id` are copied from the chosen Azure connector by the server."""
+
+    connector_id: Literal["org", "env"]
+    tenant_id: Annotated[str, StringConstraints(max_length=64)] = ""
+    client_id: Annotated[str, StringConstraints(max_length=64)] = ""
+    scopes: list[EntraScope] = Field(default_factory=lambda: ["users", "devices", "intune", "roles"],
+                                     min_length=1, max_length=4)
+    stale_days: int = Field(90, ge=7, le=3650)
+    interval_hours: float = Field(6, ge=1, le=168)
+
+    @field_validator("scopes")
+    @classmethod
+    def _scopes(cls, v: list[str]) -> list[str]:
+        return list(dict.fromkeys(v))
+
+
+CONFIG_MODELS: dict[str, type[_Strict]] = {"ad": AdConfig, "entra": EntraConfig}
+
+
+def parse_config(type_: str, raw: dict) -> dict:
+    """Validate a source config for its type (raises pydantic ValidationError)."""
+    model = CONFIG_MODELS.get(type_)
+    if model is None:
+        raise ValueError(f"unsupported directory type {type_!r}")
+    return model.model_validate(raw).model_dump()
+
+
 class Credential(_Strict):
     username: Annotated[str, StringConstraints(min_length=1, max_length=256)]
     password: Annotated[str, StringConstraints(min_length=1, max_length=256, strip_whitespace=False)]
@@ -95,19 +127,29 @@ DeviceId = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{32}$")]
 
 
 class SourceCreate(_Strict):
-    type: Literal["ad"] = "ad"
+    type: Literal["ad", "entra"] = "ad"
     name: Name
     enabled: bool = True
-    config: AdConfig
-    collector_device_ids: list[DeviceId] = Field(min_length=1, max_length=10)
+    # Validated per type (AdConfig, EntraConfig).
+    config: dict
+    # AD: the collector agents (at least one); cloud types: none.
+    collector_device_ids: list[DeviceId] = Field(default_factory=list, max_length=10)
     credential: Credential | None = None
+
+    @model_validator(mode="after")
+    def _config(self) -> SourceCreate:
+        self.config = parse_config(self.type, self.config)
+        if self.type != "ad" and (self.collector_device_ids or self.credential):
+            raise ValueError("cloud directories are read by the server: no collectors or AD credential")
+        return self
 
 
 class SourceUpdate(_Strict):
     name: Name | None = None
     enabled: bool | None = None
-    config: AdConfig | None = None
-    collector_device_ids: list[DeviceId] | None = Field(None, min_length=1, max_length=10)
+    # Validated against the source's type by the API.
+    config: dict | None = None
+    collector_device_ids: list[DeviceId] | None = Field(None, max_length=10)
     credential: Credential | None = None
     clear_credential: bool = False
 
@@ -145,6 +187,8 @@ class RunOut(BaseModel):
     attempt: int
     server: str | None = None
     sample: list[dict] = []
+    checks: list[dict] = []
+    scope_status: dict = {}
 
 
 class SourceOut(BaseModel):
@@ -163,6 +207,8 @@ class SourceOut(BaseModel):
     last_success_at: UTCDateTime | None
     computers_count: int
     users_count: int
+    collection: str  # agent | server
+    scope_status: dict
     next_sync_at: UTCDateTime | None
     active_run: RunOut | None
     created_at: UTCDateTime
@@ -189,6 +235,10 @@ class IssueOut(BaseModel):
     user_id: str | None
     it_asset_id: str | None = None
     first_seen_at: UTCDateTime
+    # Sources the object is in ({"id", "type", "kind"}): every record of the
+    # physical machine for computer issues, the user's source for user issues.
+    sources: list[dict] = []
+    privileged: bool = False
 
 
 class IssuePage(BaseModel):
@@ -217,6 +267,15 @@ class ComputerOut(BaseModel):
     device_hostname: str | None = None
     it_asset_id: str | None
     in_it_assets: bool
+    device_kind: str = "ad"
+    platform: str = ""
+    compliance: str | None = None
+    encrypted: bool | None = None
+    serial_number: str = ""
+    primary_user: str = ""
+    agent_expected: bool = True
+    # Every record of this physical machine ({"id", "source_id", "type", "kind"}).
+    sources: list[dict] = []
 
 
 class ComputerPage(BaseModel):
@@ -238,6 +297,11 @@ class UserOut(BaseModel):
     domain: str
     ou: str
     missing_since: UTCDateTime | None
+    source_type: str = "ad"
+    privileged: bool = False
+    privileged_roles: list[str] = []
+    # False when the directory cannot tell (Entra ID without P1/P2 or AuditLog.Read.All).
+    sign_in_known: bool = True
 
 
 class UserPage(BaseModel):

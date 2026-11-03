@@ -1,9 +1,30 @@
-// Typed client for /api/directory (directory discovery: on-prem Active Directory today).
+// Typed client for /api/directory (directory discovery: on-prem Active Directory read by a collector agent,
+// Microsoft Entra ID + Intune read by the server through Microsoft Graph).
 import { BASE, qs, request } from "./api";
 
+export type DirectoryType = "ad" | "entra" | "google";
 export type DirectoryScope = "computers" | "users";
 export type DirectorySecurity = "ldaps" | "starttls";
 export type DirectoryAuth = "computer_account" | "service_account";
+export type EntraScope = "users" | "devices" | "intune" | "roles";
+
+export const DIRECTORY_NAME: Record<DirectoryType, string> = {
+  ad: "Active Directory",
+  entra: "Microsoft Entra ID",
+  google: "Google Workspace",
+};
+
+/** Short source badge text: the directory a device / user record comes from. */
+export const RECORD_LABEL: Record<string, string> = {
+  ad: "AD",
+  entra: "Entra ID",
+  intune: "Intune",
+  endpoint: "Google endpoint",
+  chromeos: "ChromeOS",
+  mobile: "Google mobile",
+  google: "Google",
+  user: "",
+};
 
 export interface AdConfig {
   domain: string;
@@ -18,6 +39,16 @@ export interface AdConfig {
   ca_pem: string;
 }
 
+export interface EntraConfig {
+  connector_id: "org" | "env";
+  /** Set by the server from the chosen Azure connector. */
+  tenant_id: string;
+  client_id: string;
+  scopes: EntraScope[];
+  stale_days: number;
+  interval_hours: number;
+}
+
 export interface Collector {
   id: string;
   hostname: string;
@@ -29,6 +60,23 @@ export interface Collector {
 }
 
 export type RunStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
+
+export type CheckStatus = "ok" | "missing" | "unlicensed" | "missing_permission" | "error";
+
+export interface PermissionCheck {
+  id: string;
+  label: string;
+  status: CheckStatus;
+  detail: string;
+  required: boolean;
+}
+
+/** Outcome of one part of a server-side sync (users, devices, intune, roles, sign_in...). */
+export interface ScopeStatus {
+  status: "ok" | "missing_permission" | "unlicensed" | "not_enabled" | "error" | "truncated";
+  detail?: string;
+  count?: number;
+}
 
 export interface SyncRun {
   id: string;
@@ -49,14 +97,14 @@ export interface SyncRun {
   attempt: number;
   server: string | null;
   sample: { kind: string; name: string }[];
+  checks: PermissionCheck[];
+  scope_status: Record<string, ScopeStatus>;
 }
 
-export interface DirectorySource {
+interface SourceBase {
   id: string;
-  type: "ad";
   name: string;
   enabled: boolean;
-  config: AdConfig;
   has_credential: boolean;
   credential_username_hint: string | null;
   collector_device_ids: string[];
@@ -67,6 +115,9 @@ export interface DirectorySource {
   last_success_at: string | null;
   computers_count: number;
   users_count: number;
+  /** agent: read by a collector agent; server: read by the platform over HTTPS. */
+  collection: "agent" | "server";
+  scope_status: Record<string, ScopeStatus>;
   next_sync_at: string | null;
   active_run: SyncRun | null;
   created_at: string;
@@ -75,27 +126,52 @@ export interface DirectorySource {
   updated_by: string | null;
 }
 
+export type DirectorySource = SourceBase & ({ type: "ad"; config: AdConfig } | { type: "entra"; config: EntraConfig });
+
 export interface Credential {
   username: string;
   password: string;
 }
 
-export interface SourceCreate {
-  type: "ad";
-  name: string;
-  enabled?: boolean;
-  config: AdConfig;
-  collector_device_ids: string[];
-  credential?: Credential | null;
-}
+export type SourceCreate =
+  | { type: "ad"; name: string; enabled?: boolean; config: AdConfig; collector_device_ids: string[]; credential?: Credential | null }
+  | { type: "entra"; name: string; enabled?: boolean; config: Partial<EntraConfig> & Pick<EntraConfig, "connector_id"> };
 
 export interface SourceUpdate {
   name?: string;
   enabled?: boolean;
-  config?: AdConfig;
+  config?: AdConfig | Partial<EntraConfig>;
   collector_device_ids?: string[];
   credential?: Credential | null;
   clear_credential?: boolean;
+}
+
+export interface AzureConnector {
+  id: "org" | "env";
+  name: string;
+  tenant_id: string;
+  client_id: string;
+  auth_mode: string;
+  usable: boolean;
+  /** Why it cannot be used (empty when usable). */
+  reason: string;
+  /** The Entra ID source already reading this tenant, if any. */
+  source: { id: string; name: string } | null;
+}
+
+export interface GraphPermission {
+  name: string;
+  /** App role id of the permission on the Microsoft Graph service principal. */
+  id: string;
+  scope: EntraScope | null;
+  why: string;
+}
+
+export interface AzureConnectorsInfo {
+  connectors: AzureConnector[];
+  graph_app_id: string;
+  permissions: GraphPermission[];
+  privileged_roles: string[];
 }
 
 export type IssueType =
@@ -104,8 +180,13 @@ export type IssueType =
   | "disabled_but_active"
   | "unknown_to_directory"
   | "not_domain_joined"
+  | "non_compliant"
+  | "not_in_intune"
   | "disabled_user_signed_in"
-  | "stale_user_signed_in";
+  | "stale_user_signed_in"
+  | "privileged_disabled"
+  | "privileged_stale"
+  | "privileged_no_agent";
 
 export const ISSUE_TYPES: IssueType[] = [
   "not_managed",
@@ -113,8 +194,13 @@ export const ISSUE_TYPES: IssueType[] = [
   "disabled_but_active",
   "unknown_to_directory",
   "not_domain_joined",
+  "non_compliant",
+  "not_in_intune",
   "disabled_user_signed_in",
   "stale_user_signed_in",
+  "privileged_disabled",
+  "privileged_stale",
+  "privileged_no_agent",
 ];
 
 export const ISSUE_LABEL: Record<IssueType, string> = {
@@ -123,18 +209,28 @@ export const ISSUE_LABEL: Record<IssueType, string> = {
   disabled_but_active: "Disabled but active",
   unknown_to_directory: "Unknown to directory",
   not_domain_joined: "Not domain-joined",
+  non_compliant: "Non-compliant",
+  not_in_intune: "Not in Intune",
   disabled_user_signed_in: "Disabled user signed in",
   stale_user_signed_in: "Stale user signed in",
+  privileged_disabled: "Disabled admin",
+  privileged_stale: "Stale admin",
+  privileged_no_agent: "Admin device without agent",
 };
 
 export const ISSUE_HINT: Record<IssueType, string> = {
-  not_managed: "Enabled directory computers that signed in recently but have no agent",
-  stale_computer: "Enabled directory computers with no domain logon within the stale window",
+  not_managed: "Enabled directory computers in recent use that have no agent (each physical machine once)",
+  stale_computer: "Enabled directory computers with no activity within the stale window",
   disabled_but_active: "Disabled in the directory, but the agent still checks in",
-  unknown_to_directory: "Agent devices joined to a synced domain with no matching directory computer",
-  not_domain_joined: "Agent devices that report no Active Directory domain",
+  unknown_to_directory: "Agent devices joined to a synced domain or Entra tenant with no matching directory record",
+  not_domain_joined: "Agent devices that report neither an Active Directory domain nor an Entra join",
+  non_compliant: "Intune reports the device non-compliant with its compliance policies",
+  not_in_intune: "Windows / macOS agent devices joined to an Entra tenant that uses Intune, unknown to Intune",
   disabled_user_signed_in: "A user disabled in the directory is signed in on an agent device",
-  stale_user_signed_in: "A signed-in user has no recent domain logon",
+  stale_user_signed_in: "A signed-in user has no recent sign-in in the directory",
+  privileged_disabled: "A disabled account still holds a privileged admin role",
+  privileged_stale: "A privileged admin has not signed in within the stale window",
+  privileged_no_agent: "A privileged admin's primary device has no agent",
 };
 
 export const ISSUE_TONE: Record<IssueType, "critical" | "warn" | "accent" | "default"> = {
@@ -143,11 +239,48 @@ export const ISSUE_TONE: Record<IssueType, "critical" | "warn" | "accent" | "def
   disabled_but_active: "critical",
   unknown_to_directory: "accent",
   not_domain_joined: "default",
+  non_compliant: "warn",
+  not_in_intune: "accent",
   disabled_user_signed_in: "critical",
   stale_user_signed_in: "warn",
+  privileged_disabled: "critical",
+  privileged_stale: "warn",
+  privileged_no_agent: "critical",
 };
 
-export const USER_ISSUES: IssueType[] = ["disabled_user_signed_in", "stale_user_signed_in"];
+export const USER_ISSUES: IssueType[] = [
+  "disabled_user_signed_in",
+  "stale_user_signed_in",
+  "privileged_disabled",
+  "privileged_stale",
+  "privileged_no_agent",
+];
+
+/** Issue types a directory type can produce (KPI tiles show those of the configured sources). */
+export const ISSUES_BY_TYPE: Record<DirectoryType, IssueType[]> = {
+  ad: ["not_managed", "stale_computer", "disabled_but_active", "unknown_to_directory", "not_domain_joined", "disabled_user_signed_in", "stale_user_signed_in"],
+  entra: [
+    "not_managed",
+    "stale_computer",
+    "disabled_but_active",
+    "unknown_to_directory",
+    "non_compliant",
+    "not_in_intune",
+    "disabled_user_signed_in",
+    "stale_user_signed_in",
+    "privileged_disabled",
+    "privileged_stale",
+    "privileged_no_agent",
+  ],
+  google: ["not_managed", "stale_computer", "disabled_but_active", "disabled_user_signed_in", "stale_user_signed_in", "privileged_disabled", "privileged_stale", "privileged_no_agent"],
+};
+
+export interface RecordRef {
+  id: string;
+  source_id: string;
+  type: string;
+  kind: string;
+}
 
 export interface Issue {
   id: string;
@@ -167,6 +300,8 @@ export interface Issue {
   user_id: string | null;
   it_asset_id: string | null;
   first_seen_at: string;
+  sources: RecordRef[];
+  privileged: boolean;
 }
 
 export interface IssuePage {
@@ -195,6 +330,15 @@ export interface DirComputer {
   device_hostname: string | null;
   it_asset_id: string | null;
   in_it_assets: boolean;
+  device_kind: string;
+  platform: string;
+  compliance: string | null;
+  encrypted: boolean | null;
+  serial_number: string;
+  primary_user: string;
+  agent_expected: boolean;
+  /** Every record of this physical machine. */
+  sources: RecordRef[];
 }
 
 export interface DirUser {
@@ -211,11 +355,16 @@ export interface DirUser {
   domain: string;
   ou: string;
   missing_since: string | null;
+  source_type: string;
+  privileged: boolean;
+  privileged_roles: string[];
+  sign_in_known: boolean;
 }
 
 export interface DirectorySummary {
   sources: number;
   enabled_sources: number;
+  source_types: DirectoryType[];
   last_sync_at: string | null;
   counts: Record<IssueType, number>;
   coverage: { directory_computers: number; managed: number; pct: number | null };
@@ -243,6 +392,15 @@ export interface ComputerFilters {
   offset?: number;
 }
 
+export interface UserFilters {
+  q?: string;
+  source_id?: string;
+  enabled?: boolean;
+  privileged?: boolean;
+  limit?: number;
+  offset?: number;
+}
+
 const J = (body: unknown): RequestInit => ({ method: "POST", body: JSON.stringify(body) });
 
 export const directoryApi = {
@@ -257,13 +415,13 @@ export const directoryApi = {
   runs: (id: string, limit = 10) => request<SyncRun[]>(`/api/directory/sources/${id}/runs${qs({ limit })}`),
   run: (runId: string) => request<SyncRun>(`/api/directory/runs/${runId}`),
   collectors: () => request<Collector[]>("/api/directory/collectors"),
+  azureConnectors: () => request<AzureConnectorsInfo>("/api/directory/azure-connectors"),
   summary: () => request<DirectorySummary>("/api/directory/summary"),
   issues: (f: IssueFilters = {}) => request<IssuePage>(`/api/directory/issues${qs({ ...f })}`),
   issuesExportUrl: (f: IssueFilters = {}) =>
     `${BASE}/api/directory/issues/export.csv${qs({ type: f.type, kind: f.kind, source_id: f.source_id, q: f.q, domain: f.domain })}`,
   computers: (f: ComputerFilters = {}) => request<{ items: DirComputer[]; total: number }>(`/api/directory/computers${qs({ ...f })}`),
-  users: (f: { q?: string; source_id?: string; enabled?: boolean; limit?: number; offset?: number } = {}) =>
-    request<{ items: DirUser[]; total: number }>(`/api/directory/users${qs({ ...f })}`),
+  users: (f: UserFilters = {}) => request<{ items: DirUser[]; total: number }>(`/api/directory/users${qs({ ...f })}`),
   addToAssets: (computer_ids: string[]) =>
     request<{ created: number; skipped: number; asset_ids: string[] }>("/api/directory/computers/add-to-assets", J({ computer_ids })),
 };

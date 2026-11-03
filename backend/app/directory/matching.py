@@ -1,23 +1,30 @@
 """Directory object <-> agent device / IT asset owner matching (pure functions,
 no database access; see docs/DIRECTORY_DISCOVERY.md#matching).
 
-Computers are matched to agent devices in tiers, strongest first. A tier only
-matches when the key is unique on BOTH sides among what is still unmatched;
-anything else at that tier is "ambiguous" (flagged with its candidates, never
-guessed) and is not retried with weaker keys:
+Directory computer records are first grouped into physical machines
+(`cluster_computers`): the same object synced by two sources (same external
+id), an Entra device and its Intune record (same Entra device id), an AD
+computer and its hybrid-joined Entra device (same on-prem SID), records with
+the same (real) serial number, and records an agent device ties together (it
+reports the SID of one and the Entra device id of another).
+
+Machines are then matched to agent devices in tiers, strongest first, using
+the keys of all their records. A tier only matches when the key is unique on
+BOTH sides among what is still unmatched; anything else at that tier is
+"ambiguous" (flagged with its candidates, never guessed) and is not retried
+with weaker keys:
 
 1. directory_sid / directory_guid (100): the computer account SID / objectGUID
    the agent reported for itself.
-2. serial (95): when the directory knows the serial number (not AD today).
-3. fqdn (90): dNSHostName vs the device FQDN (reported, or hostname + domain).
-4. hostname_domain (75): short host name within the same domain (the device
+2. entra_device_id (100): the Entra device id the agent reported (Entra and
+   Intune records).
+3. serial (95): when the directory knows the serial number (Intune, Google).
+4. fqdn (90): dNSHostName vs the device FQDN (reported, or hostname + domain).
+5. hostname_domain (75): short host name within the same domain (the device
    reported its AD domain).
-5. hostname (50): short host name for devices that report no domain (older
-   agents), only when the name exists once across ALL directory computers
-   (otherwise ambiguous).
-
-The same directory object synced by two sources (overlapping configuration)
-shares one external id and is matched as one.
+6. hostname (50): short host name for devices that report no domain (older
+   agents, Entra-only devices), only when the name exists once across ALL
+   directory machines (otherwise ambiguous).
 """
 from __future__ import annotations
 
@@ -26,6 +33,9 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 
 MATCHED, AMBIGUOUS, UNMATCHED = "matched", "ambiguous", "unmatched"
+# Device record kinds, in the order a machine's representative record is chosen:
+# AD computer, Entra device, Intune device, Google endpoint, ChromeOS, mobile.
+DEVICE_KINDS = ("ad", "entra", "intune", "endpoint", "chromeos", "mobile")
 # Serial numbers firmware ships when the vendor did not set one.
 JUNK_SERIALS = frozenset({"", "0", "none", "n/a", "na", "default string", "to be filled by o.e.m.",
                           "system serial number", "not specified", "not applicable", "123456789", "0123456789",
@@ -50,6 +60,9 @@ class ComputerKey:
     dns_hostname: str = ""
     object_sid: str = ""
     serial: str = ""
+    kind: str = "ad"            # device_kind (models.DEVICE_KINDS)
+    cloud_device_id: str = ""   # Entra device id (Entra / Intune records)
+    hybrid: bool = False        # Entra device hybrid-joined (synced from an AD computer of the same name)
 
 
 @dataclass(frozen=True)
@@ -61,6 +74,7 @@ class DeviceKey:
     ad_object_guid: str = ""
     dns_hostname: str = ""
     serial: str = ""
+    entra_device_id: str = ""
 
     @property
     def fqdn(self) -> str:
@@ -93,7 +107,11 @@ def _tiers() -> list[Tier]:
 
     return [
         ("directory_sid", 100, lambda c: c.object_sid.upper() or None, lambda d: d.ad_computer_sid.upper() or None),
-        ("directory_guid", 100, lambda c: c.external_id.lower() or None, lambda d: d.ad_object_guid.lower() or None),
+        # objectGUID is an AD notion: cloud records' external ids are not comparable.
+        ("directory_guid", 100, lambda c: c.external_id.lower() if c.kind == "ad" and c.external_id else None,
+         lambda d: d.ad_object_guid.lower() or None),
+        ("entra_device_id", 100, lambda c: c.cloud_device_id.lower() or None,
+         lambda d: d.entra_device_id.lower() or None),
         ("serial", 95, lambda c: norm_serial(c.serial) or None, lambda d: norm_serial(d.serial) or None),
         ("fqdn", 90, lambda c: c.dns_hostname.lower().rstrip(".") or None, lambda d: d.fqdn or None),
         ("hostname_domain", 75, dom_pair_c, dom_pair_d),
@@ -102,22 +120,115 @@ def _tiers() -> list[Tier]:
     ]
 
 
-def match_computers(computers: Iterable[ComputerKey], devices: Iterable[DeviceKey]) -> dict[str, Match]:
-    """Match directory computers to agent devices. Returns a Match per computer id."""
+# Tiers strong enough that one agent device reporting two of them ties records together.
+_LINK_TIERS = ("directory_sid", "directory_guid", "entra_device_id", "serial")
+# Keys that make two directory records the same machine on their own.
+_SAME_MACHINE: tuple[Callable[[ComputerKey], str], ...] = (
+    lambda c: "x:" + c.external_id.lower() if c.external_id else "",
+    lambda c: "e:" + c.cloud_device_id.lower() if c.cloud_device_id else "",
+    lambda c: "s:" + c.object_sid.upper() if c.object_sid else "",
+    lambda c: "n:" + norm_serial(c.serial) if norm_serial(c.serial) else "",
+)
+
+
+def _kind_rank(kind: str) -> int:
+    return DEVICE_KINDS.index(kind) if kind in DEVICE_KINDS else len(DEVICE_KINDS)
+
+
+def cluster_computers(computers: Iterable[ComputerKey], devices: Iterable[DeviceKey] = ()) -> dict[str, str]:
+    """Group directory records into physical machines. Returns, per computer id,
+    the id of its machine's representative record (the strongest kind: AD
+    computer, then Entra device, Intune, Google endpoint, ChromeOS, mobile)."""
     computers = list(computers)
-    devices = list(devices)
-    # One matching entity per external id (the same object synced by two sources).
+    parent: dict[str, str] = {c.id: c.id for c in computers}
+
+    def find(x: str) -> str:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: str, b: str) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    first: dict[str, str] = {}
+    for c in computers:
+        for key in _SAME_MACHINE:
+            k = key(c)
+            if k:
+                if k in first:
+                    union(first[k], c.id)
+                else:
+                    first[k] = c.id
+    # A hybrid-joined Entra device is created by Entra Connect from an AD computer
+    # and carries its name: linked when the short name is unique among AD
+    # computers and among hybrid devices (two domains with a PC1 link nothing).
+    ad_names: dict[str, set[str]] = defaultdict(set)
+    hybrid_names: dict[str, set[str]] = defaultdict(set)
+    for c in computers:
+        if c.short_name and c.kind == "ad":
+            ad_names[c.short_name.lower()].add(find(c.id))
+        elif c.short_name and c.kind == "entra" and c.hybrid:
+            hybrid_names[c.short_name.lower()].add(find(c.id))
+    for name, hyb in hybrid_names.items():
+        ads = {find(x) for x in ad_names.get(name, ())}
+        hyb = {find(x) for x in hyb}
+        if len(ads) == 1 and len(hyb) == 1:
+            union(next(iter(ads)), next(iter(hyb)))
+    # An agent device reporting e.g. the SID of an AD computer and the Entra
+    # device id of an Entra record proves they are one machine (only keys that
+    # point at exactly one record each: an ambiguous key ties nothing).
+    tiers = [t for t in _tiers() if t[0] in _LINK_TIERS]
+    index: list[dict[object, set[str]]] = []
+    for _, _, ckey, _ in tiers:
+        idx: dict[object, set[str]] = defaultdict(set)
+        for c in computers:
+            k = ckey(c)
+            if k is not None:
+                idx[k].add(find(c.id))
+        index.append(idx)
+    for d in devices:
+        hits: set[str] = set()
+        for (_, _, _, dkey), idx in zip(tiers, index, strict=True):
+            k = dkey(d)
+            if k is not None and len(idx.get(k, ())) == 1:
+                hits |= idx[k]
+        hits = {find(h) for h in hits}
+        if len(hits) > 1:
+            first_hit, *rest = sorted(hits)
+            for h in rest:
+                union(first_hit, h)
     groups: dict[str, list[ComputerKey]] = defaultdict(list)
     for c in computers:
-        groups[c.external_id.lower() or f"id:{c.id}"].append(c)
-    reps = {g: members[0] for g, members in groups.items()}
+        groups[find(c.id)].append(c)
+    out: dict[str, str] = {}
+    for members in groups.values():
+        rep = min(members, key=lambda c: (_kind_rank(c.kind), c.id))
+        for c in members:
+            out[c.id] = rep.id
+    return out
+
+
+def match_computers(computers: Iterable[ComputerKey], devices: Iterable[DeviceKey],
+                    clusters: dict[str, str] | None = None) -> dict[str, Match]:
+    """Match directory computers to agent devices, one physical machine
+    (`cluster_computers`) at a time. Returns a Match per computer id."""
+    computers = list(computers)
+    devices = list(devices)
+    clusters = clusters if clusters is not None else cluster_computers(computers, devices)
+    groups: dict[str, list[ComputerKey]] = defaultdict(list)
+    for c in computers:
+        groups[clusters.get(c.id, c.id)].append(c)
     short_count: dict[str, int] = defaultdict(int)
-    for rep in reps.values():
-        if rep.short_name:
-            short_count[rep.short_name.lower()] += 1
+    for members in groups.values():
+        for name in {c.short_name.lower() for c in members if c.short_name}:
+            short_count[name] += 1
     result: dict[str, Match] = {}
-    open_groups = set(reps)
+    open_groups = set(groups)
     free_devices = {d.id: d for d in devices}
+
     def unique_short(name: str) -> bool:
         return short_count.get(name, 0) == 1
 
@@ -127,25 +238,33 @@ def match_computers(computers: Iterable[ComputerKey], devices: Iterable[DeviceKe
             k = dkey(d)
             if k is not None:
                 by_dev[k].append(d.id)
-        by_comp: dict[object, list[str]] = defaultdict(list)
+        keys: dict[str, set[object]] = {}
+        by_comp: dict[object, set[str]] = defaultdict(set)
         for g in open_groups:
-            k = ckey(reps[g])
-            if k is not None:
-                by_comp[k].append(g)
-        for k, gs in by_comp.items():
-            devs = by_dev.get(k)
-            if not devs:
+            ks = {k for k in (ckey(c) for c in groups[g]) if k is not None}
+            if ks:
+                keys[g] = ks
+                for k in ks:
+                    by_comp[k].add(g)
+        decided: dict[str, Match] = {}
+        for g, ks in keys.items():
+            hit = [k for k in ks if by_dev.get(k)]
+            if not hit:
                 continue
-            # Short names must be unique across ALL computers (also those already
+            devs = sorted({d for k in hit for d in by_dev[k]})
+            rivals = set().union(*(by_comp[k] for k in hit))
+            # Short names must be unique across ALL machines (also those already
             # matched): PC1 in two domains is never guessed for a domain-less device.
-            unique = method != "hostname" or unique_short(str(k))
-            if len(devs) == 1 and len(gs) == 1 and unique:
-                result[gs[0]] = Match(MATCHED, devs[0], method, confidence, [devs[0]])
-                free_devices.pop(devs[0], None)
+            unique = method != "hostname" or all(unique_short(str(k)) for k in hit)
+            if len(devs) == 1 and rivals == {g} and unique:
+                decided[g] = Match(MATCHED, devs[0], method, confidence, [devs[0]])
             else:
-                for g in gs:
-                    result[g] = Match(AMBIGUOUS, None, method, None, sorted(devs)[:10])
-            open_groups.difference_update(gs)
+                decided[g] = Match(AMBIGUOUS, None, method, None, devs[:10])
+        for g, m in decided.items():
+            result[g] = m
+            if m.device_id:
+                free_devices.pop(m.device_id, None)
+        open_groups.difference_update(decided)
     out: dict[str, Match] = {}
     for g, members in groups.items():
         m = result.get(g, Match())
@@ -162,6 +281,9 @@ class UserKey:
     upn: str = ""      # lower-case
     mail: str = ""     # lower-case
     domain: str = ""   # lower-case DNS domain (from the DN)
+    # Same person in two directories: an AD user and the Entra user synced from
+    # it share the on-prem SID. Records with the same non-empty person are one.
+    person: str = ""
 
 
 # Sign-in "domains" that are never on-prem AD.
@@ -198,7 +320,7 @@ class UserIndex:
 
     @staticmethod
     def _one(cands: list[UserKey]) -> UserKey | None:
-        ids = {c.id for c in cands}
+        ids = {c.person or c.id for c in cands}
         return cands[0] if len(ids) == 1 else None
 
     def by_email(self, email: str) -> UserKey | None:

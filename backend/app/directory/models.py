@@ -1,15 +1,21 @@
 """Directory discovery tables (docs/DIRECTORY_DISCOVERY.md).
 
-* `directory_sources`: one configured directory per row (type "ad" today; the
-  `type` column and provider-neutral object model leave room for Entra ID,
-  Google Workspace and Okta). Optional service-account credentials are stored
-  Fernet-encrypted in `secret_ciphertext` and never returned by the API.
+* `directory_sources`: one configured directory per row: on-prem Active
+  Directory ("ad", read by an enrolled collector agent) or a cloud directory
+  read by the server itself ("entra": Microsoft Entra ID + Intune through
+  Microsoft Graph; "google": Google Workspace). Credentials (an AD service
+  account, a Google service-account key) are stored Fernet-encrypted in
+  `secret_ciphertext` and never returned by the API; an Entra source only
+  references one of the organisation's Azure connectors (no copy of its secret).
 * `directory_sync_runs`: one row per sync (scheduled, manual or test), the
   collector it ran on, its single-use upload token (SHA-256 only) and counts.
 * `directory_computers` / `directory_users`: the objects a source returned,
-  keyed by their stable provider id (`external_id`: objectGUID for AD) per
-  source. Objects a complete run no longer returns get `missing_since` (they
-  are purged later, never on the spot).
+  keyed by their stable provider id (`external_id`: objectGUID for AD, the
+  Entra object id, "mdm:<Intune id>", ...) per source. A computer row is one
+  device record of one kind (`device_kind`); the records of one physical
+  machine (AD computer, Entra device, Intune device...) share a `machine_id`
+  (directory/matching.py). Objects a complete run no longer returns get
+  `missing_since` (they are purged later, never on the spot).
 * `directory_findings`: materialised "discovery issues" (not managed, stale,
   disabled but active, ...), recomputed after each sync and periodically.
 
@@ -28,7 +34,9 @@ from ..db import Base
 from ..models import new_id, utcnow
 from ..tenancy import TenantMixin
 
-SOURCE_TYPES = ("ad",)  # future: "entra", "google", "okta"
+SOURCE_TYPES = ("ad", "entra", "google")  # future: "okta"
+# Read by the server itself, no collector agent (docs/DIRECTORY_DISCOVERY.md#server-side-collection).
+CLOUD_TYPES = ("entra", "google")
 RUN_TRIGGERS = ("scheduled", "manual", "test")
 RUN_ACTIVE = ("queued", "running")
 RUN_FINAL = ("succeeded", "failed", "cancelled")
@@ -56,6 +64,9 @@ class DirectorySource(TenantMixin, Base):
     last_success_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     computers_count: Mapped[int] = mapped_column(Integer, default=0)
     users_count: Mapped[int] = mapped_column(Integer, default=0)
+    # Cloud sources: outcome of each part of the last finished sync, e.g.
+    # {"intune": {"status": "unlicensed", "detail": "..."}} (directory/cloud.py).
+    scope_status: Mapped[dict] = mapped_column(JSON, default=dict)
     # Last "not managed" count a notification was sent for (no repeats).
     notified_not_managed: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
@@ -100,6 +111,11 @@ class DirectorySyncRun(TenantMixin, Base):
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Test runs: a few object names (nothing else is stored).
     sample: Mapped[list] = mapped_column(JSON, default=list)
+    # Cloud test runs: one entry per permission / licence check
+    # ({"id", "label", "status": ok|missing|unlicensed|error, "detail", "required"}).
+    checks: Mapped[list] = mapped_column(JSON, default=list)
+    # Cloud runs: outcome per part (users, devices, intune, roles, sign_in, ...).
+    scope_status: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
 class _DirectoryObject:
@@ -140,9 +156,27 @@ class DirectoryComputer(_DirectoryObject, TenantMixin, Base):
     operating_system: Mapped[str] = mapped_column(String(256), default="")
     os_version: Mapped[str] = mapped_column(String(256), default="")
     when_changed: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # ad | entra | intune | endpoint (Google endpoint) | chromeos | mobile
+    device_kind: Mapped[str] = mapped_column(String(16), default="ad")
+    # Entra device id (deviceId of an Entra device, azureADDeviceId of an Intune
+    # device): matched against the entra_device_id agents report.
+    cloud_device_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    # windows | macos | linux | ios | android | chromeos | "" (unknown)
+    platform: Mapped[str] = mapped_column(String(16), default="")
+    # False for devices an agent cannot or should not run on (phones, ChromeOS,
+    # personal / registered-only devices): never "no agent", not in coverage.
+    agent_expected: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Intune complianceState (compliant, noncompliant, inGracePeriod, ...).
+    compliance: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    encrypted: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # Lower-case UPN / email of the device's primary user (Intune, Google).
+    primary_user: Mapped[str] = mapped_column(String(256), default="", index=True)
+    # Representative row of the physical machine this record belongs to (set by
+    # the matcher; NULL until the next evaluation = a machine of its own).
+    machine_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     # Matcher output (directory/matching.py): the agent device / IT asset this
-    # computer is, how it was matched (directory_sid, serial, fqdn, hostname_domain,
-    # hostname) and how sure (0-100); "ambiguous" keeps the candidates instead.
+    # computer is, how it was matched (directory_sid, entra_device_id, serial,
+    # fqdn, hostname_domain, hostname) and how sure (0-100); "ambiguous" keeps the candidates instead.
     match_status: Mapped[str] = mapped_column(String(16), default="unmatched", index=True)
     match_method: Mapped[str | None] = mapped_column(String(24), nullable=True)
     match_confidence: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -174,10 +208,17 @@ class DirectoryUser(_DirectoryObject, TenantMixin, Base):
     title: Mapped[str] = mapped_column(String(256), default="")
     manager_dn: Mapped[str] = mapped_column(Text, default="")
     pwd_last_set_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Holds a privileged admin role (an Entra directory role such as Global
+    # Administrator, Google Super Admin...); role names kept for display.
+    privileged: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    privileged_roles: Mapped[list] = mapped_column(JSON, default=list)
 
 
 FINDING_TYPES = ("not_managed", "stale_computer", "disabled_but_active", "unknown_to_directory",
-                 "not_domain_joined", "disabled_user_signed_in", "stale_user_signed_in")
+                 "not_domain_joined", "non_compliant", "not_in_intune", "disabled_user_signed_in",
+                 "stale_user_signed_in", "privileged_disabled", "privileged_stale", "privileged_no_agent")
+USER_FINDING_TYPES = ("disabled_user_signed_in", "stale_user_signed_in", "privileged_disabled", "privileged_stale",
+                      "privileged_no_agent")
 
 
 class DirectoryFinding(TenantMixin, Base):
@@ -189,7 +230,7 @@ class DirectoryFinding(TenantMixin, Base):
                       Index("ix_directory_findings_org_type", "organization_id", "type"))
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
-    # "<type>:<computer|user|device id>[:<device id>]"
+    # "<type>:<computer|user|device id>[:<device id>]" or "<type>:<user id>:c<computer id>"
     key: Mapped[str] = mapped_column(String(128))
     type: Mapped[str] = mapped_column(String(32))
     kind: Mapped[str] = mapped_column(String(16))  # computer | user | device

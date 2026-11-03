@@ -1,23 +1,39 @@
-# Directory discovery (on-prem Active Directory)
+# Directory discovery (Active Directory, Microsoft Entra ID + Intune)
 
-Directory discovery compares what your directory knows with what the platform
-manages. Your own enrolled agents read Active Directory from inside your
-network (the platform never connects to a domain controller). The results answer:
+Directory discovery compares what your directories know with what the platform
+manages. Two kinds of source exist:
 
-* which computers sign in to the domain but have **no agent** ("not managed"),
-* which computer accounts are **stale** (no domain logon for 90+ days),
-* which computers are **disabled in AD but still in use** (their agent still checks in),
-* which agent devices are joined to a synced domain but **unknown to the directory**,
+* **On-prem Active Directory** is read by your own enrolled agents from inside
+  your network (the platform never connects to a domain controller).
+* **Cloud directories** are read by the platform server itself over HTTPS:
+  **Microsoft Entra ID + Intune** through Microsoft Graph, with the app
+  registration of one of your Azure cloud connectors
+  ([server-side collection](#server-side-collection)).
+
+The results answer:
+
+* which machines are in use but have **no agent** ("not managed"),
+* which computer accounts / device records are **stale** (no activity for 90+ days),
+* which computers are **disabled in the directory but still in use** (their agent still checks in),
+* which agent devices are joined to a synced domain or Entra tenant but **unknown to the directory**,
   and which are **not domain-joined** at all,
-* which **disabled or stale AD users** are signed in on managed devices.
+* which devices Intune reports **non-compliant**, and which Windows / macOS agent
+  devices of an Intune tenant are **not in Intune**,
+* which **disabled or stale users** are signed in on managed devices,
+* which **privileged admins** are disabled but still assigned, stale, or use a
+  primary device without an agent.
+
+The same physical machine can be an AD computer, an Entra device and an Intune
+record at once: it is shown as **one machine** with the sources it is in,
+reported once and counted once in agent coverage ([matching](#matching)).
 
 It also adds the owner's directory identity (display name, email, department)
 to IT assets, and lets admins **add directory computers to IT assets**.
 
-Phase 1 (this release) ships the shared framework and **on-prem Active
-Directory**. The source `type`, the provider-neutral object model (stable
-`external_id` per source, provider attributes in JSON) and the matching tiers
-are ready for Entra ID, Google Workspace and Okta sources later.
+Phase 1 shipped the framework and on-prem Active Directory; phase 2 adds
+server-side collection and Microsoft Entra ID + Intune. The source `type`, the
+provider-neutral object model (stable `external_id` per source, provider
+attributes in JSON) and the matching tiers are shared by every source type.
 
 ## Contents
 
@@ -27,6 +43,8 @@ are ready for Entra ID, Google Workspace and Okta sources later.
 - [Authentication options](#authentication-options)
 - [Least privilege](#least-privilege)
 - [Setting up a source](#setting-up-a-source)
+- [Server-side collection](#server-side-collection)
+- [Microsoft Entra ID + Intune](#microsoft-entra-id--intune)
 - [Scheduling](#scheduling)
 - [Domain-join facts](#domain-join-facts)
 - [Matching](#matching)
@@ -39,6 +57,7 @@ are ready for Entra ID, Google Workspace and Okta sources later.
 - [Configuration](#configuration)
 - [Troubleshooting](#troubleshooting)
 - [Manual test checklist (real domain)](#manual-test-checklist-real-domain)
+- [Manual test checklist (real Entra ID tenant)](#manual-test-checklist-real-entra-id-tenant)
 - [Limitations and future work](#limitations-and-future-work)
 
 ## Architecture
@@ -79,8 +98,9 @@ are ready for Entra ID, Google Workspace and Okta sources later.
   `DIRECTORY_MISSING_PURGE_DAYS` (30). A failed or truncated run never removes anything.
 
 Code: `backend/app/directory/` (models, schemas, service, matching, reconcile,
-scheduler, api, agent_api), `endpoint-agent/internal/directory/` (LDAP client,
-decoding, batching), `endpoint-agent/internal/collect/join*.go` (domain-join facts).
+scheduler, api, agent_api; cloud, cloud_http, graph for server-side sources),
+`endpoint-agent/internal/directory/` (LDAP client, decoding, batching),
+`endpoint-agent/internal/collect/join*.go` (domain-join facts).
 
 ## Collector requirements
 
@@ -155,7 +175,7 @@ accepted with StartTLS; integrity and confidentiality always come from TLS.
 
 1. Install agent 1.3.0+ on two domain-joined Windows hosts (any member servers
    or admin workstations that stay on).
-2. **Connectors & scans → Directories → Add Active Directory.** Enter the
+2. **Connectors & scans → Directories → Add directory → Active Directory.** Enter the
    domain (e.g. `corp.example.com`), choose the collectors (only agents
    advertising `directory_collector` are listed), keep *Collector's computer
    account* or switch to *Read-only service account*. Advanced: DCs (default:
@@ -171,6 +191,137 @@ accepted with StartTLS; integrity and confidentiality always come from TLS.
 5. The first full sync runs on schedule (immediately for a new source) or with
    **Sync now**. Results: **IT assets → Discovery**.
 
+## Server-side collection
+
+Cloud directories have no on-prem component: the platform server calls the
+provider's HTTPS API itself (`backend/app/directory/cloud.py`). Everything else
+is the same machinery as AD: sources, sync runs, the scheduler, upsert by
+`(source, external_id)`, missing-marking, matching, findings, notifications,
+audit, RBAC and tenancy.
+
+```
+ console (admin)        CNAPP server                                        provider
+ ───────────────  ─────────────────────────────────────────────────  ───────────────────────
+ Add directory →  directory_sources (references an Azure connector)
+ Test & save    → permission / licence checks (synchronous, GETs) ──► token + 1-object probes
+ Sync now /       directory_sync_runs: queued ─► worker pool claims
+ scheduler        it (atomic queued→running: one process runs it)
+                  parts in order: users → roles → devices → Intune ───► paged GETs (nextLink),
+                  one page in memory, upserted + committed per page   ◄── 429 → Retry-After backoff
+                  complete parts mark missing; reconcile; notify
+```
+
+* **Read-only.** Only GET requests (plus the OAuth token request) to a fixed
+  allow-list of hosts (`login.microsoftonline.com`, `graph.microsoft.com`);
+  a paging link to any other host is refused.
+* **Parts degrade independently.** Each part (users, admin roles, Entra
+  devices, Intune) is skipped with a status (`missing_permission`,
+  `unlicensed`, `error`) when the tenant does not allow it; the others still
+  sync. The run succeeds when at least one part completed (its error starts
+  with `partial:`) and fails only when nothing could be read or the sign-in
+  itself failed. The source card shows the outcome per part.
+* **Missing, not deleted (per part).** Only parts that completed mark the
+  objects they no longer return as missing; a skipped Intune part never
+  removes Intune records. A run that hits `DIRECTORY_MAX_OBJECTS` stops
+  (`truncated`) and marks nothing missing.
+* **Throttling.** 429 / 503 / 504 and network errors are retried up to 6 times
+  per request, honouring `Retry-After` (capped at 120 s) or exponential backoff.
+* **Concurrency.** At most 2 cloud syncs run per server process; a run is
+  claimed atomically, so several API workers and the scheduler never run it
+  twice. A running cloud run that commits no page for 30 minutes (its process
+  died) is failed by the scheduler; queued runs nobody picked up are re-kicked.
+* **Disable / delete** a source during a sync: the run is cancelled and stops
+  before writing its next page.
+
+## Microsoft Entra ID + Intune
+
+The source reuses one of the organisation's **Azure cloud connectors**
+(Connectors & scans → Cloud connectors → Azure): its tenant ID, app
+registration (client ID) and client secret. The source stores only which
+connector it uses; the secret stays in the connector's encrypted settings and
+is never copied, returned or logged. The connector must authenticate with a
+**client secret**; a connector that uses the server's managed identity or
+DefaultAzureCredential (environment configuration of the default organisation)
+is listed as unusable, with the reason. **One source per Entra tenant**: a
+second source for the same tenant ID is refused.
+
+### Setup
+
+1. Connect Azure under Connectors & scans (tenant ID, client ID, client secret)
+   if it is not connected yet.
+2. **Directories → Add directory → Microsoft Entra ID + Intune.** Choose the
+   connector and the parts to read (users, admin roles, Entra devices, Intune
+   devices), the stale threshold (90 days) and sync interval (6 h).
+3. Copy the **permission script** (Azure CLI for Cloud Shell, or Microsoft Graph
+   PowerShell) and run it as a Global Administrator or Privileged Role
+   Administrator. It adds the Microsoft Graph **application** permissions below
+   to the connector's app registration and grants admin consent. It changes
+   nothing else in the tenant.
+4. **Test & save.** The source is saved, then the server signs in as the app,
+   reads the permissions granted in its token and probes each part with a
+   1-object read. Each permission is reported as granted or missing; Intune
+   and sign-in activity report "not licensed" when the tenant has no licence
+   (a warning, not a failure). Re-run Test & save after fixing.
+5. The first full sync starts within a minute (scheduler) or with **Sync now**.
+
+### Permissions (all read-only application permissions)
+
+| Permission | Needed for | Without it |
+|---|---|---|
+| `User.Read.All` | Users: enabled / disabled, UPN, email, department, title, on-prem SID / sAMAccountName (links synced users to AD) | users part skipped (and admin roles, which flag users) |
+| `AuditLog.Read.All` | Users' last sign-in (`signInActivity`) | last sign-in unknown: stale-user / stale-admin checks are skipped, never guessed |
+| `Device.Read.All` | Entra joined, hybrid joined and registered devices, their Entra device id and last sign-in | devices part skipped |
+| `DeviceManagementManagedDevices.Read.All` | Intune managed devices: compliance, encryption, last check-in, serial, primary user | Intune part skipped |
+| `RoleManagement.Read.Directory` | Privileged directory role assignments | admin-role part skipped, privileged flags kept from the last run |
+| `GroupMember.Read.All` | Members of role-assignable groups that hold a privileged role | roles held through groups are not expanded (noted on the roles part) |
+| `RoleEligibilitySchedule.Read.Directory` (optional) | PIM **eligible** assignments of the privileged roles (`roleEligibilityScheduleInstances`); needs **Entra ID P2** | eligible admins are not read (*PIM eligible · no permission* / *not licensed*); eligibility seen by the last successful read is kept |
+
+**Licences.** `signInActivity` needs **Microsoft Entra ID P1 or P2**: without
+it Graph answers `Authentication_RequestFromNonPremiumTenantOrB2CTenant`, the
+sync continues and last sign-in is shown as *unknown*. The Intune part needs an
+Intune licence; without it the part is skipped as *not licensed*.
+
+**What is read.** Users: `id, userPrincipalName, mail, displayName, givenName,
+surname, department, jobTitle, accountEnabled, createdDateTime, userType,
+onPremisesSamAccountName, onPremisesDomainName, onPremisesSecurityIdentifier,
+onPremisesDistinguishedName, onPremisesSyncEnabled, signInActivity`. Devices:
+the default device properties (`deviceId, displayName, operatingSystem,
+trustType, accountEnabled, approximateLastSignInDateTime, ...`). Intune:
+`id, deviceName, azureADDeviceId, serialNumber, complianceState, isEncrypted,
+lastSyncDateTime, operatingSystem, osVersion, userPrincipalName,
+managedDeviceOwnerType, enrolledDateTime, model, manufacturer`. Roles: role
+definitions, assignments of the privileged roles (`$filter=roleDefinitionId`,
+`$expand=principal`) and the transitive user members of groups holding them.
+
+**Privileged roles** (built-in, matched by role template id or display name):
+Global Administrator, Privileged Role Administrator, Privileged Authentication
+Administrator, Security Administrator, Conditional Access Administrator,
+Application Administrator, Cloud Application Administrator, Hybrid Identity
+Administrator, User Administrator, Authentication Administrator, Helpdesk
+Administrator, Password Administrator, Exchange Administrator, SharePoint
+Administrator, Intune Administrator, Cloud Device Administrator. Service
+principals holding roles are ignored.
+
+**PIM eligible admins.** With `RoleEligibilitySchedule.Read.Directory` and
+Entra ID P2, the current eligibility instances
+(`GET /roleManagement/directory/roleEligibilityScheduleInstances?$filter=roleDefinitionId eq '…'&$expand=principal`,
+paged, same throttling / host allow-list) are read for the same privileged
+roles, including eligibility through role-assignable groups (expanded with
+`GroupMember.Read.All`). An eligible holder is privileged for every privileged
+issue, the badge and the filter, and is shown as such: role
+"Eligible: Global Administrator (PIM)", issue detail "is eligible (PIM) for
+Global Administrator". A role a user holds both actively and as eligible is
+shown once, as active. Without the permission or P2 the run records
+*PIM eligible* as `missing_permission` / `unlicensed` and keeps the eligibility
+the last successful read found; nothing else is affected.
+
+**Device records.** Entra devices are records of kind `entra` (join type
+`joined`, `hybrid` or `registered`), Intune devices of kind `intune`
+(`external_id` `mdm:<id>`). Registered-only (personal) Entra devices, Intune
+devices owned `personal`, phones and anything not Windows / macOS / Linux are
+kept and listed, but **no agent is expected** on them: they are never "no
+agent" and are not in coverage.
+
 ## Scheduling
 
 The leader-elected scheduler (one per deployment) checks every minute:
@@ -185,6 +336,9 @@ The leader-elected scheduler (one per deployment) checks every minute:
   in the last 10 minutes (it polls every ~60 s), and runs Windows for
   computer-account auth;
 * with no healthy collector the slot is recorded as a failed run and notified;
+* cloud sources have no collector: their runs go to the server's worker pool
+  (see [server-side collection](#server-side-collection)); a stalled one is
+  failed, not failed over;
 * matches and findings are re-evaluated every 30 minutes (device check-ins change
   them) and after every sync.
 
@@ -207,50 +361,90 @@ they are still matched by host name.
 
 ## Matching
 
-Computers are matched to agent devices in tiers, strongest first
-(`backend/app/directory/matching.py`, pure and unit-tested). A tier matches only
-when the key is unique on both sides among what is still unmatched; otherwise
-the computer is **ambiguous** (flagged with its candidates, never guessed) and
+**One machine, several records.** Directory records are first grouped into
+physical machines (`cluster_computers` in `backend/app/directory/matching.py`):
+
+* the same object synced by two sources (same external id, e.g. overlapping AD sources);
+* an Entra device and its Intune record (same Entra device id, `azureADDeviceId`);
+* an AD computer and its hybrid-joined Entra device (same on-prem SID when Graph
+  returns it; otherwise the same host name, when that name is unique among AD
+  computers and among hybrid-joined devices, since Entra Connect names the
+  device after the computer account);
+* records with the same real serial number (placeholder serials are ignored);
+* records an agent device ties together: it reports the SID of one and the
+  Entra device id of the other (only keys that point at exactly one record).
+
+A machine's representative record is the strongest kind (AD computer, then
+Entra device, Intune, ...). Machines are matched, reported, listed (*Directory
+computers* shows one row per machine with a badge per source) and counted in
+coverage **once**.
+
+Machines are then matched to agent devices in tiers, strongest first, using
+the keys of all their records (pure and unit-tested). A tier matches only when
+the key is unique on both sides among what is still unmatched; otherwise the
+machine is **ambiguous** (flagged with its candidates, never guessed) and
 weaker tiers are not tried:
 
 | Tier | Key | Confidence |
 |---|---|---|
-| `directory_sid` / `directory_guid` | computer account SID / objectGUID reported by the agent | 100 |
-| `serial` | serial number (when the directory has one; not AD today) | 95 |
+| `directory_sid` / `directory_guid` | computer account SID / objectGUID reported by the agent (AD records) | 100 |
+| `entra_device_id` | Entra device id reported by the agent (Windows `NetGetAadJoinInformation`) = Entra `deviceId` / Intune `azureADDeviceId` | 100 |
+| `serial` | serial number (Intune; not AD) | 95 |
 | `fqdn` | dNSHostName = device FQDN (reported, hostname, or hostname + AD domain) | 90 |
 | `hostname_domain` | short host name within the same AD domain | 75 |
-| `hostname` | short host name for devices that report no domain (older agents), only if the name exists once across **all** directory computers | 50 |
+| `hostname` | short host name for devices that report no domain (older agents, Entra-only devices), only if the name exists once across **all** directory machines | 50 |
 
-Comparisons are case-insensitive. The same object synced by two sources
-(overlapping configuration, same objectGUID) is matched once. A computer
-matched to a device is linked to that device's IT asset.
+Comparisons are case-insensitive. A machine matched to a device is linked to
+that device's IT asset. The `intune_enrollment_id` agents report is the local
+MDM enrollment key, not the Intune device id, so it is not a match key.
 
 **Users** are matched to signed-in users (`DOMAIN\user`, `user@upn`) and IT
 asset owners by sAMAccountName within the device's domain (the NetBIOS prefix is
-mapped via the domain-join facts), or UPN / email. Entra ID (`AzureAD\…`), local
-and service accounts are ignored; names present in several domains without a
-domain hint are ambiguous and ignored. IT assets keep the agent-always-wins
+mapped via the domain-join facts), or UPN / email. Entra ID users match by UPN /
+email; an Entra user synced from AD (same on-prem SID) is the **same person** as
+the AD user, not an ambiguity. `AzureAD\…` display names, local and service
+accounts are ignored; names present in several domains without a domain hint
+are ambiguous and ignored. IT assets keep the agent-always-wins
 **username owner rule**: the username stays the owner key; the directory
 identity (display name, email, department, enabled) is display-only enrichment
 (`owner_directory` in the IT asset API).
 
 ## Discovery issues
 
-| Type | Meaning |
-|---|---|
-| `not_managed` | Enabled computer with a domain logon within the stale window, no matched (active) agent device |
-| `stale_computer` | Enabled computer with no domain logon for `stale_days` (default 90; never-logged-on computers older than that too) |
-| `disabled_but_active` | Disabled in AD, but its matched agent checked in within 7 days |
-| `unknown_to_directory` | Active agent device joined to a synced domain with no matching directory computer (or several possible ones) |
-| `not_domain_joined` | Active agent device (1.3.0+) that reports no AD domain |
-| `disabled_user_signed_in` | A user disabled in AD is signed in on a managed device |
-| `stale_user_signed_in` | A signed-in user has no domain logon for `stale_days` |
+Computer issues are evaluated per physical machine (all its records together);
+"activity" is the AD `lastLogonTimestamp`, the Entra device's approximate last
+sign-in or the Intune last check-in, whichever is newest.
 
-`lastLogonTimestamp` replicates with up to ~14 days of lag by design, which is
-why the stale threshold is in weeks, not days. Issues are stored
+| Type | Tab | Meaning |
+|---|---|---|
+| `not_managed` (No agent) | Computer | A machine the agent belongs on (Windows / macOS / Linux, not personal) with an enabled record active within the stale window, and no matched active agent device. Reported once even if it is in AD, Entra ID and Intune |
+| `stale_computer` | Computer | Every enabled record of the machine has had no activity for `stale_days` (default 90; never-active records older than that too) |
+| `disabled_but_active` | Computer | Disabled in AD or Entra ID, but its matched agent checked in within 7 days |
+| `unknown_to_directory` | Computer | Active agent device joined to a synced AD domain, or to the Entra tenant of a source that synced devices, with no matching directory record (or several possible ones) |
+| `not_domain_joined` | Computer | Active agent device (1.3.0+) that reports neither an AD domain nor an Entra join (only when an AD source exists) |
+| `non_compliant` | Computer | Intune reports the machine's record `noncompliant` (detail adds "not encrypted" when Intune says so) |
+| `not_in_intune` | Computer | Active Windows / macOS agent device joined to an Entra tenant whose source synced Intune successfully, with no Intune record (agents report the tenant on Windows) |
+| `disabled_user_signed_in` | User | A user disabled in the directory (AD or Entra ID; for a synced person, disabled in either) is signed in on a managed device |
+| `stale_user_signed_in` | User | A signed-in user has no sign-in for `stale_days`; skipped when last sign-in is unknown (Entra ID without P1/P2 or `AuditLog.Read.All`) |
+| `privileged_disabled` | User | A disabled account still holds a privileged admin role (assignment left behind) |
+| `privileged_stale` | User | An enabled privileged admin has not signed in for `stale_days` (skipped when last sign-in is unknown) |
+| `privileged_no_agent` | User | An enabled privileged admin's primary device (Intune primary user) is a machine the agent belongs on but has no agent; one issue per device |
+
+`lastLogonTimestamp` replicates with up to ~14 days of lag by design, and Entra
+`approximateLastSignInDateTime` is updated about weekly, which is why the stale
+threshold is in weeks, not days. Issues are stored
 (`directory_findings`), keep their first-seen time across re-evaluations, and
 are listed with filters, search, pagination and CSV export on **IT assets →
-Discovery**. The same object from two sources is reported once.
+Discovery**, with a source filter (a machine matches every source one of its
+records is in) and a badge per source on each row. The same machine from
+several sources is reported once.
+
+**Agent coverage** (Discovery and Dashboards → Endpoints) = machines with an
+active agent / machines the agent belongs on, each physical machine counted
+once (enabled, present records with `agent_expected`).
+
+**Privileged users.** *Directory users* lists users with a *Privileged* filter
+and badge (role names on hover); no group browser.
 
 ## Adding computers to IT assets
 
@@ -281,7 +475,13 @@ computer, or same short name and domain) instead of creating a duplicate.
 * **Tenant isolation:** all tables use `TenantMixin`; every id of another
   organisation answers 404 (also the agent upload of another organisation's run).
 * **Secrets:** see [Authentication options](#authentication-options); audit
-  records never contain passwords.
+  records never contain passwords. An Entra source holds no secret: the Azure
+  connector's client secret is decrypted only in memory for the token request
+  (form body, never logged; provider errors keep only the error code and
+  message). `python -m app.cli rotate-notification-key` re-encrypts directory credentials too.
+* **Cloud sources are organisation-scoped like everything else:** another
+  organisation never sees the source, and organisations other than the default
+  can never use the server environment's Azure credentials.
 
 ## Scaling
 
@@ -314,13 +514,19 @@ Session-authenticated (`viewer` reads, `admin` writes), under `/api/directory`:
 | GET | `/sources`, `/sources/{id}` | viewer |
 | POST | `/sources` | admin |
 | PATCH / DELETE | `/sources/{id}` | admin |
-| POST | `/sources/{id}/sync`, `/sources/{id}/test` | admin |
-| GET | `/sources/{id}/runs`, `/runs/{id}` | viewer |
+| POST | `/sources/{id}/sync`, `/sources/{id}/test` (cloud: synchronous permission checks in the run's `checks`) | admin |
+| GET | `/sources/{id}/runs`, `/runs/{id}` (cloud runs: `scope_status` per part) | viewer |
 | GET | `/collectors` | viewer |
-| GET | `/summary` (issue counts, coverage) | viewer |
-| GET | `/issues`, `/issues/export.csv` (type, kind, source_id, q, domain, limit, offset) | viewer |
-| GET | `/computers` (status: all, not_in_assets, matched, unmatched, ambiguous, missing), `/users` | viewer |
-| POST | `/computers/add-to-assets` | admin |
+| GET | `/azure-connectors` (usable connectors, Graph permissions with app role ids, privileged roles; no secrets) | viewer |
+| GET | `/summary` (issue counts, coverage, source types) | viewer |
+| GET | `/issues`, `/issues/export.csv` (type, kind, source_id, q, domain, limit, offset; rows carry `sources`, `privileged`) | viewer |
+| GET | `/computers` (one row per machine with its `sources`; status: all, not_in_assets, matched, unmatched, ambiguous, missing), `/users` (privileged, enabled) | viewer |
+| POST | `/computers/add-to-assets` (links every record of the machine) | admin |
+
+Source bodies: `{"type": "ad", "config": {...AD...}, "collector_device_ids": [...]}` or
+`{"type": "entra", "config": {"connector_id": "org" | "env", "scopes": ["users",
+"roles", "devices", "intune"], "stale_days": 90, "interval_hours": 6}}`
+(`tenant_id` / `client_id` are copied from the connector by the server).
 
 Agent: `POST /api/agent/directory/runs/{run_id}/batches` (device credential +
 `X-Directory-Sync-Token`, `Content-Encoding: gzip`, JSON `{seq, final,
@@ -347,6 +553,12 @@ computers[], users[], status, error, truncated, totals, duration_ms, server}`).
 | Run fails after 15 min "did not pick up" | The collector is offline or its agent is stuck; failover goes to the next collector. |
 | Computers "ambiguous" | Same host name on several devices / domains: update agents to 1.3.0+ (they report their SID and domain). |
 | "incomplete: the safety cap was reached" | Raise `DIRECTORY_MAX_OBJECTS` or narrow base DNs. |
+| Entra: connector "unusable" | It must be enabled and have tenant ID, client ID and client secret; managed identity / DefaultAzureCredential cannot be used. |
+| Entra: sign-in failed `AADSTS7000215` / `AADSTS7000222` | The connector's client secret is wrong / expired: update it under Cloud connectors → Azure. |
+| Entra: a part shows "no permission" | Run the permission script (as Global / Privileged Role Administrator), wait a minute for consent to apply, Test & save. |
+| Entra: "Last sign-in · not licensed" | The tenant has no Entra ID P1/P2: last sign-in stays unknown; stale checks are skipped. |
+| Entra: "Intune · not licensed" | No Intune licence (or the service is not set up): Intune is skipped, other parts sync. |
+| Entra: run "throttled Nx" | Graph throttled the app; the sync backs off and continues. Persistent throttling: lengthen the interval. |
 
 Agent logs (`collect_logs`) contain "directory sync started / finished" lines
 with counts and errors, never credentials or tokens.
@@ -382,12 +594,58 @@ Run before go-live against a test or production domain (read-only):
    *Directory discovery* events (once).
 16. [ ] Dashboards → Endpoints shows the **Agent coverage** tile.
 
+## Manual test checklist (real Entra ID tenant)
+
+Nothing in the test suite talks to Microsoft (Graph is faked). Before go-live,
+against a test tenant (read-only):
+
+1. [ ] Deploy the server (migration `0021_directory_cloud_sources`). The Azure connector
+   is configured with a client secret.
+2. [ ] *Add directory → Microsoft Entra ID + Intune*: the connector is listed as usable;
+   a managed-identity / environment connector shows the "cannot call Graph" reason.
+3. [ ] Run the Azure CLI script in Cloud Shell, and on a second tenant the PowerShell one:
+   both add the permissions and grant consent; the "Check" lines list 6 app role ids.
+4. [ ] Before running the script, **Test & save** lists the missing permissions; after, all
+   pass. In a tenant without P1/P2 "Last sign-in" shows *not licensed*; without Intune
+   "Intune service" shows *not licensed* (warnings only).
+5. [ ] **Sync now**: user / device counts match the Entra admin center (Users, Devices) and
+   Intune (Devices → All devices) within the safety cap; the run shows the request count.
+6. [ ] A hybrid-joined PC with the agent: one row under *Directory computers* with AD,
+   Entra ID and Intune badges, matched by SID / Entra device id; coverage counts it once.
+7. [ ] An Entra-joined laptop without the agent: *No agent* once (not twice for Entra + Intune).
+8. [ ] A device Intune marks non-compliant: *Non-compliant*; a Windows agent device joined to
+   the tenant but not enrolled in Intune: *Not in Intune*.
+9. [ ] Assign Global Administrator to a disabled test user: *Disabled admin*; to a user
+   whose primary device has no agent: *Admin device without agent*; a role held through a
+   role-assignable group appears "(via group)".
+9a. [ ] (Entra ID P2) Make a test user only PIM-*eligible* for Global Administrator (not
+   activated): it appears under *Directory users → Privileged* as "eligible (PIM)", and, if
+   it has not signed in for 90+ days, as *Stale admin* "is eligible (PIM) for Global
+   Administrator". Activate the role: it shows once, as active. Without P2 (or without
+   `RoleEligibilitySchedule.Read.Directory`) Test & save marks PIM optional / not licensed and
+   the sync shows *PIM eligible · not licensed* while everything else syncs.
+10. [ ] Remove `DeviceManagementManagedDevices.Read.All` and re-sync: Intune *no permission*,
+   existing Intune records kept (not missing), other parts succeed.
+11. [ ] In a large tenant (10k+ users) the sync pages through everything (nextLink) and
+   completes; server logs show "retrying" lines only when Graph throttles.
+12. [ ] The client secret never appears in the console, API responses, audit log or server logs.
+13. [ ] Disable the source during a sync: the run is cancelled, nothing is marked missing.
+
 ## Limitations and future work
 
-* Entra ID, Google Workspace and Okta sources (the framework is ready: `type`,
-  provider-neutral `external_id`, matching tiers incl. Entra device id).
-* Privileged group membership (`memberOf`) for "privileged user on unmanaged
-  device" findings; incremental sync (DirSync / uSNChanged).
+* Google Workspace and Okta sources.
+* Entra: PIM for *groups* (eligible membership of a group via PIM for Groups)
+  is not read, only eligible role assignments; only the global Azure cloud
+  (no national clouds); the connector must use a client secret (certificate /
+  managed identity not supported for Graph yet). Cloud-only users signed in on
+  Windows as `AzureAD\Name` cannot be resolved to a directory user (the name is
+  not the UPN); UPN-style sign-ins are.
+* Hybrid AD + Entra linking uses the on-prem SID on the Entra device (when
+  Graph returns it), a unique host name, or an agent reporting both ids. A
+  hybrid PC without an agent whose name exists in several AD domains (and no
+  SID from Graph) shows as two machines and counts twice in coverage.
+* Privileged AD group membership (`memberOf`); incremental sync (DirSync /
+  uSNChanged, Graph delta queries).
 * `ad_object_guid` of the device itself (needs an LDAP read on the device).
 * No endpoint actions are taken from discovery (no disabling accounts, no
   uninstalling, no USB / service control): it only reports.

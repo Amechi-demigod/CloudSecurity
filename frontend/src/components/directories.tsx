@@ -1,8 +1,9 @@
-// Connectors & scans -> Directories: add / edit / monitor directory sources (on-prem Active Directory).
-import { Check, Copy, Network, RefreshCw } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { ApiError } from "../api";
+// Connectors & scans -> Directories: add / edit / monitor directory sources (on-prem Active Directory read by a
+// collector agent; Microsoft Entra ID + Intune read by the server through Microsoft Graph).
+import { RefreshCw } from "lucide-react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import {
+  DIRECTORY_NAME,
   directoryApi,
   type AdConfig,
   type Collector,
@@ -10,60 +11,16 @@ import {
   type DirectoryScope,
   type DirectorySecurity,
   type DirectorySource,
-  type SyncRun,
+  type DirectoryType,
 } from "../directoryApi";
+import { FINAL, RUN_COLOR, RUN_TEXT, RUN_TEXT_SERVER, TRIGGER_TEXT, errMsg, inputCls, runDuration, useRun } from "../lib/directory";
 import { fmtAgo, fmtHours, fmtTime, fmtUntil } from "../lib/format";
 import { useApi } from "../lib/useApi";
+import { EntraForm } from "./directoryEntra";
+import { CodeBox, DirectoryMark, RunResult, ScopeChips, StatCell } from "./directoryShared";
 import { Button, Card, ErrorNote, Field, Tag } from "./ui";
 
-function errMsg(e: unknown) {
-  return e instanceof ApiError ? e.message : e instanceof Error ? e.message : String(e);
-}
-
-const FINAL = new Set(["succeeded", "failed", "cancelled"]);
-
-const RUN_TEXT: Record<string, string> = {
-  queued: "Waiting for collector",
-  running: "Syncing",
-  succeeded: "Succeeded",
-  failed: "Failed",
-  cancelled: "Cancelled",
-};
-const RUN_COLOR: Record<string, string> = {
-  queued: "text-accent",
-  running: "text-accent",
-  succeeded: "text-good",
-  failed: "text-sev-high",
-  cancelled: "text-ink-3",
-};
-const TRIGGER_TEXT: Record<string, string> = { scheduled: "Scheduled", manual: "Sync now", test: "Test" };
-
-const inputCls =
-  "block w-full rounded border border-line bg-surface-2 px-3 py-1.5 text-sm text-ink focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/40";
-
-function runDuration(r: SyncRun): string | null {
-  if (r.duration_ms == null) return null;
-  const s = Math.round(r.duration_ms / 1000);
-  return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h ${Math.round((s % 3600) / 60)}m`;
-}
-
-function StatCell({ label, value, sub, valueClass = "text-ink" }: { label: string; value: ReactNode; sub?: ReactNode; valueClass?: string }) {
-  return (
-    <div className="min-w-0 border-line py-1 sm:border-l sm:px-4 sm:first:border-l-0 sm:first:pl-0">
-      <div className="text-[11px] font-semibold uppercase tracking-wide text-ink-3">{label}</div>
-      <div className={`mt-0.5 text-lg font-semibold ${valueClass}`}>{value}</div>
-      {sub && <div className="text-xs text-ink-3">{sub}</div>}
-    </div>
-  );
-}
-
-function DirectoryMark({ size = 18 }: { size?: number }) {
-  return (
-    <span aria-hidden className="inline-grid shrink-0 place-items-center rounded bg-accent/15 text-accent" style={{ width: size, height: size }}>
-      <Network style={{ width: size * 0.62, height: size * 0.62 }} />
-    </span>
-  );
-}
+type AdSource = Extract<DirectorySource, { type: "ad" }>;
 
 // ----------------------------------------------------------------------------- pre-check script
 const ps = (s: string) => s.replace(/'/g, "''");
@@ -142,123 +99,6 @@ function precheckScript(o: { domain: string; servers: string[]; port: number; se
   ].join("\n");
 }
 
-function CodeBox({ text, note }: { text: string; note?: ReactNode }) {
-  const pre = useRef<HTMLPreElement>(null);
-  const [state, setState] = useState<"idle" | "copied" | "select">("idle");
-  useEffect(() => {
-    if (state !== "copied") return;
-    const t = setTimeout(() => setState("idle"), 2500);
-    return () => clearTimeout(t);
-  }, [state]);
-  function selectAll() {
-    const el = pre.current;
-    const sel = window.getSelection();
-    if (!el || !sel) return;
-    const range = document.createRange();
-    range.selectNodeContents(el);
-    sel.removeAllRanges();
-    sel.addRange(range);
-    setState("select");
-  }
-  async function copy() {
-    if (!navigator.clipboard?.writeText) return selectAll();
-    try {
-      await navigator.clipboard.writeText(text);
-      setState("copied");
-    } catch {
-      selectAll();
-    }
-  }
-  return (
-    <div>
-      <div className="relative">
-        <pre
-          ref={pre}
-          data-testid="directory-precheck"
-          className="max-h-96 overflow-auto whitespace-pre-wrap rounded-xl bg-slate-900 py-3.5 pl-4 pr-24 font-mono text-[12px] leading-relaxed text-slate-200 ring-1 ring-inset ring-white/5"
-        >
-          {text.split("\n").map((line, i) => (
-            <span key={i} className={line.trimStart().startsWith("#") ? "text-slate-400" : undefined}>
-              {line}
-              {"\n"}
-            </span>
-          ))}
-        </pre>
-        <button
-          type="button"
-          onClick={() => void copy()}
-          className="absolute right-2.5 top-2.5 inline-flex items-center gap-1.5 rounded-md border border-slate-700 bg-slate-800 px-2.5 py-1 text-xs font-semibold text-slate-200 hover:bg-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-        >
-          {state === "copied" ? <Check aria-hidden className="h-3.5 w-3.5" /> : <Copy aria-hidden className="h-3.5 w-3.5" />}
-          {state === "copied" ? "Copied" : "Copy"}
-        </button>
-      </div>
-      <p role="status" aria-live="polite" className="mt-2 min-h-4 text-xs text-ink-3">
-        {state === "copied" ? "Copied to the clipboard." : state === "select" ? "Your browser blocked the clipboard: the script is selected, press Ctrl+C." : note}
-      </p>
-    </div>
-  );
-}
-
-// ----------------------------------------------------------------------------- run polling
-/** Poll a sync run every 5 s until it ends. */
-function useRun(runId: string | null) {
-  const [run, setRun] = useState<SyncRun | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    setRun(null);
-    setError(null);
-    if (!runId) return;
-    let stop = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const tick = async () => {
-      try {
-        const r = await directoryApi.run(runId);
-        if (stop) return;
-        setRun(r);
-        if (FINAL.has(r.status)) return;
-      } catch (e) {
-        if (!stop) setError(errMsg(e));
-      }
-      if (!stop) timer = setTimeout(tick, 5000);
-    };
-    void tick();
-    return () => {
-      stop = true;
-      if (timer) clearTimeout(timer);
-    };
-  }, [runId]);
-  return { run, error };
-}
-
-function RunResult({ run, error }: { run: SyncRun | null; error: string | null }) {
-  if (error) return <ErrorNote error={error} />;
-  if (!run) return <p className="text-sm text-ink-3">Queuing the test…</p>;
-  const done = FINAL.has(run.status);
-  return (
-    <div role="status" aria-live="polite" className={`rounded-lg border px-3 py-2.5 text-sm ${run.status === "failed" ? "border-sev-high/60 bg-sev-high/10" : run.status === "succeeded" ? "border-good/60 bg-good/10" : "border-line bg-surface-2"}`}>
-      <div className="flex items-center gap-2 font-medium text-ink">
-        {!done && <RefreshCw aria-hidden className="h-3.5 w-3.5 animate-spin text-accent" />}
-        <span className={RUN_COLOR[run.status]}>{RUN_TEXT[run.status]}</span>
-        {run.device_hostname && <span className="text-ink-3">on {run.device_hostname}</span>}
-      </div>
-      {run.status === "queued" && (
-        <p className="mt-1 text-xs text-ink-3">Agents fetch commands about once a minute, so the collector picks the test up within ~1 minute.</p>
-      )}
-      {run.status === "running" && <p className="mt-1 text-xs text-ink-3">Connected collector is binding and reading a few objects…</p>}
-      {run.status === "succeeded" && (
-        <div className="mt-1 text-xs text-ink-2">
-          Bound{run.server ? ` to ${run.server}` : ""} and read {run.computers_seen} computer(s) and {run.users_seen} user(s).
-          {run.sample.length > 0 && (
-            <span className="text-ink-3"> Sample: {run.sample.map((s) => s.name).join(", ")}</span>
-          )}
-        </div>
-      )}
-      {run.error && <p className="mt-1 break-words text-xs text-ink">{run.error}</p>}
-    </div>
-  );
-}
-
 // ----------------------------------------------------------------------------- form
 interface FormState {
   name: string;
@@ -284,7 +124,7 @@ const split = (s: string) =>
     .map((x) => x.trim())
     .filter(Boolean);
 
-function initialForm(src: DirectorySource | null): FormState {
+function initialForm(src: AdSource | null): FormState {
   const c = src?.config;
   return {
     name: src?.name ?? "",
@@ -344,7 +184,7 @@ function CollectorPicker({ collectors, selected, onChange, auth }: { collectors:
 }
 
 /** Add or edit an Active Directory source: settings, collectors, auth, the pre-check script and "Test & save". */
-export function DirectoryForm({ source, onDone, onCancel }: { source: DirectorySource | null; onDone: (s: DirectorySource) => void; onCancel: () => void }) {
+function DirectoryForm({ source, onDone, onCancel }: { source: AdSource | null; onDone: (s: DirectorySource) => void; onCancel: () => void }) {
   const [f, setF] = useState<FormState>(() => initialForm(source));
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -562,6 +402,20 @@ export function DirectoryForm({ source, onDone, onCancel }: { source: DirectoryS
 }
 
 // ----------------------------------------------------------------------------- status card
+function sourceSubtitle(src: DirectorySource): string {
+  const state = src.enabled ? "enabled" : "disabled";
+  if (src.type === "entra") {
+    const parts = src.config.scopes.map((s) => ({ users: "users", devices: "devices", intune: "Intune", roles: "admin roles" })[s]).join(", ");
+    return `${DIRECTORY_NAME.entra} · tenant ${src.config.tenant_id} · ${state} · read by the server via Microsoft Graph · ${parts}`;
+  }
+  const c = src.config;
+  return (
+    `${DIRECTORY_NAME.ad} · ${c.domain} · ${state} · ` +
+    `${c.auth === "service_account" ? `service account ${src.credential_username_hint ?? ""}` : "computer account (Kerberos)"} · ` +
+    `${c.security === "ldaps" ? "LDAPS" : "StartTLS"} ${c.port}`
+  );
+}
+
 function SourceCard({ src, isAdmin, onChanged }: { src: DirectorySource; isAdmin: boolean; onChanged: () => void }) {
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -569,6 +423,8 @@ function SourceCard({ src, isAdmin, onChanged }: { src: DirectorySource; isAdmin
   const runs = useApi(() => directoryApi.runs(src.id, 8), [src.id, src.last_sync_at, src.active_run?.status], src.active_run ? 5000 : undefined);
   const active = src.active_run;
   const healthy = src.collectors.filter((c) => c.healthy).length;
+  const server = src.collection === "server";
+  const runText = server ? RUN_TEXT_SERVER : RUN_TEXT;
 
   async function act(fn: () => Promise<unknown>) {
     setBusy(true);
@@ -584,23 +440,20 @@ function SourceCard({ src, isAdmin, onChanged }: { src: DirectorySource; isAdmin
     }
   }
 
-  const lastValue = active ? RUN_TEXT[active.status] : src.last_sync_status ? RUN_TEXT[src.last_sync_status] : "Not yet";
+  const lastValue = active ? runText[active.status] : src.last_sync_status ? runText[src.last_sync_status] : "Not yet";
   const lastClass = active ? RUN_COLOR[active.status] : src.last_sync_status ? RUN_COLOR[src.last_sync_status] : "text-ink-3";
+  const objectsSub = src.type === "entra" ? `${src.computers_count.toLocaleString()} device records · ${src.users_count.toLocaleString()} users` : `${src.computers_count.toLocaleString()} computers · ${src.users_count.toLocaleString()} users`;
 
   return (
     <Card className="mb-4">
       <div className="flex flex-wrap items-start justify-between gap-4 px-1">
         <div className="flex min-w-0 items-center gap-3">
-          <DirectoryMark size={32} />
+          <DirectoryMark size={32} type={src.type} />
           <div className="min-w-0">
             <h3 className="text-base font-semibold text-ink">{src.name}</h3>
             <div className="flex flex-wrap items-center gap-x-1.5 text-[13px] text-ink-3">
               <span aria-hidden className={`inline-block h-2 w-2 rounded-full ${src.enabled ? "bg-good" : "bg-ink-3"}`} />
-              <span>
-                Active Directory · {src.config.domain} · {src.enabled ? "enabled" : "disabled"} ·{" "}
-                {src.config.auth === "service_account" ? `service account ${src.credential_username_hint ?? ""}` : "computer account (Kerberos)"} ·{" "}
-                {src.config.security === "ldaps" ? "LDAPS" : "StartTLS"} {src.config.port}
-              </span>
+              <span>{sourceSubtitle(src)}</span>
             </div>
           </div>
         </div>
@@ -609,10 +462,7 @@ function SourceCard({ src, isAdmin, onChanged }: { src: DirectorySource; isAdmin
             <Button onClick={() => setEditing((v) => !v)} disabled={editing || busy}>
               Edit
             </Button>
-            <Button
-              disabled={busy}
-              onClick={() => void act(() => directoryApi.updateSource(src.id, { enabled: !src.enabled }))}
-            >
+            <Button disabled={busy} onClick={() => void act(() => directoryApi.updateSource(src.id, { enabled: !src.enabled }))}>
               {src.enabled ? "Disable" : "Enable"}
             </Button>
             <Button
@@ -643,7 +493,7 @@ function SourceCard({ src, isAdmin, onChanged }: { src: DirectorySource; isAdmin
           sub={
             active ? (
               active.status === "queued" ? (
-                `queued ${fmtAgo(active.queued_at)} on ${active.device_hostname ?? "collector"}`
+                server ? `queued ${fmtAgo(active.queued_at)}` : `queued ${fmtAgo(active.queued_at)} on ${active.device_hostname ?? "collector"}`
               ) : (
                 `${(active.computers_seen + active.users_seen).toLocaleString()} objects so far`
               )
@@ -652,20 +502,31 @@ function SourceCard({ src, isAdmin, onChanged }: { src: DirectorySource; isAdmin
             ) : undefined
           }
         />
-        <StatCell label="Objects" value={(src.computers_count + src.users_count).toLocaleString()} sub={`${src.computers_count.toLocaleString()} computers · ${src.users_count.toLocaleString()} users`} />
+        <StatCell label="Objects" value={(src.computers_count + src.users_count).toLocaleString()} sub={objectsSub} />
         <StatCell
           label="Next sync"
           value={!src.enabled ? "Off" : src.next_sync_at ? fmtUntil(src.next_sync_at) : "—"}
           sub={src.enabled ? `every ${fmtHours(src.config.interval_hours)}` : "source disabled"}
         />
-        <StatCell
-          label="Collectors"
-          value={`${healthy} / ${src.collectors.length} online`}
-          valueClass={healthy === 0 ? "text-sev-high" : "text-ink"}
-          sub={src.collectors.map((c) => c.hostname).join(", ")}
-        />
+        {server ? (
+          <StatCell label="Collection" value="Server-side" sub={src.type === "entra" ? `app ${src.config.client_id}` : undefined} />
+        ) : (
+          <StatCell
+            label="Collectors"
+            value={`${healthy} / ${src.collectors.length} online`}
+            valueClass={healthy === 0 ? "text-sev-high" : "text-ink"}
+            sub={src.collectors.map((c) => c.hostname).join(", ")}
+          />
+        )}
       </div>
-      {src.last_sync_error && !active && <p className="mt-3 break-words px-1 text-xs text-sev-high">{src.last_sync_error}</p>}
+      {server && Object.keys(src.scope_status).length > 0 && (
+        <div className="mt-3 px-1">
+          <ScopeChips status={src.scope_status} />
+        </div>
+      )}
+      {src.last_sync_error && !active && (
+        <p className={`mt-3 break-words px-1 text-xs ${src.last_sync_status === "succeeded" ? "text-sev-medium" : "text-sev-high"}`}>{src.last_sync_error}</p>
+      )}
       {runs.data && runs.data.length > 0 && (
         <details className="mt-3 px-1">
           <summary className="cursor-pointer text-xs font-medium text-ink-3">Recent syncs ({runs.data.length})</summary>
@@ -677,13 +538,16 @@ function SourceCard({ src, isAdmin, onChanged }: { src: DirectorySource; isAdmin
                 </span>
                 <span className="w-20 shrink-0 text-ink-3">{TRIGGER_TEXT[r.trigger] ?? r.trigger}</span>
                 <span className={`w-36 shrink-0 font-medium ${RUN_COLOR[r.status]}`}>
-                  {RUN_TEXT[r.status]}
+                  {runText[r.status]}
                   {r.truncated && " (capped)"}
                 </span>
                 <span className="text-ink-2">
-                  {r.computers_seen.toLocaleString()} computers · {r.users_seen.toLocaleString()} users
+                  {r.trigger === "test" && r.checks.length > 0
+                    ? `${r.checks.filter((c) => c.status === "ok").length} of ${r.checks.length} checks passed`
+                    : `${r.computers_seen.toLocaleString()} ${server ? "device records" : "computers"} · ${r.users_seen.toLocaleString()} users`}
                   {runDuration(r) && ` · ${runDuration(r)}`}
                   {r.device_hostname && ` · ${r.device_hostname}`}
+                  {server && r.server && ` · ${r.server}`}
                 </span>
                 {r.error && <span className="basis-full break-words text-ink-3">{r.error}</span>}
               </li>
@@ -694,7 +558,8 @@ function SourceCard({ src, isAdmin, onChanged }: { src: DirectorySource; isAdmin
       {editing && (
         <div className="mt-4 border-t border-line px-1 pt-4">
           <h4 className="mb-3 text-[13px] font-semibold text-ink">Edit {src.name}</h4>
-          <DirectoryForm
+          <SourceForm
+            type={src.type}
             source={src}
             onCancel={() => setEditing(false)}
             onDone={() => {
@@ -708,15 +573,70 @@ function SourceCard({ src, isAdmin, onChanged }: { src: DirectorySource; isAdmin
   );
 }
 
+function SourceForm({ type, source, onDone, onCancel }: { type: DirectoryType; source: DirectorySource | null; onDone: (s: DirectorySource) => void; onCancel: () => void }) {
+  if (type === "entra") return <EntraForm source={source?.type === "entra" ? source : null} onDone={onDone} onCancel={onCancel} />;
+  return <DirectoryForm source={source?.type === "ad" ? source : null} onDone={onDone} onCancel={onCancel} />;
+}
+
+// ----------------------------------------------------------------------------- add a directory
+interface DirectoryChoice {
+  type: DirectoryType;
+  title: string;
+  blurb: string;
+  how: string;
+  steps: string[];
+}
+
+const CHOICES: DirectoryChoice[] = [
+  {
+    type: "ad",
+    title: "Active Directory",
+    blurb: "On-prem domain: computers and users over LDAPS.",
+    how: "Read by one of your enrolled agents inside your network",
+    steps: ["Choose a collector agent", "Optionally run the pre-check on it", "Test & save"],
+  },
+  {
+    type: "entra",
+    title: "Microsoft Entra ID + Intune",
+    blurb: "Cloud users, joined / hybrid / registered devices, Intune compliance and admin roles.",
+    how: "Read by the server through Microsoft Graph, with your Azure connector's app",
+    steps: ["Choose the Azure connector", "Run the permission script", "Test & save"],
+  },
+];
+
+function DirectoryChooser({ onPick }: { onPick: (t: DirectoryType) => void }) {
+  return (
+    <div role="list" aria-label="Directory types" className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+      {CHOICES.map((c) => (
+        <button
+          key={c.type}
+          type="button"
+          role="listitem"
+          onClick={() => onPick(c.type)}
+          className="group flex min-w-0 items-start gap-3 rounded-xl border border-line bg-surface-2/40 p-4 text-left transition hover:border-accent hover:bg-accent/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+        >
+          <DirectoryMark size={36} type={c.type} />
+          <span className="min-w-0">
+            <span className="block text-sm font-semibold text-ink group-hover:text-accent">{c.title}</span>
+            <span className="mt-0.5 block text-xs text-ink-2">{c.blurb}</span>
+            <span className="mt-1.5 block text-[11px] text-ink-3">{c.how}</span>
+          </span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
 // ----------------------------------------------------------------------------- section
 export function DirectoriesSection({ isAdmin }: { isAdmin: boolean }) {
   const sources = useApi(directoryApi.sources, [], 10000);
-  const [adding, setAdding] = useState(false);
+  const [adding, setAdding] = useState<DirectoryType | "choose" | null>(null);
   const list = sources.data ?? [];
   const loaded = sources.data !== null;
   useEffect(() => {
     if (loaded && window.location.hash === "#directories") document.getElementById("directories")?.scrollIntoView({ block: "start" });
   }, [loaded]);
+  const choice = CHOICES.find((c) => c.type === adding);
 
   return (
     <section id="directories" aria-labelledby="directories-title" className="mt-6 scroll-mt-4">
@@ -726,13 +646,11 @@ export function DirectoriesSection({ isAdmin }: { isAdmin: boolean }) {
             Directories
           </h2>
           <p className="mt-0.5 text-sm text-ink-2">
-            Read-only discovery of the computers and users in your directory, collected by your own agents. Find machines without an agent,
-            stale and disabled accounts.
+            Read-only discovery of the computers, devices and users in your directories. Find machines without an agent, stale and disabled
+            accounts, non-compliant devices and risky admin accounts.
           </p>
         </div>
-        {isAdmin && list.length > 0 && !adding && (
-          <Button onClick={() => setAdding(true)}>Add Active Directory</Button>
-        )}
+        {isAdmin && list.length > 0 && !adding && <Button onClick={() => setAdding("choose")}>Add directory</Button>}
       </div>
       <ErrorNote error={sources.error} />
       {sources.data && list.length === 0 && !adding && (
@@ -743,14 +661,15 @@ export function DirectoriesSection({ isAdmin }: { isAdmin: boolean }) {
               <div className="min-w-0">
                 <h3 className="text-base font-semibold text-ink">No directory connected</h3>
                 <p className="mt-1 max-w-2xl text-sm text-ink-3">
-                  Connect on-prem Active Directory: one of your enrolled agents reads computers and users over LDAPS (read-only, nothing is
-                  written) and streams them here. Discovery then shows computers that sign in to the domain but have no agent.
+                  Connect on-prem Active Directory (read by one of your agents over LDAPS) or Microsoft Entra ID + Intune (read by the server
+                  through Microsoft Graph). Everything is read-only. Discovery then shows machines without an agent, stale and disabled
+                  accounts, and admins at risk.
                 </p>
               </div>
             </div>
             {isAdmin ? (
-              <Button variant="primary" onClick={() => setAdding(true)}>
-                Add Active Directory
+              <Button variant="primary" onClick={() => setAdding("choose")}>
+                Add directory
               </Button>
             ) : (
               <span className="text-xs text-ink-3">An organisation administrator can connect a directory.</span>
@@ -761,24 +680,40 @@ export function DirectoriesSection({ isAdmin }: { isAdmin: boolean }) {
       {adding && isAdmin && (
         <Card className="mb-4">
           <div className="px-1 py-1">
-            <h3 className="text-base font-semibold text-ink">Add Active Directory</h3>
-            <ol className="mb-4 mt-3 flex flex-wrap items-center gap-2.5" aria-label="Steps">
-              {["Choose a collector agent", "Optionally run the pre-check on it", "Test & save"].map((t, i) => (
-                <li key={t} className="flex items-center gap-2 text-sm text-ink-2">
-                  {i > 0 && <span aria-hidden className="text-ink-3">→</span>}
-                  <span className="grid h-[22px] w-[22px] place-items-center rounded-full bg-accent/10 text-xs font-semibold text-accent">{i + 1}</span>
-                  {t}
-                </li>
-              ))}
-            </ol>
-            <DirectoryForm
-              source={null}
-              onCancel={() => setAdding(false)}
-              onDone={() => {
-                setAdding(false);
-                sources.reload();
-              }}
-            />
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h3 className="text-base font-semibold text-ink">{choice ? `Add ${choice.title}` : "Add a directory"}</h3>
+              {choice ? (
+                <Button onClick={() => setAdding("choose")}>Other directory type</Button>
+              ) : (
+                <Button onClick={() => setAdding(null)}>Cancel</Button>
+              )}
+            </div>
+            {!choice ? (
+              <div className="mt-3">
+                <DirectoryChooser onPick={setAdding} />
+              </div>
+            ) : (
+              <>
+                <ol className="mb-4 mt-3 flex flex-wrap items-center gap-2.5" aria-label="Steps">
+                  {choice.steps.map((t, i) => (
+                    <li key={t} className="flex items-center gap-2 text-sm text-ink-2">
+                      {i > 0 && <span aria-hidden className="text-ink-3">→</span>}
+                      <span className="grid h-[22px] w-[22px] place-items-center rounded-full bg-accent/10 text-xs font-semibold text-accent">{i + 1}</span>
+                      {t}
+                    </li>
+                  ))}
+                </ol>
+                <SourceForm
+                  type={choice.type}
+                  source={null}
+                  onCancel={() => setAdding(null)}
+                  onDone={() => {
+                    setAdding(null);
+                    sources.reload();
+                  }}
+                />
+              </>
+            )}
           </div>
         </Card>
       )}

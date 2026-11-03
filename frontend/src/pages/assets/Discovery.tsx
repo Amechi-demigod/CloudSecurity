@@ -1,17 +1,20 @@
-import { Network } from "lucide-react";
+import { Network, ShieldAlert } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { useAuth } from "../../auth/context";
 import { Breadcrumbs, Button, Card, Empty, ErrorNote, PageHeader, Select, Stat, Table, Tag } from "../../components/ui";
+import { SourceBadges } from "../../components/directoryShared";
 import {
   directoryApi,
   ISSUE_HINT,
   ISSUE_LABEL,
   ISSUE_TONE,
   ISSUE_TYPES,
+  ISSUES_BY_TYPE,
   USER_ISSUES,
   type ComputerStatus,
   type DirComputer,
+  type DirUser,
   type Issue,
   type IssueType,
 } from "../../directoryApi";
@@ -21,7 +24,8 @@ import { useApi } from "../../lib/useApi";
 import { useUrlState } from "../../lib/useUrlState";
 
 const PAGE = 100;
-type View = "issues" | "computers" | "users";
+// issues: computer issues; users: user issues; people: directory users.
+type View = "issues" | "computers" | "users" | "people";
 const COMPUTER_ISSUES = ISSUE_TYPES.filter((t) => !USER_ISSUES.includes(t));
 
 const COMPUTER_STATUS: { value: ComputerStatus; label: string }[] = [
@@ -36,14 +40,21 @@ const COMPUTER_STATUS: { value: ComputerStatus; label: string }[] = [
 const MATCH_LABEL: Record<string, string> = {
   directory_sid: "computer SID",
   directory_guid: "object GUID",
+  entra_device_id: "Entra device ID",
   serial: "serial number",
   fqdn: "FQDN",
   hostname_domain: "host name + domain",
   hostname: "host name only",
 };
 
-function When({ at }: { at: string | null }) {
-  if (!at) return <span className="text-ink-3">never</span>;
+const COMPLIANCE: Record<string, { label: string; tone: "good" | "warn" | "default" }> = {
+  compliant: { label: "compliant", tone: "good" },
+  noncompliant: { label: "non-compliant", tone: "warn" },
+  ingraceperiod: { label: "grace period", tone: "default" },
+};
+
+function When({ at, unknown }: { at: string | null; unknown?: string }) {
+  if (!at) return <span className="text-ink-3" title={unknown}>{unknown ? "unknown" : "never"}</span>;
   return <span title={fmtTime(at)}>{fmtAgo(at)}</span>;
 }
 
@@ -108,6 +119,18 @@ function AssetCell({ assetId, canAdd, busy, onAdd }: { assetId: string | null; c
   );
 }
 
+function PrivilegedBadge({ roles }: { roles?: string[] }) {
+  return (
+    <span
+      title={roles && roles.length ? roles.join(", ") : "Holds a privileged admin role"}
+      className="inline-flex items-center gap-1 rounded border border-sev-critical/50 bg-sev-critical/10 px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide text-sev-critical"
+    >
+      <ShieldAlert aria-hidden className="h-3 w-3" />
+      Privileged
+    </span>
+  );
+}
+
 export default function Discovery() {
   const { can } = useAuth();
   const isAdmin = can("admin");
@@ -120,6 +143,7 @@ export default function Discovery() {
   const [domain, setDomain] = useState("");
   const dDomain = useDebounced(domain);
   const [compStatus, setCompStatus] = useUrlState("status", "not_in_assets");
+  const [userFilter, setUserFilter] = useUrlState("users", "all");
   const [offset, setOffset] = useState(0);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [notice, setNotice] = useState<string | null>(null);
@@ -139,7 +163,7 @@ export default function Discovery() {
     offset,
   };
   const issues = useApi(
-    () => (view === "computers" ? Promise.resolve(null) : directoryApi.issues(issueFilters)),
+    () => (view === "computers" || view === "people" ? Promise.resolve(null) : directoryApi.issues(issueFilters)),
     [view, issueType, dq, dDomain, sourceId, offset],
   );
   const computers = useApi(
@@ -149,14 +173,29 @@ export default function Discovery() {
         : directoryApi.computers({ q: dq, domain: dDomain, source_id: sourceId, status: compStatus as ComputerStatus, limit: PAGE, offset }),
     [view, dq, dDomain, sourceId, compStatus, offset],
   );
+  const people = useApi(
+    () =>
+      view !== "people"
+        ? Promise.resolve(null)
+        : directoryApi.users({
+            q: dq,
+            source_id: sourceId,
+            privileged: userFilter === "privileged" ? true : undefined,
+            enabled: userFilter === "disabled" ? false : undefined,
+            limit: PAGE,
+            offset,
+          }),
+    [view, dq, sourceId, userFilter, offset],
+  );
 
   useEffect(() => {
     setOffset(0);
     setSelected(new Set());
-  }, [view, issueType, dq, dDomain, sourceId, compStatus]);
+  }, [view, issueType, dq, dDomain, sourceId, compStatus, userFilter]);
 
   const s = summary.data;
   const counts = issues.data?.counts ?? s?.counts;
+  const sourceNames = Object.fromEntries((sources.data ?? []).map((x) => [x.id, x.name]));
 
   async function add(ids: string[]) {
     if (ids.length === 0) return;
@@ -193,14 +232,14 @@ export default function Discovery() {
       <Breadcrumbs items={[{ label: "IT assets", to: "/it-assets" }, { label: "Discovery" }]} />
       <PageHeader
         title="Discovery"
-        subtitle="Computers and users from your directories, matched against agent devices and IT assets. Directory computers become IT assets only when you add them."
+        subtitle="Computers, devices and users from your directories, matched against agent devices and IT assets. Each physical machine is one row, whichever directories know it. Directory computers become IT assets only when you add them."
         actions={
           s && s.sources > 0 ? (
             <div className="flex flex-wrap items-center gap-2">
               <Link to="/connectors#directories" className="rounded border border-line bg-surface-2 px-3 py-1.5 text-sm font-medium text-ink hover:bg-line">
                 Directory sources
               </Link>
-              {view !== "computers" && (
+              {(view === "issues" || view === "users") && (
                 <a
                   href={directoryApi.issuesExportUrl(issueFilters)}
                   className="rounded border border-line bg-surface-2 px-3 py-1.5 text-sm font-medium text-ink hover:bg-line"
@@ -225,32 +264,38 @@ export default function Discovery() {
             title="No directory connected"
             action={
               <Link className="text-sm font-medium text-accent hover:underline" to="/connectors#directories">
-                Connect Active Directory
+                Connect a directory
               </Link>
             }
           >
-            Discovery compares the computers and users in your directory with your agents: machines without an agent, stale and disabled
-            accounts, devices the directory does not know.
+            Discovery compares the computers and users in Active Directory or Microsoft Entra ID + Intune with your agents: machines without an
+            agent, stale and disabled accounts, non-compliant devices, admins at risk.
           </Empty>
         </Card>
       </div>
     );
   }
 
-  const domains = Array.from(new Set((sources.data ?? []).map((x) => x.config.domain)));
+  const domains = Array.from(new Set((sources.data ?? []).flatMap((x) => (x.type === "ad" ? [x.config.domain] : []))));
   const sourceOptions = [{ value: "", label: "All" }, ...(sources.data ?? []).map((x) => ({ value: x.id, label: x.name }))];
   const issueRows = issues.data?.items ?? [];
   const compRows = computers.data?.items ?? [];
-  const addableIssues = issueRows.filter((r) => r.computer_id && !r.it_asset_id);
+  const peopleRows = people.data?.items ?? [];
+  const addableIssues = issueRows.filter((r) => r.kind === "computer" && r.computer_id && !r.it_asset_id);
   const addableComps = compRows.filter((r) => !r.in_it_assets && !r.missing_since);
   const addable: string[] = view === "computers" ? addableComps.map((r) => r.id) : addableIssues.map((r) => r.computer_id!);
   const allSelected = addable.length > 0 && addable.every((id) => selected.has(id));
   const cov = s?.coverage;
+  // KPI tiles: the issue types the configured directory types can produce.
+  const relevant = new Set((s?.source_types ?? ["ad"]).flatMap((t) => ISSUES_BY_TYPE[t] ?? []));
+  const kpiTypes = ISSUE_TYPES.filter((t) => relevant.has(t) || (counts?.[t] ?? 0) > 0);
+  const canSelect = isAdmin && (view === "issues" || view === "computers");
 
   const tabs: { key: View; label: string }[] = [
     { key: "issues", label: "Computer issues" },
     { key: "computers", label: "Directory computers" },
     { key: "users", label: "User issues" },
+    { key: "people", label: "Directory users" },
   ];
 
   const filters: ReactNode = (
@@ -274,6 +319,17 @@ export default function Discovery() {
       </div>
       {view === "computers" ? (
         <Select label="Show" value={compStatus} onChange={setCompStatus} options={COMPUTER_STATUS} />
+      ) : view === "people" ? (
+        <Select
+          label="Show"
+          value={userFilter}
+          onChange={setUserFilter}
+          options={[
+            { value: "all", label: "All users" },
+            { value: "privileged", label: "Privileged" },
+            { value: "disabled", label: "Disabled" },
+          ]}
+        />
       ) : (
         <Select
           label="Issue"
@@ -283,24 +339,26 @@ export default function Discovery() {
         />
       )}
       {sourceOptions.length > 2 && <Select label="Source" value={sourceId} onChange={setSourceId} options={sourceOptions} />}
-      <label className="flex items-center gap-1.5 text-xs text-ink-3">
-        Domain
-        <input
-          list="discovery-domains"
-          value={domain}
-          onChange={(e) => setDomain(e.target.value)}
-          placeholder="any"
-          aria-label="Domain"
-          className="w-44 rounded border border-line bg-surface-2 px-2 py-1 text-sm text-ink placeholder:text-ink-3"
-        />
-        <datalist id="discovery-domains">
-          {domains.map((d) => (
-            <option key={d} value={d} />
-          ))}
-        </datalist>
-      </label>
-      <Search value={q} onChange={setQ} label={view === "users" ? "Search users" : "Search name, OU, OS"} />
-      {isAdmin && view !== "users" && (
+      {view !== "people" && domains.length > 0 && (
+        <label className="flex items-center gap-1.5 text-xs text-ink-3">
+          Domain
+          <input
+            list="discovery-domains"
+            value={domain}
+            onChange={(e) => setDomain(e.target.value)}
+            placeholder="any"
+            aria-label="Domain"
+            className="w-44 rounded border border-line bg-surface-2 px-2 py-1 text-sm text-ink placeholder:text-ink-3"
+          />
+          <datalist id="discovery-domains">
+            {domains.map((d) => (
+              <option key={d} value={d} />
+            ))}
+          </datalist>
+        </label>
+      )}
+      <Search value={q} onChange={setQ} label={view === "users" || view === "people" ? "Search users" : "Search name, OU, OS"} />
+      {canSelect && (
         <div className="ml-auto">
           <Button variant="primary" disabled={busy || selected.size === 0} onClick={() => void add(Array.from(selected))}>
             Add {selected.size > 0 ? selected.size : ""} to IT assets
@@ -310,7 +368,7 @@ export default function Discovery() {
     </div>
   );
 
-  const selectAllCell = isAdmin && view !== "users" ? (
+  const selectAllCell = canSelect ? (
     <Check
       label="Select all on this page"
       checked={allSelected}
@@ -332,15 +390,15 @@ export default function Discovery() {
         </div>
       )}
 
-      <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-8">
+      <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-6">
         <Stat
           label="Agent coverage"
           value={cov?.pct != null ? `${cov.pct}%` : "—"}
-          sub={cov ? `${cov.managed.toLocaleString()} of ${cov.directory_computers.toLocaleString()} computers` : undefined}
+          sub={cov ? `${cov.managed.toLocaleString()} of ${cov.directory_computers.toLocaleString()} machines` : undefined}
           to="/it-assets/discovery?view=computers&status=unmatched"
-          hint="Enabled directory computers matched to an active agent device"
+          hint="Physical machines the agent belongs on (enabled, Windows / macOS / Linux, not personal), each counted once across directories, with an active agent"
         />
-        {ISSUE_TYPES.map((t) => (
+        {kpiTypes.map((t) => (
           <Stat
             key={t}
             label={ISSUE_LABEL[t]}
@@ -353,19 +411,63 @@ export default function Discovery() {
 
       <Card>
         {filters}
-        <ErrorNote error={issues.error ?? computers.error} />
-        {view === "computers" ? (
+        <ErrorNote error={issues.error ?? computers.error ?? people.error} />
+        {view === "people" ? (
           <>
             <Table
-              head={[
-                ...(selectAllCell ? [{ label: selectAllCell }] : []),
-                "Computer",
-                "Domain / OU",
-                "OS",
-                "Last logon",
-                "Agent match",
-                "IT asset",
-              ]}
+              head={["User", "Department / domain", "Source", "Last sign-in", "Status", "Admin roles"]}
+              loading={people.loading}
+              rowCount={peopleRows.length}
+              empty={<Empty icon={Network} title="No directory users match">Change the filter, or run a sync from Connectors &amp; scans.</Empty>}
+            >
+              {peopleRows.map((u: DirUser) => (
+                <tr key={u.id}>
+                  <td className="px-3 py-2">
+                    <div className="font-medium text-ink">{u.display_name || u.user_principal_name || u.sam_account_name}</div>
+                    <div className="text-[11px] text-ink-3">{u.user_principal_name || u.mail || u.sam_account_name}</div>
+                  </td>
+                  <td className="max-w-xs px-3 py-2 text-xs">
+                    <div className="text-ink-2">{u.department || "—"}</div>
+                    <div className="truncate text-ink-3">{u.domain}</div>
+                  </td>
+                  <td className="px-3 py-2 text-xs">
+                    <SourceBadges refs={[{ id: u.id, source_id: u.source_id, type: u.source_type, kind: u.source_type }]} names={sourceNames} />
+                  </td>
+                  <td className="whitespace-nowrap px-3 py-2 text-xs text-ink-2">
+                    <When at={u.last_logon_at} unknown={u.sign_in_known ? undefined : "Last sign-in is not available (Entra ID P1/P2 and AuditLog.Read.All needed)"} />
+                  </td>
+                  <td className="px-3 py-2 text-xs">{u.enabled ? <span className="text-ink-2">enabled</span> : <Tag tone="warn">disabled</Tag>}</td>
+                  <td className="px-3 py-2 text-xs">
+                    {u.privileged ? (
+                      <div className="space-y-1">
+                        <PrivilegedBadge roles={u.privileged_roles} />
+                        <ul className="space-y-0.5">
+                          {u.privileged_roles.map((r) =>
+                            r.startsWith("Eligible: ") ? (
+                              <li key={r} className="text-ink-3">
+                                <Tag>eligible (PIM)</Tag> {r.replace("Eligible: ", "").replace(/ \(PIM(, via group)?\)$/, (_m, g) => (g ? " (via group)" : ""))}
+                              </li>
+                            ) : (
+                              <li key={r} className="text-ink-2">
+                                <Tag tone="critical">active</Tag> {r}
+                              </li>
+                            ),
+                          )}
+                        </ul>
+                      </div>
+                    ) : (
+                      <span className="text-ink-3">—</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </Table>
+            <Pager offset={offset} total={people.data?.total ?? 0} onChange={setOffset} />
+          </>
+        ) : view === "computers" ? (
+          <>
+            <Table
+              head={[...(selectAllCell ? [{ label: selectAllCell }] : []), "Computer / device", "Sources", "OS", "Last activity", "Agent match", "IT asset"]}
               loading={computers.loading}
               rowCount={compRows.length}
               empty={<Empty icon={Network} title="No directory computers match">Change the filter, or run a sync from Connectors &amp; scans.</Empty>}
@@ -374,24 +476,25 @@ export default function Discovery() {
                 <tr key={c.id}>
                   {selectAllCell && (
                     <td className="px-3 py-2">
-                      <Check
-                        label={`Select ${c.name}`}
-                        checked={selected.has(c.id)}
-                        disabled={c.in_it_assets || !!c.missing_since}
-                        onChange={(on) => toggle(c.id, on)}
-                      />
+                      <Check label={`Select ${c.name}`} checked={selected.has(c.id)} disabled={c.in_it_assets || !!c.missing_since} onChange={(on) => toggle(c.id, on)} />
                     </td>
                   )}
                   <td className="px-3 py-2">
                     <div className="font-medium text-ink">{c.name}</div>
-                    <div className="text-[11px] text-ink-3">{c.dns_hostname}</div>
-                    {!c.enabled && <Tag>disabled</Tag>} {c.missing_since && <Tag tone="warn">missing since {fmtAgo(c.missing_since)}</Tag>}
+                    <div className="text-[11px] text-ink-3">{c.dns_hostname || c.serial_number || c.primary_user}</div>
+                    {!c.enabled && <Tag>disabled</Tag>} {c.missing_since && <Tag tone="warn">missing since {fmtAgo(c.missing_since)}</Tag>}{" "}
+                    {c.compliance && COMPLIANCE[c.compliance.toLowerCase()] && (
+                      <Tag tone={COMPLIANCE[c.compliance.toLowerCase()].tone}>{COMPLIANCE[c.compliance.toLowerCase()].label}</Tag>
+                    )}{" "}
+                    {c.encrypted === false && <Tag tone="warn">not encrypted</Tag>} {!c.agent_expected && <Tag>no agent expected</Tag>}
                   </td>
                   <td className="max-w-xs px-3 py-2 text-xs">
-                    <div className="text-ink-2">{c.domain}</div>
-                    <div className="truncate text-ink-3" title={c.ou}>
-                      {c.ou}
-                    </div>
+                    <SourceBadges refs={c.sources} names={sourceNames} />
+                    {(c.domain || c.ou) && (
+                      <div className="mt-0.5 truncate text-ink-3" title={c.ou}>
+                        {c.domain} {c.ou}
+                      </div>
+                    )}
                   </td>
                   <td className="px-3 py-2 text-xs text-ink-2">
                     {c.os}
@@ -430,11 +533,11 @@ export default function Discovery() {
               head={[
                 ...(selectAllCell ? [{ label: selectAllCell }] : []),
                 view === "users" ? "User" : "Computer / device",
-                "Domain / OU",
+                "Sources",
                 ...(view === "users" ? [] : ["OS"]),
-                "Last logon",
+                "Last activity",
                 "Issue",
-                view === "users" ? "Signed in on" : "Agent device",
+                view === "users" ? "Device" : "Agent device",
                 ...(view === "users" ? [] : ["IT asset"]),
               ]}
               loading={issues.loading}
@@ -449,25 +552,25 @@ export default function Discovery() {
                 <tr key={r.id}>
                   {selectAllCell && (
                     <td className="px-3 py-2">
-                      {r.computer_id && (
-                        <Check
-                          label={`Select ${r.name}`}
-                          checked={selected.has(r.computer_id)}
-                          disabled={!!r.it_asset_id}
-                          onChange={(on) => toggle(r.computer_id!, on)}
-                        />
+                      {r.kind === "computer" && r.computer_id && (
+                        <Check label={`Select ${r.name}`} checked={selected.has(r.computer_id)} disabled={!!r.it_asset_id} onChange={(on) => toggle(r.computer_id!, on)} />
                       )}
                     </td>
                   )}
                   <td className="px-3 py-2">
                     <div className="font-medium text-ink">{r.name}</div>
-                    <div className="text-[11px] text-ink-3">{r.kind === "device" ? "agent device" : r.kind === "user" ? "directory user" : "directory computer"}</div>
+                    <div className="flex flex-wrap items-center gap-1 text-[11px] text-ink-3">
+                      {r.kind === "device" ? "agent device" : r.kind === "user" ? "directory user" : "directory computer"}
+                      {r.privileged && <PrivilegedBadge />}
+                    </div>
                   </td>
                   <td className="max-w-xs px-3 py-2 text-xs">
-                    <div className="text-ink-2">{r.domain || "—"}</div>
-                    <div className="truncate text-ink-3" title={r.ou}>
-                      {r.ou}
-                    </div>
+                    {r.sources.length > 0 ? <SourceBadges refs={r.sources} names={sourceNames} /> : <span className="text-ink-3">agent</span>}
+                    {(r.domain || r.ou) && (
+                      <div className="mt-0.5 truncate text-ink-3" title={r.ou}>
+                        {r.domain} {r.ou}
+                      </div>
+                    )}
                   </td>
                   {view !== "users" && <td className="px-3 py-2 text-xs text-ink-2">{r.os}</td>}
                   <td className="whitespace-nowrap px-3 py-2 text-xs text-ink-2">
@@ -488,7 +591,7 @@ export default function Discovery() {
                   </td>
                   {view !== "users" && (
                     <td className="px-3 py-2 text-xs">
-                      {r.computer_id ? (
+                      {r.kind === "computer" && r.computer_id ? (
                         <AssetCell assetId={r.it_asset_id} canAdd={isAdmin} busy={busy} onAdd={() => void add([r.computer_id!])} />
                       ) : (
                         <span className="text-ink-3">—</span>

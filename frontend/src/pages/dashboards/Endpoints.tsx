@@ -12,7 +12,8 @@ import { TabSkeleton } from "./Skeleton";
 
 const OS_LABEL: Record<string, string> = { windows: "Windows", macos: "macOS", linux: "Linux" };
 
-/** Directory computers that have an agent (directory discovery). */
+/** Directory machines that have an agent (directory discovery): each physical machine once, whether it is
+ * in Active Directory, Entra ID, Intune or several of them. */
 function CoverageTile({ cov, unmanaged, days }: { cov: DirectorySummary["coverage"]; unmanaged: number; days: number }) {
   const without = Math.max(0, cov.directory_computers - cov.managed);
   // "No agent" matches the Discovery page (computers in use); the rest are stale.
@@ -23,14 +24,14 @@ function CoverageTile({ cov, unmanaged, days }: { cov: DirectorySummary["coverag
       value={cov.pct != null ? cov.pct : "—"}
       unit={cov.pct != null ? "%" : undefined}
       to="/it-assets/discovery?type=not_managed"
-      hint="Enabled directory computers matched to an active agent device; open the computers without an agent"
+      hint="Machines from your directories (each counted once across AD, Entra ID and Intune) matched to an active agent device; open the machines without an agent"
       days={days}
       segments={[
         { key: "managed", label: "With agent", count: cov.managed, color: "var(--color-good)" },
         { key: "unmanaged", label: "No agent", count: noAgent, color: SEV_COLOR.high, to: "/it-assets/discovery?type=not_managed" },
         { key: "inactive", label: "Stale", count: without - noAgent, color: "var(--color-ink-3)", to: "/it-assets/discovery?type=stale_computer" },
       ].filter((s) => s.count > 0)}
-      footer={`${cov.managed.toLocaleString()} of ${cov.directory_computers.toLocaleString()} directory computers have an agent`}
+      footer={`${cov.managed.toLocaleString()} of ${cov.directory_computers.toLocaleString()} directory machines have an agent`}
     />
   );
 }
