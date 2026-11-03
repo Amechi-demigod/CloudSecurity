@@ -11,6 +11,10 @@ Every tick (60 s), for every active organisation and enabled source:
 * a source is due when its newest scheduled run was queued `interval_hours`
   ago (or never). Timing comes from the database, so restarts neither cause
   sync storms nor skip syncs.
+* cloud sources (Entra ID, Google Workspace) are read by the server itself
+  (directory/cloud.py): their queued runs are handed to the worker pool, and a
+  running one that made no progress for STALL_TIMEOUT is failed (no failover:
+  there is no collector to switch to).
 
 Organisations with directory sources are also re-evaluated (matches and
 findings) every RECONCILE_INTERVAL, and objects missing for
@@ -30,9 +34,9 @@ from .. import tenancy
 from ..auth import audit
 from ..locks import LeaderLock
 from ..models import DeviceCommand, utcnow
-from . import reconcile
+from . import cloud, reconcile
 from . import service as svc
-from .models import DirectorySource, DirectorySyncRun
+from .models import CLOUD_TYPES, DirectorySource, DirectorySyncRun
 
 log = logging.getLogger(__name__)
 
@@ -89,16 +93,20 @@ class DirectoryScheduler:
         sources = list(db.scalars(select(DirectorySource)))
         if not sources:
             return
+        kick: list[str] = []
         for src in sources:
             try:
-                self._supervise(db, src, now, out)
+                self._supervise(db, src, now, out, kick)
                 db.commit()
                 if src.enabled:
-                    self._maybe_queue(db, src, now, out)
+                    self._maybe_queue(db, src, now, out, kick)
                     db.commit()
             except Exception:
                 db.rollback()
                 log.exception("directory source %s: scheduling failed", src.id)
+        # Server-side (cloud) runs: committed above, executed by the worker pool.
+        for run_id in kick:
+            cloud.rekick(org_id, run_id)
         last = self._reconciled.get(org_id)
         if last is None or now - last >= RECONCILE_INTERVAL:
             n = svc.purge_missing(db, now)
@@ -108,9 +116,21 @@ class DirectoryScheduler:
             reconcile.reconcile(db, now)
             self._reconciled[org_id] = now
 
-    def _supervise(self, db: Session, src: DirectorySource, now: datetime, out: dict[str, list[str]]) -> None:
+    def _supervise(self, db: Session, src: DirectorySource, now: datetime, out: dict[str, list[str]],
+                   kick: list[str]) -> None:
         run = svc.active_run(db, src.id)
         if run is None:
+            return
+        if src.type in CLOUD_TYPES:
+            # Server-side: a queued run nobody claimed yet is (re)handed to the pool;
+            # a running one that stopped committing pages died with its process.
+            if run.status == "queued":
+                kick.append(run.id)
+                return
+            if now - (run.last_batch_at or run.started_at or run.queued_at) >= svc.STALL_TIMEOUT:
+                minutes = int(svc.STALL_TIMEOUT.total_seconds() // 60)
+                svc.fail_run(db, run, f"the sync made no progress for {minutes} minutes (server restarted?)", now=now)
+                out["failed"].append(run.id)
             return
         reason = None
         if run.status == "queued":
@@ -143,7 +163,8 @@ class DirectoryScheduler:
               from_run=run.id, run_id=nxt.id, device_id=nxt.device_id, attempt=nxt.attempt)
         out["failed_over"].append(nxt.id)
 
-    def _maybe_queue(self, db: Session, src: DirectorySource, now: datetime, out: dict[str, list[str]]) -> None:
+    def _maybe_queue(self, db: Session, src: DirectorySource, now: datetime, out: dict[str, list[str]],
+                     kick: list[str]) -> None:
         if svc.active_run(db, src.id) is not None:
             return
         last = svc.last_scheduled_run(db, src.id)
@@ -163,3 +184,5 @@ class DirectoryScheduler:
         audit(db, "directory_sync_started", actor_email=svc.SYSTEM, target=f"directory-source:{src.id}",
               run_id=run.id, trigger="scheduled", device_id=run.device_id)
         out["queued"].append(run.id)
+        if src.type in CLOUD_TYPES:
+            kick.append(run.id)

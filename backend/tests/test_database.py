@@ -64,7 +64,8 @@ MIGRATION_CHAIN = ["0001_baseline", "0002_device_management", "0003_notification
                    "0008_agent_update_automation", "0009_device_approvals_scripts", "0010_scheduled_scans",
                    "0011_vulnerability_matching", "0013_organizations", "0014_host_isolation",
                    "0015_command_result_data", "0016_dashboard_snapshots", "0017_onboarding_dismissed",
-                   "0018_remote_sessions", "0019_offboarding_username", "0020_directory_discovery"]
+                   "0018_remote_sessions", "0019_offboarding_username", "0020_directory_discovery",
+                   "0021_directory_cloud_sources"]
 
 
 def test_migration_history_is_linear():
@@ -566,5 +567,43 @@ def test_directory_discovery_migration(tmp_path):
         command.downgrade(db.alembic_config(eng), "0019_offboarding_username")
         assert not any(inspect(eng).has_table(t) for t in tables)
         assert "ad_domain" not in {c["name"] for c in inspect(eng).get_columns("devices")}
+    finally:
+        eng.dispose()
+
+
+def test_directory_cloud_sources_migration(tmp_path):
+    """0021 adds the cloud-directory columns on top of 0020 with defaults for
+    existing AD rows (device kind "ad", agent expected, not privileged)."""
+    if IS_POSTGRES:
+        reset_database()
+        eng = db.create_db_engine(TEST_DATABASE_URL)
+    else:
+        eng = db.create_db_engine(f"sqlite:///{tmp_path / 'directory_cloud.db'}")
+    try:
+        db.run_migrations(eng, "0020_directory_discovery")
+        with eng.begin() as conn:  # the default organisation comes from migration 0013
+            conn.execute(text(
+                "INSERT INTO directory_sources (id, organization_id, type, name, enabled, config, collector_device_ids,"
+                " computers_count, users_count, created_at, updated_at) VALUES ('s1', 'default', 'ad', 'AD', true, '{}',"
+                " '[]', 0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"))
+            conn.execute(text(
+                "INSERT INTO directory_computers (id, organization_id, source_id, external_id, distinguished_name,"
+                " domain, ou, enabled, first_seen_at, last_seen_at, attributes, name, short_name, dns_hostname,"
+                " sam_account_name, serial_number, operating_system, os_version, match_status, match_candidates)"
+                " VALUES ('c1', 'default', 's1', 'g', '', '', '', true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, '{}', 'PC1',"
+                " 'pc1', '', '', '', '', '', 'unmatched', '[]')"))
+        db.run_migrations(eng)
+        assert _schema_diff(eng) == []
+        with eng.connect() as conn:
+            row = conn.execute(text("SELECT device_kind, agent_expected, primary_user, machine_id FROM "
+                                    "directory_computers")).one()
+            assert (row[0], bool(row[1]), row[2], row[3]) == ("ad", True, "", None)
+            assert conn.execute(text("SELECT scope_status FROM directory_sources")).scalar() in ("{}", {})
+
+        from alembic import command
+
+        command.downgrade(db.alembic_config(eng), "0020_directory_discovery")
+        assert "device_kind" not in {c["name"] for c in inspect(eng).get_columns("directory_computers")}
+        assert "privileged" not in {c["name"] for c in inspect(eng).get_columns("directory_users")}
     finally:
         eng.dispose()

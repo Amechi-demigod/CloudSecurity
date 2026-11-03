@@ -39,7 +39,7 @@ from sqlalchemy.orm import Session
 from .. import config
 from ..models import Device, DeviceCommand, utcnow
 from .matching import short_host
-from .models import RUN_ACTIVE, DirectoryComputer, DirectorySource, DirectorySyncRun, DirectoryUser
+from .models import CLOUD_TYPES, RUN_ACTIVE, DirectoryComputer, DirectorySource, DirectorySyncRun, DirectoryUser
 from .schemas import BatchIn, ComputerIn, UserIn
 
 log = logging.getLogger(__name__)
@@ -89,15 +89,44 @@ def credential_hint(username: str) -> str:
     return f"{u[:2]}••••"
 
 
-def set_credential(src: DirectorySource, username: str, password: str) -> None:
-    """Store the service account encrypted (Fernet, NOTIFICATIONS_ENCRYPTION_KEY)."""
+def store_secret(src: DirectorySource, data: dict[str, str], hint: str) -> None:
+    """Store a source credential encrypted (Fernet, NOTIFICATIONS_ENCRYPTION_KEY)."""
     from ..notifications import crypto
 
     try:
-        src.secret_ciphertext = crypto.encrypt_secrets({"username": username, "password": password})
+        src.secret_ciphertext = crypto.encrypt_secrets(data)
     except crypto.EncryptionUnavailable as e:
         raise DirectoryError(503, f"cannot store the credential: {e}") from None
-    src.credential_hint = credential_hint(username)
+    src.credential_hint = hint[:64]
+
+
+def load_secret(src: DirectorySource) -> dict[str, str] | None:
+    """The decrypted credential, or None (none stored / the key changed)."""
+    from ..notifications import crypto
+
+    if not src.secret_ciphertext:
+        return None
+    try:
+        return crypto.decrypt_secrets(src.secret_ciphertext)
+    except (crypto.DecryptionFailed, crypto.EncryptionUnavailable):
+        return None
+
+
+def rotate_secrets(db: Session) -> int:
+    """Re-encrypt every stored source credential with the primary key (any session mode)."""
+    from ..notifications import crypto
+
+    n = 0
+    for src in db.scalars(select(DirectorySource).where(DirectorySource.secret_ciphertext.is_not(None))
+                          .execution_options(tenant_unscoped=True)):
+        src.secret_ciphertext = crypto.rotate(src.secret_ciphertext)
+        n += 1
+    return n
+
+
+def set_credential(src: DirectorySource, username: str, password: str) -> None:
+    """Store the AD service account encrypted."""
+    store_secret(src, {"username": username, "password": password}, credential_hint(username))
 
 
 def clear_credential(src: DirectorySource) -> None:
@@ -106,15 +135,8 @@ def clear_credential(src: DirectorySource) -> None:
 
 
 def _credential(src: DirectorySource) -> dict[str, str] | None:
-    from ..notifications import crypto
-
-    if not src.secret_ciphertext:
-        return None
-    try:
-        data = crypto.decrypt_secrets(src.secret_ciphertext)
-    except (crypto.DecryptionFailed, crypto.EncryptionUnavailable):
-        return None
-    if not data.get("username") or not data.get("password"):
+    data = load_secret(src)
+    if not data or not data.get("username") or not data.get("password"):
         return None
     return {"username": data["username"], "password": data["password"]}
 
@@ -225,6 +247,18 @@ def queue_run(db: Session, src: DirectorySource, *, trigger: str, actor: str | N
     now = now or utcnow()
     if active_run(db, src.id) is not None:
         raise DirectoryError(409, "a sync of this directory is already queued or running")
+    cfg = src.config or {}
+    if src.type in CLOUD_TYPES:
+        # Server-side collection (directory/cloud.py): no collector, no command;
+        # the caller hands the run to cloud.kick() after committing.
+        run = DirectorySyncRun(source_id=src.id, trigger=trigger, status="queued", device_id=None,
+                               requested_by=actor, attempt=attempt, tried_device_ids=[],
+                               scopes=list(cfg.get("scopes") or []), max_objects=config.settings.directory_max_objects,
+                               queued_at=now)
+        db.add(run)
+        db.flush()
+        src.last_sync_status = "queued"
+        return run
     tried = list(tried or [])
     device = pick_collector(db, src, set(tried), now)
     if device is None:
@@ -232,7 +266,6 @@ def queue_run(db: Session, src: DirectorySource, *, trigger: str, actor: str | N
                                   "10 minutes)" + (" and run Windows (computer-account auth)"
                                                    if (src.config or {}).get("auth") != "service_account" else ""))
     test = trigger == "test"
-    cfg = src.config or {}
     run = DirectorySyncRun(source_id=src.id, trigger=trigger, status="queued", device_id=device.id,
                            requested_by=actor, attempt=attempt, tried_device_ids=[*tried, device.id],
                            scopes=list(cfg.get("scopes") or ["computers", "users"]),
@@ -338,6 +371,32 @@ def _enabled(uac: int | None) -> bool:
     return not (uac or 0) & 0x2  # ACCOUNTDISABLE
 
 
+# Platforms the endpoint agent runs on ("" = unknown, e.g. an AD computer without
+# operatingSystem): only these can be "no agent" and count in agent coverage.
+AGENT_PLATFORMS = frozenset({"windows", "macos", "linux", ""})
+
+
+def platform_of(os_name: str) -> str:
+    """windows | macos | linux | ios | android | chromeos | "" from a free-text OS name."""
+    s = (os_name or "").strip().lower().replace("_", " ")
+    if not s:
+        return ""
+    if "windows" in s:
+        return "windows"
+    if s.startswith(("mac", "os x")) or "macos" in s:
+        return "macos"
+    if s.startswith(("ios", "ipados", "iphone", "ipad")) or s == "ios sync":
+        return "ios"
+    if "android" in s:
+        return "android"
+    if "chrome" in s:
+        return "chromeos"
+    if any(x in s for x in ("linux", "ubuntu", "debian", "red hat", "rhel", "centos", "suse", "fedora", "rocky",
+                            "alma")):
+        return "linux"
+    return "other"
+
+
 def _apply_computer(row: DirectoryComputer, c: ComputerIn, default_domain: str) -> None:
     sam = c.sam_account_name
     row.name = (c.cn or sam.rstrip("$"))[:256]
@@ -349,6 +408,11 @@ def _apply_computer(row: DirectoryComputer, c: ComputerIn, default_domain: str) 
     row.domain = (domain_from_dn(c.distinguished_name) or default_domain)[:255]
     row.ou = parent_dn(c.distinguished_name)
     row.operating_system, row.os_version = c.operating_system, c.operating_system_version
+    row.device_kind = "ad"
+    row.platform = platform_of(c.operating_system)
+    # As in phase 1, every AD computer account is expected to run the agent
+    # (unless its operatingSystem says it is a phone or a Chromebook).
+    row.agent_expected = row.platform not in ("ios", "android", "chromeos")
     row.user_account_control = c.user_account_control
     row.enabled = _enabled(c.user_account_control)
     row.last_logon_at = _naive(c.last_logon_timestamp)
@@ -390,6 +454,32 @@ def _upsert(db: Session, model, src: DirectorySource, run: DirectorySyncRun, ite
             row = model(source_id=src.id, external_id=key, first_seen_at=now, attributes={})
             db.add(row)
         apply(row, it, domain)
+        row.last_seen_at, row.missing_since, row.last_run_id = now, None, run.id
+    return len(unique)
+
+
+def upsert_records(db: Session, model, src: DirectorySource, run: DirectorySyncRun, items: list[dict[str, Any]],
+                   now: datetime) -> int:
+    """Upsert normalised records of a server-side (cloud) sync: each item has
+    `external_id` plus column values (directory/cloud.py). Returns the number
+    of distinct objects stored."""
+    unique: dict[str, dict[str, Any]] = {}
+    for it in items:
+        unique[it["external_id"]] = it
+    keys = list(unique)
+    existing: dict[str, Any] = {}
+    for i in range(0, len(keys), 500):
+        chunk = keys[i:i + 500]
+        existing.update({o.external_id: o for o in db.scalars(
+            select(model).where(model.source_id == src.id, model.external_id.in_(chunk)))})
+    for key, it in unique.items():
+        row = existing.get(key)
+        if row is None:
+            row = model(source_id=src.id, external_id=key, first_seen_at=now, attributes={})
+            db.add(row)
+        for col, value in it.items():
+            if col != "external_id":
+                setattr(row, col, value)
         row.last_seen_at, row.missing_since, row.last_run_id = now, None, run.id
     return len(unique)
 
@@ -442,9 +532,6 @@ def ingest_batch(db: Session, device: Device, run_id: str, token: str | None, ba
 
 
 def finish_run(db: Session, src: DirectorySource, run: DirectorySyncRun, batch: BatchIn, now: datetime) -> None:
-    from ..auth import audit
-    from ..notifications import directory_source
-
     run.finished_at = now
     run.token_hash = None
     run.server = batch.server[:253] or None
@@ -461,18 +548,37 @@ def finish_run(db: Session, src: DirectorySource, run: DirectorySyncRun, batch: 
     if complete:
         for scope, model in (("computers", DirectoryComputer), ("users", DirectoryUser)):
             if scope in run.scopes:
-                db.execute(update(model).where(model.source_id == src.id, model.missing_since.is_(None),
-                                               or_(model.last_run_id.is_(None), model.last_run_id != run.id))
-                           .values(missing_since=now).execution_options(synchronize_session=False))
+                mark_missing(db, src, run, model, now)
+    record_run_end(db, src, run, now, complete=complete, actor=f"device:{run.device_id}")
+
+
+def mark_missing(db: Session, src: DirectorySource, run: DirectorySyncRun, model, now: datetime,
+                 kinds: tuple[str, ...] | None = None) -> None:
+    """Objects of `src` (computers: of these device kinds) that `run` did not return are missing."""
+    stmt = update(model).where(model.source_id == src.id, model.missing_since.is_(None),
+                               or_(model.last_run_id.is_(None), model.last_run_id != run.id))
+    if kinds is not None:
+        stmt = stmt.where(model.device_kind.in_(kinds))
+    db.execute(stmt.values(missing_since=now).execution_options(synchronize_session=False))
+
+
+def record_run_end(db: Session, src: DirectorySource, run: DirectorySyncRun, now: datetime, *, complete: bool,
+                   actor: str) -> None:
+    """Source status, object counts, audit and failure notification of an ended run (caller commits)."""
+    from ..auth import audit
+    from ..notifications import directory_source
+
     if run.trigger != "test":
         src.last_sync_at, src.last_sync_status = now, run.status
         src.last_sync_error = run.error if run.status != "succeeded" else (
             "incomplete: the safety cap was reached, missing objects were not marked" if run.truncated else run.error)
         if run.status == "succeeded":
             src.last_success_at = now
+        if src.type in CLOUD_TYPES:
+            src.scope_status = dict(run.scope_status or {})
         refresh_counts(db, src)
     audit(db, "directory_sync_finished" if run.status == "succeeded" else "directory_sync_failed",
-          actor_email=f"device:{run.device_id}", target=f"directory-source:{src.id}", run_id=run.id,
+          actor_email=actor, target=f"directory-source:{src.id}", run_id=run.id,
           trigger=run.trigger, computers=run.computers_seen, users=run.users_seen, truncated=run.truncated,
           complete=complete, error=run.error)
     if run.status == "failed" and run.trigger != "test":
@@ -510,7 +616,8 @@ def run_out(r: DirectorySyncRun, hostnames: dict[str, str] | None = None) -> dic
             "queued_at": r.queued_at, "started_at": r.started_at, "finished_at": r.finished_at,
             "duration_ms": dur, "computers_seen": r.computers_seen, "users_seen": r.users_seen,
             "batches": r.next_seq, "truncated": r.truncated, "error": r.error, "attempt": r.attempt,
-            "server": r.server, "sample": list(r.sample or [])}
+            "server": r.server, "sample": list(r.sample or []), "checks": list(r.checks or []),
+            "scope_status": dict(r.scope_status or {})}
 
 
 def hostnames_for(db: Session, ids: list[str | None]) -> dict[str, str]:
@@ -534,6 +641,8 @@ def source_out(db: Session, src: DirectorySource, now: datetime | None = None) -
         "last_sync_at": src.last_sync_at, "last_sync_status": src.last_sync_status,
         "last_sync_error": src.last_sync_error, "last_success_at": src.last_success_at,
         "computers_count": src.computers_count, "users_count": src.users_count,
+        "collection": "server" if src.type in CLOUD_TYPES else "agent",
+        "scope_status": dict(src.scope_status or {}),
         "next_sync_at": next_sync_at(db, src, now),
         "active_run": run_out(run, hostnames_for(db, [run.device_id])) if run is not None else None,
         "created_at": src.created_at, "created_by": src.created_by, "updated_at": src.updated_at,
@@ -543,6 +652,13 @@ def source_out(db: Session, src: DirectorySource, now: datetime | None = None) -
 
 def validate_source(db: Session, src: DirectorySource) -> None:
     cfg = src.config or {}
+    if src.type in CLOUD_TYPES:
+        from . import cloud
+
+        cloud.validate_source(db, src)
+        return
+    if not src.collector_device_ids:
+        raise DirectoryError(422, "choose at least one collector agent")
     if cfg.get("auth") == "service_account" and not src.secret_ciphertext:
         raise DirectoryError(422, "service-account auth needs a username and password")
     check_collectors(db, list(src.collector_device_ids or []), cfg.get("auth", "computer_account"))

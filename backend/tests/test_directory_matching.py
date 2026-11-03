@@ -108,3 +108,57 @@ def test_resolve_users_by_domain_hint_upn_and_uniqueness():
     assert idx.resolve("PC1\\bob", device_hostname="pc1.corp-a.example.com") is None  # local account
     assert idx.resolve("carol") is None
     assert idx.by_email("bob@example.com").id == "u3"
+
+
+# ----------------------------------------------------------------------------- machines (cloud records)
+def test_entra_device_id_tier_and_machine_grouping():
+    comps = [C("ad", "g1", "corp.example.com", "pc1", "pc1.corp.example.com", "S-1-5-21-1-2-3-1001"),
+             C("entra", "obj-1", short_name="pc1", object_sid="S-1-5-21-1-2-3-1001", kind="entra",
+               cloud_device_id="DEV-1"),
+             C("mdm", "mdm:1", short_name="pc1", serial="SER1", kind="intune", cloud_device_id="dev-1"),
+             C("laptop", "obj-2", short_name="laptop2", kind="entra", cloud_device_id="dev-2")]
+    clusters = m.cluster_computers(comps)
+    # AD computer + hybrid Entra device (same SID) + Intune record (same Entra device id): one machine, AD first.
+    assert clusters == {"ad": "ad", "entra": "ad", "mdm": "ad", "laptop": "laptop"}
+    r = _match(comps, [D("d1", "LAPTOP2", entra_device_id="DEV-2"), D("d2", "pc1", serial="ser1")])
+    assert (r["laptop"].device_id, r["laptop"].method, r["laptop"].confidence) == ("d1", "entra_device_id", 100)
+    assert r["ad"].device_id == r["entra"].device_id == r["mdm"].device_id == "d2"
+    assert r["mdm"].method == "serial"
+
+
+def test_an_agent_reporting_two_keys_ties_records_together():
+    # The AD computer has no SID link to the Entra device; the agent reports both.
+    comps = [C("ad", "g1", "corp.example.com", "pc1", "pc1.corp.example.com", "S-1-5-21-1-2-3-1001"),
+             C("entra", "obj-1", short_name="pc1", kind="entra", cloud_device_id="dev-1")]
+    dev = D("d1", "PC1", "corp.example.com", "S-1-5-21-1-2-3-1001", entra_device_id="dev-1")
+    assert m.cluster_computers(comps, [dev]) == {"ad": "ad", "entra": "ad"}
+    r = _match(comps, [dev])
+    assert r["ad"].device_id == r["entra"].device_id == "d1"
+
+
+def test_hybrid_device_linked_to_its_ad_computer_by_unique_name_only():
+    ad = C("ad", "g1", "corp.example.com", "pc1", "pc1.corp.example.com")
+    hyb = C("hyb", "obj-1", short_name="pc1", kind="entra", cloud_device_id="dev-1", hybrid=True)
+    joined = C("aad", "obj-2", short_name="pc2", kind="entra", cloud_device_id="dev-2")
+    ad2 = C("ad2", "g2", "corp.example.com", "pc2", "pc2.corp.example.com")
+    # Hybrid PC1 is its AD computer; Entra-joined (not hybrid) PC2 is not linked by name.
+    assert m.cluster_computers([ad, hyb, joined, ad2]) == {"ad": "ad", "hyb": "ad", "aad": "aad", "ad2": "ad2"}
+    # PC1 in two AD domains: the name is not unique, nothing is linked.
+    other = C("ad-b", "g3", "corp-b.example.com", "pc1", "pc1.corp-b.example.com")
+    assert m.cluster_computers([ad, other, hyb])["hyb"] == "hyb"
+
+
+def test_ambiguous_entra_device_id_and_cloud_external_ids_are_not_guids():
+    comps = [C("e1", "obj-1", kind="entra", cloud_device_id="dev-1")]
+    r = _match(comps, [D("d1", "a", entra_device_id="dev-1"), D("d2", "b", entra_device_id="DEV-1")])
+    assert r["e1"].status == "ambiguous" and r["e1"].candidates == ["d1", "d2"]
+    # An Entra object id equal to an agent's reported objectGUID is not an AD match.
+    r = _match([C("e1", "g1", kind="entra")], [D("d1", "x", ad_object_guid="g1")])
+    assert r["e1"].status == "unmatched"
+
+
+def test_same_person_in_two_directories_is_one_user():
+    idx = m.UserIndex([m.UserKey("ad", "alice", "alice@corp.example.com", "", "corp.example.com", "S-1-5-21-9"),
+                       m.UserKey("entra", "alice", "alice@contoso.com", "", "corp.example.com", "S-1-5-21-9")])
+    assert idx.resolve("CORP\\alice", netbios_map={"corp": "corp.example.com"}).id in ("ad", "entra")
+    assert idx.resolve("alice") is not None
