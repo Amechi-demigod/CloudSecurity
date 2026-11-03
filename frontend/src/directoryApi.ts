@@ -1,5 +1,5 @@
 // Typed client for /api/directory (directory discovery: on-prem Active Directory read by a collector agent,
-// Microsoft Entra ID + Intune read by the server through Microsoft Graph).
+// Microsoft Entra ID + Intune and Google Workspace read by the server).
 import { BASE, qs, request } from "./api";
 
 export type DirectoryType = "ad" | "entra" | "google";
@@ -47,6 +47,27 @@ export interface EntraConfig {
   scopes: EntraScope[];
   stale_days: number;
   interval_hours: number;
+}
+
+export type GoogleScope = "users" | "roles" | "chromeos" | "mobile" | "endpoints";
+
+export interface GoogleConfig {
+  /** Workspace admin the service account impersonates (domain-wide delegation). */
+  admin_email: string;
+  customer_id: string;
+  scopes: GoogleScope[];
+  stale_days: number;
+  interval_hours: number;
+  /** Set by the server from the uploaded key (public facts only; the key is never returned). */
+  service_account_email: string;
+  client_id: string;
+  key_id: string;
+}
+
+export interface GoogleScopeInfo {
+  scope: string;
+  part: GoogleScope | null;
+  why: string;
 }
 
 export interface Collector {
@@ -126,7 +147,8 @@ interface SourceBase {
   updated_by: string | null;
 }
 
-export type DirectorySource = SourceBase & ({ type: "ad"; config: AdConfig } | { type: "entra"; config: EntraConfig });
+export type DirectorySource = SourceBase &
+  ({ type: "ad"; config: AdConfig } | { type: "entra"; config: EntraConfig } | { type: "google"; config: GoogleConfig });
 
 export interface Credential {
   username: string;
@@ -135,15 +157,18 @@ export interface Credential {
 
 export type SourceCreate =
   | { type: "ad"; name: string; enabled?: boolean; config: AdConfig; collector_device_ids: string[]; credential?: Credential | null }
-  | { type: "entra"; name: string; enabled?: boolean; config: Partial<EntraConfig> & Pick<EntraConfig, "connector_id"> };
+  | { type: "entra"; name: string; enabled?: boolean; config: Partial<EntraConfig> & Pick<EntraConfig, "connector_id"> }
+  | { type: "google"; name: string; enabled?: boolean; config: Partial<GoogleConfig> & Pick<GoogleConfig, "admin_email">; google_key?: string };
 
 export interface SourceUpdate {
   name?: string;
   enabled?: boolean;
-  config?: AdConfig | Partial<EntraConfig>;
+  config?: AdConfig | Partial<EntraConfig> | Partial<GoogleConfig>;
   collector_device_ids?: string[];
   credential?: Credential | null;
   clear_credential?: boolean;
+  /** Google Workspace: a new service-account JSON key (write-only). */
+  google_key?: string;
 }
 
 export interface AzureConnector {
@@ -416,6 +441,7 @@ export const directoryApi = {
   run: (runId: string) => request<SyncRun>(`/api/directory/runs/${runId}`),
   collectors: () => request<Collector[]>("/api/directory/collectors"),
   azureConnectors: () => request<AzureConnectorsInfo>("/api/directory/azure-connectors"),
+  googleScopes: () => request<{ scopes: GoogleScopeInfo[]; privileged_roles: string[] }>("/api/directory/google-scopes"),
   summary: () => request<DirectorySummary>("/api/directory/summary"),
   issues: (f: IssueFilters = {}) => request<IssuePage>(`/api/directory/issues${qs({ ...f })}`),
   issuesExportUrl: (f: IssueFilters = {}) =>

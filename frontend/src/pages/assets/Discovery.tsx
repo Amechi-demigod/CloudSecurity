@@ -268,7 +268,7 @@ export default function Discovery() {
               </Link>
             }
           >
-            Discovery compares the computers and users in Active Directory or Microsoft Entra ID + Intune with your agents: machines without an
+            Discovery compares the computers and users in Active Directory, Microsoft Entra ID + Intune or Google Workspace with your agents: machines without an
             agent, stale and disabled accounts, non-compliant devices, admins at risk.
           </Empty>
         </Card>

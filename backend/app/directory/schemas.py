@@ -99,7 +99,34 @@ class EntraConfig(_Strict):
         return list(dict.fromkeys(v))
 
 
-CONFIG_MODELS: dict[str, type[_Strict]] = {"ad": AdConfig, "entra": EntraConfig}
+GoogleScope = Literal["users", "roles", "chromeos", "mobile", "endpoints"]
+
+
+class GoogleConfig(_Strict):
+    """Settings of a Google Workspace source. The service account facts
+    (`service_account_email`, `client_id`, `key_id`) are set by the server
+    from the uploaded key; the key itself is stored encrypted."""
+
+    admin_email: Annotated[str, StringConstraints(min_length=3, max_length=254, to_lower=True,
+                                                  pattern=r"^[^@\s]{1,64}@[a-z0-9.-]{1,253}$")]
+    customer_id: Annotated[str, StringConstraints(pattern=r"^(my_customer|C[0-9a-z]{5,20})$")] = "my_customer"
+    scopes: list[GoogleScope] = Field(default_factory=lambda: ["users", "roles", "chromeos", "mobile", "endpoints"],
+                                      min_length=1, max_length=5)
+    stale_days: int = Field(90, ge=7, le=3650)
+    interval_hours: float = Field(6, ge=1, le=168)
+    service_account_email: Annotated[str, StringConstraints(max_length=254)] = ""
+    client_id: Annotated[str, StringConstraints(max_length=32)] = ""
+    key_id: Annotated[str, StringConstraints(max_length=16)] = ""
+
+    @field_validator("scopes")
+    @classmethod
+    def _scopes(cls, v: list[str]) -> list[str]:
+        return list(dict.fromkeys(v))
+
+
+CONFIG_MODELS: dict[str, type[_Strict]] = {"ad": AdConfig, "entra": EntraConfig, "google": GoogleConfig}
+# Uploaded Google service-account key (JSON text, a few KB).
+GoogleKey = Annotated[str, StringConstraints(min_length=100, max_length=16384, strip_whitespace=False)]
 
 
 def parse_config(type_: str, raw: dict) -> dict:
@@ -127,20 +154,24 @@ DeviceId = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{32}$")]
 
 
 class SourceCreate(_Strict):
-    type: Literal["ad", "entra"] = "ad"
+    type: Literal["ad", "entra", "google"] = "ad"
     name: Name
     enabled: bool = True
-    # Validated per type (AdConfig, EntraConfig).
+    # Validated per type (AdConfig, EntraConfig, GoogleConfig).
     config: dict
     # AD: the collector agents (at least one); cloud types: none.
     collector_device_ids: list[DeviceId] = Field(default_factory=list, max_length=10)
     credential: Credential | None = None
+    # Google Workspace: the service account's JSON key (write-only).
+    google_key: GoogleKey | None = None
 
     @model_validator(mode="after")
     def _config(self) -> SourceCreate:
         self.config = parse_config(self.type, self.config)
         if self.type != "ad" and (self.collector_device_ids or self.credential):
             raise ValueError("cloud directories are read by the server: no collectors or AD credential")
+        if self.google_key is not None and self.type != "google":
+            raise ValueError("google_key only applies to Google Workspace sources")
         return self
 
 
@@ -152,6 +183,7 @@ class SourceUpdate(_Strict):
     collector_device_ids: list[DeviceId] | None = Field(None, max_length=10)
     credential: Credential | None = None
     clear_credential: bool = False
+    google_key: GoogleKey | None = None
 
 
 class AddToAssetsIn(_Strict):
