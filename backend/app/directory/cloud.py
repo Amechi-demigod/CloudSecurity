@@ -294,6 +294,7 @@ def sync(db: Session, src: DirectorySource, run: DirectorySyncRun) -> None:
         try:
             provider.connect()
             for part in provider.parts(list(run.scopes or [])):
+                statuses[part.name] = {"status": "running"}  # keeps parts before the notes they add
                 try:
                     extra = part.run(ctx) or {}
                     statuses[part.name] = {"status": "ok", **extra}
@@ -317,6 +318,7 @@ def sync(db: Session, src: DirectorySource, run: DirectorySyncRun) -> None:
         requests, throttled = http.requests, http.throttled
     if cancelled:
         return  # whoever ended the run recorded it
+    statuses = {k: v for k, v in statuses.items() if v["status"] != "running"}  # a fatal error interrupted it
     db.refresh(run)
     if run.status != "running":
         return
