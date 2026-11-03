@@ -517,7 +517,7 @@ function SourceCard({ src, isAdmin, onChanged }: { src: DirectorySource; isAdmin
           <StatCell
             label="Collection"
             value="Server-side"
-            sub={src.type === "entra" ? `app ${src.config.client_id}` : src.type === "google" ? src.credential_username_hint ?? undefined : undefined}
+            sub={src.type === "entra" ? `app ${src.config.client_id}` : src.type === "google" ? `key ${src.config.key_id}… · ${src.config.service_account_email}` : undefined}
           />
         ) : (
           <StatCell
