@@ -220,7 +220,7 @@ def test_key_upload_is_validated_encrypted_and_never_returned(admin, fake, key_j
     src = make_google(admin, key_json, service_account_email="forged@x.iam.gserviceaccount.com")
     cfg = src["config"]
     assert (cfg["service_account_email"], cfg["client_id"], cfg["key_id"]) == (SA, "112233445566778899001", "01234567")
-    assert src["has_credential"] and src["credential_username_hint"].startswith(SA[:20])
+    assert src["has_credential"] and src["credential_username_hint"].startswith("key 01234567… · cnapp-directory@")
     assert src["collection"] == "server"
     secret_bits = ("BEGIN PRIVATE KEY", private_pem.splitlines()[1])
     sync(admin, src["id"])

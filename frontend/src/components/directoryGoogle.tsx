@@ -132,9 +132,9 @@ export function GoogleForm({ source, onDone, onCancel }: { source: GoogleSource 
               <span className="text-xs text-ink-2">
                 Ready to upload: key {key.keyId}… for <span className="font-medium">{key.email}</span>
               </span>
-            ) : saved?.has_credential ? (
+            ) : saved?.has_credential && stored ? (
               <span className="text-xs text-ink-2">
-                Stored: <span className="font-medium">{saved.credential_username_hint}</span>
+                Stored: key {stored.key_id}… for <span className="font-medium">{stored.service_account_email}</span>
               </span>
             ) : (
               <span className="text-xs text-ink-3">The file from step 1</span>
@@ -186,9 +186,11 @@ export function GoogleForm({ source, onDone, onCancel }: { source: GoogleSource 
           <Button type="submit" variant="primary" disabled={busy}>
             {busy ? "Testing…" : "Test & save"}
           </Button>
-          <Button disabled={busy} onClick={() => (saved && !source ? onDone(saved) : onCancel())}>
-            {saved && !source ? "Done" : "Cancel"}
-          </Button>
+          {!(saved && run) && (
+            <Button disabled={busy} onClick={() => (saved && !source ? onDone(saved) : onCancel())}>
+              {saved && !source ? "Done" : "Cancel"}
+            </Button>
+          )}
           {saved && run && <Button onClick={() => onDone(saved)}>{run.status === "succeeded" ? "Finish" : "Close (keep settings)"}</Button>}
         </div>
         {run && (

@@ -110,7 +110,7 @@ def parse_key(raw: str) -> dict[str, str]:
 
 
 def key_hint(facts: dict[str, str]) -> str:
-    return f"{facts['service_account_email']} · key {facts['key_id']}…"
+    return f"key {facts['key_id']}… · {facts['service_account_email']}"[:64]
 
 
 # ----------------------------------------------------------------------------- provider
