@@ -278,6 +278,7 @@ second source for the same tenant ID is refused.
 | `DeviceManagementManagedDevices.Read.All` | Intune managed devices: compliance, encryption, last check-in, serial, primary user | Intune part skipped |
 | `RoleManagement.Read.Directory` | Privileged directory role assignments | admin-role part skipped, privileged flags kept from the last run |
 | `GroupMember.Read.All` | Members of role-assignable groups that hold a privileged role | roles held through groups are not expanded (noted on the roles part) |
+| `RoleEligibilitySchedule.Read.Directory` (optional) | PIM **eligible** assignments of the privileged roles (`roleEligibilityScheduleInstances`); needs **Entra ID P2** | eligible admins are not read (*PIM eligible · no permission* / *not licensed*); eligibility seen by the last successful read is kept |
 
 **Licences.** `signInActivity` needs **Microsoft Entra ID P1 or P2**: without
 it Graph answers `Authentication_RequestFromNonPremiumTenantOrB2CTenant`, the
@@ -302,9 +303,21 @@ Administrator, Security Administrator, Conditional Access Administrator,
 Application Administrator, Cloud Application Administrator, Hybrid Identity
 Administrator, User Administrator, Authentication Administrator, Helpdesk
 Administrator, Password Administrator, Exchange Administrator, SharePoint
-Administrator, Intune Administrator, Cloud Device Administrator. Active
-assignments only (PIM *eligible* assignments are not read). Service principals
-holding roles are ignored.
+Administrator, Intune Administrator, Cloud Device Administrator. Service
+principals holding roles are ignored.
+
+**PIM eligible admins.** With `RoleEligibilitySchedule.Read.Directory` and
+Entra ID P2, the current eligibility instances
+(`GET /roleManagement/directory/roleEligibilityScheduleInstances?$filter=roleDefinitionId eq '…'&$expand=principal`,
+paged, same throttling / host allow-list) are read for the same privileged
+roles, including eligibility through role-assignable groups (expanded with
+`GroupMember.Read.All`). An eligible holder is privileged for every privileged
+issue, the badge and the filter, and is shown as such: role
+"Eligible: Global Administrator (PIM)", issue detail "is eligible (PIM) for
+Global Administrator". A role a user holds both actively and as eligible is
+shown once, as active. Without the permission or P2 the run records
+*PIM eligible* as `missing_permission` / `unlicensed` and keeps the eligibility
+the last successful read found; nothing else is affected.
 
 **Device records.** Entra devices are records of kind `entra` (join type
 `joined`, `hybrid` or `registered`), Intune devices of kind `intune`
@@ -680,6 +693,12 @@ against a test tenant (read-only):
 9. [ ] Assign Global Administrator to a disabled test user: *Disabled admin*; to a user
    whose primary device has no agent: *Admin device without agent*; a role held through a
    role-assignable group appears "(via group)".
+9a. [ ] (Entra ID P2) Make a test user only PIM-*eligible* for Global Administrator (not
+   activated): it appears under *Directory users → Privileged* as "eligible (PIM)", and, if
+   it has not signed in for 90+ days, as *Stale admin* "is eligible (PIM) for Global
+   Administrator". Activate the role: it shows once, as active. Without P2 (or without
+   `RoleEligibilitySchedule.Read.Directory`) Test & save marks PIM optional / not licensed and
+   the sync shows *PIM eligible · not licensed* while everything else syncs.
 10. [ ] Remove `DeviceManagementManagedDevices.Read.All` and re-sync: Intune *no permission*,
    existing Intune records kept (not missing), other parts succeed.
 11. [ ] In a large tenant (10k+ users) the sync pages through everything (nextLink) and
@@ -715,8 +734,8 @@ test Workspace (read-only):
 * Okta sources.
 * Google: custom admin roles are not treated as privileged; Cloud Identity
   device users give the primary user only for endpoints that report one.
-* Entra: PIM *eligible* role assignments are not read (active only; needs
-  `RoleEligibilitySchedule.Read.Directory`); only the global Azure cloud
+* Entra: PIM for *groups* (eligible membership of a group via PIM for Groups)
+  is not read, only eligible role assignments; only the global Azure cloud
   (no national clouds); the connector must use a client secret (certificate /
   managed identity not supported for Graph yet). Cloud-only users signed in on
   Windows as `AzureAD\Name` cannot be resolved to a directory user (the name is

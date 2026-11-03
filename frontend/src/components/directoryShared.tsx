@@ -160,6 +160,7 @@ const PART_LABEL: Record<string, string> = {
   users: "Users",
   sign_in: "Last sign-in",
   roles: "Admin roles",
+  eligible: "PIM eligible",
   devices: "Entra devices",
   intune: "Intune",
   chromeos: "ChromeOS",

@@ -97,6 +97,8 @@ class FakeGraph:
                           {"id": USER_ADMIN, "displayName": "User Administrator", "templateId": USER_ADMIN},
                           {"id": READER, "displayName": "Reports Reader", "templateId": READER}]
         self.assignments: dict[str, list[tuple[str, str]]] = {}  # role id -> [(principal id, odata type)]
+        self.eligible: dict[str, list[tuple[str, str]]] = {}  # PIM eligibility, same shape
+        self.p2 = True  # Entra ID P2 (PIM)
         self.group_members: dict[str, list[str]] = {}
         self.throttle: set[str] = set()  # paths answered 429 once
         self.calls: list[tuple[str, str]] = []
@@ -146,13 +148,20 @@ class FakeGraph:
             return self.page(url, q, self.managed)
         if path == "/roleManagement/directory/roleDefinitions":
             return self.page(url, q, self.role_defs) if "RoleManagement.Read.Directory" in self.roles else self.denied()
-        if path == "/roleManagement/directory/roleAssignments":
-            if "RoleManagement.Read.Directory" not in self.roles:
+        if path in ("/roleManagement/directory/roleAssignments",
+                    "/roleManagement/directory/roleEligibilityScheduleInstances"):
+            pim = path.endswith("Instances")
+            if ("RoleEligibilitySchedule.Read.Directory" if pim else "RoleManagement.Read.Directory") not in self.roles:
                 return self.denied()
+            if pim and not self.p2:
+                return httpx.Response(400, json={"error": {"code": "AadPremiumLicenseRequired", "message":
+                                                           "The tenant needs an AAD Premium 2 license"}})
+            if "$filter" not in q:  # Test & save probe
+                return self.page(url, q, [])
             rid = q["$filter"].split("'")[1]
             assert q.get("$expand") == "principal"
             items = [{"id": f"a-{p}", "principalId": p, "roleDefinitionId": rid, "principal": {"@odata.type": t}}
-                     for p, t in self.assignments.get(rid, [])]
+                     for p, t in (self.eligible if pim else self.assignments).get(rid, [])]
             return self.page(url, q, items)
         if path.startswith("/groups/") and path.endswith("/transitiveMembers/microsoft.graph.user"):
             if "GroupMember.Read.All" not in self.roles:
@@ -347,6 +356,10 @@ def populate(fake: FakeGraph) -> None:
                         USER_ADMIN: [(gid(4), "#microsoft.graph.user")],
                         READER: [(gid(5), "#microsoft.graph.user")]}
     fake.group_members = {GROUP: [gid(3)]}
+    # PIM: erin is only eligible for Global Administrator; alice is also eligible for the role she holds
+    # actively, and the group is eligible for the role it holds (both deduped).
+    fake.eligible = {GA: [(gid(5), "#microsoft.graph.user"), (gid(1), "#microsoft.graph.user")],
+                     SEC_ADMIN: [(GROUP, "#microsoft.graph.group")]}
     fake.devices = [gdevice(11, "LAPTOP1", E1), gdevice(12, "LAPTOP-NOAGENT", E2),
                     gdevice(13, "Erin's iPhone", gid(913), trust="Workplace", os_name="iOS"),
                     gdevice(14, "OLD-PC", gid(914), days=400)]
@@ -372,8 +385,8 @@ def test_sync_pages_throttling_grouping_and_issues(admin, fake):
     assert fake.sleeps == [1.0, 1.0] and "throttled 2x" in run["server"]
     status = run["scope_status"]
     assert {k: v["status"] for k, v in status.items()} == {"users": "ok", "sign_in": "ok", "roles": "ok",
-                                                           "devices": "ok", "intune": "ok"}
-    assert status["roles"]["count"] == 4  # alice, bob (GA), carol (via group), dave; not the reader / app
+                                                           "eligible": "ok", "devices": "ok", "intune": "ok"}
+    assert status["roles"]["count"] == 5  # alice, bob (GA), carol (via group), dave, erin (eligible); not reader / app
     s = admin.get(f"/api/directory/sources/{src['id']}").json()
     assert s["last_sync_status"] == "succeeded" and s["computers_count"] == 7 and s["users_count"] == 5
     assert s["scope_status"]["intune"]["status"] == "ok" and s["next_sync_at"]
@@ -397,7 +410,7 @@ def test_sync_pages_throttling_grouping_and_issues(admin, fake):
     assert "not_domain_joined" not in by  # no AD source: an Entra-joined device is fine
     assert by["disabled_user_signed_in"] == {"bob@contoso.com"}
     assert by["privileged_disabled"] == {"bob@contoso.com"}
-    assert by["privileged_stale"] == {"carol@contoso.com"}
+    assert by["privileged_stale"] == {"carol@contoso.com", "erin@contoso.com"}
     assert by["privileged_no_agent"] == {"dave@contoso.com"}
     assert "stale_user_signed_in" not in by
     items = admin.get("/api/directory/issues", params={"limit": 1000}).json()["items"]
@@ -413,11 +426,12 @@ def test_sync_pages_throttling_grouping_and_issues(admin, fake):
     roles = {u["user_principal_name"]: u["privileged_roles"] for u in priv["items"]}
     assert roles == {"alice@contoso.com": ["Global Administrator"], "bob@contoso.com": ["Global Administrator"],
                      "carol@contoso.com": ["Security Administrator (via group)"],
-                     "dave@contoso.com": ["User Administrator"]}
+                     "dave@contoso.com": ["User Administrator"],
+                     "erin@contoso.com": ["Eligible: Global Administrator (PIM)"]}
     assert all(u["source_type"] == "entra" and u["sign_in_known"] for u in priv["items"])
     # Issue filters: by source, user kind.
     assert admin.get("/api/directory/issues", params={"source_id": src["id"], "type": "not_managed"}).json()["total"] == 1
-    assert admin.get("/api/directory/issues?kind=user").json()["total"] == 4
+    assert admin.get("/api/directory/issues?kind=user").json()["total"] == 5
     # "Add to IT assets" on a machine links every record of it (Entra device + Intune record).
     r = admin.post("/api/directory/computers/add-to-assets", json={"computer_ids": [comps["LAPTOP-NOAGENT"]["id"]]})
     assert r.json()["created"] == 1
@@ -433,6 +447,58 @@ def test_sync_pages_throttling_grouping_and_issues(admin, fake):
     assert "dave@contoso.com" not in {u["user_principal_name"] for u in
                                       admin.get("/api/directory/users?privileged=true").json()["items"]}
     assert "privileged_no_agent" not in issues_by_type(admin)
+
+
+def test_pim_eligible_admins(admin, fake):
+    connect_azure(admin)
+    populate(fake)
+    src = make_entra(admin)
+    run = sync(admin, src["id"])
+    assert run["scope_status"]["eligible"] == {"status": "ok", "count": 2}  # users eligible directly
+    users = {u["user_principal_name"]: u for u in admin.get("/api/directory/users?privileged=true").json()["items"]}
+    # Eligible-only admin: privileged, marked as eligible; active + eligible for the same role: active only.
+    assert users["erin@contoso.com"]["privileged_roles"] == ["Eligible: Global Administrator (PIM)"]
+    assert users["alice@contoso.com"]["privileged_roles"] == ["Global Administrator"]
+    assert users["carol@contoso.com"]["privileged_roles"] == ["Security Administrator (via group)"]
+    stale = next(i for i in admin.get("/api/directory/issues?type=privileged_stale&limit=100").json()["items"]
+                 if i["name"] == "erin@contoso.com")
+    assert stale["detail"].startswith("Is eligible (PIM) for Global Administrator, but no sign-in") and stale["privileged"]
+    # An eligible-only group member.
+    fake.group_members[GROUP] = [gid(3), gid(4)]
+    fake.eligible[SEC_ADMIN] = [(GROUP, "#microsoft.graph.group")]
+    fake.assignments[SEC_ADMIN] = []
+    sync(admin, src["id"])
+    users = {u["user_principal_name"]: u for u in admin.get("/api/directory/users?privileged=true").json()["items"]}
+    assert users["dave@contoso.com"]["privileged_roles"] == [
+        "User Administrator", "Eligible: Security Administrator (PIM, via group)"]
+    # Permission missing: eligibility skipped with a status, the last known eligibility is kept, nothing else fails.
+    fake.roles = ALL_ROLES - {"RoleEligibilitySchedule.Read.Directory"}
+    run = sync(admin, src["id"])
+    assert run["status"] == "succeeded" and run["scope_status"]["roles"]["status"] == "ok"
+    assert run["scope_status"]["eligible"]["status"] == "missing_permission"
+    assert "RoleEligibilitySchedule.Read.Directory" in run["scope_status"]["eligible"]["detail"]
+    users = {u["user_principal_name"]: u for u in admin.get("/api/directory/users?privileged=true").json()["items"]}
+    assert users["erin@contoso.com"]["privileged_roles"] == ["Eligible: Global Administrator (PIM)"]
+    # No Entra ID P2: skipped as unlicensed, data kept.
+    fake.roles, fake.p2 = set(ALL_ROLES), False
+    run = sync(admin, src["id"])
+    assert run["scope_status"]["eligible"]["status"] == "unlicensed" and "P2" in run["scope_status"]["eligible"]["detail"]
+    assert "erin@contoso.com" in {u["user_principal_name"] for u in
+                                  admin.get("/api/directory/users?privileged=true").json()["items"]}
+    # Test & save: the optional permission and the P2 probe.
+    checks = {c["id"]: c for c in admin.post(f"/api/directory/sources/{src['id']}/test").json()["checks"]}
+    assert checks["RoleEligibilitySchedule.Read.Directory"]["status"] == "ok"
+    assert not checks["RoleEligibilitySchedule.Read.Directory"]["required"]
+    assert checks["pim"]["status"] == "unlicensed" and not checks["pim"]["required"]
+    fake.roles = ALL_ROLES - {"RoleEligibilitySchedule.Read.Directory"}
+    run = admin.post(f"/api/directory/sources/{src['id']}/test").json()
+    checks = {c["id"]: c for c in run["checks"]}
+    assert checks["RoleEligibilitySchedule.Read.Directory"]["status"] == "missing" and run["status"] == "succeeded"
+    # P2 back: eligibility removed in Entra is cleared on the next complete read.
+    fake.roles, fake.p2, fake.eligible = set(ALL_ROLES), True, {}
+    sync(admin, src["id"])
+    assert "erin@contoso.com" not in {u["user_principal_name"] for u in
+                                      admin.get("/api/directory/users?privileged=true").json()["items"]}
 
 
 def test_missing_licence_and_permission_degrade_without_losing_data(admin, fake):
@@ -458,7 +524,7 @@ def test_missing_licence_and_permission_degrade_without_losing_data(admin, fake)
         users = s.scalars(select(DirectoryUser)).all()
         assert all(u.last_logon_at is None for u in users)
         assert {u.user_principal_name for u in users if u.privileged} == {
-            "alice@contoso.com", "bob@contoso.com", "carol@contoso.com", "dave@contoso.com"}
+            "alice@contoso.com", "bob@contoso.com", "carol@contoso.com", "dave@contoso.com", "erin@contoso.com"}
     by = issues_by_type(admin)
     # Unknown sign-in is never "stale"; disabled admins are still reported.
     assert "privileged_stale" not in by and "stale_user_signed_in" not in by
