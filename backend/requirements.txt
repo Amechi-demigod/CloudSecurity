@@ -27,7 +27,7 @@ boto3>=1.35
 # GCP read-only posture connector: google-auth credentials + its authorized
 # requests session against the REST APIs (no google-api-python-client discovery
 # documents or per-service google-cloud-* libraries; ~2 MB)
-google-auth>=2.30
+google-auth>=2.62.0
 requests>=2.32
 
 # PostgreSQL (Azure Database for PostgreSQL Flexible Server) + schema migrations
