@@ -2,4 +2,4 @@
 
 package version
 
-const platformFeatures = ",remote_session"
+const platformFeatures = ",remote_session,windows_updates"

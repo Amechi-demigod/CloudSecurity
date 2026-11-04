@@ -50,7 +50,7 @@ from ..schemas_devices import (
     SnapshotOut,
     SoftwareOut,
 )
-from ..services import approvals, installers, remote_sessions
+from ..services import approvals, installers, os_updates, remote_sessions
 from ..services import devices as svc
 
 log = logging.getLogger(__name__)
@@ -84,6 +84,8 @@ def list_devices(db: Session = Depends(get_db),
                                                    description="offline = stale or inactive (no check-in for 24 h+)"),
                  status: str = Query("active", pattern="^(active|revoked|all)$"),
                  group: str | None = Query(None, max_length=64),
+                 updates: str | None = Query(None, pattern="^(security|any|none|unknown)$",
+                                             description="missing OS updates (Windows Update report)"),
                  limit: int = Query(500, ge=1, le=5000)):
     stmt = select(Device)
     if status != "all":
@@ -105,6 +107,8 @@ def list_devices(db: Session = Depends(get_db),
         if connectivity and sm["connectivity"] not in (("stale", "inactive") if connectivity == "offline" else (connectivity,)):
             continue
         if issue and issue not in {i["code"] for i in sm["issues"]}:
+            continue
+        if updates and not os_updates.matches_filter(d, updates):
             continue
         out.append(sm)
         if len(out) >= limit:

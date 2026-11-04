@@ -1,7 +1,7 @@
 import { Laptop } from "lucide-react";
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { api } from "../../api";
+import { api, type DeviceSummary } from "../../api";
 import { useAuth } from "../../auth/context";
 import { ConnectivityTag, HealthBadge, IssueList } from "../../components/devices";
 import { Card, Empty, ErrorNote, PageHeader, Select, Stat, Table, Tag } from "../../components/ui";
@@ -10,6 +10,23 @@ import { fmtAgo } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
 import { useSort } from "../../lib/useSort";
 import { useUrlState } from "../../lib/useUrlState";
+
+/** Missing OS updates on a Devices row (Windows Update report, docs/PATCHING.md). */
+function OsUpdatesCell({ d }: { d: DeviceSummary }) {
+  const u = d.os_updates;
+  if (!u) return <span className="text-xs text-ink-3">{d.os_family === "windows" ? "not reported" : "—"}</span>;
+  if (!u.listed) return <span className="text-xs text-sev-high">search failed</span>;
+  if (u.missing === 0) return <Tag tone="good">Up to date</Tag>;
+  return (
+    <div title={u.oldest_security_days !== null ? `Oldest security update released ${u.oldest_security_days} days ago` : undefined}>
+      {u.security > 0 ? <Tag tone={u.critical > 0 ? "critical" : "warn"}>{u.security} security</Tag> : <Tag>{u.missing} missing</Tag>}
+      <div className="text-[11px] text-ink-3">
+        {u.missing} total{u.reboot_pending ? " · restart pending" : ""}
+        {u.scan_status === "failed" ? " · last check failed" : ""}
+      </div>
+    </div>
+  );
+}
 
 export default function Devices() {
   const navigate = useNavigate();
@@ -21,10 +38,12 @@ export default function Devices() {
   const [issue, setIssue] = useUrlState("issue");
   const [connectivity, setConnectivity] = useUrlState("connectivity");
   const [status, setStatus] = useUrlState("status", "active");
-  const filters = { q: q.trim() || undefined, os, health, issue, connectivity, status };
-  const { data, error, loading } = useApi(() => api.devices(filters), [q, os, health, issue, connectivity, status], 30000);
+  // Missing OS updates (Windows Update report): security | any | none | unknown
+  const [updates, setUpdates] = useUrlState("updates");
+  const filters = { q: q.trim() || undefined, os, health, issue, connectivity, status, updates };
+  const { data, error, loading } = useApi(() => api.devices(filters), [q, os, health, issue, connectivity, status, updates], 30000);
   const { data: summary } = useApi(api.deviceSummary, [], 30000);
-  const filtered = !!(q || os || health || issue || connectivity) || status !== "active";
+  const filtered = !!(q || os || health || issue || connectivity || updates) || status !== "active";
   const HEALTH_RANK: Record<string, number> = { critical: 3, warning: 2, unknown: 1, healthy: 0 };
   const sorted = useSort(
     data,
@@ -36,9 +55,10 @@ export default function Devices() {
       issues: (d) => d.issues.length,
       seen: (d) => (d.last_seen_at ? Date.parse(d.last_seen_at) : null),
       agent: (d) => d.agent_version,
+      updates: (d) => (d.os_updates ? d.os_updates.security * 10000 + d.os_updates.missing : null),
     },
     { key: "name", dir: "asc" },
-    { health: "desc", issues: "desc", seen: "desc" },
+    { health: "desc", issues: "desc", seen: "desc", updates: "desc" },
   );
   const { data: issueTypes } = useApi(api.deviceIssueTypes, []);
 
@@ -116,6 +136,18 @@ export default function Devices() {
             ]}
           />
           <Select
+            label="Missing updates"
+            value={updates}
+            onChange={setUpdates}
+            options={[
+              { value: "", label: "Any" },
+              { value: "security", label: "Security updates missing" },
+              { value: "any", label: "Any update missing" },
+              { value: "none", label: "Up to date" },
+              { value: "unknown", label: "Not reported" },
+            ]}
+          />
+          <Select
             label="Status"
             value={status}
             onChange={setStatus}
@@ -134,6 +166,7 @@ export default function Devices() {
               { label: "User", sort: "user" },
               { label: "Health", sort: "health" },
               { label: "Issues", sort: "issues" },
+              { label: "OS updates", sort: "updates" },
               { label: "Last seen", sort: "seen" },
               { label: "Agent", sort: "agent" },
             ]}
@@ -189,6 +222,9 @@ export default function Devices() {
                 </td>
                 <td className="px-3 py-2">
                   <IssueList issues={d.issues} compact />
+                </td>
+                <td className="px-3 py-2">
+                  <OsUpdatesCell d={d} />
                 </td>
                 <td className="px-3 py-2">
                   <ConnectivityTag value={d.connectivity} />

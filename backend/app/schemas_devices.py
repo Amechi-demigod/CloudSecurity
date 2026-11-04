@@ -31,6 +31,9 @@ COMMAND_ROLES: dict[str, str] = {
     # scripts go through /api/scripts/run (approval unless the signed risk is low).
     "wipe_device": "admin",
     "run_script": "admin",
+    # Never queued through POST /commands: POST /api/devices/{id}/os-updates/scan
+    # ("Check for updates now", read-only Windows Update search, app/services/os_updates.py).
+    "scan_os_updates": "analyst",
     # Never queued through POST /commands: directory sources (admin) queue it
     # for their designated collectors (app/directory/service.py).
     "directory_sync": "admin",
@@ -293,6 +296,8 @@ class DeviceSummaryOut(ORM):
     issues: list[DeviceIssue]
     # active | lost | wipe_pending | revoked (for asset / lifecycle views)
     device_state: str = "active"
+    # Missing OS updates summary (Windows, agent 1.4.0+); None = no report.
+    os_updates: dict[str, Any] | None = None
 
 
 class DeviceDetailOut(DeviceSummaryOut):

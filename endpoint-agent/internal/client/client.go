@@ -339,6 +339,11 @@ func (c *Client) Fetch(ctx context.Context, path string, max int64, w io.Writer)
 	return n, nil
 }
 
+// ReportOSUpdates uploads a missing-OS-updates report (internal/osupdates).
+func (c *Client) ReportOSUpdates(ctx context.Context, r *model.OSUpdateReport) error {
+	return c.postJSON(ctx, "/api/agent/os-updates", r, nil)
+}
+
 // ReportUpdate sends an update status (downloading, verified, installed, rolled_back, ...).
 func (c *Client) ReportUpdate(ctx context.Context, r update.Report) error {
 	return c.postJSON(ctx, "/api/agent/updates/status", r, nil)
