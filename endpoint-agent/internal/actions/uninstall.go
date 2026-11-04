@@ -264,7 +264,7 @@ func (m *Manager) uninstall(ctx context.Context, p UninstallParams) Result {
 	code, output, err := m.Programs.Run(rctx, cmd)
 	data := map[string]any{"name": prog.DisplayName, "version": prog.DisplayVersion, "method": method}
 	if err != nil {
-		if rctx.Err() == context.DeadlineExceeded {
+		if errors.Is(rctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
 			return Result{Status: "failed", Output: fmt.Sprintf("the uninstaller did not finish within %s and was stopped", m.UninstallTime),
 				Data: data, Refresh: true}
 		}

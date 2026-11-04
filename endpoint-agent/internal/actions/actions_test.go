@@ -152,6 +152,10 @@ func (f *fakePrograms) Lookup(source, key string) (Program, error) {
 
 func (f *fakePrograms) Run(ctx context.Context, c Cmd) (int, string, error) {
 	f.ran = append(f.ran, c)
+	if errors.Is(f.runErr, context.DeadlineExceeded) { // a hung uninstaller: killed at the timeout
+		<-ctx.Done()
+		return -1, "", ctx.Err()
+	}
 	if f.runErr != nil {
 		return -1, "", f.runErr
 	}
@@ -478,7 +482,7 @@ func TestUninstallRefusals(t *testing.T) {
 	}
 	progs.runErr = context.DeadlineExceeded
 	progs.progs["registry_hklm64|Bar"] = Program{Key: "Bar", DisplayName: "Bar", QuietUninstallString: `"C:\Bar\u.exe" /S`}
-	m.UninstallTime = time.Nanosecond
+	m.UninstallTime = 20 * time.Millisecond
 	r = m.Execute(ctx, cmd(UninstallSoftware, "c", map[string]any{"identifier": "Bar", "source": "registry_hklm64", "name": "Bar"}))
 	if r.Status != "failed" || !strings.Contains(r.Output, "did not finish") {
 		t.Fatalf("%+v", r)
