@@ -306,6 +306,8 @@ class ComputerOut(BaseModel):
     serial_number: str = ""
     primary_user: str = ""
     agent_expected: bool = True
+    # workstation | server | domain_controller | None (from the directory attributes).
+    device_class: str | None = None
     # Every record of this physical machine ({"id", "source_id", "type", "kind"}).
     sources: list[dict] = []
 

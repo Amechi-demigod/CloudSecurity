@@ -509,13 +509,27 @@ once (enabled, present records with `agent_expected`).
 **Privileged users.** *Directory users* lists users with a *Privileged* filter
 and badge (role names on hover); no group browser.
 
+## Device class of directory computers
+
+Directory computers are classified without an agent (the
+[device class](DEVICE_MANAGEMENT.md#device-class) of agent devices comes from the
+agent itself): an AD computer account with `SERVER_TRUST_ACCOUNT` (0x2000) in
+`userAccountControl` is a **domain controller**; "Server" in `operatingSystem`
+(AD, Entra ID, Intune, Google endpoints) is a **server**; Linux is a server;
+other Windows, macOS and ChromeOS records are **workstations**; phones and
+unknown operating systems have no class. Discovery → Computers filters by class
+(`GET /api/directory/computers?device_class=domain_controller`), and the
+Endpoints dashboard splits agent coverage into workstations, servers and domain
+controllers (`coverage.by_class` of `GET /api/directory/summary`).
+
 ## Adding computers to IT assets
 
 Directory computers that are not IT assets are only listed under Discovery: they
 are **never created automatically**. Admins choose **Add to IT assets** (one or
 in bulk, up to 1000 per request): each becomes an asset with source
-`directory`, status `in_stock`, tag `DIR-<NAME>`, type `server` (server OS) or
-`computer`, with the DN in its notes and a custody event. When that computer
+`directory`, status `in_stock`, tag `DIR-<NAME>`, type `server` (servers and
+domain controllers, see below) or `computer`, with the DN in its notes and a
+custody event. When that computer
 later gets an agent, the device is linked to this asset (matched directory
 computer, or same short name and domain) instead of creating a duplicate.
 

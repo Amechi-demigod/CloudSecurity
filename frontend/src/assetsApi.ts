@@ -16,6 +16,8 @@ export interface ItAsset {
   asset_tag: string;
   serial_number: string;
   asset_type: string;
+  /** auto: follows the device class / form factor (laptop, desktop, server); manual: chosen by a person */
+  asset_type_source?: "auto" | "manual";
   manufacturer: string;
   model: string;
   status: AssetStatus;

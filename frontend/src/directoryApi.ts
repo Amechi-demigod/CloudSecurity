@@ -362,6 +362,8 @@ export interface DirComputer {
   serial_number: string;
   primary_user: string;
   agent_expected: boolean;
+  /** workstation / server / domain_controller from the directory attributes; null = unknown */
+  device_class?: "workstation" | "server" | "domain_controller" | null;
   /** Every record of this physical machine. */
   sources: RecordRef[];
 }
@@ -392,7 +394,13 @@ export interface DirectorySummary {
   source_types: DirectoryType[];
   last_sync_at: string | null;
   counts: Record<IssueType, number>;
-  coverage: { directory_computers: number; managed: number; pct: number | null };
+  coverage: {
+    directory_computers: number;
+    managed: number;
+    pct: number | null;
+    /** split by device class (workstation / server / domain_controller / unknown) */
+    by_class?: Record<string, { directory_computers: number; managed: number; pct: number | null }>;
+  };
   users: number;
 }
 
@@ -413,6 +421,7 @@ export interface ComputerFilters {
   source_id?: string;
   domain?: string;
   status?: ComputerStatus;
+  device_class?: string;
   limit?: number;
   offset?: number;
 }

@@ -121,6 +121,19 @@ class DirectoryJoin(Strict):
     source: Annotated[str, StringConstraints(pattern=r"^[a-z_]{0,16}$")] = ""
 
 
+class DeviceClassification(Strict):
+    """Role, form factor and virtualisation the agent reads locally (agents
+    1.4.0+, docs/DEVICE_MANAGEMENT.md#device-class). "" / None = unknown."""
+    role: Literal["workstation", "server", "domain_controller", ""] = ""
+    role_source: Annotated[str, StringConstraints(pattern=r"^[a-z_]{0,64}$")] = ""
+    form_factor: Literal["laptop", "desktop", "server", "tablet", "other", ""] = ""
+    chassis_type: int | None = Field(None, ge=0, le=255)
+    is_virtual: bool | None = None
+    hypervisor: Annotated[str, StringConstraints(pattern=r"^[a-z0-9_-]{0,32}$")] = ""
+    cloud_provider: Annotated[str, StringConstraints(pattern=r"^[a-z0-9_-]{0,32}$")] = ""
+    cloud_instance_id: Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9._:-]{0,128}$")] = ""
+
+
 class DeviceInfo(Strict):
     hostname: Str255 = Field(min_length=1)
     os_family: OsFamily
@@ -143,6 +156,8 @@ class DeviceInfo(Strict):
     agent_version: Annotated[str, StringConstraints(max_length=32)] = ""
     # Agents >= 1.3.0; omitted when the device is not joined to any directory.
     directory_join: DirectoryJoin | None = None
+    # Agents >= 1.4.0; older agents: inferred from os_name / model (app/device_class.py).
+    classification: DeviceClassification | None = None
 
 
 class PostureCheck(Strict):
@@ -293,6 +308,14 @@ class DeviceSummaryOut(ORM):
     issues: list[DeviceIssue]
     # active | lost | wipe_pending | revoked (for asset / lifecycle views)
     device_state: str = "active"
+    # workstation | server | domain_controller | None; class_source agent | inferred.
+    device_class: str | None = None
+    class_source: str | None = None
+    form_factor: str | None = None
+    is_virtual: bool | None = None
+    hypervisor: str | None = None
+    cloud_provider: str | None = None
+    cloud_instance_id: str | None = None
 
 
 class DeviceDetailOut(DeviceSummaryOut):
@@ -310,6 +333,8 @@ class DeviceDetailOut(DeviceSummaryOut):
     isolation: dict[str, Any] = {}
     # Directory membership reported by the agent (docs/DIRECTORY_DISCOVERY.md).
     directory_join: dict[str, Any] = {}
+    # The scanned cloud resource this VM is ({"id", "name", "type", "provider", "region"}).
+    cloud_resource: dict[str, Any] | None = None
 
 
 class SoftwareOut(ORM):

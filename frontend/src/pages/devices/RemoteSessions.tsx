@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { ApiError, api, type DeviceDetail, type RemoteMode, type RemoteSession } from "../../api";
 import { useAuth } from "../../auth/context";
+import { ServerTargetWarning } from "../../components/deviceClass";
 import { Button, Card, Empty, ErrorNote, Field, Modal, Table, Tag } from "../../components/ui";
 import { fmtDuration } from "../../lib/devices";
 import { fmtTime } from "../../lib/format";
@@ -105,6 +106,7 @@ function StartRemoteDialog({ device, modes, open, onClose, onStarted }: {
   return (
     <Modal open={open} onClose={close} title={`Remote session: ${device.hostname}`}>
       <form className="space-y-3" onSubmit={submit}>
+        <ServerTargetWarning device={device} action="a remote session on it" />
         <p className="text-sm text-ink-2">
           The signed-in user sees a prompt with your name, the access level and your reason, and nothing is shared until
           they click <strong>Allow</strong>. While connected, a banner stays on their screen and they can end the session

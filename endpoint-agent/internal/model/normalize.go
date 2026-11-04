@@ -53,6 +53,14 @@ func (r *Report) Normalize() {
 	d.CPU = Trunc(d.CPU, 255)
 	d.Timezone = Trunc(d.Timezone, 64)
 	d.AgentVersion = Trunc(d.AgentVersion, 32)
+	if c := d.Classification; c != nil {
+		c.Role = Trunc(c.Role, 32)
+		c.RoleSource = Trunc(c.RoleSource, 64)
+		c.FormFactor = Trunc(c.FormFactor, 32)
+		c.Hypervisor = Trunc(c.Hypervisor, 32)
+		c.CloudProvider = Trunc(c.CloudProvider, 32)
+		c.CloudInstanceID = Trunc(c.CloudInstanceID, 128)
+	}
 	d.Disks = capList(d.Disks, 64)
 	for i := range d.Disks {
 		d.Disks[i].Mount = Trunc(d.Disks[i].Mount, 255)

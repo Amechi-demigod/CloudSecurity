@@ -21,7 +21,7 @@ from pydantic import BaseModel, ConfigDict, StringConstraints
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from .. import config
+from .. import config, device_class
 from ..auth import ROLE_RANK, RateLimiter, audit, client_ip, current_user, require_admin, require_analyst
 from ..db import get_db
 from ..models import (
@@ -84,8 +84,18 @@ def list_devices(db: Session = Depends(get_db),
                                                    description="offline = stale or inactive (no check-in for 24 h+)"),
                  status: str = Query("active", pattern="^(active|revoked|all)$"),
                  group: str | None = Query(None, max_length=64),
+                 device_class: str | None = Query(None, pattern="^(workstation|server|domain_controller|unknown)$"),
+                 virtual: bool | None = Query(None, description="true: virtual machines only; false: physical only"),
                  limit: int = Query(500, ge=1, le=5000)):
     stmt = select(Device)
+    if device_class == "unknown":
+        stmt = stmt.where(Device.device_class.is_(None))
+    elif device_class:
+        stmt = stmt.where(Device.device_class == device_class)
+    if virtual is True:
+        stmt = stmt.where(Device.is_virtual.is_(True))
+    elif virtual is False:
+        stmt = stmt.where(or_(Device.is_virtual.is_(False), Device.is_virtual.is_(None)))
     if status != "all":
         stmt = stmt.where(Device.status == status)
     if os:
@@ -251,7 +261,18 @@ def device_detail(device_id: str = DeviceId, db: Session = Depends(get_db)):
             "updates_pending_since": d.updates_pending_since, "revoked_at": d.revoked_at,
             "inventory": d.inventory or {}, "posture": d.posture or {}, "collection_errors": d.collection_errors or {},
             "lost_mode": svc.lost_mode_info(d), "wipe": svc.wipe_info(d), "isolation": svc.isolation_info(db, d),
-            "directory_join": d.directory_join or {}}
+            "directory_join": d.directory_join or {}, "cloud_resource": _cloud_resource(db, d)}
+
+
+def _cloud_resource(db: Session, d: Device) -> dict | None:
+    """The scanned cloud resource of a cloud VM; never fails the detail view."""
+    if not d.cloud_provider:
+        return None
+    try:
+        return device_class.cloud_resource(db, d)
+    except Exception:  # noqa: BLE001 - display only
+        log.exception("cloud resource lookup failed")
+        return None
 
 
 @router.get("/{device_id}/software", response_model=list[SoftwareOut])

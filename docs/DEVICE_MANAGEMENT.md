@@ -17,6 +17,7 @@ Linux is not supported yet. The code is split so it can be added later: see [Add
 - [Roll out to all devices](#roll-out-to-all-devices) (one pre-configured MSI / pkg: GPO, Intune, SCCM, Jamf, Kandji)
 - [Enrolling devices](#enrolling-devices) one by one: [Windows](#windows-1011) and [macOS](#macos)
 - [What data is collected](#what-data-is-collected) (privacy)
+- [Device class](#device-class) (workstation / server / domain controller, virtual machines, cloud VMs)
 - [Device health and issues](#device-health-and-issues)
 - [Remote actions](#remote-actions)
 - [Two-person approval](#two-person-approval)
@@ -292,6 +293,55 @@ Everything is **read-only** and uses OS-native tools with timeouts, so the user 
 **Directory membership** (agent 1.3.0+): the AD domain, NetBIOS name, forest, domain and computer-account SIDs, DNS host name, Entra ID device / tenant id and join type, and Intune enrollment id, all read locally (LSA, `NetGetAadJoinInformation`, registry; `dsconfigad -show` on macOS, `realm list` on Linux). See [DIRECTORY_DISCOVERY.md](DIRECTORY_DISCOVERY.md#domain-join-facts).
 
 **Privacy note.** The agent does **not** collect files, documents, browsing data, screenshots, keystrokes, location, process lists or network traffic. It records the user names of signed-in users and local administrators, IP and MAC addresses, the serial number and the installed applications. Tell your users about it as your policies require. Data is kept until the device is deleted. Posture history is capped per device (`DEVICE_HISTORY_LIMIT`, default 200 snapshots).
+
+## Device class
+
+The console tells user workstations from servers, domain controllers and virtual machines. Agents **1.4.0+** report a
+`classification` with every check-in, read locally and offline (no network call, never a cloud metadata service / IMDS):
+
+| Field | Windows | macOS | Linux |
+|---|---|---|---|
+| Role | OS product type `HKLM\SYSTEM\CurrentControlSet\Control\ProductOptions\ProductType` (the value `RtlGetVersion` reports): `WinNT` workstation, `ServerNT` server, `LanmanNT` domain controller | always workstation | heuristic, see below |
+| Form factor | SMBIOS chassis type (type 3) from the raw table (`GetSystemFirmwareTable('RSMB')`, no WMI) | battery present (`ioreg AppleSmartBattery`) or a `MacBook*` model: laptop, else desktop | `/sys/class/dmi/id/chassis_type` |
+| Virtual / hypervisor | SMBIOS vendor / product / BIOS strings, confirmed by the CPUID hypervisor leaf (`0x40000000`) | `kern.hv_vmm_present`, model (`VirtualMac`, `VMware`, `Parallels`) | DMI strings, CPUID |
+| Cloud + instance id | Azure: chassis asset tag `7783-7084-3265-9085-8269-3286-77`, VM id = SMBIOS system UUID; AWS: vendor `Amazon EC2` (or a UUID starting `ec2`), instance id from the baseboard asset tag (Nitro); GCP: product `Google Compute Engine` (no instance id in SMBIOS) | — | same as Windows, from DMI |
+
+Chassis types map to *laptop* (portable, laptop, notebook, sub-notebook, convertible, detachable), *desktop* (desktop,
+tower, mini PC, all-in-one, ...), *server* (main server chassis, rack mount, blade, multi-system), *tablet* (tablet, hand
+held) or *other*. A virtual machine's chassis type is meaningless (Hyper-V says "desktop"), so VMs report *other*.
+
+Hypervisors: `vmware`, `hyper-v`, `kvm` (also QEMU, Proxmox, OpenStack, Google Compute Engine), `xen`, `virtualbox`,
+`parallels`, `nitro` (AWS), `apple` (Apple Virtualization), `other`. A physical Windows PC with virtualisation-based
+security (Credential Guard, HVCI) runs as the Hyper-V root partition and reports the `Microsoft Hv` CPUID signature,
+so that signature alone never makes a machine virtual: SMBIOS strings decide, CPUID only fills in for other hypervisors.
+Bare-metal EC2 instances (`*.metal`) are physical but still `aws`.
+
+**Linux role heuristic.** A Linux host is a **server** unless it is clearly a user machine: a *physical* laptop,
+tablet or desktop chassis, or a graphical boot target (systemd `default.target` -> `graphical.target`, which desktop
+distributions use and server installs do not). A VM is never a workstation because of its chassis type, only because
+of a graphical target. The device detail shows which rule applied (`role_source`: `product_type`, `chassis`,
+`graphical_target`, `linux_default`, `macos`).
+
+**Older agents** (before 1.4.0) are classified from what they already send and the class is marked **inferred**:
+Windows with "Server" in the OS name is a server (a domain controller cannot be told apart from a member server this
+way), other Windows and macOS are workstations, Linux is a server; virtual machines are recognised from the make /
+model strings ("VMware", "Virtual Machine", "QEMU", "Amazon EC2", ...). Migration `0022_device_classification`
+applies the same rules to existing devices. The next check-in of an upgraded agent replaces the inferred class.
+
+**Cloud VMs.** When the agent reports a cloud instance id and the organisation's cloud inventory has the resource
+(Connectors & scans), the device's *Hardware* card links to it ("Cloud VM -> resource"): AWS by instance id (the
+`instance/<id>` ARN), Azure by VM id (also matching the other SMBIOS UUID byte order older firmware uses), GCP by
+instance name (GCE puts no instance id into SMBIOS; linked only when the name is unique).
+
+**Where it shows.** Devices list: *Class* column (with a *Virtual* tag) and *Class* / *Virtual* filters
+(`GET /api/devices?device_class=server&virtual=true`); device detail: *Hardware* card; Endpoints dashboard: coverage
+split into workstations, servers and domain controllers; IT assets: the asset type ([ASSET_MANAGEMENT.md](ASSET_MANAGEMENT.md#agent-devices));
+Discovery: class of directory computers without an agent ([DIRECTORY_DISCOVERY.md](DIRECTORY_DISCOVERY.md)).
+Servers and domain controllers never get an IT asset owner from the signed-in user (that is an administrator).
+
+**Confirmation dialogs.** Suspend sign-in (isolation), lock, lost mode, remote wipe, remote sessions and scripts show a
+prominent warning when the target is a server or a domain controller ("This is a domain controller — isolating it will
+affect the whole domain"). Approval policies are unchanged: the class only adds the warning.
 
 ## Device health and issues
 

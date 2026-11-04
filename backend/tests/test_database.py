@@ -65,7 +65,7 @@ MIGRATION_CHAIN = ["0001_baseline", "0002_device_management", "0003_notification
                    "0011_vulnerability_matching", "0013_organizations", "0014_host_isolation",
                    "0015_command_result_data", "0016_dashboard_snapshots", "0017_onboarding_dismissed",
                    "0018_remote_sessions", "0019_offboarding_username", "0020_directory_discovery",
-                   "0021_directory_cloud_sources"]
+                   "0021_directory_cloud_sources", "0022_device_classification"]
 
 
 def test_migration_history_is_linear():
@@ -605,5 +605,81 @@ def test_directory_cloud_sources_migration(tmp_path):
         command.downgrade(db.alembic_config(eng), "0020_directory_discovery")
         assert "device_kind" not in {c["name"] for c in inspect(eng).get_columns("directory_computers")}
         assert "privileged" not in {c["name"] for c in inspect(eng).get_columns("directory_users")}
+    finally:
+        eng.dispose()
+
+
+def _insert_row(conn, table: str, values: dict) -> None:
+    """Insert a row giving every NOT NULL column without a server default a value."""
+    from datetime import datetime
+
+    import sqlalchemy as sa
+
+    row = dict(values)
+    for c in inspect(conn).get_columns(table):
+        if c["name"] in row or c["nullable"] or c.get("default") is not None:
+            continue
+        t = c["type"]
+        row[c["name"]] = (False if isinstance(t, sa.Boolean) else 0 if isinstance(t, sa.Integer | sa.Numeric)
+                          else datetime(2026, 1, 1) if isinstance(t, sa.DateTime)
+                          else "{}" if isinstance(t, sa.JSON) else "")
+    cols = ", ".join(row)
+    conn.execute(text(f"INSERT INTO {table} ({cols}) VALUES ({', '.join(':' + k for k in row)})"), row)  # noqa: S608
+
+
+def test_device_classification_migration(tmp_path):
+    """0022 classifies existing devices from OS name and model ("inferred"),
+    classifies directory computers (SERVER_TRUST_ACCOUNT = domain controller)
+    and marks agent / directory asset types as automatic; downgrade removes it."""
+    if IS_POSTGRES:
+        reset_database()
+        eng = db.create_db_engine(TEST_DATABASE_URL)
+    else:
+        eng = db.create_db_engine(f"sqlite:///{tmp_path / 'device_class.db'}")
+    try:
+        db.run_migrations(eng, "0021_directory_cloud_sources")
+        with eng.begin() as conn:
+            base = {"organization_id": "default", "os_version": "", "os_build": "", "architecture": "",
+                    "serial_number": "", "machine_id": "", "agent_version": "1.3.0", "status": "active"}
+            for i, (fam, os_name, make, model) in enumerate([
+                    ("windows", "Microsoft Windows 11 Pro", "LENOVO", "20XW"),
+                    ("windows", "Microsoft Windows Server 2022 Standard", "VMware, Inc.", "VMware7,1"),
+                    ("macos", "macOS 15", "Apple Inc.", "MacBookPro18,3"),
+                    ("linux", "Ubuntu 24.04", "Amazon EC2", "m5.metal")]):
+                _insert_row(conn, "devices", {**base, "id": f"d{i}", "hostname": f"h{i}", "os_family": fam,
+                                              "os_name": os_name, "manufacturer": make, "model": model})
+            _insert_row(conn, "directory_sources", {"id": "s1", "organization_id": "default", "type": "ad",
+                                                    "name": "AD", "config": "{}", "collector_device_ids": "[]"})
+            for cid, os_name, uac in (("c1", "Windows Server 2022", 532480), ("c2", "Windows Server 2019", 4096),
+                                      ("c3", "Windows 11 Enterprise", 4096)):
+                _insert_row(conn, "directory_computers", {
+                    "id": cid, "organization_id": "default", "source_id": "s1", "external_id": cid,
+                    "operating_system": os_name, "user_account_control": uac, "platform": "windows",
+                    "device_kind": "ad", "match_candidates": "[]"})
+            for aid, src, typ, dev in (("a1", "agent", "computer", "d1"), ("a2", "manual", "laptop", None),
+                                       ("a3", "agent", "monitor", None)):
+                _insert_row(conn, "it_assets", {"id": aid, "organization_id": "default", "asset_tag": aid,
+                                                "source": src, "asset_type": typ, "device_id": dev,
+                                                "custom_fields": "{}"})
+        db.run_migrations(eng)
+        assert _schema_diff(eng) == []
+        with eng.connect() as conn:
+            rows = {r[0]: (r[1], r[2], r[3]) for r in conn.execute(text(
+                "SELECT id, device_class, class_source, is_virtual FROM devices"))}
+            assert rows["d0"][:2] == ("workstation", "inferred") and rows["d0"][2] is None
+            assert rows["d1"][0] == "server" and bool(rows["d1"][2]) is True
+            assert rows["d2"][0] == "workstation"
+            assert rows["d3"][0] == "server" and rows["d3"][2] is None  # bare-metal EC2
+            assert dict(conn.execute(text("SELECT id, device_class FROM directory_computers")).all()) == {
+                "c1": "domain_controller", "c2": "server", "c3": "workstation"}
+            assets = {r[0]: (r[1], r[2]) for r in conn.execute(text(
+                "SELECT id, asset_type, asset_type_source FROM it_assets"))}
+            assert assets == {"a1": ("server", "auto"), "a2": ("laptop", "manual"), "a3": ("monitor", "manual")}
+
+        from alembic import command
+
+        command.downgrade(db.alembic_config(eng), "0021_directory_cloud_sources")
+        assert "device_class" not in {c["name"] for c in inspect(eng).get_columns("devices")}
+        assert "asset_type_source" not in {c["name"] for c in inspect(eng).get_columns("it_assets")}
     finally:
         eng.dispose()

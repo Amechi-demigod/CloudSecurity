@@ -17,7 +17,7 @@ from typing import Any
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
-from .. import config
+from .. import config, device_class
 from ..models import (
     Device,
     DeviceCommand,
@@ -132,6 +132,7 @@ def apply_checkin(db: Session, device: Device, body: CheckinRequest, ip: str | N
         device.agent_version = info.agent_version
     device.inventory = info.model_dump(mode="json", exclude={"directory_join"})
     apply_directory_join(device, info.directory_join)
+    device_class.apply(device, info.classification)
     posture = {k: v.model_dump(mode="json") for k, v in body.posture.items()}
     device.posture = posture
     device.collection_errors = dict(body.errors)
@@ -374,6 +375,7 @@ def summarize(device: Device, now: datetime | None = None) -> dict[str, Any]:
         "device_group": device.device_group,
         "health": health_from_issues(device, issues), "connectivity": connectivity(device, now), "issues": issues,
         "device_state": device_state(device),
+        **device_class.summary(device),
     }
 
 
@@ -438,6 +440,8 @@ def fleet_summary(db: Session) -> dict[str, Any]:
     devices = list(db.scalars(select(Device)))
     active = [d for d in devices if d.status == "active"]
     by_os: dict[str, int] = {}
+    by_class = {"workstation": 0, "server": 0, "domain_controller": 0, "unknown": 0}
+    virtual = 0
     by_health = {"healthy": 0, "warning": 0, "critical": 0, "unknown": 0}
     issue_counts: dict[str, int] = {}
     conn_counts = {"active": 0, "stale": 0, "inactive": 0, "never": 0}
@@ -446,6 +450,8 @@ def fleet_summary(db: Session) -> dict[str, Any]:
     for d in active:
         sm = summarize(d, now)
         by_os[d.os_family] = by_os.get(d.os_family, 0) + 1
+        by_class[d.device_class if d.device_class in by_class else "unknown"] += 1
+        virtual += d.is_virtual is True
         by_health[sm["health"]] += 1
         conn_counts[sm["connectivity"]] += 1
         for i in sm["issues"]:
@@ -460,7 +466,8 @@ def fleet_summary(db: Session) -> dict[str, Any]:
         return round(100 * acc["pass"] / acc["known"], 1) if acc["known"] else None
 
     return {
-        "total": len(active), "revoked": len(devices) - len(active), "by_os": by_os, "by_health": by_health,
+        "total": len(active), "revoked": len(devices) - len(active), "by_os": by_os, "by_class": by_class,
+        "virtual": virtual, "by_health": by_health,
         "connectivity": conn_counts, "issues": issue_counts,
         "encrypted_percent": pct(enc), "firewall_percent": pct(fw),
         "encryption_known": enc["known"], "firewall_known": fw["known"],

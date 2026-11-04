@@ -399,7 +399,8 @@ def test_sync_pages_throttling_grouping_and_issues(admin, fake):
     assert not comps["Erin's iPhone"]["agent_expected"]
     # Coverage counts machines the agent belongs on, once each: LAPTOP1 (agent), LAPTOP-NOAGENT, OLD-PC.
     summary = admin.get("/api/directory/summary").json()
-    assert summary["coverage"] == {"directory_computers": 3, "managed": 1, "pct": 33.3}
+    cov = {k: v for k, v in summary["coverage"].items() if k != "by_class"}
+    assert cov == {"directory_computers": 3, "managed": 1, "pct": 33.3}
     assert summary["source_types"] == ["entra"]
     by = issues_by_type(admin)
     assert by["not_managed"] == {"LAPTOP-NOAGENT"}  # once, although it is in Entra ID and Intune
@@ -596,7 +597,8 @@ def test_cross_source_machine_and_person_with_active_directory(admin, fake):
     nm = next(i for i in admin.get("/api/directory/issues?type=not_managed").json()["items"])
     assert {x["kind"] for x in nm["sources"]} == {"ad", "entra", "intune"} and nm["detail"].startswith("Active in")
     # Coverage: COLLECTOR1 (agent) and PC1, each counted once.
-    assert admin.get("/api/directory/summary").json()["coverage"] == {"directory_computers": 2, "managed": 1,
+    cov = {k: v for k, v in admin.get("/api/directory/summary").json()["coverage"].items() if k != "by_class"}
+    assert cov == {"directory_computers": 2, "managed": 1,
                                                                      "pct": 50.0}
     comps = admin.get("/api/directory/computers?status=all").json()
     assert comps["total"] == 2

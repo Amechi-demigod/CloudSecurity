@@ -3,6 +3,8 @@ import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api } from "../../api";
 import { useAuth } from "../../auth/context";
+import { DeviceClassTag } from "../../components/deviceClass";
+import { CLASS_FILTER_OPTIONS, CLASS_LABEL } from "../../lib/deviceClass";
 import { ConnectivityTag, HealthBadge, IssueList } from "../../components/devices";
 import { Card, Empty, ErrorNote, PageHeader, Select, Stat, Table, Tag } from "../../components/ui";
 import { OS_LABEL } from "../../lib/devices";
@@ -21,16 +23,20 @@ export default function Devices() {
   const [issue, setIssue] = useUrlState("issue");
   const [connectivity, setConnectivity] = useUrlState("connectivity");
   const [status, setStatus] = useUrlState("status", "active");
-  const filters = { q: q.trim() || undefined, os, health, issue, connectivity, status };
-  const { data, error, loading } = useApi(() => api.devices(filters), [q, os, health, issue, connectivity, status], 30000);
+  const [deviceClass, setDeviceClass] = useUrlState("class");
+  const [virtual, setVirtual] = useUrlState("virtual");
+  const filters = { q: q.trim() || undefined, os, health, issue, connectivity, status, device_class: deviceClass || undefined, virtual: virtual || undefined };
+  const { data, error, loading } = useApi(() => api.devices(filters), [q, os, health, issue, connectivity, status, deviceClass, virtual], 30000);
   const { data: summary } = useApi(api.deviceSummary, [], 30000);
-  const filtered = !!(q || os || health || issue || connectivity) || status !== "active";
+  const filtered = !!(q || os || health || issue || connectivity || deviceClass || virtual) || status !== "active";
+  const CLASS_RANK: Record<string, number> = { domain_controller: 3, server: 2, workstation: 1 };
   const HEALTH_RANK: Record<string, number> = { critical: 3, warning: 2, unknown: 1, healthy: 0 };
   const sorted = useSort(
     data,
     {
       name: (d) => d.hostname,
       os: (d) => `${OS_LABEL[d.os_family] ?? d.os_family} ${d.os_version ?? ""}`,
+      class: (d) => (CLASS_RANK[d.device_class ?? ""] ?? 0) * 2 + (d.is_virtual ? 1 : 0),
       user: (d) => d.logged_in_users.join(", "),
       health: (d) => (d.status === "revoked" ? -1 : HEALTH_RANK[d.health] ?? 0),
       issues: (d) => d.issues.length,
@@ -46,7 +52,7 @@ export default function Devices() {
     <div>
       <PageHeader
         title="Devices"
-        subtitle="Laptops and desktops running the CNAPP endpoint agent: inventory, security posture and remote actions."
+        subtitle="Workstations, servers and domain controllers running the CNAPP endpoint agent: inventory, security posture and remote actions."
         actions={
           <div className="flex items-center gap-2">
             <Link to="/devices/updates" className="rounded border border-line bg-surface-2 px-3 py-1.5 text-sm font-medium text-ink hover:bg-line">
@@ -64,8 +70,12 @@ export default function Devices() {
         }
       />
       {summary && (
-        <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-5">
+        <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
           <Stat label="Devices" value={summary.total} sub={Object.entries(summary.by_os).map(([k, v]) => `${v} ${OS_LABEL[k] ?? k}`).join(" · ") || "none enrolled"} />
+          {summary.by_class && (
+            <Stat label="Workstations / servers" value={`${summary.by_class.workstation} / ${summary.by_class.server + summary.by_class.domain_controller}`}
+              sub={`${summary.by_class.domain_controller} ${CLASS_LABEL.domain_controller.toLowerCase()}${summary.by_class.domain_controller === 1 ? "" : "s"} · ${summary.virtual ?? 0} virtual`} />
+          )}
           <Stat label="Healthy" value={summary.by_health.healthy} sub={`${summary.by_health.critical} at risk · ${summary.by_health.warning} warning`} />
           <Stat label="Encrypted" value={summary.encrypted_percent === null ? "—" : `${summary.encrypted_percent}%`} sub={`of ${summary.encryption_known} reporting`} />
           <Stat label="Firewall on" value={summary.firewall_percent === null ? "—" : `${summary.firewall_percent}%`} sub={`of ${summary.firewall_known} reporting`} />
@@ -83,7 +93,18 @@ export default function Devices() {
               className="w-56 rounded border border-line bg-surface-2 px-2 py-1 text-sm text-ink"
             />
           </label>
-          <Select label="OS" value={os} onChange={setOs} options={[{ value: "", label: "All" }, { value: "windows", label: "Windows" }, { value: "macos", label: "macOS" }]} />
+          <Select label="OS" value={os} onChange={setOs} options={[{ value: "", label: "All" }, { value: "windows", label: "Windows" }, { value: "macos", label: "macOS" }, { value: "linux", label: "Linux" }]} />
+          <Select label="Class" value={deviceClass} onChange={setDeviceClass} options={CLASS_FILTER_OPTIONS} />
+          <Select
+            label="Virtual"
+            value={virtual}
+            onChange={setVirtual}
+            options={[
+              { value: "", label: "All" },
+              { value: "true", label: "Virtual machines" },
+              { value: "false", label: "Physical" },
+            ]}
+          />
           <Select
             label="Health"
             value={health}
@@ -130,6 +151,7 @@ export default function Devices() {
           <Table
             head={[
               { label: "Device", sort: "name" },
+              { label: "Class", sort: "class" },
               { label: "OS", sort: "os" },
               { label: "User", sort: "user" },
               { label: "Health", sort: "health" },
@@ -178,6 +200,9 @@ export default function Devices() {
                   <div className="text-[11px] text-ink-3">
                     {[d.manufacturer, d.model].filter(Boolean).join(" ")} {d.serial_number && `· ${d.serial_number}`}
                   </div>
+                </td>
+                <td className="px-3 py-2">
+                  <DeviceClassTag device={d} />
                 </td>
                 <td className="px-3 py-2 text-ink-2">
                   {OS_LABEL[d.os_family] ?? d.os_family}

@@ -22,6 +22,7 @@ import { errMsg } from "../../lib/assets";
 import { fmtAgo, fmtTime } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
 import { useUrlState } from "../../lib/useUrlState";
+import { CLASS_FILTER_OPTIONS, CLASS_LABEL } from "../../lib/deviceClass";
 
 const PAGE = 100;
 // issues: computer issues; users: user issues; people: directory users.
@@ -143,6 +144,7 @@ export default function Discovery() {
   const [domain, setDomain] = useState("");
   const dDomain = useDebounced(domain);
   const [compStatus, setCompStatus] = useUrlState("status", "not_in_assets");
+  const [compClass, setCompClass] = useUrlState("class");
   const [userFilter, setUserFilter] = useUrlState("users", "all");
   const [offset, setOffset] = useState(0);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -170,8 +172,8 @@ export default function Discovery() {
     () =>
       view !== "computers"
         ? Promise.resolve(null)
-        : directoryApi.computers({ q: dq, domain: dDomain, source_id: sourceId, status: compStatus as ComputerStatus, limit: PAGE, offset }),
-    [view, dq, dDomain, sourceId, compStatus, offset],
+        : directoryApi.computers({ q: dq, domain: dDomain, source_id: sourceId, status: compStatus as ComputerStatus, device_class: compClass || undefined, limit: PAGE, offset }),
+    [view, dq, dDomain, sourceId, compStatus, compClass, offset],
   );
   const people = useApi(
     () =>
@@ -191,7 +193,7 @@ export default function Discovery() {
   useEffect(() => {
     setOffset(0);
     setSelected(new Set());
-  }, [view, issueType, dq, dDomain, sourceId, compStatus, userFilter]);
+  }, [view, issueType, dq, dDomain, sourceId, compStatus, compClass, userFilter]);
 
   const s = summary.data;
   const counts = issues.data?.counts ?? s?.counts;
@@ -318,7 +320,10 @@ export default function Discovery() {
         ))}
       </div>
       {view === "computers" ? (
-        <Select label="Show" value={compStatus} onChange={setCompStatus} options={COMPUTER_STATUS} />
+        <>
+          <Select label="Show" value={compStatus} onChange={setCompStatus} options={COMPUTER_STATUS} />
+          <Select label="Class" value={compClass} onChange={setCompClass} options={CLASS_FILTER_OPTIONS} />
+        </>
       ) : view === "people" ? (
         <Select
           label="Show"
@@ -499,6 +504,11 @@ export default function Discovery() {
                   <td className="px-3 py-2 text-xs text-ink-2">
                     {c.os}
                     {c.os_version && <div className="text-ink-3">{c.os_version}</div>}
+                    {c.device_class && c.device_class !== "workstation" && (
+                      <div className="mt-0.5">
+                        <Tag tone={c.device_class === "domain_controller" ? "critical" : "accent"}>{CLASS_LABEL[c.device_class]}</Tag>
+                      </div>
+                    )}
                   </td>
                   <td className="whitespace-nowrap px-3 py-2 text-xs text-ink-2">
                     <When at={c.last_logon_at} />
