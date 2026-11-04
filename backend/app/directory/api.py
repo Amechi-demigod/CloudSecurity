@@ -147,8 +147,12 @@ def _set_google_key(src: DirectorySource, raw: str) -> None:
 def create_source(body: SourceCreate, request: Request, admin: User = Depends(require_admin),
                   db: Session = Depends(get_db)):
     now = utcnow()
-    src = DirectorySource(type=body.type, name=body.name, enabled=body.enabled, config=body.config,
-                          collector_device_ids=list(dict.fromkeys(body.collector_device_ids)),
+    if body.type == "ad" and body.collector_device_ids:
+        raise HTTPException(422, "new Active Directory sources use dedicated collectors (collector_ids); endpoint "
+                                 "agents as collectors are only kept for existing sources")
+    config = svc.resolve_transport(body.config, dedicated=True) if body.type == "ad" else body.config
+    src = DirectorySource(type=body.type, name=body.name, enabled=body.enabled, config=config,
+                          collector_ids=list(dict.fromkeys(body.collector_ids)), collector_device_ids=[],
                           created_at=now, created_by=admin.email, updated_at=now, updated_by=admin.email)
     try:
         if body.credential is not None:
@@ -165,7 +169,7 @@ def create_source(body: SourceCreate, request: Request, admin: User = Depends(re
     db.flush()
     audit(db, "directory_source_created", actor=admin, target=_target(src), ip=client_ip(request), name=src.name,
           type=src.type, enabled=src.enabled, config=_public_config(src.config),
-          collectors=src.collector_device_ids, credential_set=body.credential is not None or body.google_key is not None)
+          collectors=src.collector_ids, credential_set=body.credential is not None or body.google_key is not None)
     db.commit()
     return svc.source_out(db, src, now)
 
@@ -192,10 +196,26 @@ def update_source(body: SourceUpdate, request: Request, source_id: str = Id32(),
         elif src.type == "google":  # server-set from the uploaded key
             for k in ("service_account_email", "client_id", "key_id"):
                 new[k] = (src.config or {}).get(k, "")
+        elif src.type == "ad":
+            switching = bool(body.collector_ids) and svc.is_legacy(src)
+            new = svc.resolve_transport(new, dedicated=not svc.is_legacy(src) or switching)
         if new != src.config:
             changes["config"] = [_public_config(src.config or {}), _public_config(new)]
             src.config = new
+    if body.collector_ids is not None and src.type == "ad":
+        ids = list(dict.fromkeys(body.collector_ids))
+        if not ids:
+            raise HTTPException(422, "choose at least one collector")
+        if svc.is_legacy(src):
+            # Move to dedicated collectors: objects, findings and run history stay.
+            changes["switched_to_dedicated"] = {"from_agents": list(src.collector_device_ids or []), "to": ids}
+            src.collector_device_ids = []
+        if ids != (src.collector_ids or []):
+            changes["collectors"] = [list(src.collector_ids or []), ids]
+            src.collector_ids = ids
     if body.collector_device_ids is not None and src.type == "ad":
+        if not svc.is_legacy(src):
+            raise HTTPException(422, "this source uses dedicated collectors; endpoint agents can no longer be chosen")
         ids = list(dict.fromkeys(body.collector_device_ids))
         if ids != src.collector_device_ids:
             changes["collectors"] = [src.collector_device_ids, ids]
@@ -275,9 +295,9 @@ def _queue(db: Session, src: DirectorySource, trigger: str, admin: User, request
     except svc.DirectoryError as e:
         raise _err(e) from None
     audit(db, "directory_sync_requested", actor=admin, target=_target(src), ip=client_ip(request), run_id=run.id,
-          trigger=trigger, device_id=run.device_id)
+          trigger=trigger, device_id=run.device_id, collector_id=run.collector_id)
     db.commit()
-    out = svc.run_out(run, svc.hostnames_for(db, [run.device_id]))
+    out = svc.run_out(run, svc.run_names(db, [run]))
     if src.type in CLOUD_TYPES and not cloud_test:
         cloud.kick(require_org(db), run.id)
     return out
@@ -302,7 +322,7 @@ def list_runs(source_id: str = Id32(), limit: int = Query(20, ge=1, le=200), db:
     _get_source(db, source_id)
     runs = list(db.scalars(select(DirectorySyncRun).where(DirectorySyncRun.source_id == source_id)
                            .order_by(DirectorySyncRun.queued_at.desc()).limit(limit)))
-    names = svc.hostnames_for(db, [r.device_id for r in runs])
+    names = svc.run_names(db, runs)
     return [svc.run_out(r, names) for r in runs]
 
 
@@ -311,7 +331,7 @@ def get_run(run_id: str = Id32(), db: Session = Depends(get_db)):
     run = db.get(DirectorySyncRun, run_id)
     if run is None:
         raise HTTPException(404, "sync run not found")
-    return svc.run_out(run, svc.hostnames_for(db, [run.device_id]))
+    return svc.run_out(run, svc.run_names(db, [run]))
 
 
 @router.get("/collectors", response_model=list[CollectorOut])

@@ -1,10 +1,11 @@
 // Typed client for /api/directory (directory discovery: on-prem Active Directory read by a collector agent,
 // Microsoft Entra ID + Intune and Google Workspace read by the server).
-import { BASE, qs, request } from "./api";
+import { BASE, qs, request, requestFile } from "./api";
 
 export type DirectoryType = "ad" | "entra" | "google";
 export type DirectoryScope = "computers" | "users";
-export type DirectorySecurity = "ldaps" | "starttls";
+/** sealed: LDAP 389 with Kerberos signing & sealing (dedicated Windows collectors; no DC certificate needed). */
+export type DirectorySecurity = "ldaps" | "starttls" | "sealed";
 export type DirectoryAuth = "computer_account" | "service_account";
 export type EntraScope = "users" | "devices" | "intune" | "roles";
 
@@ -80,6 +81,62 @@ export interface Collector {
   agent_version: string;
 }
 
+/** A dedicated directory collector (separate program, not an endpoint device). */
+export interface DedicatedCollector {
+  id: string;
+  name: string;
+  status: "active" | "revoked";
+  state: "online" | "offline" | "never" | "revoked";
+  healthy: boolean;
+  hostname: string;
+  dns_hostname: string;
+  domain: string;
+  os_name: string;
+  os_version: string;
+  architecture: string;
+  version: string;
+  /** e.g. CORP\HOST$ (LocalSystem = computer account) or CORP\svc-collector$ (gMSA) */
+  run_as: string;
+  run_as_kind: "computer_account" | "gmsa" | "user" | "unknown";
+  is_domain_controller: boolean;
+  enrolled_at: string;
+  last_seen_at: string | null;
+  last_ip: string | null;
+  revoked_at: string | null;
+  update_status: string | null;
+  update_status_detail: string | null;
+  diagnostics: CollectorDiagnostics | Record<string, never>;
+  sources: { id: string; name: string }[];
+}
+
+export interface DiagStep {
+  id: string;
+  label: string;
+  status: "pass" | "warn" | "fail" | "skip";
+  detail: string;
+  duration_ms?: number | null;
+}
+
+export interface CollectorDiagnostics {
+  command_id: string;
+  at: string;
+  status: "queued" | "succeeded" | "failed" | "rejected";
+  output?: string;
+  steps: DiagStep[];
+  transport?: string;
+  signed_sealed?: boolean;
+  server?: string;
+  identity?: string;
+}
+
+export interface CollectorInstallerInfo {
+  service_display_name: string;
+  server_url: string | null;
+  arches: Record<"amd64" | "arm64", { available: boolean; version?: string; reason?: string; filename: string }>;
+}
+
+export type GmsaScripts = Record<"kds_root_key" | "create_gmsa" | "grant_read" | "install_gmsa" | "service_logon" | "precheck", string>;
+
 export type RunStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 
 export type CheckStatus = "ok" | "missing" | "unlicensed" | "missing_permission" | "error";
@@ -106,6 +163,7 @@ export interface SyncRun {
   status: RunStatus;
   device_id: string | null;
   device_hostname: string | null;
+  collector_id?: string | null;
   queued_at: string;
   started_at: string | null;
   finished_at: string | null;
@@ -130,6 +188,11 @@ interface SourceBase {
   credential_username_hint: string | null;
   collector_device_ids: string[];
   collectors: Collector[];
+  /** dedicated collectors (new sources) */
+  collector_ids?: string[];
+  dedicated_collectors?: DedicatedCollector[];
+  /** true: an older source whose collectors are endpoint agents */
+  legacy_collectors?: boolean;
   last_sync_at: string | null;
   last_sync_status: RunStatus | null;
   last_sync_error: string | null;
@@ -156,7 +219,7 @@ export interface Credential {
 }
 
 export type SourceCreate =
-  | { type: "ad"; name: string; enabled?: boolean; config: AdConfig; collector_device_ids: string[]; credential?: Credential | null }
+  | { type: "ad"; name: string; enabled?: boolean; config: AdConfig; collector_ids: string[]; credential?: Credential | null }
   | { type: "entra"; name: string; enabled?: boolean; config: Partial<EntraConfig> & Pick<EntraConfig, "connector_id"> }
   | { type: "google"; name: string; enabled?: boolean; config: Partial<GoogleConfig> & Pick<GoogleConfig, "admin_email">; google_key?: string };
 
@@ -165,6 +228,8 @@ export interface SourceUpdate {
   enabled?: boolean;
   config?: AdConfig | Partial<EntraConfig> | Partial<GoogleConfig>;
   collector_device_ids?: string[];
+  /** dedicated collectors; on a legacy source this switches it (data and history are kept) */
+  collector_ids?: string[];
   credential?: Credential | null;
   clear_credential?: boolean;
   /** Google Workspace: a new service-account JSON key (write-only). */
@@ -451,3 +516,24 @@ export const directoryApi = {
   addToAssets: (computer_ids: string[]) =>
     request<{ created: number; skipped: number; asset_ids: string[] }>("/api/directory/computers/add-to-assets", J({ computer_ids })),
 };
+
+export const collectorApi = {
+  list: () => request<DedicatedCollector[]>("/api/collectors"),
+  get: (id: string) => request<DedicatedCollector>(`/api/collectors/${id}`),
+  rename: (id: string, name: string) =>
+    request<DedicatedCollector>(`/api/collectors/${id}`, { method: "PATCH", body: JSON.stringify({ name }) }),
+  revoke: (id: string) => request<DedicatedCollector>(`/api/collectors/${id}/revoke`, { method: "POST" }),
+  remove: (id: string) => request<void>(`/api/collectors/${id}`, { method: "DELETE" }),
+  test: (id: string, source_id?: string | null) =>
+    request<{ command_id: string; status: string }>(`/api/collectors/${id}/test`, J({ source_id: source_id ?? null })),
+  createToken: (name: string, max_uses = 1) =>
+    request<{ id: string; token: string; expires_at: string; server_url: string | null }>("/api/collectors/enrollment-tokens", J({ name, max_uses })),
+  installerInfo: () => request<CollectorInstallerInfo>("/api/collectors/installer/info"),
+  downloadInstaller: (body: { name: string; arch: "amd64" | "arm64"; gmsa: string }) => requestFile("/api/collectors/installer", body),
+  setupScripts: (o: { domain: string; gmsa: string; hosts: string }) => request<GmsaScripts>(`/api/collectors/setup/scripts${qs(o)}`),
+};
+
+/** Shown on DC collectors and when one is picked for a source. */
+export const DC_WARNING =
+  "Domain controllers are your most sensitive servers; we recommend a member server. This collector cannot run commands, " +
+  "scripts or remote sessions (it only reads the directory), so it is allowed here.";

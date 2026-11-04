@@ -12,10 +12,11 @@ import (
 	"strings"
 )
 
-// Install locations on macOS.
+// Install locations on macOS (the agent's LaunchdLabel never changes there:
+// the directory collector is Windows-only).
 const (
 	BinaryPath = "/usr/local/cnapp-agent/bin/cnapp-agent"
-	PlistPath  = "/Library/LaunchDaemons/" + LaunchdLabel + ".plist"
+	PlistPath  = "/Library/LaunchDaemons/com.cloudsecurity.cnapp-agent.plist"
 	launchctl  = "/bin/launchctl"
 )
 

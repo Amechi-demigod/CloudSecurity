@@ -3,8 +3,11 @@
 Directory discovery compares what your directories know with what the platform
 manages. Two kinds of source exist:
 
-* **On-prem Active Directory** is read by your own enrolled agents from inside
-  your network (the platform never connects to a domain controller).
+* **On-prem Active Directory** is read from inside your network by a
+  **dedicated collector** (a small, separate Windows program that only reads the
+  directory; the platform never connects to a domain controller). Sources
+  created before dedicated collectors existed keep using endpoint agents
+  ("legacy") until you switch them.
 * **Cloud directories** are read by the platform server itself over HTTPS:
   **Microsoft Entra ID + Intune** through Microsoft Graph, with the app
   registration of one of your Azure cloud connectors, and **Google Workspace**
@@ -39,6 +42,7 @@ attributes in JSON) and the matching tiers are shared by every source type.
 ## Contents
 
 - [Architecture](#architecture)
+- [Dedicated collectors](#dedicated-collectors) (recommended setup: member server + gMSA; transports; Test)
 - [Collector requirements](#collector-requirements)
 - [Network ports](#network-ports)
 - [Authentication options](#authentication-options)
@@ -105,6 +109,154 @@ scheduler, api, agent_api; cloud, cloud_http, graph, google for server-side sour
 `endpoint-agent/internal/directory/` (LDAP client, decoding, batching),
 `endpoint-agent/internal/collect/join*.go` (domain-join facts).
 
+## Dedicated collectors
+
+A dedicated collector ("<BRAND_NAME> Collector", `cnapp-collector.exe`, Windows x64
+and Arm64) is **not** an endpoint agent:
+
+| | Dedicated collector | Endpoint agent (legacy collector) |
+|---|---|---|
+| Program | `endpoint-agent/cmd/cnapp-collector` | `cmd/cnapp-agent` |
+| Identity | own enrollment token (`cnct_…`, kind *collector*), own credential (`cnc_…`), table `directory_collectors` | device |
+| Commands | **only** `directory_sync`, `collector_diagnostics`, `collector_health`, `check_for_update`; the server refuses to queue anything else and the binary does not contain scripts, remote sessions, isolation, lock, wipe or log collection (a test checks its import graph) | all agent actions |
+| Listed in | Connectors & scans → **Collectors** | Devices, IT assets, coverage |
+| Transports | Kerberos signing & sealing (389, default), LDAPS, StartTLS | LDAPS, StartTLS |
+| Service | `CNAPPCollector`, display name "<BRAND_NAME> Collector", LocalSystem or a gMSA | `CNAPPAgent` |
+
+Collectors are listed with status (online = polled in the last 10 minutes),
+version, host, domain, the identity the service runs as (`CORP\HOST$` for the
+computer account, `CORP\svc-collector$` for a gMSA), last seen and whether the
+host is a **domain controller**. Admins rename, revoke and delete them (all
+audited); a collector silent for 15 minutes raises a *collector offline*
+notification (once per outage, *collector online* when it is back).
+
+**Recommended setup: two domain-joined member servers, service running as a gMSA.**
+
+* **Domain controllers.** The collector detects a DC host (ProductType
+  `LanmanNT`). The console shows a prominent warning on that collector and when
+  it is picked for a source, and the interactive installer asks before
+  installing: *Domain controllers are your most sensitive servers; we recommend
+  a member server. This collector cannot run commands, scripts or remote
+  sessions (it only reads the directory), so it is allowed.* A silent install on
+  a DC needs `-AllowDomainController`.
+* **Identity.** The Kerberos bind (SSPI) always uses the service's own identity:
+  under LocalSystem that is the computer account; as a gMSA it is the gMSA. The
+  bind code is the same; the collector reports which identity it uses.
+
+### Installing
+
+*Connectors & scans → Collectors → Add collector → Installer* downloads a zip
+with `cnapp-collector.exe` (the signed binary bundled in the server image),
+`collector.json` (server URL, a fresh **single-use** enrollment token, the
+private CA if needed, the service display name, optionally the gMSA) and two
+scripts:
+
+```powershell
+.\Install-Collector.ps1                                  # interactive
+.\Install-Collector.ps1 -Quiet                           # silent (deployment tools)
+.\Install-Collector.ps1 -Quiet -Gmsa 'CORP\svc-collector$'
+.\Uninstall-Collector.ps1                                # service, program files, credential, logs
+```
+
+The service enrolls on start and deletes the token. Nothing listens: it polls
+`/api/collector/commands` every minute and sends a heartbeat every 5 minutes.
+
+### gMSA (recommended)
+
+The console shows the PowerShell for each step (*Add collector → gMSA*), with your
+domain, gMSA name and collector computers filled in:
+
+1. **KDS root key**, once per forest: `Get-KdsRootKey`, else `Add-KdsRootKey
+   -EffectiveImmediately`. Needs **Enterprise Admins** (or Domain Admins in the
+   forest root). In production the key is only usable after **10 hours**
+   (replication); backdating it (`-EffectiveTime (Get-Date).AddHours(-10)`) is
+   for single-DC labs only.
+2. `New-ADServiceAccount -Name svc-collector -DNSHostName svc-collector.corp.example.com
+   -PrincipalsAllowedToRetrieveManagedPassword 'COLL01$','COLL02$'` (or a group).
+3. Hardened OUs only (Authenticated Users lost read): `dsacls <OU> /I:T /G "CORP\svc-collector$:GR"`.
+4. On each collector: `Install-ADServiceAccount svc-collector; Test-ADServiceAccount
+   svc-collector` (must print `True`; a computer just added to the principals
+   reboots or purges its tickets first).
+5. Install with `-Gmsa 'CORP\svc-collector$'`, or switch an installed collector:
+   `sc.exe config CNAPPCollector obj= "CORP\svc-collector$" password= ""`. The
+   installer grants the gMSA **Log on as a service**, full control of its state
+   folder (`%ProgramData%\CNAPP Collector`), modify on its program folder (signed
+   self-update) and start/stop on its own service; nothing else.
+
+A read-only **service account** with a password stays available for collectors
+that are not domain-joined (simple bind, always inside TLS, stored encrypted on
+the server); the computer account (LocalSystem) remains the default.
+
+### Transports
+
+| Transport | Port | DC certificate | Auth | Notes |
+|---|---|---|---|---|
+| **Kerberos signing & sealing** (default for computer account / gMSA on dedicated collectors) | 389 (GC 3268) | **not needed** | Kerberos (Negotiate) as the service identity | integrity + confidentiality from the SASL security layer |
+| LDAPS | 636 (GC 3269) | trusted chain + host name | Kerberos or service account | channel binding token sent |
+| StartTLS | 389 | trusted chain + host name | Kerberos or service account | |
+
+Many domains have no LDAPS certificate on their DCs (the DC accepts TCP 636 and
+then resets the TLS handshake), so the default needs none. The sealed transport
+uses the Windows LDAP library (`wldap32.dll`, through syscalls, no cgo):
+`ldap_init` → `LDAP_OPT_PROTOCOL_VERSION 3`, referrals off,
+`LDAP_OPT_AREC_EXCLUSIVE` (the exact DC name, the `ldap/<dc>` SPN),
+`LDAP_OPT_SIGN` and `LDAP_OPT_ENCRYPT` **on** → `ldap_connect` →
+`ldap_bind_s(LDAP_AUTH_NEGOTIATE)` with no credentials (the process identity) →
+**both options read back; if either is not on, nothing is searched and the
+connection is closed** → paged search (`ldap_search_init_page` /
+`ldap_get_next_page_s`, RFC 2696 paged results, 1000 per page). It never falls
+back to unsigned or unsealed LDAP.
+
+Why sealed 389 is safe: the Kerberos session key signs and encrypts every LDAP
+message after the bind, which is what DCs that require LDAP signing
+(`LDAPServerIntegrity=2`) enforce. **Channel binding**
+(`LdapEnforceChannelBinding`) only applies to LDAP over TLS, so it does not
+concern this transport. Service-account passwords are never sent over 389, even
+sealed: that combination is refused by the console, the server and the collector.
+
+go-ldap (MIT) stays the backend for LDAPS / StartTLS; endpoint-agent collectors
+(legacy) are TLS-only.
+
+### Test (diagnostics on the collector)
+
+*Test & save* on a source (and *Test* on a collector) queues
+`collector_diagnostics`; the collector runs, as its own identity, and reports
+PASS / WARN / FAIL / SKIP per step:
+
+1. **DC locator** (`_ldap._tcp.dc._msdcs.<domain>`, or the configured DCs);
+2. **Port**: each DC; a DC from DNS that refuses or times out is flagged
+   *"listed in DNS as a DC but not responding — consider removing the stale SRV
+   record or listing DCs explicitly"* and the others are still tried (syncs do
+   the same);
+3. **Certificate** (LDAPS: chain and host name; skipped when sealed);
+4. **Bind** as the collector identity (or the service account) with the
+   transport used and *signed+sealed: yes*;
+5. **Read 5 objects**.
+
+The copyable PowerShell pre-check stays available as an optional manual tool.
+
+### Legacy sources (endpoint agents as collectors)
+
+Sources that use endpoint agents keep working unchanged and show *Legacy: uses
+endpoint agents — move to a dedicated collector*. **Edit → Switch to dedicated
+collectors** sets `collector_ids` and drops the agents; objects, issues and run
+history are kept (audited as `switched_to_dedicated`). New AD sources can only
+pick dedicated collectors (`collector_device_ids` is refused on create). The
+endpoint agent's `directory_collector` capability is **deprecated** and kept for
+these sources only.
+
+### Updates and release import
+
+`agent-release.yml` builds `cnapp-collector-windows-{amd64,arm64}.exe` with the
+agent and signs them in the same bundle as a second manifest
+(`collector-manifest.json`, product `cnapp-collector`, same keys and version;
+agents never see collector artifacts, so older agents keep updating).
+`cnapp-ctl agent-release fetch` / `import` verify and import both. Collectors
+follow the organisation's **default ring**: when its target release ships
+collector binaries newer than the collector, the heartbeat offers them and the
+collector verifies the signature, hashes and version policy itself before
+swapping its binary (same rollback watchdog as the agent).
+
 ## Collector requirements
 
 | | Computer account (default) | Service account |
@@ -129,14 +281,15 @@ scheduler, api, agent_api; cloud, cloud_http, graph, google for server-side sour
 
 | From | To | Port | Purpose |
 |---|---|---|---|
-| collector | DCs | TCP 636 (LDAPS) **or** TCP 389 + StartTLS | directory reads (TLS 1.2+) |
+| collector | DCs | TCP 389 (Kerberos signing & sealing, default), TCP 636 (LDAPS) **or** 389 + StartTLS | directory reads |
 | collector | DNS servers | UDP/TCP 53 | DC locator SRV lookups |
 | collector | DCs | TCP/UDP 88 | Kerberos (computer-account auth only) |
 | collector | platform | TCP 443 | commands + batch upload (existing agent traffic) |
 
-Plain, unencrypted LDAP is **never** used. go-ldap does not implement SASL
-signing/sealing (it negotiates no SASL security layer), so port 389 is only
-accepted with StartTLS; integrity and confidentiality always come from TLS.
+Unsigned, unencrypted LDAP is **never** used. On 389 the dedicated collector
+uses Kerberos signing & sealing (wldap32) or StartTLS; endpoint-agent
+collectors only StartTLS (go-ldap negotiates no SASL security layer). Kerberos
+(TCP/UDP 88) is needed for the computer account / gMSA.
 
 ## Authentication options
 
@@ -176,21 +329,21 @@ accepted with StartTLS; integrity and confidentiality always come from TLS.
 
 ## Setting up a source
 
-1. Install agent 1.3.0+ on two domain-joined Windows hosts (any member servers
-   or admin workstations that stay on).
+1. Add two [dedicated collectors](#dedicated-collectors) on domain-joined member
+   servers that stay on (gMSA recommended).
 2. **Connectors & scans → Directories → Add directory → Active Directory.** Enter the
-   domain (e.g. `corp.example.com`), choose the collectors (only agents
-   advertising `directory_collector` are listed), keep *Collector's computer
-   account* or switch to *Read-only service account*. Advanced: DCs (default:
-   DC locator), base DNs (default: domain root), LDAPS 636 / StartTLS 389,
-   extra CA, stale threshold (90 days), sync interval (6 h), objects (computers, users).
-3. Copy the **pre-check script** and run it on the collector (as SYSTEM via
-   `PsExec -s powershell` for the computer-account option). It only reads: DNS
-   SRV lookup, TCP reachability, the DC certificate, an LDAPS bind and a 5-object
-   search.
-4. **Test & save.** The source is saved and a test sync (at most 10 objects,
-   nothing stored but their names) is queued; collectors pick up commands
-   within about a minute.
+   domain (e.g. `corp.example.com`), choose the collectors (order = failover), keep
+   *Collector's identity* (computer account / gMSA) or switch to *Read-only service
+   account*. Transport: *Kerberos signing & sealing (port 389, no certificate
+   needed)* by default; LDAPS / StartTLS selectable. Advanced: DCs (default: DC
+   locator), base DNs (default: domain root), port, extra CA, stale threshold
+   (90 days), sync interval (6 h), objects (computers, users).
+3. Optional: copy the manual **pre-check script** (the console's Test runs the same
+   checks on the collector).
+4. **Test & save.** The source is saved and the collector runs its diagnostics
+   (DC locator, port, certificate, bind, 5-object read) and reports each step;
+   collectors pick up commands within about a minute. Legacy sources still queue
+   a test sync (at most 10 objects, nothing stored but their names).
 5. The first full sync runs on schedule (immediately for a new source) or with
    **Sync now**. Results: **IT assets → Discovery**.
 
@@ -640,7 +793,32 @@ with counts and errors, never credentials or tokens.
 
 ## Manual test checklist (real domain)
 
-Run before go-live against a test or production domain (read-only):
+Dedicated collector (nothing below was run against a real domain by CI; the
+wldap32 layer is unit-tested with a fake):
+
+1. [ ] Import a release with collector binaries (`cnapp-ctl agent-release fetch`); the
+   output lists the collector platforms. Deploy migration `0022_directory_collectors`.
+2. [ ] *Collectors → Add collector*: download the installer, run `Install-Collector.ps1`
+   on a member server: the collector appears online with host, domain and
+   `CORP\HOST$ (computer account)`. It is **not** under Devices or IT assets.
+3. [ ] Install on a DC: the installer warns and asks; the console shows the DC warning.
+4. [ ] gMSA: run the console's KDS / New-ADServiceAccount / Install-ADServiceAccount
+   scripts, `Test-ADServiceAccount` is True; reinstall with `-Gmsa`: run-as shows
+   `CORP\svc-collector$ (gMSA)`; a sync works; the state folder and self-update work.
+5. [ ] On a domain **without** LDAPS certificates: new source with the default
+   transport → **Test**: all PASS, *signed+sealed: yes*; Sync now succeeds.
+   Capture with Wireshark: LDAP payloads after the bind are sealed (SASL wrapped).
+6. [ ] DCs with `LDAPServerIntegrity=2` (require signing): sealed sync succeeds.
+7. [ ] A stale SRV record (an old DC that no longer answers): Test shows WARN *listed in
+   DNS as a DC but not responding*, and the sync still uses another DC.
+8. [ ] LDAPS and StartTLS still work when chosen; a service-account source refuses sealed.
+9. [ ] A legacy source shows the notice; *Switch to dedicated collectors* keeps counts
+   and run history; the next sync runs on the collector.
+10. [ ] Stop collector 1: after 15 minutes a *collector offline* notification; Sync now
+   fails over to collector 2. Revoke a collector: it gets 403 and stops.
+11. [ ] Target a newer release on the default ring: the collector self-updates.
+
+Endpoint-agent (legacy) collectors, read-only:
 
 1. [ ] Deploy the server (migration `0020_directory_discovery`), then publish agent **v1.3.0**
    and roll it to two domain-joined Windows member servers and one Linux/macOS host.

@@ -38,16 +38,28 @@ const (
 	ScopeUsers     = "users"
 )
 
-// Transport security and authentication modes.
+// Transport security and authentication modes. SecuritySealed is LDAP on
+// 389 with a Kerberos (Negotiate) bind and SASL signing + sealing through the
+// Windows LDAP library (sealed_windows.go): no DC certificate needed. It is
+// only used by the dedicated collector, with the computer account / gMSA.
 const (
 	SecurityLDAPS    = "ldaps"
 	SecurityStartTLS = "starttls"
+	SecuritySealed   = "sealed"
 	AuthKerberos     = "kerberos"
 	AuthSimple       = "simple"
 )
 
-// UploadPrefix is the only server path batches are posted to.
-const UploadPrefix = "/api/agent/directory/runs/"
+// SealedEnabled is set by the dedicated directory collector (Windows): only it
+// accepts security "sealed". Endpoint-agent collectors stay TLS-only.
+var SealedEnabled bool
+
+// UploadPrefix is the server path endpoint agents post batches to;
+// CollectorUploadPrefix the one the dedicated collector uses.
+const (
+	UploadPrefix          = "/api/agent/directory/runs/"
+	CollectorUploadPrefix = "/api/collector/directory/runs/"
+)
 
 // Limits (mirrored by the server).
 const (
@@ -187,6 +199,104 @@ func hasControl(s string) bool {
 	return false
 }
 
+// parseConnection validates where and how to connect: domain, servers,
+// transport, port, base DNs, authentication and the extra CA (shared by
+// directory_sync and the collector's diagnostics).
+func parseConnection(raw map[string]any, p *Params) error {
+	var err error
+	if p.Domain, err = str(raw, "domain", true); err != nil {
+		return err
+	}
+	p.Domain = strings.TrimSuffix(strings.ToLower(p.Domain), ".")
+	if len(p.Domain) > 253 || !domainRe.MatchString(p.Domain) {
+		return errors.New("domain must be a DNS domain name such as corp.example.com")
+	}
+	if p.Servers, err = strList(raw, "servers", MaxServers); err != nil {
+		return err
+	}
+	for _, h := range p.Servers {
+		if !hostRe.MatchString(h) || strings.HasPrefix(h, "-") {
+			return errors.New("servers must be host names or IP addresses (letters, digits, '.', ':', '-')")
+		}
+	}
+	if p.Security, err = str(raw, "security", false); err != nil {
+		return err
+	}
+	if p.Security == "" {
+		p.Security = SecurityLDAPS
+	}
+	switch p.Security {
+	case SecurityLDAPS, SecurityStartTLS:
+	case SecuritySealed:
+		if !sealedSupported || !SealedEnabled {
+			return errors.New("security sealed (Kerberos signing and sealing) needs the Windows directory collector")
+		}
+	default:
+		return errors.New("security must be ldaps, starttls or sealed (unsigned, unsealed LDAP is never used)")
+	}
+	defPort := 636
+	if p.Security != SecurityLDAPS {
+		defPort = 389
+	}
+	if p.Port, err = intParam(raw, "port", defPort, 1, 65535); err != nil {
+		return err
+	}
+	if p.Port == 389 && p.Security == SecurityLDAPS {
+		return errors.New("port 389 requires security starttls or sealed")
+	}
+	if p.BaseDNs, err = strList(raw, "base_dns", MaxBaseDNs); err != nil {
+		return err
+	}
+	for _, dn := range p.BaseDNs {
+		if dn == "" || len(dn) > MaxDNLen || !strings.Contains(dn, "=") || hasControl(dn) {
+			return fmt.Errorf("base_dns entries must be distinguished names of at most %d characters", MaxDNLen)
+		}
+	}
+	if p.Auth, err = str(raw, "auth", true); err != nil {
+		return err
+	}
+	switch p.Auth {
+	case AuthKerberos:
+		if !kerberosSupported {
+			return errors.New("auth kerberos (computer account) needs a domain-joined Windows collector; use a service account on this device")
+		}
+		if _, ok := raw["credential"]; ok && raw["credential"] != nil {
+			return errors.New("credential must not be sent with auth kerberos")
+		}
+	case AuthSimple:
+		cred, ok := raw["credential"].(map[string]any)
+		if !ok || len(cred) != 2 {
+			return errors.New("auth simple requires credential {username, password}")
+		}
+		u, uok := cred["username"].(string)
+		pw, pok := cred["password"].(string)
+		u = strings.TrimSpace(u)
+		if !uok || !pok || u == "" || pw == "" || len(u) > 256 || len(pw) > 1024 || hasControl(u) ||
+			strings.ContainsRune(pw, 0) {
+			return errors.New("credential must have a username (<=256) and a password (<=1024)")
+		}
+		p.Username, p.Password = u, pw
+		if p.Security == SecuritySealed {
+			// Passwords only ever travel inside TLS.
+			return errors.New("auth simple (service account) requires ldaps or starttls, never sealed")
+		}
+	default:
+		return errors.New("auth must be kerberos or simple")
+	}
+	if p.CAPEM, err = str(raw, "ca_pem", false); err != nil {
+		return err
+	}
+	if p.CAPEM != "" {
+		if len(p.CAPEM) > MaxCAPEM {
+			return fmt.Errorf("ca_pem is larger than %d bytes", MaxCAPEM)
+		}
+		if _, err := CertPool(p.CAPEM); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ParseParams validates a directory_sync command's parameters. Errors name
 // the offending parameter but never echo a credential or token value.
 func ParseParams(raw map[string]any) (*Params, error) {
@@ -210,47 +320,8 @@ func ParseParams(raw map[string]any) (*Params, error) {
 	if !idRe.MatchString(p.SourceID) || !idRe.MatchString(p.RunID) {
 		return nil, errors.New("source_id and run_id must be 32 lower-case hex characters")
 	}
-	if p.Domain, err = str(raw, "domain", true); err != nil {
+	if err := parseConnection(raw, p); err != nil {
 		return nil, err
-	}
-	p.Domain = strings.TrimSuffix(strings.ToLower(p.Domain), ".")
-	if len(p.Domain) > 253 || !domainRe.MatchString(p.Domain) {
-		return nil, errors.New("domain must be a DNS domain name such as corp.example.com")
-	}
-	if p.Servers, err = strList(raw, "servers", MaxServers); err != nil {
-		return nil, err
-	}
-	for _, h := range p.Servers {
-		if !hostRe.MatchString(h) || strings.HasPrefix(h, "-") {
-			return nil, errors.New("servers must be host names or IP addresses (letters, digits, '.', ':', '-')")
-		}
-	}
-	if p.Security, err = str(raw, "security", false); err != nil {
-		return nil, err
-	}
-	if p.Security == "" {
-		p.Security = SecurityLDAPS
-	}
-	if p.Security != SecurityLDAPS && p.Security != SecurityStartTLS {
-		return nil, errors.New("security must be ldaps or starttls (plain LDAP is never used)")
-	}
-	defPort := 636
-	if p.Security == SecurityStartTLS {
-		defPort = 389
-	}
-	if p.Port, err = intParam(raw, "port", defPort, 1, 65535); err != nil {
-		return nil, err
-	}
-	if p.Port == 389 && p.Security != SecurityStartTLS {
-		return nil, errors.New("port 389 requires security starttls")
-	}
-	if p.BaseDNs, err = strList(raw, "base_dns", MaxBaseDNs); err != nil {
-		return nil, err
-	}
-	for _, dn := range p.BaseDNs {
-		if dn == "" || len(dn) > MaxDNLen || !strings.Contains(dn, "=") || hasControl(dn) {
-			return nil, fmt.Errorf("base_dns entries must be distinguished names of at most %d characters", MaxDNLen)
-		}
 	}
 	if p.Scopes, err = strList(raw, "scopes", 2); err != nil {
 		return nil, err
@@ -279,44 +350,6 @@ func ParseParams(raw map[string]any) (*Params, error) {
 		return nil, err
 	}
 	p.Timeout = time.Duration(secs) * time.Second
-	if p.Auth, err = str(raw, "auth", true); err != nil {
-		return nil, err
-	}
-	switch p.Auth {
-	case AuthKerberos:
-		if !kerberosSupported {
-			return nil, errors.New("auth kerberos (computer account) needs a domain-joined Windows collector; use a service account on this device")
-		}
-		if _, ok := raw["credential"]; ok && raw["credential"] != nil {
-			return nil, errors.New("credential must not be sent with auth kerberos")
-		}
-	case AuthSimple:
-		cred, ok := raw["credential"].(map[string]any)
-		if !ok || len(cred) != 2 {
-			return nil, errors.New("auth simple requires credential {username, password}")
-		}
-		u, uok := cred["username"].(string)
-		pw, pok := cred["password"].(string)
-		u = strings.TrimSpace(u)
-		if !uok || !pok || u == "" || pw == "" || len(u) > 256 || len(pw) > 1024 || hasControl(u) ||
-			strings.ContainsRune(pw, 0) {
-			return nil, errors.New("credential must have a username (<=256) and a password (<=1024)")
-		}
-		p.Username, p.Password = u, pw
-	default:
-		return nil, errors.New("auth must be kerberos or simple")
-	}
-	if p.CAPEM, err = str(raw, "ca_pem", false); err != nil {
-		return nil, err
-	}
-	if p.CAPEM != "" {
-		if len(p.CAPEM) > MaxCAPEM {
-			return nil, fmt.Errorf("ca_pem is larger than %d bytes", MaxCAPEM)
-		}
-		if _, err := CertPool(p.CAPEM); err != nil {
-			return nil, err
-		}
-	}
 	if v, ok := raw["test"]; ok && v != nil {
 		b, ok := v.(bool)
 		if !ok {
@@ -339,10 +372,11 @@ func ParseParams(raw map[string]any) (*Params, error) {
 	return p, nil
 }
 
-// ValidUploadPath accepts only /api/agent/directory/runs/... on the enrolled server.
+// ValidUploadPath accepts only <agent or collector prefix>/directory/runs/...
+// on the enrolled server (the client also checks it is its own prefix).
 func ValidUploadPath(path string) error {
-	if !strings.HasPrefix(path, UploadPrefix) || len(path) > 256 || strings.Contains(path, "..") ||
-		strings.ContainsAny(path, "?#\\ ") || hasControl(path) {
+	if !(strings.HasPrefix(path, UploadPrefix) || strings.HasPrefix(path, CollectorUploadPrefix)) || len(path) > 256 ||
+		strings.Contains(path, "..") || strings.ContainsAny(path, "?#\\ ") || hasControl(path) {
 		return fmt.Errorf("upload_path must start with %s", UploadPrefix)
 	}
 	return nil

@@ -66,8 +66,9 @@ def token_state(t: EnrollmentToken, now: datetime | None = None) -> str:
     return "active"
 
 
-def consume_enrollment_token(db: Session, raw: str) -> EnrollmentToken | None:
-    """Atomically use one enrollment of a valid token; None if invalid.
+def consume_enrollment_token(db: Session, raw: str, kind: str = "agent") -> EnrollmentToken | None:
+    """Atomically use one enrollment of a valid token of `kind` ("agent" or
+    "collector": a collector token never enrolls an agent and vice versa); None if invalid.
 
     The conditional UPDATE makes concurrent enrollments with a single-use token
     race-safe on both PostgreSQL and SQLite."""
@@ -76,7 +77,7 @@ def consume_enrollment_token(db: Session, raw: str) -> EnrollmentToken | None:
     res = db.execute(
         update(EnrollmentToken)
         .where(EnrollmentToken.token_hash == th, EnrollmentToken.revoked_at.is_(None),
-               EnrollmentToken.expires_at > now,
+               EnrollmentToken.kind == kind, EnrollmentToken.expires_at > now,
                (EnrollmentToken.max_uses.is_(None)) | (EnrollmentToken.use_count < EnrollmentToken.max_uses))
         .values(use_count=EnrollmentToken.use_count + 1, last_used_at=now)
         .execution_options(synchronize_session=False)

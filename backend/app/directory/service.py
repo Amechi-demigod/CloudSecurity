@@ -3,10 +3,11 @@
 
 Flow of one sync:
 
-1. `queue_run` picks the first healthy collector of the source (an enrolled
-   agent advertising `directory_collector`, seen in the last few minutes; for
-   computer-account auth a Windows one) and queues a `directory_sync` device
-   command. Its stored params never contain secrets.
+1. `queue_run` picks the first healthy collector of the source: a dedicated
+   collector (directory/collectors.py; new sources) or, for legacy sources, an
+   enrolled agent advertising `directory_collector` (for computer-account auth
+   a Windows one), seen in the last few minutes, and queues a `directory_sync`
+   command for it. Its stored params never contain secrets.
 2. When the agent fetches its commands, `delivery_params` mints the run's
    single-use upload token (only its SHA-256 is stored) and, for service-account
    auth, adds the decrypted credential to the delivered copy of the params.
@@ -38,8 +39,18 @@ from sqlalchemy.orm import Session
 
 from .. import config
 from ..models import Device, DeviceCommand, utcnow
+from . import collectors as coll
 from .matching import short_host
-from .models import CLOUD_TYPES, RUN_ACTIVE, DirectoryComputer, DirectorySource, DirectorySyncRun, DirectoryUser
+from .models import (
+    CLOUD_TYPES,
+    RUN_ACTIVE,
+    CollectorCommand,
+    DirectoryCollector,
+    DirectoryComputer,
+    DirectorySource,
+    DirectorySyncRun,
+    DirectoryUser,
+)
 from .schemas import BatchIn, ComputerIn, UserIn
 
 log = logging.getLogger(__name__)
@@ -182,8 +193,39 @@ def check_collectors(db: Session, ids: list[str], auth: str) -> None:
                                       "a domain-joined Windows collector; use a service account instead")
 
 
+def is_legacy(src: DirectorySource) -> bool:
+    """An AD source whose collectors are endpoint agents (before dedicated collectors)."""
+    return src.type == "ad" and not src.collector_ids and bool(src.collector_device_ids)
+
+
+def check_dedicated(db: Session, ids: list[str]) -> list[DirectoryCollector]:
+    """Every dedicated collector must exist in this organisation and not be revoked."""
+    ids = list(dict.fromkeys(ids))
+    found = {c.id: c for c in db.scalars(select(DirectoryCollector).where(DirectoryCollector.id.in_(ids)))} if ids else {}
+    out = []
+    for i in ids:
+        c = found.get(i)
+        if c is None:
+            raise DirectoryError(404, f"collector {i} not found")
+        if c.status != "active":
+            raise DirectoryError(422, f"collector {c.name} is revoked")
+        out.append(c)
+    return out
+
+
+def pick_dedicated(db: Session, src: DirectorySource, exclude: set[str] | frozenset[str] = frozenset(),
+                   now: datetime | None = None) -> DirectoryCollector | None:
+    now = now or utcnow()
+    ids = [i for i in (src.collector_ids or []) if i not in exclude]
+    if not ids:
+        return None
+    found = {c.id: c for c in db.scalars(select(DirectoryCollector).where(DirectoryCollector.id.in_(ids)))}
+    return next((found[i] for i in ids if coll.is_healthy(found.get(i), now)), None)
+
+
 def pick_collector(db: Session, src: DirectorySource, exclude: set[str] | frozenset[str] = frozenset(),
                    now: datetime | None = None) -> Device | None:
+    """Legacy sources: the first healthy endpoint agent (see pick_dedicated for new sources)."""
     now = now or utcnow()
     ids = [i for i in (src.collector_device_ids or []) if i not in exclude]
     if not ids:
@@ -227,6 +269,7 @@ def next_sync_at(db: Session, src: DirectorySource, now: datetime | None = None)
 def command_params(src: DirectorySource, run: DirectorySyncRun, *, test: bool) -> dict[str, Any]:
     """The directory_sync params as STORED (no token, no credential)."""
     cfg = src.config or {}
+    prefix = coll.UPLOAD_PREFIX if run.collector_id else UPLOAD_PREFIX
     return {
         "source_id": src.id, "run_id": run.id, "domain": cfg["domain"], "servers": list(cfg.get("servers") or []),
         "port": int(cfg.get("port") or 636), "security": cfg.get("security") or "ldaps",
@@ -234,7 +277,7 @@ def command_params(src: DirectorySource, run: DirectorySyncRun, *, test: bool) -
         "page_size": PAGE_SIZE, "batch_size": BATCH_SIZE, "max_objects": run.max_objects,
         "timeout_seconds": TEST_TIMEOUT_SECONDS if test else SYNC_TIMEOUT_SECONDS,
         "auth": "simple" if cfg.get("auth") == "service_account" else "kerberos",
-        "ca_pem": cfg.get("ca_pem") or "", "test": test, "upload_path": f"{UPLOAD_PREFIX}{run.id}/batches",
+        "ca_pem": cfg.get("ca_pem") or "", "test": test, "upload_path": f"{prefix}{run.id}/batches",
     }
 
 
@@ -260,12 +303,30 @@ def queue_run(db: Session, src: DirectorySource, *, trigger: str, actor: str | N
         src.last_sync_status = "queued"
         return run
     tried = list(tried or [])
+    test = trigger == "test"
+    if not is_legacy(src):
+        c = pick_dedicated(db, src, set(tried), now)
+        if c is None:
+            raise DirectoryError(409, "no healthy collector: the source's collectors must be online (seen in the "
+                                      "last 10 minutes)")
+        run = DirectorySyncRun(source_id=src.id, trigger=trigger, status="queued", collector_id=c.id,
+                               requested_by=actor, attempt=attempt, tried_device_ids=[*tried, c.id],
+                               scopes=list(cfg.get("scopes") or ["computers", "users"]),
+                               max_objects=TEST_MAX_OBJECTS if test else config.settings.directory_max_objects,
+                               queued_at=now)
+        db.add(run)
+        db.flush()
+        ccmd = coll.new_command(db, c, COMMAND_TYPE, command_params(src, run, test=test),
+                                f"directory {trigger} sync of {src.name}", actor=actor or SYSTEM, ttl=COMMAND_TTL)
+        run.command_id = ccmd.id
+        if trigger != "test":
+            src.last_sync_status = "queued"
+        return run
     device = pick_collector(db, src, set(tried), now)
     if device is None:
         raise DirectoryError(409, "no healthy collector: the designated agents must be online (seen in the last "
                                   "10 minutes)" + (" and run Windows (computer-account auth)"
                                                    if (src.config or {}).get("auth") != "service_account" else ""))
-    test = trigger == "test"
     run = DirectorySyncRun(source_id=src.id, trigger=trigger, status="queued", device_id=device.id,
                            requested_by=actor, attempt=attempt, tried_device_ids=[*tried, device.id],
                            scopes=list(cfg.get("scopes") or ["computers", "users"]),
@@ -282,7 +343,7 @@ def queue_run(db: Session, src: DirectorySource, *, trigger: str, actor: str | N
     return run
 
 
-def delivery_params(db: Session, cmd: DeviceCommand) -> dict[str, Any] | None:
+def delivery_params(db: Session, cmd: DeviceCommand | CollectorCommand) -> dict[str, Any] | None:
     """Params handed to the agent for a directory_sync: the stored ones plus a
     freshly minted single-use upload token and, for service-account auth, the
     decrypted credential. None (the caller cancels the command) when the run
@@ -314,7 +375,7 @@ def delivery_params(db: Session, cmd: DeviceCommand) -> dict[str, Any] | None:
     return params
 
 
-def command_failed(db: Session, cmd: DeviceCommand, output: str) -> None:
+def command_failed(db: Session, cmd: DeviceCommand | CollectorCommand, output: str) -> None:
     """The agent reported the directory_sync command itself as failed / rejected."""
     run = db.scalar(select(DirectorySyncRun).where(DirectorySyncRun.command_id == cmd.id))
     if run is not None and run.status in RUN_ACTIVE:
@@ -484,12 +545,15 @@ def upsert_records(db: Session, model, src: DirectorySource, run: DirectorySyncR
     return len(unique)
 
 
-def ingest_batch(db: Session, device: Device, run_id: str, token: str | None, batch: BatchIn,
-                 now: datetime | None = None) -> dict[str, Any]:
-    """Store one batch of a run (caller commits). Raises DirectoryError."""
+def ingest_batch(db: Session, device: Device | None, run_id: str, token: str | None, batch: BatchIn,
+                 now: datetime | None = None, *, collector: DirectoryCollector | None = None) -> dict[str, Any]:
+    """Store one batch of a run (caller commits); the uploader is the run's
+    endpoint agent (`device`) or dedicated `collector`. Raises DirectoryError."""
     now = now or utcnow()
     run = db.get(DirectorySyncRun, run_id)
-    if run is None or run.device_id != device.id:
+    owner_ok = (run is not None and ((collector is not None and run.collector_id == collector.id)
+                                     or (device is not None and run.collector_id is None and run.device_id == device.id)))
+    if not owner_ok:
         raise DirectoryError(404, "sync run not found")
     if not token or not run.token_hash or not hmac.compare_digest(hash_token(token), run.token_hash):
         raise DirectoryError(403, "invalid or used sync token")
@@ -549,7 +613,8 @@ def finish_run(db: Session, src: DirectorySource, run: DirectorySyncRun, batch: 
         for scope, model in (("computers", DirectoryComputer), ("users", DirectoryUser)):
             if scope in run.scopes:
                 mark_missing(db, src, run, model, now)
-    record_run_end(db, src, run, now, complete=complete, actor=f"device:{run.device_id}")
+    actor = f"collector:{run.collector_id}" if run.collector_id else f"device:{run.device_id}"
+    record_run_end(db, src, run, now, complete=complete, actor=actor)
 
 
 def mark_missing(db: Session, src: DirectorySource, run: DirectorySyncRun, model, now: datetime,
@@ -612,7 +677,8 @@ def run_out(r: DirectorySyncRun, hostnames: dict[str, str] | None = None) -> dic
     if r.started_at and r.finished_at:
         dur = int((r.finished_at - r.started_at).total_seconds() * 1000)
     return {"id": r.id, "source_id": r.source_id, "trigger": r.trigger, "status": r.status,
-            "device_id": r.device_id, "device_hostname": (hostnames or {}).get(r.device_id or ""),
+            "device_id": r.device_id, "device_hostname": (hostnames or {}).get(r.device_id or r.collector_id or ""),
+            "collector_id": r.collector_id,
             "queued_at": r.queued_at, "started_at": r.started_at, "finished_at": r.finished_at,
             "duration_ms": dur, "computers_seen": r.computers_seen, "users_seen": r.users_seen,
             "batches": r.next_seq, "truncated": r.truncated, "error": r.error, "attempt": r.attempt,
@@ -621,10 +687,18 @@ def run_out(r: DirectorySyncRun, hostnames: dict[str, str] | None = None) -> dic
 
 
 def hostnames_for(db: Session, ids: list[str | None]) -> dict[str, str]:
+    """Display names of collectors: endpoint agents (hostname) and dedicated collectors (name)."""
     ids = [i for i in set(ids) if i]
     if not ids:
         return {}
-    return dict(db.execute(select(Device.id, Device.hostname).where(Device.id.in_(ids))).all())
+    out = dict(db.execute(select(Device.id, Device.hostname).where(Device.id.in_(ids))).all())
+    out.update(db.execute(select(DirectoryCollector.id, DirectoryCollector.name)
+                          .where(DirectoryCollector.id.in_(ids))).all())
+    return out
+
+
+def run_names(db: Session, runs: list[DirectorySyncRun]) -> dict[str, str]:
+    return hostnames_for(db, [r.collector_id or r.device_id for r in runs])
 
 
 def source_out(db: Session, src: DirectorySource, now: datetime | None = None) -> dict[str, Any]:
@@ -633,21 +707,43 @@ def source_out(db: Session, src: DirectorySource, now: datetime | None = None) -
     devices = {d.id: d for d in db.scalars(select(Device).where(Device.id.in_(ids)))} if ids else {}
     run = active_run(db, src.id)
     cfg = dict(src.config or {})
+    cids = list(src.collector_ids or [])
+    dedicated = {c.id: c for c in db.scalars(select(DirectoryCollector).where(DirectoryCollector.id.in_(cids)))} \
+        if cids else {}
     return {
         "id": src.id, "type": src.type, "name": src.name, "enabled": src.enabled, "config": cfg,
         "has_credential": bool(src.secret_ciphertext), "credential_username_hint": src.credential_hint,
         "collector_device_ids": ids,
         "collectors": [collector_out(devices[i], now) for i in ids if i in devices],
+        "collector_ids": cids,
+        "dedicated_collectors": [coll.collector_out(dedicated[i], now) for i in cids if i in dedicated],
+        "legacy_collectors": is_legacy(src),
         "last_sync_at": src.last_sync_at, "last_sync_status": src.last_sync_status,
         "last_sync_error": src.last_sync_error, "last_success_at": src.last_success_at,
         "computers_count": src.computers_count, "users_count": src.users_count,
         "collection": "server" if src.type in CLOUD_TYPES else "agent",
         "scope_status": dict(src.scope_status or {}),
         "next_sync_at": next_sync_at(db, src, now),
-        "active_run": run_out(run, hostnames_for(db, [run.device_id])) if run is not None else None,
+        "active_run": run_out(run, run_names(db, [run])) if run is not None else None,
         "created_at": src.created_at, "created_by": src.created_by, "updated_at": src.updated_at,
         "updated_by": src.updated_by,
     }
+
+
+TRANSPORT_PORT = {"ldaps": 636, "starttls": 389, "sealed": 389}
+
+
+def resolve_transport(cfg: dict[str, Any], *, dedicated: bool) -> dict[str, Any]:
+    """Fill an AD config's transport defaults: dedicated collectors with the
+    computer account / gMSA default to Kerberos signing & sealing on 389 (no DC
+    certificate needed); service accounts and legacy endpoint-agent collectors to LDAPS."""
+    cfg = dict(cfg)
+    if not cfg.get("security"):
+        kerberos = cfg.get("auth", "computer_account") == "computer_account"
+        cfg["security"] = "sealed" if dedicated and kerberos else "ldaps"
+    if not cfg.get("port"):
+        cfg["port"] = TRANSPORT_PORT[cfg["security"]]
+    return cfg
 
 
 def validate_source(db: Session, src: DirectorySource) -> None:
@@ -657,10 +753,20 @@ def validate_source(db: Session, src: DirectorySource) -> None:
 
         cloud.validate_source(db, src)
         return
-    if not src.collector_device_ids:
-        raise DirectoryError(422, "choose at least one collector agent")
     if cfg.get("auth") == "service_account" and not src.secret_ciphertext:
         raise DirectoryError(422, "service-account auth needs a username and password")
+    security = cfg.get("security") or "ldaps"
+    if security == "sealed" and cfg.get("auth") == "service_account":
+        raise DirectoryError(422, "a service-account password is only ever sent inside TLS: choose LDAPS or "
+                                  "StartTLS (Kerberos signing & sealing is for the computer account / gMSA)")
+    if src.collector_ids:
+        check_dedicated(db, list(src.collector_ids))
+        return
+    if not src.collector_device_ids:
+        raise DirectoryError(422, "choose at least one collector")
+    if security == "sealed":
+        raise DirectoryError(422, "Kerberos signing & sealing needs a dedicated collector: endpoint-agent collectors "
+                                  "only use LDAPS or StartTLS")
     check_collectors(db, list(src.collector_device_ids or []), cfg.get("auth", "computer_account"))
 
 

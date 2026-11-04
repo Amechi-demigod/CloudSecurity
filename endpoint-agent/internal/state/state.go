@@ -18,6 +18,15 @@ import (
 // FileName of the state document inside the state directory.
 const FileName = "state.json"
 
+// ProductDir names the system state / log folder ("CNAPP Agent"; the
+// dedicated directory collector uses "CNAPP Collector", see UseCollector).
+var ProductDir = "CNAPP Agent"
+
+// ServiceAccountSID, when set (Windows), is granted full control of the state
+// directory next to SYSTEM and Administrators: the collector service running
+// as a group Managed Service Account.
+var ServiceAccountSID string
+
 // MaxExecuted is how many executed command ids are remembered (replay guard).
 const MaxExecuted = 500
 

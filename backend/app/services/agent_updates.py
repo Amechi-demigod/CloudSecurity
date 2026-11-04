@@ -173,9 +173,15 @@ def _ts(value, field: str) -> datetime:
     return d.astimezone(UTC).replace(tzinfo=None)
 
 
-def verify_envelope(envelope: bytes, keys: list[TrustedKey], now: datetime | None = None) -> tuple[dict, str]:
+COLLECTOR_PRODUCT = "cnapp-collector"
+COLLECTOR_MANIFEST = "collector-manifest.json"
+
+
+def verify_envelope(envelope: bytes, keys: list[TrustedKey], now: datetime | None = None,
+                    product: str = PRODUCT) -> tuple[dict, str]:
     """Verify a manifest envelope; return (manifest, key_id). Mirrors the agent's
-    internal/update.Verify (the agent's own check is what actually protects devices)."""
+    internal/update.Verify (the agent's own check is what actually protects devices).
+    `product`: "cnapp-agent", or "cnapp-collector" for collector-manifest.json."""
     now = now or utcnow()
     if len(envelope) > MAX_MANIFEST_BYTES:
         raise ReleaseError("manifest.json is larger than 64 KiB")
@@ -212,8 +218,8 @@ def verify_envelope(envelope: bytes, keys: list[TrustedKey], now: datetime | Non
         assert isinstance(m, dict)
     except (ValueError, AssertionError):
         raise ReleaseError("signed manifest payload is not a JSON object") from None
-    if m.get("schema") != 1 or m.get("product") != PRODUCT:
-        raise ReleaseError("manifest is not a schema-1 cnapp-agent manifest")
+    if m.get("schema") != 1 or m.get("product") != product:
+        raise ReleaseError(f"manifest is not a schema-1 {product} manifest")
     try:
         parse_semver(m.get("version", ""))
         if m.get("min_supported_version"):
@@ -304,10 +310,37 @@ def import_bundle(db: Session, data: bytes, actor: str) -> AgentRelease:
                                                   size_bytes=a["size"], data=files[a["name"]]))
     db.add(rel)
     db.flush()
+    collector_envelope = files.pop(COLLECTOR_MANIFEST, None)
+    if collector_envelope is not None:
+        _import_collector(db, rel, collector_envelope, files)
     # Automatic mode: a new newest release goes to the Pilot ring right away.
     from .agent_update_auto import auto_tick  # noqa: PLC0415 (circular import)
     auto_tick(db)
     return rel
+
+
+def _import_collector(db: Session, rel: AgentRelease, envelope: bytes, files: dict[str, bytes]) -> None:
+    """The dedicated directory collector binaries of the same release: a second
+    signed manifest (product cnapp-collector, same keys, same version) so agents
+    never see collector artifacts in their manifest (docs/DIRECTORY_DISCOVERY.md)."""
+    from ..directory.models import CollectorRelease, CollectorReleaseArtifact  # noqa: PLC0415
+
+    m, kid = verify_envelope(envelope, trusted_keys(), product=COLLECTOR_PRODUCT)
+    if m["version"] != rel.version:
+        raise ReleaseError(f"{COLLECTOR_MANIFEST} is version {m['version']}, the agent manifest {rel.version}")
+    crel = CollectorRelease(version=m["version"], agent_release_id=rel.id, manifest_envelope=envelope.decode(),
+                            key_id=kid, imported_at=utcnow())
+    db.add(crel)
+    db.flush()
+    for a in m["artifacts"]:
+        blob = files.get(a["name"])
+        if blob is None:
+            raise ReleaseError(f"bundle is missing {a['name']}")
+        if len(blob) != a["size"] or hashlib.sha256(blob).hexdigest() != a["sha256"]:
+            raise ReleaseError(f"{a['name']}: size or SHA-256 does not match the signed collector manifest")
+        db.add(CollectorReleaseArtifact(release_id=crel.id, os=a["os"], arch=a["arch"], name=a["name"],
+                                        sha256=a["sha256"], size_bytes=a["size"], data=blob))
+    db.flush()
 
 
 # ----------------------------------------------------------------------------- rings & offers

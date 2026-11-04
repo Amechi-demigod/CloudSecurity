@@ -164,6 +164,7 @@ jobs:
         run: |
           go vet ./...
           GOOS=windows go vet ./...
+          GOOS=windows GOARCH=arm64 go vet ./...
           GOOS=darwin go vet ./...
       - name: go test (parsers run against fixtures on every OS)
         run: go test -count=1 ./...
@@ -182,6 +183,15 @@ jobs:
           fi
       - name: Build
         run: go build -trimpath -o "cnapp-agent$(go env GOEXE)" ./cmd/cnapp-agent
+      - name: Directory collector - build (Windows amd64 + arm64), command set and import graph
+        if: runner.os == 'Windows'
+        run: |
+          go build -trimpath -o cnapp-collector.exe ./cmd/cnapp-collector
+          GOARCH=arm64 go build -trimpath -o cnapp-collector-arm64.exe ./cmd/cnapp-collector
+          ./cnapp-collector.exe version
+          ./cnapp-collector.exe status
+          go test -count=1 -v -run 'TestCollectorDoesNotCompileInAgentActions|TestCommandSetIsExactlyDirectoryWork|TestSealed' \
+            ./cmd/cnapp-collector/ ./internal/collector/ ./internal/directory/
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -313,9 +323,14 @@ jobs:
           CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "$ldflags" -o dist/cnapp-agent-windows-amd64.exe ./cmd/cnapp-agent
           CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags "$ldflags" -o dist/cnapp-agent-darwin-amd64 ./cmd/cnapp-agent
           CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "$ldflags" -o dist/cnapp-agent-darwin-arm64 ./cmd/cnapp-agent
+          # The dedicated directory collector (bundled in the backend image for the collector installer).
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=windows GOARCH=$arch go build -trimpath -ldflags "$ldflags" \
+              -o "dist/cnapp-collector-windows-$arch.exe" ./cmd/cnapp-collector
+          done
           file dist/*
           # No test-only build (the remote_fake remote-session backend) in what ships.
-          ../scripts/agent_build_check.sh dist/cnapp-agent-*
+          ../scripts/agent_build_check.sh dist/cnapp-agent-* dist/cnapp-collector-*
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: agent-installer-binaries
@@ -400,7 +415,10 @@ jobs:
               -ldflags "-s -w -X github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/version.Version=${version}" \
               -o "dist/cnapp-agent-${os}-${arch}${ext}" ./cmd/cnapp-agent
           done
-          ../scripts/agent_build_check.sh dist/cnapp-agent-*
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=windows GOARCH=$arch go build -trimpath -o "dist/cnapp-collector-windows-${arch}.exe" ./cmd/cnapp-collector
+          done
+          ../scripts/agent_build_check.sh dist/cnapp-agent-* dist/cnapp-collector-*
           cp packaging/windows/*.ps1 packaging/macos/install.sh dist/
           (cd dist && sha256sum cnapp-agent-* > SHA256SUMS && cat SHA256SUMS)
           file dist/cnapp-agent-*
@@ -416,6 +434,8 @@ jobs:
           AGENT_UPDATE_SIGNING_KEY="$(cat "$key")" python scripts/agent_release.py bundle \
             --version "0.1.${GITHUB_RUN_NUMBER}+${GITHUB_SHA::7}" --out endpoint-agent/dist/cnapp-agent-update-CI-TEST-KEY.tar.gz \
             --notes "CI test bundle (ephemeral key, not trusted by any real agent)" \
+            --collector endpoint-agent/dist/cnapp-collector-windows-amd64.exe \
+            --collector endpoint-agent/dist/cnapp-collector-windows-arm64.exe \
             endpoint-agent/dist/cnapp-agent-windows-amd64.exe endpoint-agent/dist/cnapp-agent-windows-arm64.exe \
             endpoint-agent/dist/cnapp-agent-darwin-amd64 endpoint-agent/dist/cnapp-agent-darwin-arm64
           python scripts/agent_release.py verify endpoint-agent/dist/cnapp-agent-update-CI-TEST-KEY.tar.gz --keys "$RUNNER_TEMP/ci-key.pub"
@@ -511,17 +531,25 @@ jobs:
           pattern: cnapp-agent-*-{msi,pkg}
           path: ${{ runner.temp }}/generic
           merge-multiple: true
+      - name: Download the directory collector binaries
+        if: needs.agent-installers.result == 'success'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: agent-installer-binaries
+          path: ${{ runner.temp }}/binaries
       - name: Bundle them into the backend build context (+ manifest.json with SHA-256)
         if: needs.agent-installers.result == 'success'
         run: |
           src="$RUNNER_TEMP/generic"
           ls -l "$src"
           install -m 0644 "$src/cnapp-agent-windows-x64.msi" "$src/cnapp-agent-macos-universal.pkg" backend/installers/
+          install -m 0644 "$RUNNER_TEMP"/binaries/cnapp-collector-windows-*.exe backend/installers/
           python3 - "0.1.${GITHUB_RUN_NUMBER}+${GITHUB_SHA::7}" <<'PY'
           import hashlib, json, pathlib, sys
           d = pathlib.Path("backend/installers")
           files = {f: hashlib.sha256((d / f).read_bytes()).hexdigest()
-                   for f in ("cnapp-agent-windows-x64.msi", "cnapp-agent-macos-universal.pkg")}
+                   for f in ("cnapp-agent-windows-x64.msi", "cnapp-agent-macos-universal.pkg",
+                             "cnapp-collector-windows-amd64.exe", "cnapp-collector-windows-arm64.exe")}
           (d / "manifest.json").write_text(json.dumps({"version": sys.argv[1], "files": files}, indent=2) + "\n")
           print((d / "manifest.json").read_text())
           PY

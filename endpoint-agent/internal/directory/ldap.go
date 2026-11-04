@@ -81,12 +81,41 @@ func Connect(ctx context.Context, p *Params) (Searcher, error) {
 		if err == nil {
 			return s, nil
 		}
-		errs = append(errs, h+": "+Redact(err.Error(), p.Secrets()...))
+		msg := Redact(err.Error(), p.Secrets()...)
+		if len(p.Servers) == 0 && Unreachable(err) {
+			msg = StaleDCHint + " (" + msg + ")"
+		}
+		errs = append(errs, h+": "+msg)
 	}
 	return nil, fmt.Errorf("no domain controller accepted the connection (%s)", strings.Join(errs, "; "))
 }
 
+// StaleDCHint explains a DC from the DNS locator that refused or ignored the connection.
+const StaleDCHint = "listed in DNS as a DC but not responding — consider removing the stale SRV record or listing " +
+	"DCs explicitly"
+
+// Unreachable reports a connection that was refused or timed out (not a TLS / bind failure).
+func Unreachable(err error) bool {
+	var le *LDAPError
+	if errors.As(err, &le) {
+		return le.IsUnreachable()
+	}
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() {
+		return true
+	}
+	var oe *net.OpError
+	return errors.As(err, &oe) && oe.Op == "dial"
+}
+
 func connectOne(ctx context.Context, p *Params, host string) (Searcher, error) {
+	if p.Security == SecuritySealed {
+		s, err := connectSealed(ctx, sealedAPI, p, host)
+		if err != nil {
+			return nil, err
+		}
+		return s, nil
+	}
 	tc, err := TLSConfig(p, host)
 	if err != nil {
 		return nil, err

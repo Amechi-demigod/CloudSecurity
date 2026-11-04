@@ -1,4 +1,5 @@
-// Package client talks to the CNAPP server's /api/agent/* endpoints.
+// Package client talks to the CNAPP server's /api/agent/* endpoints (and, for
+// the dedicated directory collector, /api/collector/*).
 //
 // The agent only makes outbound HTTPS requests (pull model); it never listens
 // on a port. Plain http is refused unless the agent was enrolled with
@@ -55,6 +56,11 @@ type Client struct {
 	// remote-session relay socket.
 	pinned      *tls.Config
 	insecureDev bool
+	// prefix: "/api/agent" (endpoint agent) or "/api/collector" (dedicated
+	// directory collector); userAgent / features: request identity headers.
+	prefix    string
+	userAgent string
+	features  string
 }
 
 // Options configure transport security.
@@ -63,6 +69,12 @@ type Options struct {
 	CAFile      string // extra PEM CA bundle (private PKI); system roots are always trusted
 	CAPEM       []byte // same, in memory (used instead of CAFile when set)
 	Timeout     time.Duration
+	// APIPrefix of every call ("/api/agent" when empty). The dedicated
+	// directory collector uses "/api/collector" with its own UserAgent and
+	// Features (it never sends the endpoint agent's).
+	APIPrefix string
+	UserAgent string
+	Features  string
 }
 
 // New builds a client for serverURL authenticating with the device secret (may be empty for Enroll).
@@ -98,7 +110,13 @@ func New(serverURL, secret string, o Options) (*Client, error) {
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.TLSClientConfig = tlsCfg
 	noRedirect := func(*http.Request, []*http.Request) error { return errors.New("redirects are not followed") }
-	return &Client{base: base, secret: secret,
+	if o.APIPrefix == "" {
+		o.APIPrefix = "/api/agent"
+	}
+	if o.UserAgent == "" {
+		o.UserAgent, o.Features = version.UserAgent(), version.Features
+	}
+	return &Client{base: base, secret: secret, prefix: o.APIPrefix, userAgent: o.UserAgent, features: o.Features,
 		http:   &http.Client{Transport: tr, Timeout: o.Timeout, CheckRedirect: noRedirect},
 		dl:     &http.Client{Transport: tr, CheckRedirect: noRedirect},
 		pinned: pinned, insecureDev: o.InsecureDev,
@@ -120,8 +138,10 @@ func (c *Client) do(ctx context.Context, method, path, contentType string, body 
 	if err != nil {
 		return err
 	}
-	req.Header.Set("User-Agent", version.UserAgent())
-	req.Header.Set("X-CNAPP-Agent-Features", version.Features)
+	req.Header.Set("User-Agent", c.userAgent)
+	if c.features != "" {
+		req.Header.Set("X-CNAPP-Agent-Features", c.features)
+	}
 	req.Header.Set("Accept", "application/json")
 	if body != nil {
 		req.Header.Set("Content-Type", contentType)
@@ -164,6 +184,19 @@ func (c *Client) do(ctx context.Context, method, path, contentType string, body 
 	return nil
 }
 
+// PostJSON posts a JSON document to path (relative to the server URL) and decodes the response into out.
+func (c *Client) PostJSON(ctx context.Context, path string, in, out any) error {
+	return c.postJSON(ctx, path, in, out)
+}
+
+// GetJSON fetches path and decodes the JSON response into out.
+func (c *Client) GetJSON(ctx context.Context, path string, out any) error {
+	return c.do(ctx, http.MethodGet, path, "", nil, nil, out)
+}
+
+// Prefix is the API prefix of this client ("/api/agent" or "/api/collector").
+func (c *Client) Prefix() string { return c.prefix }
+
 func (c *Client) postJSON(ctx context.Context, path string, in, out any) error {
 	b, err := json.Marshal(in)
 	if err != nil {
@@ -196,7 +229,7 @@ type EnrollResponse struct {
 // Enroll exchanges an enrollment token for a device credential.
 func (c *Client) Enroll(ctx context.Context, token string, d EnrollDevice) (*EnrollResponse, error) {
 	var out EnrollResponse
-	err := c.postJSON(ctx, "/api/agent/enroll", map[string]any{"token": token, "device": d}, &out)
+	err := c.postJSON(ctx, c.prefix+"/enroll", map[string]any{"token": token, "device": d}, &out)
 	if err != nil {
 		return nil, err
 	}
@@ -221,7 +254,7 @@ type CheckinResponse struct {
 func (c *Client) CheckIn(ctx context.Context, r *model.Report) (*CheckinResponse, error) {
 	r.Normalize()
 	var out CheckinResponse
-	if err := c.postJSON(ctx, "/api/agent/checkin", r, &out); err != nil {
+	if err := c.postJSON(ctx, c.prefix+"/checkin", r, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -230,7 +263,7 @@ func (c *Client) CheckIn(ctx context.Context, r *model.Report) (*CheckinResponse
 // Commands fetches (and thereby receives exactly once) pending commands.
 func (c *Client) Commands(ctx context.Context) (*model.CommandList, error) {
 	var out model.CommandList
-	if err := c.do(ctx, http.MethodGet, "/api/agent/commands", "", nil, nil, &out); err != nil {
+	if err := c.do(ctx, http.MethodGet, c.prefix+"/commands", "", nil, nil, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -264,7 +297,7 @@ func (c *Client) ResultFull(ctx context.Context, cmd model.Command, status, outp
 	if len(resultData) > 0 {
 		body["result_data"] = resultData
 	}
-	return c.postJSON(ctx, "/api/agent/commands/"+cmd.ID+"/result", body, nil)
+	return c.postJSON(ctx, c.prefix+"/commands/"+cmd.ID+"/result", body, nil)
 }
 
 // Ack sends the final acknowledgement of a wipe_device command. It succeeds
@@ -273,7 +306,7 @@ func (c *Client) Ack(ctx context.Context, cmd model.Command) error {
 	var out struct {
 		Proceed bool `json:"proceed"`
 	}
-	if err := c.postJSON(ctx, "/api/agent/commands/"+cmd.ID+"/ack", map[string]string{"nonce": cmd.Nonce}, &out); err != nil {
+	if err := c.postJSON(ctx, c.prefix+"/commands/"+cmd.ID+"/ack", map[string]string{"nonce": cmd.Nonce}, &out); err != nil {
 		return err
 	}
 	if !out.Proceed {
@@ -284,16 +317,16 @@ func (c *Client) Ack(ctx context.Context, cmd model.Command) error {
 
 // UploadLogs uploads a gzip log bundle for a collect_logs command.
 func (c *Client) UploadLogs(ctx context.Context, cmd model.Command, gz []byte) error {
-	return c.do(ctx, http.MethodPost, "/api/agent/commands/"+cmd.ID+"/logs", "application/gzip", gz,
+	return c.do(ctx, http.MethodPost, c.prefix+"/commands/"+cmd.ID+"/logs", "application/gzip", gz,
 		map[string]string{"X-Command-Nonce": cmd.Nonce}, nil)
 }
 
 // UploadDirectoryBatch posts one gzip-compressed JSON batch of a
-// directory_sync run (internal/directory). Only /api/agent/directory/runs/...
+// directory_sync run (internal/directory). Only <prefix>/directory/runs/...
 // on the enrolled server is accepted; the single-use sync token travels in
 // X-Directory-Sync-Token next to the device credential.
 func (c *Client) UploadDirectoryBatch(ctx context.Context, path, token string, gz []byte) error {
-	if !strings.HasPrefix(path, "/api/agent/directory/runs/") || strings.Contains(path, "..") ||
+	if !strings.HasPrefix(path, c.prefix+"/directory/runs/") || strings.Contains(path, "..") ||
 		strings.ContainsAny(path, "?# ") || strings.ContainsRune(path, '\\') {
 		return fmt.Errorf("refusing to upload to %q", path)
 	}
@@ -305,7 +338,8 @@ func (c *Client) UploadDirectoryBatch(ctx context.Context, path, token string, g
 // w (at most max bytes; more is an error). Only paths on the enrolled server
 // are ever fetched.
 func (c *Client) Fetch(ctx context.Context, path string, max int64, w io.Writer) (int64, error) {
-	allowed := strings.HasPrefix(path, "/api/agent/updates/") || strings.HasPrefix(path, "/api/agent/scripts/")
+	allowed := strings.HasPrefix(path, c.prefix+"/updates/") ||
+		(c.prefix == "/api/agent" && strings.HasPrefix(path, "/api/agent/scripts/"))
 	if !allowed || strings.Contains(path, "..") || strings.ContainsAny(path, "?#\\") {
 		return 0, fmt.Errorf("refusing to fetch %q", path)
 	}
@@ -315,7 +349,7 @@ func (c *Client) Fetch(ctx context.Context, path string, max int64, w io.Writer)
 	if err != nil {
 		return 0, err
 	}
-	req.Header.Set("User-Agent", version.UserAgent())
+	req.Header.Set("User-Agent", c.userAgent)
 	req.Header.Set("Authorization", "Bearer "+c.secret)
 	resp, err := c.dl.Do(req)
 	if err != nil {
@@ -341,5 +375,5 @@ func (c *Client) Fetch(ctx context.Context, path string, max int64, w io.Writer)
 
 // ReportUpdate sends an update status (downloading, verified, installed, rolled_back, ...).
 func (c *Client) ReportUpdate(ctx context.Context, r update.Report) error {
-	return c.postJSON(ctx, "/api/agent/updates/status", r, nil)
+	return c.postJSON(ctx, c.prefix+"/updates/status", r, nil)
 }

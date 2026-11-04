@@ -33,6 +33,7 @@ from .api import remote_sessions as remote_sessions_api
 from .asset_lifecycle import api as it_assets_api
 from .directory import agent_api as directory_agent_api
 from .directory import api as directory_api
+from .directory import collector_api
 from .directory.scheduler import DirectoryScheduler
 from .notifications import api as notifications_api
 from .notifications import settings as notification_settings
@@ -164,6 +165,7 @@ def create_app() -> FastAPI:
     app.add_middleware(BodySizeLimitMiddleware, max_bytes=s.max_request_bytes,
                        path_limits={"/api/agent/": max(s.agent_max_request_bytes, s.max_request_bytes),
                                     # directory collectors: gzip JSON batches of up to 5000 objects
+                                    "/api/collector/directory/": collector_api.MAX_COMPRESSED + 1024,
                                     "/api/agent/directory/": max(directory_agent_api.MAX_COMPRESSED,
                                                                  s.max_request_bytes),
                                     "/api/updates/releases": max(s.agent_update_max_bundle_bytes, s.max_request_bytes),
@@ -185,6 +187,7 @@ def create_app() -> FastAPI:
     app.include_router(agent_updates_api.device_router)  # /api/agent/updates/*: device credentials
     app.include_router(device_scripts_api.device_router)  # /api/agent/scripts/*: device credentials
     app.include_router(directory_agent_api.router)  # /api/agent/directory/*: device credential + sync token
+    app.include_router(collector_api.router)  # /api/collector/*: dedicated directory collector credential
     app.include_router(auth_api.router)  # /login is public; the others depend on the session
     app.include_router(mfa_sso_api.router)  # /login/mfa*, /providers and /sso/* are public
     app.include_router(contact_api.router)  # POST /api/contact: the public website's demo request form
@@ -205,6 +208,7 @@ def create_app() -> FastAPI:
     app.include_router(mfa_sso_api.admin_router)
     app.include_router(it_assets_api.router)  # /api/it-assets/*: viewer reads, analyst/admin writes
     app.include_router(directory_api.router)  # /api/directory/*: viewer reads, admin writes
+    app.include_router(collector_api.admin_router)  # /api/collectors/*: viewer reads, admin writes
     app.include_router(agent_updates_api.router)  # /api/updates/*: viewer reads, admin writes (all audited)
     app.include_router(approvals_api.router)  # /api/approvals/*: admin only (two-person rule)
     app.include_router(device_scripts_api.router)  # /api/scripts/*: viewer reads, admin imports / runs

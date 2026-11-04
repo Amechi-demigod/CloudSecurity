@@ -25,8 +25,10 @@ import (
 // SignatureContext is prepended to the payload before signing (domain separation).
 const SignatureContext = "cnapp-agent-update-manifest-v1\x00"
 
-// Product is the only product name the agent accepts.
-const Product = "cnapp-agent"
+// Product is the only product name this binary accepts ("cnapp-agent"; the
+// dedicated directory collector sets "cnapp-collector" at start-up, so an agent
+// manifest can never update a collector and vice versa).
+var Product = "cnapp-agent"
 
 // Limits.
 const (

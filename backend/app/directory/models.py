@@ -18,6 +18,13 @@
   `missing_since` (they are purged later, never on the spot).
 * `directory_findings`: materialised "discovery issues" (not managed, stale,
   disabled but active, ...), recomputed after each sync and periodically.
+* `directory_collectors` / `collector_commands`: dedicated directory
+  collectors (the "Travound Collector" program, cmd/cnapp-collector), a
+  separate identity class from endpoint agents: own enrollment, own
+  credential, own command queue restricted to directory work
+  (directory/collectors.py). They are never devices, IT assets or endpoints.
+* `collector_releases` / `collector_release_artifacts`: signed collector
+  binaries imported with an agent release bundle (collector-manifest.json).
 
 These are not the IT asset (`it_assets`) or agent device (`devices`) tables:
 computers are linked to them by the matcher (directory/matching.py) and only
@@ -27,7 +34,18 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    LargeBinary,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ..db import Base
@@ -57,6 +75,10 @@ class DirectorySource(TenantMixin, Base):
     secret_ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True)
     credential_hint: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # Ordered: the scheduler uses the first healthy collector, then fails over.
+    # Dedicated collectors (directory_collectors.id) for new sources; legacy
+    # sources use endpoint agents (devices.id) in collector_device_ids. A source
+    # uses one kind only: switching to dedicated collectors clears the other.
+    collector_ids: Mapped[list] = mapped_column(JSON, default=list, server_default="[]")
     collector_device_ids: Mapped[list] = mapped_column(JSON, default=list)
     last_sync_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_sync_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
@@ -87,6 +109,11 @@ class DirectorySyncRun(TenantMixin, Base):
     status: Mapped[str] = mapped_column(String(16), default="queued", index=True)
     device_id: Mapped[str | None] = mapped_column(String(32), ForeignKey("devices.id", ondelete="SET NULL"),
                                                   nullable=True)
+    # The dedicated collector the run was queued on (command_id is then a
+    # collector_commands.id instead of a device_commands.id).
+    collector_id: Mapped[str | None] = mapped_column(
+        String(32), ForeignKey("directory_collectors.id", ondelete="SET NULL",
+                               name="fk_directory_sync_runs_collector_id"), nullable=True)
     command_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # SHA-256 of the single-use upload token (minted when the command is
     # delivered; cleared when the run ends).
@@ -252,3 +279,105 @@ class DirectoryFinding(TenantMixin, Base):
     detail: Mapped[str] = mapped_column(String(500), default="")
     first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     last_evaluated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class DirectoryCollector(TenantMixin, Base):
+    """A dedicated directory collector (cmd/cnapp-collector on a Windows host).
+    Its credential is stored as SHA-256 only (`secret_hash`, rotated on
+    re-enrollment). Facts (host, domain, run-as identity, DC) are what the
+    collector reported at its last heartbeat."""
+
+    __tablename__ = "directory_collectors"
+    __table_args__ = (Index("ix_directory_collectors_org_machine", "organization_id", "machine_id"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(128))
+    secret_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    # SHA-256 of the OS machine id: a re-installed collector on the same host keeps its record.
+    machine_id: Mapped[str] = mapped_column(String(64), default="")
+    # active | revoked
+    status: Mapped[str] = mapped_column(String(16), default="active", index=True)
+    hostname: Mapped[str] = mapped_column(String(255), default="")
+    dns_hostname: Mapped[str] = mapped_column(String(255), default="")
+    domain: Mapped[str] = mapped_column(String(255), default="")
+    os_family: Mapped[str] = mapped_column(String(16), default="windows")
+    os_name: Mapped[str] = mapped_column(String(128), default="")
+    os_version: Mapped[str] = mapped_column(String(64), default="")
+    architecture: Mapped[str] = mapped_column(String(16), default="")
+    version: Mapped[str] = mapped_column(String(64), default="")
+    # The Windows account the service runs as: "CORP\HOST$" (LocalSystem =
+    # computer account), "CORP\svc-collector$" (gMSA) or another account.
+    run_as: Mapped[str] = mapped_column(String(256), default="")
+    # computer_account | gmsa | user | unknown
+    run_as_kind: Mapped[str] = mapped_column(String(24), default="unknown")
+    is_domain_controller: Mapped[bool] = mapped_column(Boolean, default=False)
+    features: Mapped[str] = mapped_column(String(256), default="")
+    enrolled_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    enrollment_token_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Offline notifications: set when "collector offline" was raised, cleared when it is back.
+    offline_notified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Self-update (follows the organisation's default agent ring).
+    update_offered_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    update_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    update_status_detail: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    update_status_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Latest on-collector diagnostics ("Test"): {"command_id", "at", "status", "steps": [...]}.
+    diagnostics: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class CollectorCommand(TenantMixin, Base):
+    """A command for a dedicated collector. Only the collector command types
+    (directory/collectors.py COMMAND_TYPES) can ever be stored here."""
+
+    __tablename__ = "collector_commands"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    collector_id: Mapped[str] = mapped_column(String(32), ForeignKey("directory_collectors.id", ondelete="CASCADE"),
+                                              index=True)
+    type: Mapped[str] = mapped_column(String(32))
+    params: Mapped[dict] = mapped_column(JSON, default=dict)
+    nonce: Mapped[str] = mapped_column(String(64))
+    # pending -> delivered -> succeeded | failed | rejected ; or expired | cancelled
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    requested_by_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    output: Mapped[str] = mapped_column(Text, default="")
+    result_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
+class CollectorRelease(Base):
+    """Signed collector binaries of one release (collector-manifest.json in
+    the agent release bundle; same signing keys, product "cnapp-collector")."""
+
+    __tablename__ = "collector_releases"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    version: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    agent_release_id: Mapped[str | None] = mapped_column(
+        String(32), ForeignKey("agent_releases.id", ondelete="CASCADE"), nullable=True, index=True)
+    manifest_envelope: Mapped[str] = mapped_column(Text)
+    key_id: Mapped[str] = mapped_column(String(64))
+    imported_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class CollectorReleaseArtifact(Base):
+    __tablename__ = "collector_release_artifacts"
+    __table_args__ = (UniqueConstraint("release_id", "os", "arch", name="uq_collector_release_artifact_platform"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    release_id: Mapped[str] = mapped_column(String(32), ForeignKey("collector_releases.id", ondelete="CASCADE"),
+                                            index=True)
+    os: Mapped[str] = mapped_column(String(16))
+    arch: Mapped[str] = mapped_column(String(16))
+    name: Mapped[str] = mapped_column(String(128))
+    sha256: Mapped[str] = mapped_column(String(64))
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    data: Mapped[bytes] = mapped_column(LargeBinary, deferred=True)

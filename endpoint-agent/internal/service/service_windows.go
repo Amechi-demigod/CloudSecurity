@@ -21,7 +21,7 @@ func BinaryPath() string {
 	if pf == "" {
 		pf = `C:\Program Files`
 	}
-	return filepath.Join(pf, "CNAPP Agent", "cnapp-agent.exe")
+	return filepath.Join(pf, InstallDirName, BinaryName)
 }
 
 // IsService reports whether the Service Control Manager started this process.
@@ -120,16 +120,34 @@ func Install(o Options) error {
 	if err := copyFile(exe, dst, 0o755); err != nil {
 		return err
 	}
-	s, err := m.CreateService(WindowsServiceName, dst, mgr.Config{
+	if o.RunAs != "" {
+		if err := allowInstallDir(filepath.Dir(dst), o.RunAs); err != nil {
+			return err
+		}
+	}
+	cfg := mgr.Config{
 		DisplayName: DisplayName, Description: Description, StartType: mgr.StartAutomatic,
 		DelayedAutoStart: true, ErrorControl: mgr.ErrorNormal,
-	}, serviceArgs(o)...)
+	}
+	if o.RunAs != "" {
+		// gMSA: no password (Windows retrieves it from AD), "Log on as a service" granted first.
+		if err := grantServiceLogon(o.RunAs); err != nil {
+			return err
+		}
+		cfg.ServiceStartName = o.RunAs
+	}
+	s, err := m.CreateService(WindowsServiceName, dst, cfg, serviceArgs(o)...)
 	if err != nil {
 		return fmt.Errorf("creating service: %w", err)
 	}
 	defer s.Close()
 	if err := setRecovery(s); err != nil {
 		return err
+	}
+	if o.RunAs != "" {
+		if err := allowSelfControl(s, o.RunAs); err != nil {
+			return err
+		}
 	}
 	return s.Start()
 }
