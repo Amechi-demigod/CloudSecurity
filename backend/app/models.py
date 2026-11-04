@@ -720,6 +720,20 @@ class DeviceSoftware(TenantMixin, Base):
     source: Mapped[str] = mapped_column(String(32), default="")  # registry_hklm64 | applications | ...
 
 
+class DeviceService(TenantMixin, Base):
+    """Windows services (latest inventory, agents 1.4.0+): what the console's
+    Services tab and the manage_service endpoint action work from."""
+
+    __tablename__ = "device_services"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    device_id: Mapped[str] = mapped_column(String(32), ForeignKey("devices.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(256))
+    display_name: Mapped[str] = mapped_column(String(256), default="")
+    status: Mapped[str] = mapped_column(String(16), default="")  # running | stopped | ...
+    start_type: Mapped[str] = mapped_column(String(16), default="")  # auto | auto_delayed | manual | disabled | ...
+
+
 class DeviceCommand(TenantMixin, Base):
     """Allow-listed remote action, pulled by the agent and executed at most once."""
 

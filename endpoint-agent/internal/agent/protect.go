@@ -48,6 +48,7 @@ func (a *Agent) addAgentPosture(ctx context.Context, r *model.Report) {
 		}
 		r.Posture["isolation"] = model.Check(model.StatusInfo, detail, st)
 	}
+	a.addActionsInventory(r)
 }
 
 func (a *Agent) wipeOptIn() (bool, error) {

@@ -36,7 +36,7 @@ from ..schemas_devices import (
     EnrollResponse,
     validate_result_data,
 )
-from ..services import agent_updates, approvals, remote_sessions
+from ..services import agent_updates, approvals, endpoint_actions, remote_sessions
 from ..services import devices as svc
 
 log = logging.getLogger(__name__)
@@ -269,7 +269,7 @@ def command_result(body: CommandResultIn, command_id: str = CommandId, device: D
     cmd.output = body.output
     cmd.result_data = result_data or None
     cmd.completed_at = utcnow()
-    if cmd.type == "run_script":
+    if cmd.type in ("run_script", "uninstall_software"):
         cmd.exit_code = body.exit_code
     if cmd.type == "update_check_in_interval" and body.status == "succeeded":
         device.check_in_interval_seconds = svc.clamp_interval(int(cmd.params.get("interval_seconds", 900)))
@@ -299,6 +299,8 @@ def command_result(body: CommandResultIn, command_id: str = CommandId, device: D
         directory_svc.command_failed(db, cmd, body.output)
     elif cmd.type == remote_sessions.COMMAND_TYPE and body.status != "succeeded":
         remote_sessions.command_failed(db, device, cmd, result_data.get("error_code"), body.output)
+    elif cmd.type in endpoint_actions.TYPES:
+        endpoint_actions.command_result(db, device, cmd, result_data)
     elif cmd.type == "restore_host":
         audit(db, "host_restored" if body.status == "succeeded" else "host_restore_failed",
               actor_email=f"device:{device.hostname}"[:320], target=f"device:{device.id}",

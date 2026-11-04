@@ -325,3 +325,48 @@ func TestDirectorySyncValidation(t *testing.T) {
 		t.Errorf("%+v", out)
 	}
 }
+
+func TestEndpointActionValidation(t *testing.T) {
+	ok := []model.Command{
+		cmd(ManageService, map[string]any{"service": "Spooler", "action": "stop"}),
+		cmd(ManageService, map[string]any{"service": "Spooler", "action": "restore", "restore_to": "manual"}),
+		cmd(UninstallSoftware, map[string]any{"identifier": "{23170F69-40C1-2702-2409-000001000000}",
+			"source": "registry_hklm64", "name": "7-Zip", "version": "24.09"}),
+		cmd(BlockUSBStorage, nil),
+		cmd(UnblockUSBStorage, map[string]any{}),
+	}
+	for _, c := range ok {
+		if err := Validate(c, "dev", now); err != nil {
+			t.Errorf("%s %v: %v", c.Type, c.Params, err)
+		}
+	}
+	bad := []model.Command{
+		cmd(ManageService, map[string]any{"service": "Spooler", "action": "stop", "command": "sc delete"}),
+		cmd(ManageService, map[string]any{"service": "Spooler", "action": "remove"}),
+		cmd(UninstallSoftware, map[string]any{"identifier": "x", "source": "registry_user", "name": "x"}),
+		cmd(UninstallSoftware, map[string]any{"identifier": "x", "source": "registry_hklm64", "name": "CNAPP Endpoint Agent"}),
+		cmd(UninstallSoftware, map[string]any{"identifier": "x", "source": "registry_hklm64", "name": "x", "uninstall_string": "cmd /c"}),
+		cmd(BlockUSBStorage, map[string]any{"classes": "all"}),
+	}
+	for _, c := range bad {
+		if err := Validate(c, "dev", now); !errors.Is(err, ErrRejected) {
+			t.Errorf("%s %v accepted", c.Type, c.Params)
+		}
+	}
+}
+
+func TestEndpointActionDispatch(t *testing.T) {
+	var got string
+	d := Deps{EndpointAction: func(_ context.Context, c model.Command) Outcome {
+		got = c.Type
+		return Outcome{Status: "succeeded", Output: "ok"}
+	}}
+	for _, typ := range []string{ManageService, UninstallSoftware, BlockUSBStorage, UnblockUSBStorage} {
+		if out := Execute(context.Background(), cmd(typ, nil), d, nil); out.Status != "succeeded" || got != typ {
+			t.Errorf("%s: %+v", typ, out)
+		}
+	}
+	if out := Execute(context.Background(), cmd(BlockUSBStorage, nil), Deps{}, nil); out.Status != "rejected" {
+		t.Errorf("nil dep: %+v", out)
+	}
+}

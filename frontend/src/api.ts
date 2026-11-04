@@ -1,4 +1,5 @@
 // Typed API client for the FastAPI backend.
+import type { EndpointActionsInfo } from "./endpointActionsApi";
 import type { PendingUpdate } from "./updatesApi";
 
 export type Severity = "critical" | "high" | "medium" | "low" | "info";
@@ -465,6 +466,8 @@ export interface DeviceSummary {
   health: DeviceHealth;
   connectivity: Connectivity;
   issues: DeviceIssue[];
+  /** USB mass storage as last reported (Windows, agent 1.4.0+); null = unknown. */
+  usb_storage?: "blocked" | "allowed" | null;
 }
 
 export interface PostureCheck {
@@ -542,6 +545,8 @@ export interface DeviceDetail extends DeviceSummary {
   isolation: IsolationState;
   /** Directory membership reported by the agent (1.3.0+); {} when not joined / older agents. */
   directory_join?: DirectoryJoin;
+  /** Built-in endpoint actions (services, uninstall, USB storage; agent 1.4.0+, Windows). */
+  endpoint_actions?: EndpointActionsInfo;
 }
 
 export interface DirectoryJoin {
@@ -592,7 +597,11 @@ export type CommandType =
   | "run_script"
   | "isolate_host"
   | "restore_host"
-  | "start_remote_session";
+  | "start_remote_session"
+  | "manage_service"
+  | "uninstall_software"
+  | "block_usb_storage"
+  | "unblock_usb_storage";
 
 export interface DeviceCommand {
   id: string;

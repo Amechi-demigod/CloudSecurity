@@ -11,12 +11,14 @@ import { fmtAgo, fmtTime } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
 import { useUrlState } from "../../lib/useUrlState";
 import { AssetRecordLink } from "../assets/AssetRecordLink";
+import { endpointActionLabel } from "../../endpointActionsApi";
+import { ActionsTab, EndpointActionDialog, ServicesTab, UninstallCell, type PendingAction } from "./EndpointActions";
 import { IsolationCard, LostModeDialog, LostWipeCard, SuspendSignInDialog, WipeDialog } from "./LostWipe";
 import { RemoteSessionButton, RemoteSessionsCard } from "./RemoteSessions";
 import { RunScriptDialog } from "./RunScriptDialog";
 import { PendingUpdateView, UpdateNowButton } from "./UpdateAutomation";
 
-const TABS = ["Overview", "Posture", "Software", "Vulnerabilities", "History", "Commands", "Updates"] as const;
+const TABS = ["Overview", "Posture", "Software", "Services", "Vulnerabilities", "History", "Actions", "Commands", "Updates"] as const;
 type TabName = (typeof TABS)[number];
 
 const ACTIONS: { type: CommandType; label: string; role: Role; help: string; danger?: boolean }[] = [
@@ -40,7 +42,7 @@ const EXTRA_LABEL: Partial<Record<CommandType, string>> = {
 
 function commandLabel(c: DeviceCommand): string {
   if (c.type === "run_script") return `Run script ${String(c.params.script ?? "")}`.trim();
-  return ACTIONS.find((a) => a.type === c.type)?.label ?? EXTRA_LABEL[c.type] ?? c.type;
+  return ACTIONS.find((a) => a.type === c.type)?.label ?? EXTRA_LABEL[c.type] ?? endpointActionLabel(c) ?? c.type;
 }
 
 const STATUS_TONE: Record<DeviceCommand["status"], "default" | "warn" | "good" | "accent"> = {
@@ -374,9 +376,14 @@ function DirectoryCard({ device }: { device: Device }) {
   );
 }
 
-function SoftwareTab({ id }: { id: string }) {
+function SoftwareTab({ device, commands, reload }: { device: Device; commands: DeviceCommand[] | null; reload: () => void }) {
+  const id = device.id;
+  const { can } = useAuth();
   const [q, setQ] = useState("");
-  const { data, error } = useApi(() => api.deviceSoftware(id, q.trim() || undefined), [id, q]);
+  const [pending, setPending] = useState<PendingAction | null>(null);
+  const { data, error, reload: reloadSoftware } = useApi(() => api.deviceSoftware(id, q.trim() || undefined), [id, q]);
+  // Uninstall: Windows devices, admins (the button explains when the agent is too old).
+  const uninstall = can("admin") && device.os_family === "windows" && device.status === "active";
   return (
     <Card title={`Installed software${data ? ` (${data.length})` : ""}`} actions={
       <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filter by name or publisher" aria-label="Filter software"
@@ -386,18 +393,24 @@ function SoftwareTab({ id }: { id: string }) {
       {data && data.length === 0 ? (
         <Empty>No software reported.</Empty>
       ) : (
-        <Table head={["Name", "Version", "Publisher", "Installed", "Source"]}>
+        <Table head={["Name", "Version", "Publisher", "Installed", "Source", ...(uninstall ? [""] : [])]}>
           {(data ?? []).map((s, i) => (
-            <tr key={`${s.name}-${s.version}-${i}`}>
+            <tr key={`${s.name}-${s.version}-${i}`} className="align-top">
               <td className="px-3 py-1.5">{s.name}</td>
               <td className="px-3 py-1.5 font-mono text-xs text-ink-2">{s.version || "—"}</td>
               <td className="px-3 py-1.5 text-ink-2">{s.publisher || "—"}</td>
               <td className="px-3 py-1.5 text-xs text-ink-3">{s.install_date || "—"}</td>
               <td className="px-3 py-1.5 text-xs text-ink-3">{s.source}</td>
+              {uninstall && (
+                <td className="px-3 py-1.5">
+                  <UninstallCell device={device} software={s} commands={commands} onAsk={setPending} />
+                </td>
+              )}
             </tr>
           ))}
         </Table>
       )}
+      <EndpointActionDialog device={device} action={pending} onClose={() => setPending(null)} onDone={() => { reload(); reloadSoftware(); }} />
     </Card>
   );
 }
@@ -752,6 +765,7 @@ export default function DeviceDetail() {
             {device.device_state === "lost" && <Tag tone="warn">Lost</Tag>}
             {device.device_state === "wipe_pending" && <Tag tone="critical">Wipe pending</Tag>}
             {device.device_state === "isolated" && <Tag tone="warn">Sign-in suspended</Tag>}
+            {device.usb_storage === "blocked" && <Tag tone="warn">USB storage blocked</Tag>}
             <ConnectivityTag value={device.connectivity} />
             <AssetRecordLink deviceId={device.id} />
           </div>
@@ -906,7 +920,8 @@ export default function DeviceDetail() {
       <div role="tabpanel" id="device-tabpanel" aria-labelledby={`device-tab-${tab}`}>
       {tab === "Overview" && <Overview device={device} />}
       {tab === "Posture" && <PostureCards device={device} />}
-      {tab === "Software" && <SoftwareTab id={device.id} />}
+      {tab === "Software" && <SoftwareTab device={device} commands={cmds.data} reload={cmds.reload} />}
+      {tab === "Services" && <ServicesTab device={device} commands={cmds.data} reload={cmds.reload} />}
       {tab === "Vulnerabilities" && <VulnerabilitiesTab id={device.id} />}
       {tab === "History" && (
         <>
@@ -915,6 +930,7 @@ export default function DeviceDetail() {
         </>
       )}
       {tab === "Updates" && <UpdatesTab id={device.id} admin={can("admin") && active} analyst={can("analyst") && active} />}
+      {tab === "Actions" && <ActionsTab device={device} commands={cmds.data} error={cmds.error} reload={() => { cmds.reload(); reload(); }} />}
       {tab === "Commands" && <CommandsTab device={device} commands={cmds.data} error={cmds.error} reload={cmds.reload} />}
       {tab === "Commands" && can("admin") && <DeviceApprovals id={device.id} onChanged={() => { cmds.reload(); reload(); }} />}
       </div>
