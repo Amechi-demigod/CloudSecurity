@@ -1,8 +1,8 @@
 """Built-in endpoint actions: the Windows services inventory (device_services)
 that the Services tab and manage_service work from (docs/DEVICE_MANAGEMENT.md#endpoint-actions).
 
-Revision ID: 0022_endpoint_actions
-Revises: 0021_directory_cloud_sources
+Revision ID: 0023_endpoint_actions
+Revises: 0022_windows_updates
 Create Date: 2026-11-04
 """
 from __future__ import annotations
@@ -12,8 +12,8 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '0022_endpoint_actions'
-down_revision: str | None = '0021_directory_cloud_sources'
+revision: str = '0023_endpoint_actions'
+down_revision: str | None = '0022_windows_updates'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

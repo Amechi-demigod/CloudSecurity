@@ -25,6 +25,7 @@ import (
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/actions"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/directory"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/model"
+	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/osupdates"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/remote"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/scripts"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/wipe"
@@ -64,6 +65,10 @@ const (
 	UninstallSoftware = actions.UninstallSoftware
 	BlockUSBStorage   = actions.BlockUSBStorage
 	UnblockUSBStorage = actions.UnblockUSBStorage
+	// ScanOSUpdates starts a read-only Windows Update search in the background
+	// (internal/osupdates); the report is uploaded when it completes and the
+	// result only says whether it started.
+	ScanOSUpdates = osupdates.CommandType
 )
 
 // Lost-mode message limits (also enforced server-side).
@@ -97,6 +102,7 @@ var allowedParams = map[string][]string{
 	UninstallSoftware:     actions.AllowedParams[actions.UninstallSoftware],
 	BlockUSBStorage:       actions.AllowedParams[actions.BlockUSBStorage],
 	UnblockUSBStorage:     actions.AllowedParams[actions.UnblockUSBStorage],
+	ScanOSUpdates:         {},
 }
 
 // incidentIDRe matches an optional, operator-supplied incident reference
@@ -243,6 +249,9 @@ type Deps struct {
 	// EndpointAction runs manage_service / uninstall_software /
 	// block_usb_storage / unblock_usb_storage (internal/actions).
 	EndpointAction func(ctx context.Context, c model.Command) Outcome
+	// ScanOSUpdates starts a Windows Update search in the background and
+	// returns at once (succeeded = started or already running).
+	ScanOSUpdates func(ctx context.Context, c model.Command) Outcome
 }
 
 // Outcome of an executed command. After (if set) runs once the result has been
@@ -354,6 +363,11 @@ func Execute(ctx context.Context, c model.Command, d Deps, restart func()) Outco
 			return Outcome{Status: "rejected", Output: "endpoint actions are not available in this agent mode"}
 		}
 		return d.EndpointAction(ctx, c)
+	case ScanOSUpdates:
+		if d.ScanOSUpdates == nil {
+			return Outcome{Status: "rejected", Output: "OS update reports are not available in this agent mode"}
+		}
+		return d.ScanOSUpdates(ctx, c)
 	}
 	return Outcome{Status: "rejected", Output: "command type not in allowlist"}
 }

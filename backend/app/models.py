@@ -671,6 +671,8 @@ class Device(TenantMixin, Base):
     ad_domain: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     ad_computer_sid: Mapped[str | None] = mapped_column(String(184), nullable=True, index=True)
     entra_device_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    # Latest Windows Update report (docs/PATCHING.md); None until an agent 1.4.0+ reports one.
+    os_updates: Mapped[DeviceOsUpdates | None] = relationship(lazy="selectin", uselist=False, viewonly=True)
 
 
 class DeviceCredential(TenantMixin, Base):
@@ -858,6 +860,48 @@ class DeviceLogBundle(TenantMixin, Base):
     sha256: Mapped[str] = mapped_column(String(64))
     content_type: Mapped[str] = mapped_column(String(64), default="application/gzip")
     data: Mapped[bytes] = mapped_column(LargeBinary)
+
+
+class DeviceOsUpdates(TenantMixin, Base):
+    """Missing OS updates of one device (docs/PATCHING.md): the latest report
+    of the agent's Windows Update search, replaced on every report. Read-only:
+    nothing here installs anything. The per-update list is deferred so fleet
+    views (health, Devices list, dashboard) only load the summary columns."""
+
+    __tablename__ = "device_os_updates"
+
+    device_id: Mapped[str] = mapped_column(String(32), ForeignKey("devices.id", ondelete="CASCADE"), primary_key=True)
+    # First and latest report received.
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    reported_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    # When the agent ran the search, how it ended (ok | failed) and why it failed.
+    scanned_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    scan_status: Mapped[str] = mapped_column(String(16), default="ok")
+    scan_error: Mapped[str] = mapped_column(String(1024), default="")
+    scan_trigger: Mapped[str] = mapped_column(String(16), default="schedule")  # schedule | command
+    scan_duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Last search that succeeded (ours or Windows' own, whichever is later).
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_install_success_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # When the search that produced the stored update list ran (None: no search succeeded yet,
+    # so the list and counts below are unknown rather than "nothing missing").
+    listed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Configured update source: wsus | wufb | microsoft_update | windows_update | unknown.
+    source: Mapped[str] = mapped_column(String(24), default="unknown")
+    source_detail: Mapped[str] = mapped_column(String(255), default="")
+    # Windows Update service (wuauserv): state and start type as reported.
+    service_state: Mapped[str] = mapped_column(String(24), default="")
+    service_start_type: Mapped[str] = mapped_column(String(24), default="")
+    reboot_pending: Mapped[bool] = mapped_column(Boolean, default=False)
+    # First report that said a restart is pending (cleared when none is).
+    reboot_pending_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    missing_count: Mapped[int] = mapped_column(Integer, default=0)
+    # Security / critical classification, and MSRC severity Critical.
+    security_count: Mapped[int] = mapped_column(Integer, default=0)
+    critical_count: Mapped[int] = mapped_column(Integer, default=0)
+    oldest_security_release: Mapped[date | None] = mapped_column(Date, nullable=True)
+    oldest_critical_release: Mapped[date | None] = mapped_column(Date, nullable=True)
+    updates: Mapped[list] = mapped_column(JSON, default=list, deferred=True)
 
 
 REMOTE_SESSION_OPEN_STATES = ("requested", "awaiting_consent", "active")

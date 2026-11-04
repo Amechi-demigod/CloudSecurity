@@ -285,6 +285,7 @@ The *Endpoint device* source ([device management](DEVICE_MANAGEMENT.md)) raises:
 | `disk_encryption_off`, `firewall_off`, `antivirus_off`, `sip_disabled` | high | the issue appears on a check-in (first check-in, or it was not present at the previous one) |
 | `av_signatures_outdated`, `os_updates_pending` (past the grace period), `gatekeeper_off`, `secure_boot_off` | medium | same |
 | `screen_lock_off` | low | same |
+| `os_critical_updates_missing`, `windows_update_disabled` / `os_security_updates_missing`, `os_reboot_pending`, `os_update_scan_stale` | high / medium | same, from the Windows Update report of agents 1.4.0+ ([PATCHING.md](PATCHING.md#issues-and-notifications)); raised with the check-in after the report |
 | `stale` / `inactive` | medium / high | a device stops checking in (polled every 5 minutes by the dispatcher leader; the first poll only records a baseline). Notifies again if the device comes back and later goes quiet again |
 | `command_succeeded` / `command_failed` / `command_rejected` | low / medium / medium | the agent reports the result of a remote action (lock device, collect logs, ...) |
 

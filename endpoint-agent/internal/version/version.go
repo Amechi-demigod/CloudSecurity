@@ -20,7 +20,9 @@ var Version = "0.1.0-dev"
 // all OSes: Kerberos on Windows, a service account everywhere); endpoint_actions
 // marks the built-in endpoint actions manage_service / uninstall_software /
 // block_usb_storage / unblock_usb_storage and the services inventory (agent
-// 1.4.0+, Windows only for now, internal/actions).
+// 1.4.0+, Windows only for now, internal/actions); windows_updates marks the
+// missing-OS-updates report and scan_os_updates (Windows only for now,
+// internal/osupdates).
 const Features = "check_for_update,host_isolation,directory_collector" + platformFeatures
 
 // UserAgent is sent on every request to the server.
