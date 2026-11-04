@@ -74,6 +74,13 @@ type Agent struct {
 	directoryRetryDelays []time.Duration
 	dirRunning           atomic.Bool
 	dirWG                sync.WaitGroup
+	// OSUpdateScan runs one Windows Update search (nil: osupdates.Scan;
+	// replaced in tests); osUpd* track the background search and its schedule.
+	OSUpdateScan        func(ctx context.Context) (model.OSUpdateReport, error)
+	osUpdRunning        atomic.Bool
+	osUpdWG             sync.WaitGroup
+	nextOSUpdateScan    time.Time
+	osUpdateRetryDelays []time.Duration
 	// baseCtx is Run's context: background work (directory syncs) outlives
 	// the command poll that started it but stops with the agent.
 	baseCtx context.Context
@@ -236,6 +243,7 @@ func (a *Agent) handle(ctx context.Context, c model.Command) {
 		RestoreHost:    a.restoreHost,
 		RemoteSession:  a.remoteSession,
 		DirectorySync:  a.directorySync,
+		ScanOSUpdates:  a.scanOSUpdates,
 	}, a.Restart)
 	log.Info("command finished", "status", out.Status, "output", out.Output)
 	if err := a.client.ResultFull(ctx, c, out.Status, out.Output, out.ExitCode, out.ResultData); err != nil {
@@ -415,6 +423,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		}
 		a.maybeRelock(ctx)
 		a.maybeReenforceSignin(ctx)
+		a.maybeScanOSUpdates()
 	}
 }
 

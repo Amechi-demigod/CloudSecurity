@@ -18,6 +18,7 @@ Linux is not supported yet. The code is split so it can be added later: see [Add
 - [Enrolling devices](#enrolling-devices) one by one: [Windows](#windows-1011) and [macOS](#macos)
 - [What data is collected](#what-data-is-collected) (privacy)
 - [Device health and issues](#device-health-and-issues)
+- [Missing OS updates (Windows)](PATCHING.md) (read-only Windows Update report, agent 1.4.0+)
 - [Remote actions](#remote-actions)
 - [Two-person approval](#two-person-approval)
 - [Lost mode](#lost-mode)
@@ -310,6 +311,7 @@ The server derives **issues** from the latest posture and timestamps whenever a 
 | `secure_boot_off` | medium | Secure Boot reported off |
 | `stale` | medium | no contact for more than `DEVICE_STALE_HOURS` (24) |
 | `inactive` | high | no contact for more than `DEVICE_INACTIVE_DAYS` (7) |
+| `os_critical_updates_missing`, `os_security_updates_missing`, `os_reboot_pending`, `windows_update_disabled`, `os_update_scan_stale` | high / medium | from the Windows Update report of agents 1.4.0+: see [PATCHING.md](PATCHING.md#issues-and-notifications). Once a device has a report, `os_updates_pending` is no longer raised for it |
 
 **Health** is *At risk* if any issue is high, *Warning* if there are only medium or low issues, *Healthy* if there are none, and *No data* before the first check-in. The dashboard tile and the Devices page show fleet totals: device counts, % encrypted, % with the firewall on, and stale devices. Checks that report `unknown` (for example BitLocker on Windows Server, or Secure Boot on a VM) never raise issues.
 
@@ -331,6 +333,7 @@ There is no generic "run command". Only the following actions exist, and each on
 | `wipe_device` | admin **+ a second admin** | Windows only, device opted in at install time: factory-resets the device through `MDM_RemoteWipe` ([Remote wipe](#remote-wipe-windows)). Never queued directly: `POST /api/devices/{id}/wipe` creates an approval request |
 | `run_script` | admin (**+ a second admin** unless the signed manifest says `risk: low`) | runs one approved, signed script with validated parameters ([Approved scripts](#approved-scripts)) |
 | `directory_sync` | admin | Agent 1.3.0+ designated as a **directory collector** only: reads Active Directory over LDAPS / StartTLS (never plain LDAP) with fixed filters and attributes and uploads the objects in batches to the server ([Directory discovery](DIRECTORY_DISCOVERY.md)). Never queued directly: directory sources queue it on schedule or with Sync now. Read-only: it changes nothing in the directory |
+| `scan_os_updates` | analyst | Windows, agent 1.4.0+: "Check for updates now", a **read-only** Windows Update search against the device's configured source (WSUS / WUfB / Microsoft Update) in the background; the report is uploaded when it completes ([PATCHING.md](PATCHING.md)). Never queued directly: `POST /api/devices/{id}/os-updates/scan`. The agent also searches on its own about every 12 hours |
 | `start_remote_session` | analyst (View only) / admin (View and control) | Windows only: opens an attended remote session after the signed-in user allows it ([Remote sessions](#remote-sessions-windows)). Never queued directly: `POST /api/devices/{id}/remote-sessions` |
 
 Every action requires a **reason**. Creating one is written to the audit log (`device_command_created`, with actor, device, type, parameters and reason), and so are cancellation, completion (reported by the device), log-bundle downloads, token creation and revocation, enrollment, re-enrollment, revocation and deletion.

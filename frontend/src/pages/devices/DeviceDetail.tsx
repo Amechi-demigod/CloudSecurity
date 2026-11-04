@@ -11,12 +11,14 @@ import { fmtAgo, fmtTime } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
 import { useUrlState } from "../../lib/useUrlState";
 import { AssetRecordLink } from "../assets/AssetRecordLink";
+import { OsUpdatesTab } from "./OsUpdates";
 import { IsolationCard, LostModeDialog, LostWipeCard, SuspendSignInDialog, WipeDialog } from "./LostWipe";
 import { RemoteSessionButton, RemoteSessionsCard } from "./RemoteSessions";
 import { RunScriptDialog } from "./RunScriptDialog";
 import { PendingUpdateView, UpdateNowButton } from "./UpdateAutomation";
 
-const TABS = ["Overview", "Posture", "Software", "Vulnerabilities", "History", "Commands", "Updates"] as const;
+// "Updates" is the agent's own version / rollout; "OS updates" the Windows Update report (Windows only).
+const TABS = ["Overview", "Posture", "Software", "Vulnerabilities", "OS updates", "History", "Commands", "Updates"] as const;
 type TabName = (typeof TABS)[number];
 
 const ACTIONS: { type: CommandType; label: string; role: Role; help: string; danger?: boolean }[] = [
@@ -36,6 +38,7 @@ const EXTRA_LABEL: Partial<Record<CommandType, string>> = {
   isolate_host: "Suspend sign-in",
   restore_host: "Restore sign-in",
   start_remote_session: "Remote session",
+  scan_os_updates: "Check for OS updates",
 };
 
 function commandLabel(c: DeviceCommand): string {
@@ -734,6 +737,8 @@ export default function DeviceDetail() {
     setTab("Commands");
   }
   const active = device.status === "active";
+  const tabs = TABS.filter((t) => t !== "OS updates" || device.os_family === "windows");
+  const tabId = (t: TabName) => `device-tab-${t.replace(" ", "-")}`;
   const suspendSignInBlockedReason = !device.isolation.supported
     ? "Not supported by this agent version"
     : device.lost_mode.status
@@ -866,21 +871,22 @@ export default function DeviceDetail() {
         className="mb-4 flex gap-1 overflow-x-auto border-b border-line"
         onKeyDown={(e) => {
           // WAI-ARIA tabs: arrows move between tabs, Home / End jump to the ends
-          const i = TABS.indexOf(tab);
-          const next = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: TABS.length - 1 }[e.key];
+          const i = tabs.indexOf(tab);
+          const next = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: tabs.length - 1 }[e.key];
           if (next === undefined) return;
           e.preventDefault();
-          const t = TABS[(next + TABS.length) % TABS.length];
+          const t = tabs[(next + tabs.length) % tabs.length];
           setTab(t);
-          document.getElementById(`device-tab-${t}`)?.focus();
+          document.getElementById(tabId(t))?.focus();
         }}
       >
-        {TABS.map((t) => {
-          const count = t === "Software" ? device.software_count : t === "Posture" ? device.issues.length : null;
+        {tabs.map((t) => {
+          const count = t === "Software" ? device.software_count : t === "Posture" ? device.issues.length
+            : t === "OS updates" ? device.os_updates?.security ?? null : null;
           return (
             <button
               key={t}
-              id={`device-tab-${t}`}
+              id={tabId(t)}
               role="tab"
               aria-selected={tab === t}
               aria-controls="device-tabpanel"
@@ -892,7 +898,7 @@ export default function DeviceDetail() {
             >
               {t}
               {!!count && (
-                <span className={`rounded-full px-1.5 text-[11px] leading-5 ${t === "Posture" ? "bg-sev-high/15 text-sev-high" : "bg-surface-2 text-ink-2"}`}>
+                <span className={`rounded-full px-1.5 text-[11px] leading-5 ${t === "Posture" || t === "OS updates" ? "bg-sev-high/15 text-sev-high" : "bg-surface-2 text-ink-2"}`}>
                   {count}
                 </span>
               )}
@@ -903,11 +909,12 @@ export default function DeviceDetail() {
           );
         })}
       </div>
-      <div role="tabpanel" id="device-tabpanel" aria-labelledby={`device-tab-${tab}`}>
+      <div role="tabpanel" id="device-tabpanel" aria-labelledby={tabId(tab)}>
       {tab === "Overview" && <Overview device={device} />}
       {tab === "Posture" && <PostureCards device={device} />}
       {tab === "Software" && <SoftwareTab id={device.id} />}
       {tab === "Vulnerabilities" && <VulnerabilitiesTab id={device.id} />}
+      {tab === "OS updates" && <OsUpdatesTab device={device} onChanged={() => { cmds.reload(); reload(); }} />}
       {tab === "History" && (
         <>
           <RemoteSessionsCard deviceId={device.id} />
