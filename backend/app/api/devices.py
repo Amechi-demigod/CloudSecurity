@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response
@@ -177,38 +177,51 @@ def create_installer(body: InstallerCreate, request: Request, admin: User = Depe
     The token's plaintext exists only in the response body (the file); the
     database keeps its hash like any other enrollment token, so it is listed,
     limited and revocable under Enrollment tokens."""
+    now = utcnow()
+    spec = installers.PLATFORMS[body.platform]
+    response, _ = installer_download(db, admin, request, platform=body.platform,
+                                     name=body.name or f"Installer {spec['label']} {now:%Y-%m-%d}",
+                                     max_uses=body.max_devices, expires_at=now + timedelta(days=body.expires_in_days),
+                                     device_group=body.device_group or None, include_ca=body.include_ca,
+                                     allow_wipe=body.allow_wipe)
+    db.commit()
+    return response
+
+
+def installer_download(db: Session, admin: User, request: Request, *, platform: str, name: str, max_uses: int,
+                       expires_at: datetime, device_group: str | None, include_ca: bool | None, allow_wipe: bool,
+                       **audit_extra) -> tuple[Response, EnrollmentToken]:
+    """Build a pre-configured installer with a fresh package-bound token (added
+    to the session and audited; the caller commits). Shared by Enroll devices
+    and the agent deployments of Discovery (directory/deploy_api.py)."""
     s = config.settings
     if not installer_limiter.hit(f"user:{admin.id}", s.agent_installer_rate_limit,
                                  s.agent_installer_rate_window_seconds):
         raise HTTPException(429, "too many installer downloads; try again later", headers={"Retry-After": "60"})
-    include_ca = body.include_ca
-    if body.allow_wipe and body.platform != "windows-msi":
+    if allow_wipe and platform != "windows-msi":
         raise HTTPException(422, "remote wipe is only available for Windows devices (MSI)")
     try:
         if include_ca is None:
             include_ca = installers.server_ca_pem() is not None
         installers.server_url()
-        installers.artifact(body.platform, verify=False)
+        installers.artifact(platform, verify=False)
     except installers.InstallerConfigError as e:
         raise HTTPException(409, str(e)) from None
     except installers.InstallerUnavailable as e:
         raise HTTPException(503, str(e)) from None
-    spec = installers.PLATFORMS[body.platform]
+    spec = installers.PLATFORMS[platform]
     raw = svc.new_enrollment_token()
-    now = utcnow()
-    name = body.name or f"Installer {spec['label']} {now:%Y-%m-%d}"
     t = EnrollmentToken(name=name[:128], token_hash=svc.hash_secret(raw), token_prefix=raw[:10],
-                        max_uses=body.max_devices, created_by=admin.email, created_at=now,
-                        expires_at=now + timedelta(days=body.expires_in_days), package_platform=body.platform,
-                        device_group=body.device_group or None)
+                        max_uses=max_uses, created_by=admin.email, created_at=utcnow(),
+                        expires_at=expires_at, package_platform=platform, device_group=device_group)
     try:
-        data, art, ca_included = installers.build(body.platform, raw, include_ca, body.allow_wipe)
+        data, art, ca_included = installers.build(platform, raw, include_ca, allow_wipe)
     except installers.InstallerConfigError as e:
         raise HTTPException(409, str(e)) from None
     except installers.InstallerUnavailable as e:
         raise HTTPException(503, str(e)) from None
     except Exception:
-        log.exception("building the %s installer failed", body.platform)
+        log.exception("building the %s installer failed", platform)
         raise HTTPException(500, "building the installer failed; see the server log") from None
     del raw  # the plaintext token now only exists inside `data`
     digest = hashlib.sha256(data).hexdigest()
@@ -216,16 +229,15 @@ def create_installer(body: InstallerCreate, request: Request, admin: User = Depe
     db.add(t)
     db.flush()
     audit(db, "agent_installer_created", actor=admin, target=f"enrollment-token:{t.id}", ip=client_ip(request),
-          name=t.name, platform=body.platform, agent_version=art.version, base_sha256=art.sha256,
+          name=t.name, platform=platform, agent_version=art.version, base_sha256=art.sha256,
           sha256=digest, size_bytes=len(data), max_uses=t.max_uses, expires_at=t.expires_at.isoformat() + "Z",
           device_group=t.device_group, ca_included=ca_included, server_url=installers.server_url(),
-          allow_wipe=body.allow_wipe)
-    db.commit()
+          allow_wipe=allow_wipe, **audit_extra)
     return Response(content=data, media_type=spec["media_type"], headers={
         "Content-Disposition": f'attachment; filename="{spec["download"]}"',
         "Cache-Control": "no-store", "X-Content-SHA256": digest, "X-Enrollment-Token-Id": t.id,
         "X-Agent-Version": art.version, "X-CA-Included": "true" if ca_included else "false",
-        "X-Allow-Wipe": "true" if body.allow_wipe else "false"})
+        "X-Allow-Wipe": "true" if allow_wipe else "false"}), t
 
 
 @router.post("/enrollment-tokens/{token_id}/revoke", response_model=EnrollmentTokenOut)

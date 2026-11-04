@@ -1,6 +1,6 @@
 // Typed client for /api/directory (directory discovery: on-prem Active Directory read by a collector agent,
 // Microsoft Entra ID + Intune and Google Workspace read by the server).
-import { BASE, qs, request } from "./api";
+import { BASE, qs, request, requestFile, type InstallerPlatform } from "./api";
 
 export type DirectoryType = "ad" | "entra" | "google";
 export type DirectoryScope = "computers" | "users";
@@ -450,4 +450,112 @@ export const directoryApi = {
   users: (f: UserFilters = {}) => request<{ items: DirUser[]; total: number }>(`/api/directory/users${qs({ ...f })}`),
   addToAssets: (computer_ids: string[]) =>
     request<{ created: number; skipped: number; asset_ids: string[] }>("/api/directory/computers/add-to-assets", J({ computer_ids })),
+  deployPlan: (sel: DeploySelection) => request<DeployPlan>("/api/directory/deployments/plan", J(sel)),
+  createDeployment: (body: DeploymentCreate) => request<Deployment & { token?: string }>("/api/directory/deployments", J(body)),
+  deployments: () => request<Deployment[]>("/api/directory/deployments"),
+  deployment: (id: string) => request<Deployment>(`/api/directory/deployments/${id}`),
+  revokeDeployment: (id: string) => request<Deployment>(`/api/directory/deployments/${id}/revoke`, { method: "POST" }),
+  deploymentInstaller: (id: string, platform: InstallerPlatform) => requestFile(`/api/directory/deployments/${id}/installer`, { platform }),
+};
+
+// --- Deploy agent (docs/DIRECTORY_DISCOVERY.md#deploying-the-agent) ---
+export type DeployRoute = "gpo" | "intune" | "rmm" | "manual";
+export type ExcludedReason = "has_agent" | "mobile" | "no_agent_expected" | "disabled" | "linux" | "unknown_os" | "gone";
+
+/** Explicit computers, or every computer issue matching a Discovery filter (use_filter). */
+export interface DeploySelection {
+  computer_ids?: string[];
+  use_filter?: boolean;
+  issue_type?: string | null;
+  source_id?: string | null;
+  q?: string | null;
+  domain?: string | null;
+}
+
+export interface DeployMachine {
+  computer_id: string;
+  name: string;
+  os: string;
+  platform: string;
+  domain: string;
+  ou: string;
+  kinds: string[];
+  source_ids: string[];
+  route: DeployRoute | null;
+  allowed_routes: DeployRoute[];
+  reason: ExcludedReason | "";
+}
+
+export interface RouteFacts {
+  route: DeployRoute;
+  label: string;
+  count: number;
+  platforms: Record<string, number>;
+  ous?: { domain: string; ou: string; count: number }[];
+}
+
+type InstallerAvailability = Record<InstallerPlatform, { available: boolean; label: string; filename: string; version?: string; reason?: string }>;
+
+export interface DeployPlan {
+  routes: (RouteFacts & { items: DeployMachine[] })[];
+  excluded: { reason: ExcludedReason; label: string; count: number; items: DeployMachine[] }[];
+  total: number;
+  deployable: number;
+  server_url: string | null;
+  agent_download_url: string | null;
+  installers: InstallerAvailability;
+}
+
+export interface DeploymentCreate extends DeploySelection {
+  name: string;
+  routes?: Record<string, DeployRoute>;
+  expires_in_days: number;
+  device_group?: string | null;
+  command_line_token: boolean;
+}
+
+export interface DeploymentItem {
+  computer_id: string;
+  name: string;
+  os: string;
+  platform: string;
+  route: DeployRoute;
+  domain: string;
+  ou: string;
+  kinds: string[];
+  status: "enrolled" | "pending" | "gone";
+  device_id: string | null;
+  device_hostname: string | null;
+  enrolled_at: string | null;
+  via_deployment: boolean;
+}
+
+export interface Deployment {
+  id: string;
+  name: string;
+  state: "active" | "expired" | "revoked";
+  route_counts: Partial<Record<DeployRoute, number>>;
+  excluded_counts: Partial<Record<ExcludedReason, number>>;
+  selection_filter: Record<string, string> | null;
+  device_group: string | null;
+  expires_at: string;
+  created_by: string | null;
+  created_at: string;
+  revoked_at: string | null;
+  revoked_by: string | null;
+  progress: { total: number; enrolled: number; pending: number; gone: number; pct: number | null; enrolled_with_tokens: number; age_days: number };
+  // Detail only:
+  items?: DeploymentItem[];
+  routes?: RouteFacts[];
+  tokens?: { id: string; name: string; token_prefix: string; package_platform: InstallerPlatform | null; max_uses: number | null; use_count: number; expires_at: string; state: string }[];
+  server_url?: string | null;
+  agent_download_url?: string | null;
+  installers?: InstallerAvailability;
+}
+
+export const ROUTE_LABEL: Record<DeployRoute, string> = {
+  gpo: "Group Policy",
+  intune: "Microsoft Intune",
+  rmm: "ConfigMgr / Jamf / RMM",
+  manual: "Download / manual",
 };

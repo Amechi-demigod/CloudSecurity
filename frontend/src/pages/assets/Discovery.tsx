@@ -1,6 +1,6 @@
-import { Network, ShieldAlert } from "lucide-react";
+import { Network, Rocket, ShieldAlert } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../../auth/context";
 import { Breadcrumbs, Button, Card, Empty, ErrorNote, PageHeader, Select, Stat, Table, Tag } from "../../components/ui";
 import { SourceBadges } from "../../components/directoryShared";
@@ -19,9 +19,11 @@ import {
   type IssueType,
 } from "../../directoryApi";
 import { errMsg } from "../../lib/assets";
+import { filterLabel } from "../../lib/deploy";
 import { fmtAgo, fmtTime } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
 import { useUrlState } from "../../lib/useUrlState";
+import type { DeployState } from "./DeployAgent";
 
 const PAGE = 100;
 // issues: computer issues; users: user issues; people: directory users.
@@ -119,6 +121,15 @@ function AssetCell({ assetId, canAdd, busy, onAdd }: { assetId: string | null; c
   );
 }
 
+function DeployLink({ onClick }: { onClick: () => void }) {
+  return (
+    <button type="button" onClick={onClick} className="mt-0.5 inline-flex items-center gap-1 whitespace-nowrap text-accent hover:underline">
+      <Rocket aria-hidden className="h-3 w-3" />
+      Deploy agent
+    </button>
+  );
+}
+
 function PrivilegedBadge({ roles }: { roles?: string[] }) {
   return (
     <span
@@ -134,6 +145,7 @@ function PrivilegedBadge({ roles }: { roles?: string[] }) {
 export default function Discovery() {
   const { can } = useAuth();
   const isAdmin = can("admin");
+  const navigate = useNavigate();
   const [type, setType] = useUrlState("type");
   const [viewParam, setView] = useUrlState("view", "issues");
   const view: View = type && USER_ISSUES.includes(type as IssueType) ? "users" : (viewParam as View);
@@ -218,6 +230,15 @@ export default function Discovery() {
     }
   }
 
+  function deploy(state: DeployState) {
+    navigate("/it-assets/discovery/deploy", { state });
+  }
+
+  function deployIds(ids: string[]) {
+    if (ids.length === 0) return;
+    deploy({ selection: { computer_ids: ids }, label: `${ids.length} selected machine${ids.length === 1 ? "" : "s"}` });
+  }
+
   function toggle(id: string, on: boolean) {
     setSelected((prev) => {
       const next = new Set(prev);
@@ -238,6 +259,9 @@ export default function Discovery() {
             <div className="flex flex-wrap items-center gap-2">
               <Link to="/connectors#directories" className="rounded border border-line bg-surface-2 px-3 py-1.5 text-sm font-medium text-ink hover:bg-line">
                 Directory sources
+              </Link>
+              <Link to="/it-assets/discovery/deployments" className="rounded border border-line bg-surface-2 px-3 py-1.5 text-sm font-medium text-ink hover:bg-line">
+                Deployments
               </Link>
               {(view === "issues" || view === "users") && (
                 <a
@@ -284,7 +308,17 @@ export default function Discovery() {
   const addableIssues = issueRows.filter((r) => r.kind === "computer" && r.computer_id && !r.it_asset_id);
   const addableComps = compRows.filter((r) => !r.in_it_assets && !r.missing_since);
   const addable: string[] = view === "computers" ? addableComps.map((r) => r.id) : addableIssues.map((r) => r.computer_id!);
-  const allSelected = addable.length > 0 && addable.every((id) => selected.has(id));
+  // Machines without an agent can get one (the server excludes what cannot run it, with the reason).
+  const deployable: string[] =
+    view === "computers"
+      ? compRows.filter((r) => !r.missing_since && r.match_status !== "matched").map((r) => r.id)
+      : issueRows.filter((r) => r.kind === "computer" && r.computer_id && !r.device_id).map((r) => r.computer_id!);
+  const selectable = Array.from(new Set([...addable, ...deployable]));
+  const allSelected = selectable.length > 0 && selectable.every((id) => selected.has(id));
+  const selAdd = addable.filter((id) => selected.has(id));
+  const selDeploy = deployable.filter((id) => selected.has(id));
+  const issueTotal = issues.data?.total ?? 0;
+  const canDeployFilter = view === "issues" && issueType === "not_managed" && issueTotal > 0;
   const cov = s?.coverage;
   // KPI tiles: the issue types the configured directory types can produce.
   const relevant = new Set((s?.source_types ?? ["ad"]).flatMap((t) => ISSUES_BY_TYPE[t] ?? []));
@@ -359,9 +393,27 @@ export default function Discovery() {
       )}
       <Search value={q} onChange={setQ} label={view === "users" || view === "people" ? "Search users" : "Search name, OU, OS"} />
       {canSelect && (
-        <div className="ml-auto">
-          <Button variant="primary" disabled={busy || selected.size === 0} onClick={() => void add(Array.from(selected))}>
-            Add {selected.size > 0 ? selected.size : ""} to IT assets
+        <div className="ml-auto flex flex-wrap gap-2">
+          {selDeploy.length === 0 && canDeployFilter ? (
+            <Button
+              onClick={() =>
+                deploy({
+                  selection: { use_filter: true, issue_type: issueType, source_id: sourceId || null, q: dq || null, domain: dDomain || null },
+                  label: filterLabel(issueType, dq, dDomain) + (sourceId ? ` from ${sourceNames[sourceId] ?? "one source"}` : ""),
+                })
+              }
+            >
+              <Rocket aria-hidden className="mr-1 inline h-3.5 w-3.5" />
+              Deploy agent to all {issueTotal.toLocaleString()}
+            </Button>
+          ) : (
+            <Button disabled={selDeploy.length === 0} onClick={() => deployIds(selDeploy)}>
+              <Rocket aria-hidden className="mr-1 inline h-3.5 w-3.5" />
+              Deploy agent{selDeploy.length > 0 ? ` (${selDeploy.length})` : ""}
+            </Button>
+          )}
+          <Button variant="primary" disabled={busy || selAdd.length === 0} onClick={() => void add(selAdd)}>
+            Add {selAdd.length > 0 ? selAdd.length : ""} to IT assets
           </Button>
         </div>
       )}
@@ -372,8 +424,8 @@ export default function Discovery() {
     <Check
       label="Select all on this page"
       checked={allSelected}
-      disabled={addable.length === 0}
-      onChange={(on) => setSelected(on ? new Set([...selected, ...addable]) : new Set([...selected].filter((x) => !addable.includes(x))))}
+      disabled={selectable.length === 0}
+      onChange={(on) => setSelected(on ? new Set([...selected, ...selectable]) : new Set([...selected].filter((x) => !selectable.includes(x))))}
     />
   ) : null;
 
@@ -476,7 +528,7 @@ export default function Discovery() {
                 <tr key={c.id}>
                   {selectAllCell && (
                     <td className="px-3 py-2">
-                      <Check label={`Select ${c.name}`} checked={selected.has(c.id)} disabled={c.in_it_assets || !!c.missing_since} onChange={(on) => toggle(c.id, on)} />
+                      <Check label={`Select ${c.name}`} checked={selected.has(c.id)} disabled={!selectable.includes(c.id)} onChange={(on) => toggle(c.id, on)} />
                     </td>
                   )}
                   <td className="px-3 py-2">
@@ -516,7 +568,14 @@ export default function Discovery() {
                     ) : c.match_status === "ambiguous" ? (
                       <Tag tone="warn">ambiguous ({MATCH_LABEL[c.match_method ?? ""] ?? c.match_method})</Tag>
                     ) : (
-                      <span className="text-ink-3">no agent</span>
+                      <>
+                        <span className="text-ink-3">no agent</span>
+                        {isAdmin && !c.missing_since && c.agent_expected && (
+                          <div>
+                            <DeployLink onClick={() => deployIds([c.id])} />
+                          </div>
+                        )}
+                      </>
                     )}
                   </td>
                   <td className="px-3 py-2 text-xs">
@@ -553,7 +612,7 @@ export default function Discovery() {
                   {selectAllCell && (
                     <td className="px-3 py-2">
                       {r.kind === "computer" && r.computer_id && (
-                        <Check label={`Select ${r.name}`} checked={selected.has(r.computer_id)} disabled={!!r.it_asset_id} onChange={(on) => toggle(r.computer_id!, on)} />
+                        <Check label={`Select ${r.name}`} checked={selected.has(r.computer_id)} disabled={!selectable.includes(r.computer_id)} onChange={(on) => toggle(r.computer_id!, on)} />
                       )}
                     </td>
                   )}
@@ -585,6 +644,8 @@ export default function Discovery() {
                       <Link to={`/devices/${r.device_id}`} className="text-accent hover:underline">
                         {r.device_hostname ?? "device"}
                       </Link>
+                    ) : isAdmin && r.type === "not_managed" && r.computer_id ? (
+                      <DeployLink onClick={() => deployIds([r.computer_id!])} />
                     ) : (
                       <span className="text-ink-3">—</span>
                     )}
