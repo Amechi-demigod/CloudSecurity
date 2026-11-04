@@ -338,6 +338,8 @@ def render_webhook(msg: dict[str, Any], delivery_id: str) -> dict[str, Any]:
 
 # An email as (subject, plain text, html).
 Rendered = tuple[str, str, str]
+# Platform mail only (app/mailer.py): (file name, media type, content).
+Attachment = tuple[str, str, bytes]
 
 
 def _header_safe(s: str) -> str:
@@ -447,7 +449,7 @@ ACS_PATH = "/emails:send?api-version=2023-03-31"
 
 
 def send_acs(config: dict[str, Any], secrets: dict[str, str], msg: dict[str, Any], delivery_id: str,
-             *, rendered: Rendered | None = None) -> SendResult:
+             *, rendered: Rendered | None = None, attachments: list[Attachment] | None = None) -> SendResult:
     endpoint, key = parse_connection_string(secrets.get("connection_string", ""))
     subject, text, body_html = rendered or render_email(msg)
     payload = {"senderAddress": config["sender_address"],
@@ -456,6 +458,10 @@ def send_acs(config: dict[str, Any], secrets: dict[str, str], msg: dict[str, Any
                "userEngagementTrackingDisabled": True}
     if config.get("reply_to"):  # platform mail only (app/mailer.py)
         payload["replyTo"] = [{"address": _header_safe(config["reply_to"])}]
+    if attachments:
+        payload["attachments"] = [{"name": _header_safe(name), "contentType": ctype,
+                                   "contentInBase64": base64.b64encode(data).decode()}
+                                  for name, ctype, data in attachments]
     body = json.dumps(payload, separators=(",", ":")).encode()
     headers = acs_headers(endpoint, key, ACS_PATH, body, formatdate(usegmt=True))
     # Idempotent retries: ACS de-duplicates on the operation id.
@@ -512,7 +518,7 @@ def _smtp_target(host: str, port: int) -> str:
 
 
 def send_smtp(config: dict[str, Any], secrets: dict[str, str], msg: dict[str, Any], delivery_id: str,
-              *, rendered: Rendered | None = None) -> SendResult:
+              *, rendered: Rendered | None = None, attachments: list[Attachment] | None = None) -> SendResult:
     s = nsettings.get()
     host, port, security = config["host"], int(config.get("port") or 587), config.get("security", "starttls")
     ip = _smtp_target(host, port)
@@ -528,6 +534,9 @@ def send_smtp(config: dict[str, Any], secrets: dict[str, str], msg: dict[str, An
     em["X-CNAPP-Delivery"] = delivery_id
     em.set_content(text)
     em.add_alternative(body_html, subtype="html")
+    for name, ctype, data in attachments or []:
+        maintype, _, subtype = ctype.partition("/")
+        em.add_attachment(data, maintype=maintype, subtype=subtype or "octet-stream", filename=_header_safe(name))
     ctx = ssl.create_default_context()
     ctx.minimum_version = ssl.TLSVersion.TLSv1_2
     timeout = s.connect_timeout + s.read_timeout
@@ -569,12 +578,13 @@ def send_smtp(config: dict[str, Any], secrets: dict[str, str], msg: dict[str, An
 
 
 def send(ctype: str, config: dict[str, Any], secrets: dict[str, str], msg: dict[str, Any],
-         delivery_id: str, *, rendered: Rendered | None = None) -> SendResult:
+         delivery_id: str, *, rendered: Rendered | None = None, attachments: list[Attachment] | None = None
+         ) -> SendResult:
     """Deliver `msg`. Raises PermanentError / TransientError on failure.
 
     `rendered` (email only): a ready (subject, text, html) used instead of the
     alert layout of `render_email`, for platform transactional mail
-    (app/mailer.py, e.g. invitations)."""
+    (app/mailer.py, e.g. invitations); `attachments` likewise (compliance reports)."""
     try:
         if ctype == "teams":
             return _post_json(secrets["webhook_url"], render_teams(msg), "teams")
@@ -584,8 +594,8 @@ def send(ctype: str, config: dict[str, Any], secrets: dict[str, str], msg: dict[
             return send_webhook(secrets, msg, delivery_id)
         if ctype == "email":
             if config.get("provider") == "acs":
-                return send_acs(config, secrets, msg, delivery_id, rendered=rendered)
-            return send_smtp(config, secrets, msg, delivery_id, rendered=rendered)
+                return send_acs(config, secrets, msg, delivery_id, rendered=rendered, attachments=attachments)
+            return send_smtp(config, secrets, msg, delivery_id, rendered=rendered, attachments=attachments)
     except KeyError as exc:
         raise PermanentError(f"channel is missing required setting {exc}") from None
     except ChannelConfigError as exc:

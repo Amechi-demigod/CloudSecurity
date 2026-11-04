@@ -1,0 +1,98 @@
+{
+ "id": "pci-dss-4.0",
+ "name": "PCI DSS v4.0",
+ "short_name": "PCI DSS",
+ "version": "4.0",
+ "mapping_version": 1,
+ "publisher": "PCI Security Standards Council",
+ "notice": "Requirement numbers (two levels) with short paraphrased titles only; the standard's text is published by the PCI SSC. The platform does not know which systems are in your cardholder data environment: automated evidence covers every resource in scope of the report.",
+ "groups": [
+  {"id": "1", "title": "Network security controls", "controls": [
+   {"id": "1.1", "title": "Processes for network security controls defined"},
+   {"id": "1.2", "title": "Network security controls configured and maintained", "checks": ["@public-network-exposure"], "coverage": "partial"},
+   {"id": "1.3", "title": "Network access to and from the CDE restricted", "checks": ["@public-network-exposure"], "coverage": "partial"},
+   {"id": "1.4", "title": "Connections between trusted and untrusted networks controlled", "checks": ["@public-network-exposure", "@public-data-access"], "coverage": "partial"},
+   {"id": "1.5", "title": "Risks from computing devices connecting to untrusted networks mitigated", "checks": ["endpoint:firewall"], "coverage": "partial"}
+  ]},
+  {"id": "2", "title": "Secure configurations", "controls": [
+   {"id": "2.1", "title": "Processes for secure configuration defined"},
+   {"id": "2.2", "title": "System components configured securely", "checks": ["@secure-config-cloud", "@endpoint-hardening", "cloud:AWS-SG-003"], "coverage": "partial"},
+   {"id": "2.3", "title": "Wireless environments configured securely"}
+  ]},
+  {"id": "3", "title": "Protect stored account data", "controls": [
+   {"id": "3.1", "title": "Processes for protecting stored account data defined"},
+   {"id": "3.2", "title": "Storage of account data kept to a minimum"},
+   {"id": "3.3", "title": "Sensitive authentication data not stored after authorisation"},
+   {"id": "3.4", "title": "Display of full PAN restricted"},
+   {"id": "3.5", "title": "Stored PAN secured", "checks": ["@encryption-at-rest-cloud"], "coverage": "partial", "note": "Storage-level encryption only; PAN rendering (hashing, truncation, tokens) is not assessed."},
+   {"id": "3.6", "title": "Cryptographic keys protected", "checks": ["cloud:AZ-KV-001", "cloud:AZ-KV-002"], "coverage": "partial"},
+   {"id": "3.7", "title": "Key management life cycle defined and implemented", "checks": ["cloud:AWS-KMS-001", "cloud:GCP-KMS-001"], "coverage": "partial"}
+  ]},
+  {"id": "4", "title": "Protect data in transmission", "controls": [
+   {"id": "4.1", "title": "Processes for strong cryptography in transit defined"},
+   {"id": "4.2", "title": "PAN protected with strong cryptography in transmission", "checks": ["@encryption-in-transit"], "coverage": "partial"}
+  ]},
+  {"id": "5", "title": "Protect against malicious software", "controls": [
+   {"id": "5.1", "title": "Processes for malware protection defined"},
+   {"id": "5.2", "title": "Malware prevented or detected and addressed", "checks": ["endpoint:antivirus"], "coverage": "partial"},
+   {"id": "5.3", "title": "Anti-malware active, maintained and monitored", "checks": ["endpoint:antivirus", "endpoint:av_signatures"], "coverage": "partial"},
+   {"id": "5.4", "title": "Anti-phishing mechanisms in place"}
+  ]},
+  {"id": "6", "title": "Secure systems and software", "controls": [
+   {"id": "6.1", "title": "Processes for secure systems and software defined"},
+   {"id": "6.2", "title": "Bespoke and custom software developed securely"},
+   {"id": "6.3", "title": "Security vulnerabilities identified and addressed", "checks": ["@vulnerability-management", "@eol-software"], "coverage": "partial"},
+   {"id": "6.4", "title": "Public-facing web applications protected"},
+   {"id": "6.5", "title": "Changes to system components managed securely"}
+  ]},
+  {"id": "7", "title": "Restrict access by business need to know", "controls": [
+   {"id": "7.1", "title": "Processes for access restriction defined"},
+   {"id": "7.2", "title": "Access appropriately defined and assigned", "checks": ["@privileged-access", "@public-data-access"], "coverage": "partial"},
+   {"id": "7.3", "title": "Access managed through an access control system"}
+  ]},
+  {"id": "8", "title": "Identify users and authenticate access", "controls": [
+   {"id": "8.1", "title": "Processes for identification and authentication defined"},
+   {"id": "8.2", "title": "User identification and accounts managed", "checks": ["@account-lifecycle"], "coverage": "partial"},
+   {"id": "8.3", "title": "Strong authentication established", "checks": ["@password-policy", "cloud:AWS-IAM-005", "cloud:GCP-IAM-002", "@service-authentication"], "coverage": "partial"},
+   {"id": "8.4", "title": "Multi-factor authentication implemented", "checks": ["@mfa"], "coverage": "partial", "note": "Cloud console users (AWS); MFA for other systems needs manual evidence."},
+   {"id": "8.5", "title": "MFA systems configured to prevent misuse"},
+   {"id": "8.6", "title": "System and application accounts managed", "checks": ["cloud:AZ-ID-001", "cloud:AWS-IAM-007", "cloud:GCP-IAM-001", "cloud:GCP-GCE-002"], "coverage": "partial"}
+  ]},
+  {"id": "9", "title": "Restrict physical access", "controls": [
+   {"id": "9.1", "title": "Processes for physical access defined"},
+   {"id": "9.2", "title": "Physical access controls manage entry"},
+   {"id": "9.3", "title": "Physical access for personnel and visitors authorised"},
+   {"id": "9.4", "title": "Media with cardholder data secured"},
+   {"id": "9.5", "title": "Point-of-interaction devices protected"}
+  ]},
+  {"id": "10", "title": "Log and monitor access", "controls": [
+   {"id": "10.1", "title": "Processes for logging and monitoring defined"},
+   {"id": "10.2", "title": "Audit logs implemented", "checks": ["@cloud-logging"], "coverage": "partial"},
+   {"id": "10.3", "title": "Audit logs protected", "checks": ["cloud:AWS-CT-002"], "coverage": "partial"},
+   {"id": "10.4", "title": "Audit logs reviewed"},
+   {"id": "10.5", "title": "Audit log history retained"},
+   {"id": "10.6", "title": "Time synchronisation"},
+   {"id": "10.7", "title": "Failures of critical security controls detected and addressed"}
+  ]},
+  {"id": "11", "title": "Test security regularly", "controls": [
+   {"id": "11.1", "title": "Processes for security testing defined"},
+   {"id": "11.2", "title": "Wireless access points identified and monitored"},
+   {"id": "11.3", "title": "Vulnerabilities identified, prioritised and addressed", "checks": ["vuln:kev", "vuln:critical_sla", "vuln:high_sla", "inventory:cloud_scan"], "coverage": "partial", "note": "Not an ASV scan: external scans by an approved vendor need manual evidence."},
+   {"id": "11.4", "title": "Penetration testing performed"},
+   {"id": "11.5", "title": "Intrusions and unexpected file changes detected", "checks": ["@network-threat-protection"], "coverage": "partial"},
+   {"id": "11.6", "title": "Unauthorised changes on payment pages detected"}
+  ]},
+  {"id": "12", "title": "Policies and programmes", "controls": [
+   {"id": "12.1", "title": "Information security policy maintained"},
+   {"id": "12.2", "title": "Acceptable use policies for end-user technologies"},
+   {"id": "12.3", "title": "Risks to the CDE identified and managed"},
+   {"id": "12.4", "title": "PCI DSS compliance managed"},
+   {"id": "12.5", "title": "PCI DSS scope documented and validated", "checks": ["@asset-inventory"], "coverage": "partial", "note": "Inventory of system components only; scope validation needs manual evidence."},
+   {"id": "12.6", "title": "Security awareness education"},
+   {"id": "12.7", "title": "Personnel screened"},
+   {"id": "12.8", "title": "Third-party service provider risk managed"},
+   {"id": "12.9", "title": "Service providers support customer compliance"},
+   {"id": "12.10", "title": "Incidents responded to immediately"}
+  ]}
+ ]
+}
