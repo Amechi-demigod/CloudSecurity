@@ -1053,7 +1053,7 @@ computers[], users[], status, error, truncated, totals, duration_ms, server}`).
 | Wizard keeps *Waiting for the collector to come online…* | On the host: `sc.exe query CNAPPCollector` must be RUNNING and `"C:\Program Files\CNAPP Collector\cnapp-collector.exe" status` shows `enrolled`. Not enrolled: the log shows why (server not reachable over HTTPS 443, a TLS / CA error, or *invalid, expired or used-up collector enrollment token*: each download's token is single-use and valid 24 hours — download a new installer). A collector installed from **another** download still appears in the list; pick it there. |
 | Collector installed but enrolls as the old collector | Expected: re-installing on the same machine (MSI, zip, take-over) keeps its record (same machine id). |
 | Execution policy / *running scripts is disabled* (zip) | Use the MSI, or `powershell -ExecutionPolicy Bypass -File .\Install-Collector.ps1` from the unzipped folder. |
-| *the enrollment token is missing or malformed (expected cne_...)* at install | The 1.4.0 collector zip (fixed in the next collector release: collectors accept `cnct_` tokens); use the MSI or a zip from a server with the fixed release. |
+| *the enrollment token is missing or malformed (expected cne_...)* at install | The 1.4.0 collector zip (fixed in 1.4.1: collectors accept `cnct_` tokens); import 1.4.1 or later, then use the MSI or a new zip. |
 | No collectors listed | Agent < 1.3.0, or not enrolled in this organisation. |
 | "no healthy collector" | The collector agents must be online (seen in 10 min); computer-account auth needs Windows collectors. |
 | `no domain controller accepted the connection` | DNS SRV lookup, firewall to 636/389, DC certificate trust (paste the CA), host name in the certificate. |
