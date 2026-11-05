@@ -103,6 +103,8 @@ export interface DedicatedCollector {
   last_seen_at: string | null;
   last_ip: string | null;
   revoked_at: string | null;
+  /** the enrollment token it enrolled with (matches X-Enrollment-Token-Id of an installer download) */
+  enrollment_token_id: string | null;
   update_status: string | null;
   update_status_detail: string | null;
   diagnostics: CollectorDiagnostics | Record<string, never>;
@@ -129,10 +131,16 @@ export interface CollectorDiagnostics {
   identity?: string;
 }
 
+export type CollectorPackage = "msi" | "zip";
+
 export interface CollectorInstallerInfo {
   service_display_name: string;
   server_url: string | null;
+  ca_configured: boolean;
+  /** zip downloads per architecture */
   arches: Record<"amd64" | "arm64", { available: boolean; version?: string; reason?: string; filename: string }>;
+  /** the pre-configured MSI (x64) */
+  msi: { available: boolean; version?: string; reason?: string; filename: string; arch: "amd64" };
 }
 
 export type GmsaScripts = Record<"kds_root_key" | "create_gmsa" | "grant_read" | "install_gmsa" | "service_logon" | "precheck", string>;
@@ -641,12 +649,15 @@ export const collectorApi = {
     request<DedicatedCollector>(`/api/collectors/${id}`, { method: "PATCH", body: JSON.stringify({ name }) }),
   revoke: (id: string) => request<DedicatedCollector>(`/api/collectors/${id}/revoke`, { method: "POST" }),
   remove: (id: string) => request<void>(`/api/collectors/${id}`, { method: "DELETE" }),
-  test: (id: string, source_id?: string | null) =>
-    request<{ command_id: string; status: string }>(`/api/collectors/${id}/test`, J({ source_id: source_id ?? null })),
+  /** On-collector diagnostics for a saved source, or for settings not saved yet (the Add directory wizard). */
+  test: (id: string, source_id?: string | null, config?: Partial<AdConfig> & { domain: string }) =>
+    request<{ command_id: string; status: string }>(`/api/collectors/${id}/test`, J(config ? { config } : { source_id: source_id ?? null })),
   createToken: (name: string, max_uses = 1) =>
     request<{ id: string; token: string; expires_at: string; server_url: string | null }>("/api/collectors/enrollment-tokens", J({ name, max_uses })),
   installerInfo: () => request<CollectorInstallerInfo>("/api/collectors/installer/info"),
-  downloadInstaller: (body: { name: string; arch: "amd64" | "arm64"; gmsa: string }) => requestFile("/api/collectors/installer", body),
+  /** msi: pre-configured Windows Installer package (x64); zip: binary + PowerShell scripts (advanced, Arm64). */
+  downloadInstaller: (body: { name: string; format: CollectorPackage; arch: "amd64" | "arm64"; gmsa: string }) =>
+    requestFile("/api/collectors/installer", body),
   setupScripts: (o: { domain: string; gmsa: string; hosts: string }) => request<GmsaScripts>(`/api/collectors/setup/scripts${qs(o)}`),
 };
 

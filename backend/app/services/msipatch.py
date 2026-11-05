@@ -122,18 +122,80 @@ def read_preset(msi: bytes) -> str | None:
     raise MsiPatchError("the MSI has no CNAPP_PRESET property")
 
 
-def inject(msi: bytes, enroll_json: bytes) -> bytes:
-    """Return a copy of `msi` with the preset set and a new package code."""
+def _pool_entries(pool: bytes) -> list[tuple[int, int, int]]:
+    """(offset, length, reference count) in _StringData per string id (index 0 unused)."""
+    out, pos, i = [(0, 0, 0)], 0, 4
+    while i + 4 <= len(pool):
+        length, refs = struct.unpack_from("<HH", pool, i)
+        i += 4
+        if length == 0 and refs != 0:  # 64 KiB or more: (0, high word) then (low word, refs)
+            if i + 4 > len(pool):
+                raise MsiPatchError("corrupt _StringPool")
+            high = refs
+            low, refs = struct.unpack_from("<HH", pool, i)
+            i += 4
+            length = (high << 16) | low
+        out.append((pos, length, refs))
+        pos += length
+    return out
+
+
+def property_string(msi: bytes, name: str) -> tuple[int, int, int]:
+    """(offset, length, reference count) in _StringData of the Property table value of `name`."""
+    with olefile.OleFileIO(io.BytesIO(msi)) as ole:
+        st = _streams(ole)
+        if "!Property" not in st:
+            raise MsiPatchError("the MSI has no Property table")
+        pool = ole.openstream(st["!_StringPool"]).read()
+        data = ole.openstream(st["!_StringData"]).read()
+        table = ole.openstream(st["!Property"]).read()
+    entries = _pool_entries(pool)
+    width = 3 if struct.unpack_from("<I", pool, 0)[0] & 0x80000000 else 2
+    rows = len(table) // (2 * width)
+
+    def sid(col: int, row: int) -> int:
+        at = (col * rows + row) * width
+        return int.from_bytes(table[at:at + width], "little")
+
+    for row in range(rows):
+        k = sid(0, row)
+        off, ln, _ = entries[k]
+        if data[off:off + ln] == name.encode():
+            v = sid(1, row)
+            if not 0 < v < len(entries):
+                break
+            return entries[v]
+    raise MsiPatchError(f"the MSI has no {name} property")
+
+
+def inject(msi: bytes, enroll_json: bytes, *, new_product_code: bool = False) -> bytes:
+    """Return a copy of `msi` with the preset set and a new package code.
+
+    new_product_code: also give the copy its own ProductCode (same length, so
+    nothing moves). Each download is then its own product: installing a second
+    download over the first (same UpgradeCode and version) is a major upgrade
+    instead of Windows Installer's "another version of this product is already
+    installed" (used by the directory collector's MSI)."""
     value = encode_preset(enroll_json)
     off, length = read_property_raw(msi, PLACEHOLDER_PREFIX)
     if length != PRESET_LENGTH:
         raise MsiPatchError(f"CNAPP_PRESET placeholder has length {length}, expected {PRESET_LENGTH}")
+    pc = None
+    if new_product_code:
+        pc = property_string(msi, "ProductCode")
+        if pc[1] != 38 or pc[2] != 1:
+            raise MsiPatchError("the ProductCode is not a GUID string used once; refusing to change it")
     buf = io.BytesIO(msi)
     ole = olefile.OleFileIO(buf, write_mode=True)
     try:
         st = _streams(ole)
         data = bytearray(ole.openstream(st["!_StringData"]).read())
         data[off:off + length] = value
+        if pc is not None:
+            old = bytes(data[pc[0]:pc[0] + 38])
+            if not _GUID_RE.fullmatch(old):
+                raise MsiPatchError("the ProductCode is not an upper-case GUID")
+            data[pc[0]:pc[0] + 38] = ("{" + str(uuid.uuid4()).upper() + "}").encode()
         ole.write_stream(st["!_StringData"], bytes(data))
         # New package code (PID_REVNUMBER): one GUID string in the summary information.
         si_path = st.get("\x05SummaryInformation")

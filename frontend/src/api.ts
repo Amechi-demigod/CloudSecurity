@@ -988,7 +988,10 @@ export async function request<T>(path: string, init?: RequestInit & { skipAuthHa
 }
 
 /** POST that returns a file (e.g. a generated installer): the bytes plus the suggested filename. */
-export async function requestFile(path: string, body: unknown): Promise<{ blob: Blob; filename: string; sha256: string | null }> {
+export async function requestFile(
+  path: string,
+  body: unknown,
+): Promise<{ blob: Blob; filename: string; sha256: string | null; tokenId: string | null }> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (csrfToken) headers["X-CSRF-Token"] = csrfToken;
   const res = await fetch(`${BASE}${path}`, { method: "POST", credentials: "same-origin", headers, body: JSON.stringify(body) });
@@ -1005,7 +1008,12 @@ export async function requestFile(path: string, body: unknown): Promise<{ blob: 
   }
   const cd = res.headers.get("Content-Disposition") ?? "";
   const m = /filename="([^"]+)"/.exec(cd);
-  return { blob: await res.blob(), filename: m ? m[1] : "installer", sha256: res.headers.get("X-Content-SHA256") };
+  return {
+    blob: await res.blob(),
+    filename: m ? m[1] : "installer",
+    sha256: res.headers.get("X-Content-SHA256"),
+    tokenId: res.headers.get("X-Enrollment-Token-Id"),
+  };
 }
 
 /** Upload a signed agent release bundle (raw .tar.gz body). */

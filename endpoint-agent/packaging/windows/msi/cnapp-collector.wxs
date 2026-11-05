@@ -1,0 +1,237 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  CNAPP directory collector - Windows Installer package (WiX Toolset v5).
+  docs/DIRECTORY_DISCOVERY.md#installing-the-collector-msi
+
+  Build (see build-msi.ps1):
+    .\build-msi.ps1 -Product collector -AgentExe ..\..\..\dist\cnapp-collector-windows-amd64.exe -Version 0.1.42 -Output cnapp-collector-windows-x64.msi
+
+  Install (a pre-configured download from the console carries the server URL and
+  a single-use collector enrollment token in CNAPP_PRESET):
+    double-click                     simple UI; on a domain controller it warns and asks
+    msiexec /i Travound-Collector.msi /qn [GMSA=CORP\svc-collector$] [ALLOW_DOMAIN_CONTROLLER=1]
+  Generic MSI (e.g. a re-signed copy deployed by GPO / Intune):
+    msiexec /i cnapp-collector-windows-x64.msi /qn CNAPP_SERVER=https://cnapp.example.com CNAPP_TOKEN=cnct_... [CNAPP_CA_B64=<base64 PEM>]
+
+  What it does:
+    * installs cnapp-collector.exe to %ProgramFiles%\CNAPP Collector. The file
+      carries a version in the File table (DefaultVersion) although the Go
+      binary has none, so the MSI's copy always replaces an unversioned one on
+      disk: a binary left by a zip install or by the collector's signed
+      self-update. MSI install / upgrade / repair therefore always puts the
+      package's binary in place; self-update then moves it to the organisation's
+      update-ring target if that is newer.
+    * stops an existing CNAPPCollector service first (zip install, older MSI)
+      and runs `cnapp-collector msi-install` (deferred, as SYSTEM), which
+      validates GMSA / ALLOW_DOMAIN_CONTROLLER / the enrollment BEFORE changing
+      anything, writes the pending enrollment (never on an enrolled host:
+      upgrade, repair and take-over keep the identity) and (re)creates the
+      service - LocalSystem, or the gMSA with "Log on as a service", its folder
+      and service rights - exactly like the zip's Install-Collector.ps1. The
+      service is created by the collector, not by the ServiceInstall table,
+      because a gMSA needs those rights and must survive upgrades.
+    * uninstall (not upgrade) removes the service and runs `cnapp-collector
+      purge`: credential, pending enrollment, settings and logs are deleted
+      (CNAPP_KEEP_STATE=1 keeps them).
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="CNAPP Collector"
+           Manufacturer="CloudSecurity CNAPP"
+           Version="$(var.Version)"
+           UpgradeCode="5123CDB5-EAF1-4702-BDAF-0BDAD46BE183"
+           Language="1033"
+           Scope="perMachine"
+           Compressed="yes"
+           InstallerVersion="500">
+    <SummaryInformation Description="CNAPP Collector (Active Directory, read-only)" Manufacturer="CloudSecurity CNAPP" />
+
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <!-- Enrollment for the generic MSI (public, so they can be passed on the command line; hidden from MSI logs). -->
+    <Property Id="CNAPP_SERVER" Secure="yes" />
+    <Property Id="CNAPP_TOKEN" Secure="yes" Hidden="yes" />
+    <Property Id="CNAPP_CA_B64" Secure="yes" Hidden="yes" />
+    <Property Id="CNAPP_KEEP_STATE" Secure="yes" />
+    <!-- Run the service as a group Managed Service Account (DOMAIN\name$); LocalSystem resets it. -->
+    <Property Id="GMSA" Secure="yes" />
+    <!-- 1: install on a domain controller without asking (the interactive installer asks and sets it). -->
+    <Property Id="ALLOW_DOMAIN_CONTROLLER" Secure="yes" />
+    <!-- Fixed-length placeholder that the server overwrites in place for a pre-configured
+         download (backend/app/services/msipatch.py); length and prefix must not change. -->
+    <Property Id="CNAPP_PRESET" Value="$(var.PresetPlaceholder)" Hidden="yes" />
+
+    <Property Id="ARPNOMODIFY" Value="1" />
+    <Property Id="ARPCOMMENTS" Value="Reads Active Directory (read-only) for directory discovery. Runs no commands, scripts or remote sessions." />
+
+    <Launch Condition="Installed OR VersionNT64" Message="[ProductName] requires 64-bit Windows Server 2016 / Windows 10 or later." />
+    <!-- MsiNTProductType 2 = domain controller. The full UI asks instead (CnappDcDlg). -->
+    <Launch Condition="Installed OR WIX_UPGRADE_DETECTED OR MsiNTProductType &lt;&gt; 2 OR ALLOW_DOMAIN_CONTROLLER = &quot;1&quot; OR UILevel = 5"
+            Message="This computer is a domain controller. Domain controllers are your most sensitive servers; we recommend a member server. To install the collector here silently anyway, add ALLOW_DOMAIN_CONTROLLER=1." />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="CNAPP Collector">
+        <Component Id="CollectorComponent" Bitness="always64">
+          <File Id="CollectorExe" Name="cnapp-collector.exe" Source="$(var.CollectorExe)" KeyPath="yes"
+                DefaultVersion="$(var.Version).0" DefaultLanguage="0" />
+          <!-- Self-update side files (cnapp-collector.{new,old,failed,restore}.exe). -->
+          <RemoveFile Id="CollectorUpdateLeftovers" Name="cnapp-collector.*.exe" On="uninstall" />
+          <!-- The service itself is (re)created by `msi-install`; the MSI stops it before
+               replacing the binary and removes it on uninstall (also one left by a zip install). -->
+          <ServiceControl Id="CollectorServiceControl" Name="CNAPPCollector" Stop="both" Remove="uninstall" Wait="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <Feature Id="Main" Title="CNAPP Collector" Level="1">
+      <ComponentRef Id="CollectorComponent" />
+    </Feature>
+
+    <!-- Runs the installed binary as SYSTEM; HideTarget keeps the token out of verbose logs. -->
+    <CustomAction Id="CnappCollectorInstall"
+                  FileRef="CollectorExe"
+                  ExeCommand="msi-install --server=&quot;[CNAPP_SERVER]&quot; --token=&quot;[CNAPP_TOKEN]&quot; --ca-b64=&quot;[CNAPP_CA_B64]&quot; --preset=&quot;[CNAPP_PRESET]&quot; --gmsa=&quot;[GMSA]&quot; --allow-domain-controller=&quot;[ALLOW_DOMAIN_CONTROLLER]&quot;"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="check"
+                  HideTarget="yes" />
+    <CustomAction Id="CnappCollectorPurge"
+                  FileRef="CollectorExe"
+                  ExeCommand="purge"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="ignore" />
+
+    <InstallExecuteSequence>
+      <Custom Action="CnappCollectorInstall" After="InstallFiles" Condition="NOT REMOVE" />
+      <Custom Action="CnappCollectorPurge" After="DeleteServices"
+              Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE AND NOT CNAPP_KEEP_STATE" />
+    </InstallExecuteSequence>
+
+    <!-- A deliberately small UI: Install (or a domain-controller warning first), progress, done. -->
+    <UI>
+      <TextStyle Id="CnappNormal" FaceName="Segoe UI" Size="9" />
+      <TextStyle Id="CnappTitle" FaceName="Segoe UI" Size="12" Bold="yes" />
+      <TextStyle Id="CnappWarn" FaceName="Segoe UI" Size="9" Bold="yes" Red="160" />
+      <Property Id="DefaultUIFont" Value="CnappNormal" />
+
+      <Dialog Id="CnappWelcomeDlg" Width="370" Height="270" Title="[ProductName] Setup">
+        <Control Id="Title" Type="Text" X="20" Y="16" Width="330" Height="22" Transparent="yes" NoPrefix="yes"
+                 Text="{\CnappTitle}Install [ProductName]" />
+        <Control Id="Body" Type="Text" X="20" Y="48" Width="330" Height="84" NoPrefix="yes"
+                 Text="The collector reads Active Directory (read-only) for the directory discovery of your security console. It only connects outbound: HTTPS to the console's server and LDAP / Kerberos to your domain controllers. It runs no commands, scripts or remote sessions. Install it on a domain-joined member server that stays on." />
+        <Control Id="RunAsDefault" Type="Text" X="20" Y="140" Width="330" Height="40" NoPrefix="yes" HideCondition="GMSA"
+                 Text="Service account: LocalSystem (this computer's account), unless a group Managed Service Account was chosen when this installer was downloaded." />
+        <Control Id="RunAsGmsa" Type="Text" X="20" Y="140" Width="330" Height="40" NoPrefix="yes" Hidden="yes" ShowCondition="GMSA"
+                 Text="Service account: [GMSA] (group Managed Service Account)." />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+        <Control Id="Install" Type="PushButton" X="226" Y="243" Width="66" Height="17" Default="yes" ElevationShield="yes" Text="&amp;Install">
+          <Publish Event="NewDialog" Value="CnappDcDlg" Condition="MsiNTProductType = 2 AND NOT ALLOW_DOMAIN_CONTROLLER = &quot;1&quot;" />
+          <Publish Event="EndDialog" Value="Return" Condition="MsiNTProductType &lt;&gt; 2 OR ALLOW_DOMAIN_CONTROLLER = &quot;1&quot;" />
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="300" Y="243" Width="56" Height="17" Cancel="yes" Text="Cancel">
+          <Publish Event="EndDialog" Value="Exit" />
+        </Control>
+      </Dialog>
+
+      <Dialog Id="CnappDcDlg" Width="370" Height="270" Title="[ProductName] Setup">
+        <Control Id="Title" Type="Text" X="20" Y="16" Width="330" Height="22" Transparent="yes" NoPrefix="yes"
+                 Text="{\CnappTitle}This computer is a domain controller" />
+        <Control Id="Body" Type="Text" X="20" Y="48" Width="330" Height="26" NoPrefix="yes"
+                 Text="{\CnappWarn}Domain controllers are your most sensitive servers; we recommend a member server." />
+        <Control Id="Body2" Type="Text" X="20" Y="80" Width="330" Height="80" NoPrefix="yes"
+                 Text="This collector cannot run commands, scripts or remote sessions (it only reads the directory), so installing it here is allowed. Choose Install anyway to continue, or Cancel and install it on a member server." />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+        <Control Id="Install" Type="PushButton" X="196" Y="243" Width="96" Height="17" ElevationShield="yes" Text="Install &amp;anyway">
+          <Publish Property="ALLOW_DOMAIN_CONTROLLER" Value="1" Order="1" />
+          <Publish Event="EndDialog" Value="Return" Order="2" />
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="300" Y="243" Width="56" Height="17" Default="yes" Cancel="yes" Text="Cancel">
+          <Publish Event="EndDialog" Value="Exit" />
+        </Control>
+      </Dialog>
+
+      <Dialog Id="CnappMaintenanceDlg" Width="370" Height="270" Title="[ProductName] Setup">
+        <Control Id="Title" Type="Text" X="20" Y="16" Width="330" Height="22" Transparent="yes" NoPrefix="yes"
+                 Text="{\CnappTitle}[ProductName] is installed" />
+        <Control Id="Body" Type="Text" X="20" Y="48" Width="330" Height="60" NoPrefix="yes"
+                 Text="Remove it from this computer? The service, its credential and its logs are deleted; revoke and delete the collector in the console as well." />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+        <Control Id="Remove" Type="PushButton" X="226" Y="243" Width="66" Height="17" ElevationShield="yes" Text="&amp;Remove">
+          <Publish Event="Remove" Value="All" Order="1" />
+          <Publish Event="EndDialog" Value="Return" Order="2" />
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="300" Y="243" Width="56" Height="17" Default="yes" Cancel="yes" Text="Cancel">
+          <Publish Event="EndDialog" Value="Exit" />
+        </Control>
+      </Dialog>
+
+      <Dialog Id="CnappProgressDlg" Width="370" Height="270" Title="[ProductName] Setup" Modeless="yes">
+        <Control Id="Title" Type="Text" X="20" Y="16" Width="330" Height="22" Transparent="yes" NoPrefix="yes"
+                 Text="{\CnappTitle}Installing [ProductName]" />
+        <Control Id="ActionText" Type="Text" X="20" Y="70" Width="330" Height="20">
+          <Subscribe Event="ActionText" Attribute="Text" />
+        </Control>
+        <Control Id="ProgressBar" Type="ProgressBar" X="20" Y="95" Width="330" Height="12" ProgressBlocks="yes" Text="Progress done">
+          <Subscribe Event="SetProgress" Attribute="Progress" />
+        </Control>
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+        <Control Id="Cancel" Type="PushButton" X="300" Y="243" Width="56" Height="17" Default="yes" Cancel="yes" Text="Cancel">
+          <Publish Event="SpawnDialog" Value="CnappCancelDlg" />
+        </Control>
+      </Dialog>
+
+      <Dialog Id="CnappCancelDlg" Width="260" Height="85" Title="[ProductName] Setup" NoMinimize="yes">
+        <Control Id="Text" Type="Text" X="20" Y="15" Width="220" Height="30" NoPrefix="yes" Text="Cancel the installation?" />
+        <Control Id="Yes" Type="PushButton" X="112" Y="57" Width="56" Height="17" Text="&amp;Yes">
+          <Publish Event="EndDialog" Value="Exit" />
+        </Control>
+        <Control Id="No" Type="PushButton" X="184" Y="57" Width="56" Height="17" Default="yes" Cancel="yes" Text="&amp;No">
+          <Publish Event="EndDialog" Value="Return" />
+        </Control>
+      </Dialog>
+
+      <Dialog Id="CnappExitDlg" Width="370" Height="270" Title="[ProductName] Setup">
+        <Control Id="Title" Type="Text" X="20" Y="16" Width="330" Height="22" Transparent="yes" NoPrefix="yes"
+                 Text="{\CnappTitle}Done" />
+        <Control Id="Body" Type="Text" X="20" Y="48" Width="330" Height="80" NoPrefix="yes"
+                 Text="The collector service is running. It connects to your console within a minute and appears under Connectors &amp; scans, Collectors (and in the Add directory wizard, which is waiting for it)." />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+        <Control Id="Finish" Type="PushButton" X="300" Y="243" Width="56" Height="17" Default="yes" Cancel="yes" Text="&amp;Finish">
+          <Publish Event="EndDialog" Value="Return" />
+        </Control>
+      </Dialog>
+
+      <Dialog Id="CnappFatalDlg" Width="370" Height="270" Title="[ProductName] Setup">
+        <Control Id="Title" Type="Text" X="20" Y="16" Width="330" Height="22" Transparent="yes" NoPrefix="yes"
+                 Text="{\CnappTitle}Setup failed" />
+        <Control Id="Body" Type="Text" X="20" Y="48" Width="330" Height="100" NoPrefix="yes"
+                 Text="Nothing was changed. The reason is in the collector's log, [CommonAppDataFolder]CNAPP Collector\logs\agent.log (for example a malformed GMSA value, a gMSA this computer cannot use, or an expired enrollment token). For a full Windows Installer log run: msiexec /i &lt;file&gt;.msi /l*v install.log" />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+        <Control Id="Finish" Type="PushButton" X="300" Y="243" Width="56" Height="17" Default="yes" Cancel="yes" Text="&amp;Finish">
+          <Publish Event="EndDialog" Value="Return" />
+        </Control>
+      </Dialog>
+
+      <Dialog Id="CnappUserExitDlg" Width="370" Height="270" Title="[ProductName] Setup">
+        <Control Id="Title" Type="Text" X="20" Y="16" Width="330" Height="22" Transparent="yes" NoPrefix="yes"
+                 Text="{\CnappTitle}Setup was cancelled" />
+        <Control Id="Body" Type="Text" X="20" Y="48" Width="330" Height="40" NoPrefix="yes" Text="Nothing was changed on this computer." />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+        <Control Id="Finish" Type="PushButton" X="300" Y="243" Width="56" Height="17" Default="yes" Cancel="yes" Text="&amp;Finish">
+          <Publish Event="EndDialog" Value="Return" />
+        </Control>
+      </Dialog>
+
+      <InstallUISequence>
+        <Show Dialog="CnappWelcomeDlg" Sequence="1290" Condition="NOT Installed" />
+        <Show Dialog="CnappMaintenanceDlg" Sequence="1291" Condition="Installed AND NOT REMOVE" />
+        <Show Dialog="CnappProgressDlg" Sequence="1299" />
+        <Show Dialog="CnappExitDlg" OnExit="success" />
+        <Show Dialog="CnappFatalDlg" OnExit="error" />
+        <Show Dialog="CnappUserExitDlg" OnExit="cancel" />
+      </InstallUISequence>
+    </UI>
+  </Package>
+</Wix>

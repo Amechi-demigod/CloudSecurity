@@ -8,6 +8,7 @@
 //	cnapp-collector status
 //	cnapp-collector diagnose --domain corp.example.com [--security sealed|ldaps|starttls]
 //	cnapp-collector uninstall [--purge]
+//	cnapp-collector msi-install ...    # the MSI's custom action (msi.go)
 //	cnapp-collector run                # foreground loop (what the service runs)
 package main
 
@@ -41,7 +42,9 @@ const usage = `cnapp-collector %s - directory collector (read-only Active Direct
 Usage:
   cnapp-collector install --preset collector.json [--run-as DOMAIN\name$] [--allow-domain-controller]
                                    install / upgrade the service (elevated); --run-as: a gMSA
-  cnapp-collector uninstall [--purge]   remove the service (--purge: also credentials and logs)
+  cnapp-collector uninstall [--purge]   remove the service (--purge: also credentials and logs);
+                                   an MSI-installed collector is removed with Apps / msiexec /x instead
+  cnapp-collector purge                 delete credentials, pending enrollment and logs (the MSI uninstall)
   cnapp-collector status                enrollment and identity (never prints the secret)
   cnapp-collector diagnose --domain D [--security sealed|ldaps|starttls] [--server DC]
                                    run the console's Test checks locally, as the current identity
@@ -74,6 +77,10 @@ func main() {
 		err = cmdInstall(args)
 	case "uninstall":
 		err = cmdUninstall(args)
+	case "msi-install": // the Windows Installer package's custom action (msi.go)
+		err = cmdMSIInstall(args)
+	case "purge":
+		err = cmdPurge(args)
 	case "status":
 		err = cmdStatus(args)
 	case "diagnose":
@@ -157,6 +164,11 @@ func cmdInstall(args []string) error {
 		CAPEM: pr.CAPEM}); err != nil {
 		return fmt.Errorf("saving the pending enrollment: %w", err)
 	}
+	// Remembered so a later MSI upgrade or take-over keeps the identity.
+	if err := state.SaveServiceSettings(p, state.ServiceSettings{RunAs: *runAs, DisplayName: pr.ServiceDisplayName,
+		UpdatedAt: time.Now().UTC(), Source: "install"}); err != nil {
+		return fmt.Errorf("saving the service settings: %w", err)
+	}
 	if err := service.Install(service.Options{Home: *home, RunAs: *runAs}); err != nil {
 		return err
 	}
@@ -178,20 +190,16 @@ func confirm(prompt string) bool {
 
 func cmdUninstall(args []string) error {
 	fs, home := flags("uninstall")
-	purge := fs.Bool("purge", false, "also delete the collector credential and logs")
+	purgeAll := fs.Bool("purge", false, "also delete the collector credential and logs")
 	_ = fs.Parse(args)
 	_, _ = logx.Setup("", true, slog.LevelWarn)
 	if err := service.Uninstall(); err != nil {
 		return err
 	}
-	if *purge {
-		p := state.Resolve(*home)
-		_ = state.RemoveEnrollConfig(p)
-		if err := state.Remove(p); err != nil {
+	if *purgeAll {
+		if err := purge(state.Resolve(*home)); err != nil {
 			return err
 		}
-		_ = os.RemoveAll(p.LogDir)
-		_ = os.Remove(p.StateDir)
 		fmt.Println("Collector removed with its credential and logs. Revoke and delete it in the console as well.")
 		return nil
 	}
@@ -225,6 +233,9 @@ func cmdDiagnose(args []string) error {
 	f := collector.HostFacts()
 	if *domain == "" {
 		*domain = f.Domain
+	}
+	if *domain == "" {
+		return errors.New("this computer is not domain-joined: pass --domain (and --server for a DC by name)")
 	}
 	raw := map[string]any{"domain": *domain, "security": *security, "auth": "kerberos"}
 	if *server != "" {

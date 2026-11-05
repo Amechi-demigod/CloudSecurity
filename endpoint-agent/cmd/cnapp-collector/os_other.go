@@ -15,6 +15,8 @@ func accountSID(string) (string, error) {
 	return "", errors.New("running as a gMSA is only supported on Windows")
 }
 
+func installedServiceAccount() string { return "" }
+
 func machineGUID() string {
 	b, _ := os.ReadFile("/etc/machine-id")
 	return strings.TrimSpace(string(b))

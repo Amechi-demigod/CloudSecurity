@@ -1,6 +1,16 @@
 package collector
 
-import "strings"
+import (
+	"regexp"
+	"strings"
+)
+
+// gmsaRe is the accepted form of a group Managed Service Account (mirrors the
+// server's collector_installer.GMSA_RE): NETBIOS-or-DNS-DOMAIN\name$.
+var gmsaRe = regexp.MustCompile(`^[A-Za-z0-9.-]{1,64}\\[A-Za-z0-9._-]{1,63}\$$`)
+
+// ValidGMSA reports whether s looks like DOMAIN\name$.
+func ValidGMSA(s string) bool { return gmsaRe.MatchString(s) }
 
 // ClassifyIdentity turns the service's account into what the console shows:
 // LocalSystem (S-1-5-18) acts on the network as the computer account

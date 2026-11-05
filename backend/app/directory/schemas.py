@@ -539,10 +539,25 @@ class CollectorTokenIn(_Strict):
 
 class CollectorTestIn(_Strict):
     source_id: DeviceId | None = None
+    # Settings not saved yet (the Add directory wizard tests before saving);
+    # the collector's own identity only (Kerberos: computer account / gMSA).
+    config: AdConfig | None = None
+
+    @model_validator(mode="after")
+    def _one(self) -> CollectorTestIn:
+        if self.source_id and self.config is not None:
+            raise ValueError("give either source_id or config")
+        if self.config is not None and self.config.auth != "computer_account":
+            raise ValueError("an unsaved configuration is tested as the collector's identity only; save the source "
+                             "to test a service account")
+        return self
 
 
 class CollectorInstallerIn(_Strict):
     name: Name = "collector"
+    # msi: pre-configured Windows Installer package (x64, recommended);
+    # zip: binary + PowerShell scripts (advanced / scripted, and Arm64).
+    format: Literal["msi", "zip"] = "msi"
     arch: Literal["amd64", "arm64"] = "amd64"
     expires_in_hours: int = Field(24, ge=1, le=24 * 30)
     # gMSA to run the service as (DOMAIN\name$); empty: LocalSystem (computer account).

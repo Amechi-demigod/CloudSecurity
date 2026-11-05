@@ -6,6 +6,7 @@ import {
   DC_WARNING,
   collectorApi,
   type CollectorDiagnostics,
+  type CollectorPackage,
   type DedicatedCollector,
   type DiagStep,
   type GmsaScripts,
@@ -78,7 +79,7 @@ export function DiagnosticsResult({ d }: { d: CollectorDiagnostics | Record<stri
   );
 }
 
-function GmsaSetup({ domain }: { domain: string }) {
+export function GmsaSetup({ domain }: { domain: string }) {
   const [gmsa, setGmsa] = useState("svc-collector");
   const [hosts, setHosts] = useState("COLLECTOR01");
   const scripts = useApi(() => collectorApi.setupScripts({ domain, gmsa, hosts }), [domain, gmsa, hosts]);
@@ -108,7 +109,143 @@ function GmsaSetup({ domain }: { domain: string }) {
           <h4 className="text-[13px] font-semibold text-ink">4 · On each collector: install and test it</h4>
           <CodeBox text={s.install_gmsa} />
           <h4 className="text-[13px] font-semibold text-ink">5 · Run the service as the gMSA</h4>
-          <CodeBox text={s.service_logon} note='Or install with -Gmsa. The installer grants "Log on as a service".' />
+          <CodeBox text={s.service_logon} note='Easiest: install the MSI with GMSA=. The installer grants "Log on as a service".' />
+        </>
+      )}
+    </div>
+  );
+}
+
+const GMSA_RE = /^[A-Za-z0-9.-]{1,64}\\[A-Za-z0-9._-]{1,63}\$$/;
+
+/** Install commands shown after a download (the file name is the downloaded one). */
+function installCommands(pkg: CollectorPackage, filename: string, gmsa: string): string {
+  if (pkg === "zip")
+    return [
+      "# Advanced / scripted: on the collector host, in an elevated PowerShell, from the unzipped folder:",
+      ".\\Install-Collector.ps1                 # interactive (warns on a domain controller)",
+      ".\\Install-Collector.ps1 -Quiet          # silent (software deployment tools)",
+      ".\\Install-Collector.ps1 -Quiet -Gmsa 'CORP\\svc-collector$'",
+      "# Uninstall (removes the service, program files, credential and logs):",
+      ".\\Uninstall-Collector.ps1",
+    ].join("\n");
+  const g = gmsa ? "" : " [GMSA=CORP\\svc-collector$]";
+  return [
+    `# Double-click ${filename} on the collector host, or install silently (elevated):`,
+    `msiexec /i "${filename}" /qn${g}`,
+    "# On a domain controller (not recommended) a silent install also needs:  ALLOW_DOMAIN_CONTROLLER=1",
+    "# Uninstall: Settings > Apps (or Add or Remove Programs), or:",
+    `msiexec /x "${filename}" /qn`,
+  ].join("\n");
+}
+
+/** Download a pre-configured collector installer: the MSI (x64, recommended) or, under Advanced,
+ * the zip with PowerShell scripts (Arm64, scripted installs). Shared by Add collector and the
+ * Add directory wizard; `onDownloaded` gets the enrollment token id the collector will report. */
+export function CollectorInstaller({
+  idPrefix,
+  defaultName = "Collector 1",
+  onDownloaded,
+}: {
+  idPrefix: string;
+  defaultName?: string;
+  onDownloaded?: (d: { tokenId: string | null; filename: string; pkg: CollectorPackage; gmsa: string }) => void;
+}) {
+  const [name, setName] = useState(defaultName);
+  const [pkg, setPkg] = useState<CollectorPackage>("msi");
+  const [arch, setArch] = useState<"amd64" | "arm64">("amd64");
+  const [gmsa, setGmsa] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [done, setDone] = useState<{ filename: string; pkg: CollectorPackage; gmsa: string } | null>(null);
+  const info = useApi(collectorApi.installerInfo, []);
+  const avail = pkg === "msi" ? info.data?.msi : info.data?.arches[arch];
+  const gmsaBad = gmsa.trim() !== "" && !GMSA_RE.test(gmsa.trim());
+
+  async function download() {
+    setBusy(true);
+    setErr(null);
+    try {
+      const g = gmsa.trim();
+      const f = await collectorApi.downloadInstaller({
+        name: name.trim() || "collector",
+        format: pkg,
+        arch: pkg === "msi" ? "amd64" : arch,
+        gmsa: g,
+      });
+      const url = URL.createObjectURL(f.blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = f.filename;
+      a.click();
+      URL.revokeObjectURL(url);
+      setDone({ filename: f.filename, pkg, gmsa: g });
+      onDownloaded?.({ tokenId: f.tokenId, filename: f.filename, pkg, gmsa: g });
+    } catch (ex) {
+      setErr(errMsg(ex));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <Field label="Collector name" id={`${idPrefix}-name`} value={name} maxLength={128} onChange={(e) => setName(e.target.value)} />
+        <Field
+          label="Run as gMSA (optional)"
+          id={`${idPrefix}-gmsa`}
+          placeholder="CORP\svc-collector$"
+          spellCheck={false}
+          value={gmsa}
+          onChange={(e) => setGmsa(e.target.value)}
+          hint={gmsaBad ? "Use DOMAIN\\name$ (a group Managed Service Account)." : "Empty: LocalSystem, i.e. the computer account."}
+        />
+      </div>
+      <fieldset>
+        <legend className="mb-1 block text-sm font-medium text-ink-2">Package</legend>
+        <div className="space-y-1.5 text-sm">
+          <label className="flex items-start gap-2">
+            <input type="radio" className="mt-1" name={`${idPrefix}-pkg`} checked={pkg === "msi"} onChange={() => setPkg("msi")} />
+            <span>
+              <span className="font-medium text-ink">Windows installer (MSI, x64)</span> <Tag tone="good">recommended</Tag>
+              <span className="block text-xs text-ink-3">Double-click, or deploy silently with msiexec, Group Policy or Intune.</span>
+            </span>
+          </label>
+          <details className="rounded border border-line px-3 py-1.5" open={pkg === "zip"}>
+            <summary className="cursor-pointer text-xs font-medium text-ink-3">Advanced / scripted install (zip)</summary>
+            <div className="mt-1.5 space-y-1.5">
+              {(["amd64", "arm64"] as const).map((a) => (
+                <label key={a} className="flex items-center gap-2">
+                  <input
+                    type="radio"
+                    name={`${idPrefix}-pkg`}
+                    checked={pkg === "zip" && arch === a}
+                    onChange={() => {
+                      setPkg("zip");
+                      setArch(a);
+                    }}
+                  />
+                  Zip with PowerShell scripts, Windows {a === "amd64" ? "x64" : "on Arm64"}
+                </label>
+              ))}
+              <p className="text-xs text-ink-3">Deprecated for x64: the MSI replaces it and takes over a zip-installed collector without re-enrolling.</p>
+            </div>
+          </details>
+        </div>
+      </fieldset>
+      {avail && !avail.available && <ErrorNote error={avail.reason ?? "not available"} />}
+      <ErrorNote error={err} />
+      <Button variant="primary" onClick={download} disabled={busy || !avail?.available || gmsaBad}>
+        <Download aria-hidden className="mr-1 inline h-4 w-4" />
+        {busy ? "Preparing…" : `Download ${pkg === "msi" ? "collector installer (MSI)" : "zip"}${avail?.version ? ` · ${avail.version}` : ""}`}
+      </Button>
+      {done && (
+        <>
+          <p className="text-sm text-good" role="status">
+            {done.filename} downloaded. It contains a single-use enrollment token valid for 24 hours: delete it after installing.
+          </p>
+          <CodeBox testId={`${idPrefix}-install`} text={installCommands(done.pkg, done.filename, done.gmsa)} />
         </>
       )}
     </div>
@@ -118,34 +255,8 @@ function GmsaSetup({ domain }: { domain: string }) {
 /** Add a collector: pre-configured installer (silent-installable), gMSA setup scripts, manual token. */
 function AddCollector({ open, onClose, domain }: { open: boolean; onClose: () => void; domain: string }) {
   const [tab, setTab] = useState<"installer" | "gmsa" | "precheck">("installer");
-  const [name, setName] = useState("Collector 1");
-  const [arch, setArch] = useState<"amd64" | "arm64">("amd64");
-  const [gmsa, setGmsa] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const [done, setDone] = useState<string | null>(null);
   const info = useApi(collectorApi.installerInfo, []);
   const scripts = useApi(() => collectorApi.setupScripts({ domain, gmsa: "", hosts: "" }), [domain]);
-  const avail = info.data?.arches[arch];
-
-  async function download() {
-    setBusy(true);
-    setErr(null);
-    try {
-      const f = await collectorApi.downloadInstaller({ name: name.trim() || "collector", arch, gmsa: gmsa.trim() });
-      const url = URL.createObjectURL(f.blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = f.filename;
-      a.click();
-      URL.revokeObjectURL(url);
-      setDone(f.filename);
-    } catch (ex) {
-      setErr(errMsg(ex));
-    } finally {
-      setBusy(false);
-    }
-  }
 
   const tabCls = (t: string) =>
     `px-3 py-1 text-sm ${tab === t ? "bg-accent/15 font-semibold text-accent" : "text-ink-2 hover:bg-surface-2"}`;
@@ -169,44 +280,7 @@ function AddCollector({ open, onClose, domain }: { open: boolean; onClose: () =>
               Install it on a <strong>domain-joined member server</strong> that stays on (two collectors give failover). It only reads the directory
               and connects outbound: HTTPS to this server, LDAP 389 / Kerberos 88 to your domain controllers. Nothing listens.
             </p>
-            <Field label="Name" id="col-name" value={name} maxLength={128} onChange={(e) => setName(e.target.value)} />
-            <div className="flex flex-wrap gap-4 text-sm">
-              {(["amd64", "arm64"] as const).map((a) => (
-                <label key={a} className="flex items-center gap-2">
-                  <input type="radio" checked={arch === a} onChange={() => setArch(a)} /> Windows {a === "amd64" ? "x64" : "Arm64"}
-                </label>
-              ))}
-            </div>
-            <Field
-              label="Run as gMSA (optional)"
-              id="col-gmsa"
-              placeholder="CORP\svc-collector$"
-              spellCheck={false}
-              value={gmsa}
-              onChange={(e) => setGmsa(e.target.value)}
-              hint="Empty: LocalSystem, i.e. the computer account. See the gMSA tab to create one."
-            />
-            {avail && !avail.available && <ErrorNote error={avail.reason ?? "not available"} />}
-            <ErrorNote error={err} />
-            <Button variant="primary" onClick={download} disabled={busy || !avail?.available}>
-              <Download aria-hidden className="mr-1 inline h-4 w-4" />
-              {busy ? "Preparing…" : `Download installer${avail?.version ? ` (${avail.version})` : ""}`}
-            </Button>
-            {done && (
-              <p className="text-sm text-good" role="status">
-                {done} downloaded. It contains a single-use token valid for 24 hours: delete the folder after installing.
-              </p>
-            )}
-            <CodeBox
-              text={[
-                "# On the collector host, in an elevated PowerShell, from the unzipped folder:",
-                ".\\Install-Collector.ps1                 # interactive (warns on a domain controller)",
-                ".\\Install-Collector.ps1 -Quiet          # silent (software deployment tools)",
-                ".\\Install-Collector.ps1 -Quiet -Gmsa 'CORP\\svc-collector$'",
-                "# Uninstall (removes the service, program files, credential and logs):",
-                ".\\Uninstall-Collector.ps1",
-              ].join("\n")}
-            />
+            <CollectorInstaller idPrefix="col" />
           </div>
         )}
         {tab === "gmsa" && <GmsaSetup domain={domain} />}
