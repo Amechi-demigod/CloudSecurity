@@ -3,7 +3,9 @@
 viewer  : read everything except log bundles
 analyst : + recheck_posture, collect_logs, download log bundles
 admin   : + lock_device, restart_agent, update_check_in_interval, lost mode
-          (enable_lost_mode / disable_lost_mode), enrollment tokens, revoke /
+          (enable_lost_mode / disable_lost_mode), the built-in endpoint actions
+          (manage_service, uninstall_software, block / unblock_usb_storage;
+          app/services/endpoint_actions.py), enrollment tokens, revoke /
           delete devices, and *request* a remote wipe (Windows only; executed
           only after a second admin approves, see app/services/approvals.py)
 
@@ -13,11 +15,11 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response
-from pydantic import BaseModel, ConfigDict, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
@@ -29,6 +31,7 @@ from ..models import (
     DeviceCommand,
     DeviceLogBundle,
     DevicePostureSnapshot,
+    DeviceService,
     DeviceSoftware,
     EnrollmentToken,
     User,
@@ -47,10 +50,11 @@ from ..schemas_devices import (
     EnrollmentTokenCreated,
     EnrollmentTokenOut,
     InstallerCreate,
+    ServiceOut,
     SnapshotOut,
     SoftwareOut,
 )
-from ..services import approvals, installers, remote_sessions
+from ..services import approvals, endpoint_actions, installers, os_updates, remote_sessions
 from ..services import devices as svc
 
 log = logging.getLogger(__name__)
@@ -84,6 +88,10 @@ def list_devices(db: Session = Depends(get_db),
                                                    description="offline = stale or inactive (no check-in for 24 h+)"),
                  status: str = Query("active", pattern="^(active|revoked|all)$"),
                  group: str | None = Query(None, max_length=64),
+                 usb: str | None = Query(None, pattern="^(blocked|allowed|unknown)$",
+                                         description="USB mass storage as last reported (Windows, agent 1.4.0+)"),
+                 updates: str | None = Query(None, pattern="^(security|any|none|unknown)$",
+                                             description="missing OS updates (Windows Update report)"),
                  limit: int = Query(500, ge=1, le=5000)):
     stmt = select(Device)
     if status != "all":
@@ -105,6 +113,10 @@ def list_devices(db: Session = Depends(get_db),
         if connectivity and sm["connectivity"] not in (("stale", "inactive") if connectivity == "offline" else (connectivity,)):
             continue
         if issue and issue not in {i["code"] for i in sm["issues"]}:
+            continue
+        if usb and (sm["usb_storage"] or "unknown") != usb:
+            continue
+        if updates and not os_updates.matches_filter(d, updates):
             continue
         out.append(sm)
         if len(out) >= limit:
@@ -177,38 +189,51 @@ def create_installer(body: InstallerCreate, request: Request, admin: User = Depe
     The token's plaintext exists only in the response body (the file); the
     database keeps its hash like any other enrollment token, so it is listed,
     limited and revocable under Enrollment tokens."""
+    now = utcnow()
+    spec = installers.PLATFORMS[body.platform]
+    response, _ = installer_download(db, admin, request, platform=body.platform,
+                                     name=body.name or f"Installer {spec['label']} {now:%Y-%m-%d}",
+                                     max_uses=body.max_devices, expires_at=now + timedelta(days=body.expires_in_days),
+                                     device_group=body.device_group or None, include_ca=body.include_ca,
+                                     allow_wipe=body.allow_wipe)
+    db.commit()
+    return response
+
+
+def installer_download(db: Session, admin: User, request: Request, *, platform: str, name: str, max_uses: int,
+                       expires_at: datetime, device_group: str | None, include_ca: bool | None, allow_wipe: bool,
+                       **audit_extra) -> tuple[Response, EnrollmentToken]:
+    """Build a pre-configured installer with a fresh package-bound token (added
+    to the session and audited; the caller commits). Shared by Enroll devices
+    and the agent deployments of Discovery (directory/deploy_api.py)."""
     s = config.settings
     if not installer_limiter.hit(f"user:{admin.id}", s.agent_installer_rate_limit,
                                  s.agent_installer_rate_window_seconds):
         raise HTTPException(429, "too many installer downloads; try again later", headers={"Retry-After": "60"})
-    include_ca = body.include_ca
-    if body.allow_wipe and body.platform != "windows-msi":
+    if allow_wipe and platform != "windows-msi":
         raise HTTPException(422, "remote wipe is only available for Windows devices (MSI)")
     try:
         if include_ca is None:
             include_ca = installers.server_ca_pem() is not None
         installers.server_url()
-        installers.artifact(body.platform, verify=False)
+        installers.artifact(platform, verify=False)
     except installers.InstallerConfigError as e:
         raise HTTPException(409, str(e)) from None
     except installers.InstallerUnavailable as e:
         raise HTTPException(503, str(e)) from None
-    spec = installers.PLATFORMS[body.platform]
+    spec = installers.PLATFORMS[platform]
     raw = svc.new_enrollment_token()
-    now = utcnow()
-    name = body.name or f"Installer {spec['label']} {now:%Y-%m-%d}"
     t = EnrollmentToken(name=name[:128], token_hash=svc.hash_secret(raw), token_prefix=raw[:10],
-                        max_uses=body.max_devices, created_by=admin.email, created_at=now,
-                        expires_at=now + timedelta(days=body.expires_in_days), package_platform=body.platform,
-                        device_group=body.device_group or None)
+                        max_uses=max_uses, created_by=admin.email, created_at=utcnow(),
+                        expires_at=expires_at, package_platform=platform, device_group=device_group)
     try:
-        data, art, ca_included = installers.build(body.platform, raw, include_ca, body.allow_wipe)
+        data, art, ca_included = installers.build(platform, raw, include_ca, allow_wipe)
     except installers.InstallerConfigError as e:
         raise HTTPException(409, str(e)) from None
     except installers.InstallerUnavailable as e:
         raise HTTPException(503, str(e)) from None
     except Exception:
-        log.exception("building the %s installer failed", body.platform)
+        log.exception("building the %s installer failed", platform)
         raise HTTPException(500, "building the installer failed; see the server log") from None
     del raw  # the plaintext token now only exists inside `data`
     digest = hashlib.sha256(data).hexdigest()
@@ -216,16 +241,15 @@ def create_installer(body: InstallerCreate, request: Request, admin: User = Depe
     db.add(t)
     db.flush()
     audit(db, "agent_installer_created", actor=admin, target=f"enrollment-token:{t.id}", ip=client_ip(request),
-          name=t.name, platform=body.platform, agent_version=art.version, base_sha256=art.sha256,
+          name=t.name, platform=platform, agent_version=art.version, base_sha256=art.sha256,
           sha256=digest, size_bytes=len(data), max_uses=t.max_uses, expires_at=t.expires_at.isoformat() + "Z",
           device_group=t.device_group, ca_included=ca_included, server_url=installers.server_url(),
-          allow_wipe=body.allow_wipe)
-    db.commit()
+          allow_wipe=allow_wipe, **audit_extra)
     return Response(content=data, media_type=spec["media_type"], headers={
         "Content-Disposition": f'attachment; filename="{spec["download"]}"',
         "Cache-Control": "no-store", "X-Content-SHA256": digest, "X-Enrollment-Token-Id": t.id,
         "X-Agent-Version": art.version, "X-CA-Included": "true" if ca_included else "false",
-        "X-Allow-Wipe": "true" if body.allow_wipe else "false"})
+        "X-Allow-Wipe": "true" if allow_wipe else "false"}), t
 
 
 @router.post("/enrollment-tokens/{token_id}/revoke", response_model=EnrollmentTokenOut)
@@ -251,7 +275,7 @@ def device_detail(device_id: str = DeviceId, db: Session = Depends(get_db)):
             "updates_pending_since": d.updates_pending_since, "revoked_at": d.revoked_at,
             "inventory": d.inventory or {}, "posture": d.posture or {}, "collection_errors": d.collection_errors or {},
             "lost_mode": svc.lost_mode_info(d), "wipe": svc.wipe_info(d), "isolation": svc.isolation_info(db, d),
-            "directory_join": d.directory_join or {}}
+            "directory_join": d.directory_join or {}, "endpoint_actions": endpoint_actions.info(db, d)}
 
 
 @router.get("/{device_id}/software", response_model=list[SoftwareOut])
@@ -263,6 +287,18 @@ def device_software(device_id: str = DeviceId, q: str | None = Query(None, max_l
         like = f"%{q.lower()}%"
         stmt = stmt.where(or_(DeviceSoftware.name.ilike(like), DeviceSoftware.publisher.ilike(like)))
     return list(db.scalars(stmt.order_by(DeviceSoftware.name, DeviceSoftware.version)))
+
+
+@router.get("/{device_id}/services", response_model=list[ServiceOut])
+def device_services(device_id: str = DeviceId, q: str | None = Query(None, max_length=255),
+                    db: Session = Depends(get_db)):
+    """Windows services as last reported (agents 1.4.0+)."""
+    _get_device(db, device_id)
+    stmt = select(DeviceService).where(DeviceService.device_id == device_id)
+    if q:
+        like = f"%{q.lower()}%"
+        stmt = stmt.where(or_(DeviceService.name.ilike(like), DeviceService.display_name.ilike(like)))
+    return list(db.scalars(stmt.order_by(DeviceService.display_name, DeviceService.name)))
 
 
 @router.get("/{device_id}/vulnerabilities")
@@ -319,7 +355,15 @@ def create_command(body: CommandCreate, request: Request, device_id: str = Devic
     if device.status != "active":
         raise HTTPException(409, "device is revoked")
     try:
-        params = svc.validate_params(body.type, body.params)
+        if body.type in endpoint_actions.TYPES:
+            params = endpoint_actions.prepare(db, device, body.type, body.params)
+        else:
+            params = svc.validate_params(body.type, body.params)
+    except endpoint_actions.ActionError as e:
+        audit(db, "endpoint_action_refused", actor=user, target=f"device:{device.id}", ip=client_ip(request),
+              hostname=device.hostname, type=body.type, params=body.params, reason=body.reason, detail=e.detail)
+        db.commit()
+        raise HTTPException(e.status, e.detail) from None
     except ValueError as e:
         raise HTTPException(422, str(e)) from None
     if body.type == "enable_lost_mode":
@@ -354,6 +398,56 @@ def create_command(body: CommandCreate, request: Request, device_id: str = Devic
         host_isolation_source.notify(db, device, "restore_requested", actor=user.email, reason=body.reason)
     db.commit()
     return cmd
+
+
+class BulkCommand(BaseModel):
+    """The same endpoint action on several devices (Devices list selection)."""
+    model_config = ConfigDict(extra="forbid")
+
+    device_ids: list[Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{32}$")]] = Field(min_length=1,
+                                                                                           max_length=500)
+    type: Literal["block_usb_storage", "unblock_usb_storage", "manage_service"]
+    params: dict = Field(default_factory=dict)
+    reason: Annotated[str, StringConstraints(strip_whitespace=True, min_length=3, max_length=500)]
+
+
+@router.post("/bulk-commands")
+def bulk_commands(body: BulkCommand, request: Request, admin: User = Depends(require_admin),
+                  db: Session = Depends(get_db)):
+    """Queue an endpoint action on each selected device. Devices where it
+    cannot run (not Windows, agent too old, protected or unknown service,
+    already queued) are skipped with the reason; the others are queued and
+    audited exactly as from the device page."""
+    ip = client_ip(request)
+    results = []
+    for device_id in dict.fromkeys(body.device_ids):
+        device = db.get(Device, device_id)
+        if device is None:
+            results.append({"device_id": device_id, "hostname": None, "status": "skipped",
+                            "detail": "device not found"})
+            continue
+        if device.status != "active":
+            results.append({"device_id": device_id, "hostname": device.hostname, "status": "skipped",
+                            "detail": "device is revoked"})
+            continue
+        try:
+            params = endpoint_actions.prepare(db, device, body.type, body.params)
+        except endpoint_actions.ActionError as e:
+            results.append({"device_id": device_id, "hostname": device.hostname, "status": "skipped",
+                            "detail": e.detail})
+            continue
+        cmd = svc.new_command(db, device, body.type, params, body.reason, requested_by_id=admin.id,
+                              requested_by_email=admin.email)
+        audit(db, "device_command_created", actor=admin, target=f"device:{device.id}", ip=ip,
+              hostname=device.hostname, command_id=cmd.id, type=cmd.type, params=params, reason=body.reason,
+              bulk=True)
+        results.append({"device_id": device_id, "hostname": device.hostname, "status": "queued",
+                        "command_id": cmd.id})
+    queued = sum(r["status"] == "queued" for r in results)
+    audit(db, "device_bulk_command", actor=admin, ip=ip, type=body.type, params=body.params, reason=body.reason,
+          devices=len(results), queued=queued)
+    db.commit()
+    return {"queued": queued, "skipped": len(results) - queued, "results": results}
 
 
 @router.post("/{device_id}/commands/{command_id}/cancel", response_model=CommandOut)

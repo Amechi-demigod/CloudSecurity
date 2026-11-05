@@ -34,6 +34,9 @@ import Approvals from "./pages/Approvals";
 import AssetDetail from "./pages/assets/AssetDetail";
 import Assets from "./pages/assets/Assets";
 import AssetSettings from "./pages/assets/AssetSettings";
+import DeployAgent from "./pages/assets/DeployAgent";
+import DeploymentDetail from "./pages/assets/DeploymentDetail";
+import Deployments from "./pages/assets/Deployments";
 import Discovery from "./pages/assets/Discovery";
 import Offboarding from "./pages/assets/Offboarding";
 import AttackPaths from "./pages/AttackPaths";
@@ -331,6 +334,9 @@ function Shell() {
             <Route path="/it-assets" element={<Assets />} />
             <Route path="/it-assets/offboarding" element={<Offboarding />} />
             <Route path="/it-assets/discovery" element={<Discovery />} />
+            <Route path="/it-assets/discovery/deploy" element={<RequireRole role="admin"><DeployAgent /></RequireRole>} />
+            <Route path="/it-assets/discovery/deployments" element={<Deployments />} />
+            <Route path="/it-assets/discovery/deployments/:id" element={<DeploymentDetail />} />
             <Route path="/it-assets/settings" element={<RequireRole role="admin"><AssetSettings /></RequireRole>} />
             <Route path="/it-assets/:id" element={<AssetDetail />} />
             <Route path="/notifications" element={<RequireRole role="analyst"><Notifications /></RequireRole>} />

@@ -52,6 +52,7 @@ attributes in JSON) and the matching tiers are shared by every source type.
 - [Matching](#matching)
 - [Discovery issues](#discovery-issues)
 - [Adding computers to IT assets](#adding-computers-to-it-assets)
+- [Deploying the agent](#deploying-the-agent)
 - [Security model](#security-model)
 - [Scaling](#scaling)
 - [Notifications and audit](#notifications-and-audit)
@@ -519,6 +520,124 @@ in bulk, up to 1000 per request): each becomes an asset with source
 later gets an agent, the device is linked to this asset (matched directory
 computer, or same short name and domain) instead of creating a duplicate.
 
+## Deploying the agent
+
+**IT assets → Discovery → Deploy agent** turns the "No agent" list into
+coverage. Select machines (checkboxes on *Computer issues* or *Directory
+computers*, or **Deploy agent** on one row), or take the whole *No agent* filter
+(**Deploy agent to all N**, resolved by the server, up to 5000 machines). The
+plan groups the selection by the best route for where each machine was found
+and its OS (`plan_machine` in `backend/app/directory/deploy.py`, unit-tested):
+
+| Route | Chosen for | What you do |
+|---|---|---|
+| **Microsoft Intune** | Windows / macOS machines with an Intune record (wins over Group Policy: it also reaches machines off the corporate network) | Win32 app (`.intunewin`) / macOS PKG app, detection rule, Required assignment to a device group |
+| **Group Policy** | Windows computers in on-prem AD (without Intune) | Computer startup script or GPO software installation, linked to the OUs shown |
+| **Download / manual** | Entra-only, Google endpoint, unmanaged Windows / macOS machines, Macs bound to AD | Hand the installer to the user or IT, or a one-line install |
+| **ConfigMgr / Jamf / RMM** | Only when you choose it per machine (directories do not say which tool manages a machine) | Silent install command + detection rule in your tool |
+
+Excluded with the reason (never deployed): machines that already have an active
+agent; phones, tablets and ChromeOS; personal / registered-only devices
+(`agent_expected` false); machines disabled in every directory; Linux (no agent
+package yet); unknown OS. Every machine can be switched to another route it
+allows (for example a Group Policy machine to ConfigMgr).
+
+**Nothing is written to a directory or MDM**: no Intune, Graph or Google write
+permission is needed. The platform plans, issues the enrollment material and
+tracks progress; you follow the steps in your own tools.
+
+**Creating a deployment** stores its name, the selected machines and their
+routes (name, OS, OU copied so the record survives directory clean-up), the
+expiry (1-90 days, default 14), an optional device group label and who created
+it. Enrollment material is ordinary enrollment tokens, listed under Devices →
+Enroll, all expiring with the deployment and capped to the batch (machines +
+10%, at least 2 spare; re-installs on an enrolled machine use no enrollment):
+
+* **Installers:** *Windows installer* / *macOS installer* on the deployment page
+  build the same pre-configured MSI / pkg as Devices → Enroll (same rate limit,
+  CA option, audit `agent_installer_created` with the deployment id), with a new
+  package-bound token capped to the deployment's machines of that platform. The
+  token only exists inside the file.
+* **Command-line token** (optional, default on when the plan has manual
+  machines): for the generic installer with `CNAPP_TOKEN` or `cnapp-agent
+  configure`. Shown **once**, right after creation; never stored in plaintext or
+  returned again.
+
+**Progress** (viewers too): each selected machine is *enrolled* once directory
+matching links it to an active agent device ([matching](#matching): after every
+directory sync and every 30 minutes), *no agent yet* (with the deployment's
+age), or *left the directory*. *Enrolled with this deployment* counts devices
+that used its installers or token, selected or not. **Revoke** revokes every
+token of the deployment (its installers stop enrolling); enrolled devices stay.
+The list is under **Discovery → Deployments**.
+
+### Per-route admin steps
+
+The console shows these steps with the deployment's OUs, machine names and
+copyable scripts. Install facts: Windows service `CNAPPAgent`, binary
+`C:\Program Files\CNAPP Agent\cnapp-agent.exe`; macOS package id
+`com.cloudsecurity.cnapp-agent`.
+
+**Group Policy (computer startup script, recommended)**
+
+1. Download the deployment's Windows installer and copy `cnapp-agent-setup.msi`
+   to a share **Domain Computers** can read at boot (e.g. `\\corp.example.com\NETLOGON\cnapp\`).
+2. In **Group Policy Management**, right-click each OU listed → *Create a GPO in
+   this domain, and Link it here…* (one GPO linked to every OU).
+3. Edit it → *Computer Configuration → Policies → Windows Settings → Scripts
+   (Startup/Shutdown) → Startup → PowerShell Scripts* → add the script below.
+4. Recommended: *Administrative Templates → System → Logon → Always wait for the
+   network at computer startup and logon* = Enabled.
+5. Pilot with security filtering on a group of a few computers; computers
+   install at their next restart.
+
+```powershell
+$ErrorActionPreference = 'Stop'
+$Msi = '\\corp.example.com\NETLOGON\cnapp\cnapp-agent-setup.msi'
+if (Get-Service -Name 'CNAPPAgent' -ErrorAction SilentlyContinue) { exit 0 }
+$Log = Join-Path $env:WINDIR 'Temp\cnapp-agent-install.log'
+$p = Start-Process -FilePath msiexec.exe -Wait -PassThru -ArgumentList @('/i', "`"$Msi`"", '/qn', '/norestart', '/l*v', "`"$Log`"")
+exit $p.ExitCode
+```
+
+Or *GPO software installation*: *Computer Configuration → Policies → Software
+Settings → Software installation → New → Package*, the MSI by **UNC path**,
+*Assigned*. The agent updates itself afterwards.
+
+**Intune**
+
+* Windows: `IntuneWinAppUtil.exe -c C:\cnapp\src -s cnapp-agent-setup.msi -o C:\cnapp\out -q`;
+  *Apps → Windows → Add → Windows app (Win32)*; install `msiexec /i "cnapp-agent-setup.msi" /qn /norestart`,
+  install behaviour System; requirement 64-bit Windows 10/11; detection *File*
+  `C:\Program Files\CNAPP Agent` / `cnapp-agent.exe` exists (or a script testing
+  the `CNAPPAgent` service); *Required* to a device group with these machines.
+* macOS: *Apps → macOS → Add → macOS app (PKG)*, upload `cnapp-agent-setup.pkg`
+  (your signed build if you sign packages), detection bundle id
+  `com.cloudsecurity.cnapp-agent`, ignore app version (the agent self-updates),
+  *Required* to a device group.
+
+**Configuration Manager / Jamf / other RMM**
+
+* Windows: `msiexec /i cnapp-agent-setup.msi /qn /norestart /l*v "%WINDIR%\Temp\cnapp-agent-install.log"`
+  as SYSTEM (exit 0 or 3010). ConfigMgr: *Create Application → Windows Installer
+  (MSI)* (product-code detection is filled in), *Required* to a device
+  collection. Other tools: detect `CNAPPAgent` / the binary.
+* macOS: `sudo installer -pkg cnapp-agent-setup.pkg -target /`, detection
+  `pkgutil --pkg-info com.cloudsecurity.cnapp-agent`. Jamf Pro: upload the
+  package, a policy (Install, recurring check-in, once per computer) scoped to a
+  group of these Macs.
+
+**Download / manual (Google-managed, Entra-only, unmanaged)**
+
+Send the installer through a channel limited to the people concerned (it holds
+an enrollment token); the install needs local administrator rights:
+`msiexec /i cnapp-agent-setup.msi /qn /norestart` (Windows, elevated) or
+`sudo installer -pkg ~/Downloads/cnapp-agent-setup.pkg -target /` (macOS). With
+the command-line token instead: `msiexec /i cnapp-agent-windows-x64.msi
+CNAPP_SERVER=https://… CNAPP_TOKEN=… /qn`, or the generic pkg then `printf
+'%s\n' '<token>' | sudo /usr/local/cnapp-agent/bin/cnapp-agent configure
+--server https://… --token-stdin`.
+
 ## Security model
 
 * **Admin-gated:** only admins create/edit sources, choose collectors, run
@@ -569,7 +688,9 @@ Notification source **Directory discovery** (`directory_source`):
 count differs from the last one notified, only after syncs). Audit actions:
 `directory_source_created / updated / enabled / disabled / deleted`,
 `directory_sync_requested / started / finished / failed / failed_over`,
-`directory_issues_exported`, `directory_computers_added_to_assets`.
+`directory_issues_exported`, `directory_computers_added_to_assets`,
+`agent_deployment_created`, `agent_deployment_revoked` (plus `enrollment_token_created`
+/ `agent_installer_created` with the deployment id).
 
 ## API reference
 
@@ -589,6 +710,10 @@ Session-authenticated (`viewer` reads, `admin` writes), under `/api/directory`:
 | GET | `/issues`, `/issues/export.csv` (type, kind, source_id, q, domain, limit, offset; rows carry `sources`, `privileged`) | viewer |
 | GET | `/computers` (one row per machine with its `sources`; status: all, not_in_assets, matched, unmatched, ambiguous, missing), `/users` (privileged, enabled) | viewer |
 | POST | `/computers/add-to-assets` (links every record of the machine) | admin |
+| POST | `/deployments/plan` (`computer_ids`, or `use_filter` + `issue_type`, `source_id`, `q`, `domain`; nothing stored) | admin |
+| POST | `/deployments` (selection + `name`, `routes` overrides, `expires_in_days`, `device_group`, `command_line_token`; the token is returned once) | admin |
+| GET | `/deployments`, `/deployments/{id}` (progress, items, tokens without secrets) | viewer |
+| POST | `/deployments/{id}/installer` (`platform`: `windows-msi` / `macos-pkg`), `/deployments/{id}/revoke` | admin |
 
 Source bodies: `{"type": "ad", "config": {...AD...}, "collector_device_ids": [...]}` or
 `{"type": "entra", "config": {"connector_id": "org" | "env", "scopes": ["users",

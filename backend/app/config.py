@@ -346,6 +346,19 @@ class Settings:
         default_factory=lambda: float(os.getenv("DEVICE_UPDATES_GRACE_DAYS", "14")))
     device_av_signature_max_age_days: float = field(
         default_factory=lambda: float(os.getenv("DEVICE_AV_SIGNATURE_MAX_AGE_DAYS", "7")))
+    # Missing OS updates (Windows Update report, docs/PATCHING.md): a device gets
+    # an issue when a missing update rated Critical by Microsoft (MSRC) was
+    # released more than ..._CRITICAL_DAYS ago, any other missing security /
+    # critical update more than ..._SECURITY_DAYS ago, a restart has been
+    # pending for ..._REBOOT_DAYS, or no update search succeeded for ..._SCAN_STALE_DAYS.
+    device_os_updates_critical_days: float = field(
+        default_factory=lambda: float(os.getenv("DEVICE_OS_UPDATES_CRITICAL_DAYS", "14")))
+    device_os_updates_security_days: float = field(
+        default_factory=lambda: float(os.getenv("DEVICE_OS_UPDATES_SECURITY_DAYS", "30")))
+    device_os_updates_reboot_days: float = field(
+        default_factory=lambda: float(os.getenv("DEVICE_OS_UPDATES_REBOOT_DAYS", "7")))
+    device_os_updates_scan_stale_days: float = field(
+        default_factory=lambda: float(os.getenv("DEVICE_OS_UPDATES_SCAN_STALE_DAYS", "7")))
     # Posture snapshots kept per device (older ones are pruned on check-in).
     device_history_limit: int = field(default_factory=lambda: int(os.getenv("DEVICE_HISTORY_LIMIT", "200")))
     # Default lifetime of a queued remote command.

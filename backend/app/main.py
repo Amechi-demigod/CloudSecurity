@@ -27,6 +27,7 @@ from .api import exposure as exposure_api
 from .api import invitations as invitations_api
 from .api import mfa_sso as mfa_sso_api
 from .api import organization as organization_api
+from .api import os_updates as os_updates_api
 from .api import platform_admin as platform_admin_api
 from .api import remote_relay as remote_relay_api
 from .api import remote_sessions as remote_sessions_api
@@ -35,6 +36,7 @@ from .compliance import api as compliance_api
 from .compliance.reports import ComplianceReportWorker
 from .directory import agent_api as directory_agent_api
 from .directory import api as directory_api
+from .directory import deploy_api as directory_deploy_api
 from .directory.scheduler import DirectoryScheduler
 from .notifications import api as notifications_api
 from .notifications import settings as notification_settings
@@ -194,6 +196,7 @@ def create_app() -> FastAPI:
     app.include_router(agent_updates_api.device_router)  # /api/agent/updates/*: device credentials
     app.include_router(device_scripts_api.device_router)  # /api/agent/scripts/*: device credentials
     app.include_router(directory_agent_api.router)  # /api/agent/directory/*: device credential + sync token
+    app.include_router(os_updates_api.agent_router)  # /api/agent/os-updates: device credential
     app.include_router(auth_api.router)  # /login is public; the others depend on the session
     app.include_router(mfa_sso_api.router)  # /login/mfa*, /providers and /sso/* are public
     app.include_router(contact_api.router)  # POST /api/contact: the public website's demo request form
@@ -201,7 +204,7 @@ def create_app() -> FastAPI:
     # endpoints additionally require analyst/admin via their own dependencies.
     session_required = [Depends(auth.require_viewer)]
     for r in (platform.router, inventory.router, vulns.router, runtime.router, devices.router,
-              remote_sessions_api.router):
+              remote_sessions_api.router, os_updates_api.router):
         app.include_router(r, dependencies=session_required)
     # Remote-session WebSockets (own authentication: device credential + single-use
     # token, or session cookie + Origin). Served only with REMOTE_RELAY_MODE=all|relay.
@@ -214,6 +217,7 @@ def create_app() -> FastAPI:
     app.include_router(mfa_sso_api.admin_router)
     app.include_router(it_assets_api.router)  # /api/it-assets/*: viewer reads, analyst/admin writes
     app.include_router(directory_api.router)  # /api/directory/*: viewer reads, admin writes
+    app.include_router(directory_deploy_api.router)  # /api/directory/deployments/*: viewer reads, admin writes
     app.include_router(compliance_api.router)  # /api/compliance/*: viewer reads / exports, admin schedules
     app.include_router(agent_updates_api.router)  # /api/updates/*: viewer reads, admin writes (all audited)
     app.include_router(approvals_api.router)  # /api/approvals/*: admin only (two-person rule)

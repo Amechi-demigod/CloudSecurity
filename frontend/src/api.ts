@@ -1,4 +1,6 @@
 // Typed API client for the FastAPI backend.
+import type { EndpointActionsInfo } from "./endpointActionsApi";
+import type { OsUpdatesFleet, OsUpdatesSummary } from "./osUpdatesApi";
 import type { PendingUpdate } from "./updatesApi";
 
 export type Severity = "critical" | "high" | "medium" | "low" | "info";
@@ -465,6 +467,10 @@ export interface DeviceSummary {
   health: DeviceHealth;
   connectivity: Connectivity;
   issues: DeviceIssue[];
+  /** USB mass storage as last reported (Windows, agent 1.4.0+); null = unknown. */
+  usb_storage?: "blocked" | "allowed" | null;
+  /** Missing OS updates (Windows, agent 1.4.0+); null = no report. */
+  os_updates?: OsUpdatesSummary | null;
 }
 
 export interface PostureCheck {
@@ -542,6 +548,8 @@ export interface DeviceDetail extends DeviceSummary {
   isolation: IsolationState;
   /** Directory membership reported by the agent (1.3.0+); {} when not joined / older agents. */
   directory_join?: DirectoryJoin;
+  /** Built-in endpoint actions (services, uninstall, USB storage; agent 1.4.0+, Windows). */
+  endpoint_actions?: EndpointActionsInfo;
 }
 
 export interface DirectoryJoin {
@@ -592,7 +600,12 @@ export type CommandType =
   | "run_script"
   | "isolate_host"
   | "restore_host"
-  | "start_remote_session";
+  | "start_remote_session"
+  | "manage_service"
+  | "uninstall_software"
+  | "block_usb_storage"
+  | "unblock_usb_storage"
+  | "scan_os_updates";
 
 export interface DeviceCommand {
   id: string;
@@ -1118,6 +1131,7 @@ export interface EndpointStats {
   connectivity: { active: number; stale: number; inactive: number; never: number };
   issues: { code: string; title: string; severity: Severity; devices: number }[];
   agent_versions: { version: string; devices: number }[];
+  os_updates?: OsUpdatesFleet;
 }
 export interface DashOverview extends DashFrame {
   risk_score: { value: number; delta: number | null; severity: Severity; critical_findings: number; critical_paths: number };

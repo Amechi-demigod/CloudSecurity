@@ -3,8 +3,8 @@ scheduled emailed PDF reports (docs/COMPLIANCE.md).
 
 May need renumbering at merge time if another 0022 lands first.
 
-Revision ID: 0022_compliance_reports
-Revises: 0021_directory_cloud_sources
+Revision ID: 0025_compliance_reports
+Revises: 0024_agent_deployments
 Create Date: 2026-11-04
 """
 from __future__ import annotations
@@ -14,8 +14,8 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '0022_compliance_reports'
-down_revision: str | None = '0021_directory_cloud_sources'
+revision: str = '0025_compliance_reports'
+down_revision: str | None = '0024_agent_deployments'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
