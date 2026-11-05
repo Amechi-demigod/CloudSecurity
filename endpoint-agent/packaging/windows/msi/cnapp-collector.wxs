@@ -77,6 +77,8 @@
                 DefaultVersion="$(var.Version).0" DefaultLanguage="0" />
           <!-- Self-update side files (cnapp-collector.{new,old,failed,restore}.exe). -->
           <RemoveFile Id="CollectorUpdateLeftovers" Name="cnapp-collector.*.exe" On="uninstall" />
+          <!-- The folder may predate the MSI (zip install taken over): remove it explicitly. -->
+          <RemoveFolder Id="CollectorInstallFolder" On="uninstall" />
           <!-- The service itself is (re)created by `msi-install`; the MSI stops it before
                replacing the binary and removes it on uninstall (also one left by a zip install). -->
           <ServiceControl Id="CollectorServiceControl" Name="CNAPPCollector" Stop="both" Remove="uninstall" Wait="yes" />
