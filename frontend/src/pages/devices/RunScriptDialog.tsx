@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { ApiError, api, type DeviceDetail as Device, type LibraryScript, type ScriptParam } from "../../api";
 import { RiskTag } from "../../components/approvals";
+import { ServerTargetWarning } from "../../components/deviceClass";
 import { Button, Empty, Field, Modal } from "../../components/ui";
 import { buildParams, initialParamValues } from "../../lib/scripts";
 import { useApi } from "../../lib/useApi";
@@ -90,6 +91,7 @@ function ScriptForm({ device, script, onDone }: { device: Device; script: Librar
 
   return (
     <form className="space-y-3" onSubmit={submit}>
+      <ServerTargetWarning device={device} action="running a script on it" />
       <div className="rounded border border-line bg-surface-2 p-3 text-sm">
         <div className="flex items-center justify-between gap-2">
           <span className="font-mono">{script.name}</span>

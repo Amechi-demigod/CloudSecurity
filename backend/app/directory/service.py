@@ -38,6 +38,7 @@ from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from .. import config
+from ..device_class import directory_class
 from ..models import Device, DeviceCommand, utcnow
 from . import collectors as coll
 from .matching import short_host
@@ -478,6 +479,7 @@ def _apply_computer(row: DirectoryComputer, c: ComputerIn, default_domain: str) 
     row.enabled = _enabled(c.user_account_control)
     row.last_logon_at = _naive(c.last_logon_timestamp)
     row.when_created, row.when_changed = _naive(c.when_created), _naive(c.when_changed)
+    row.device_class = directory_class("ad", c.operating_system, c.user_account_control, row.platform)
 
 
 def _apply_user(row: DirectoryUser, u: UserIn, default_domain: str) -> None:
@@ -541,6 +543,9 @@ def upsert_records(db: Session, model, src: DirectorySource, run: DirectorySyncR
         for col, value in it.items():
             if col != "external_id":
                 setattr(row, col, value)
+        if model is DirectoryComputer:
+            row.device_class = directory_class(row.device_kind, row.operating_system, row.user_account_control,
+                                               row.platform)
         row.last_seen_at, row.missing_since, row.last_run_id = now, None, run.id
     return len(unique)
 

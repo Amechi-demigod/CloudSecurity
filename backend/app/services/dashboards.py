@@ -68,7 +68,7 @@ from ..models import (
     Vulnerability,
     utcnow,
 )
-from . import analytics
+from . import analytics, os_updates
 from . import devices as device_svc
 from . import exposure as exposure_svc
 from .agent_updates import version_sort_key
@@ -458,6 +458,7 @@ def endpoint_stats(db: Session) -> dict[str, Any]:
     devices = list(db.scalars(select(Device).where(Device.status == "active")))
     latest = _latest_agent_version(db, [d.agent_version for d in devices])
     by_os: Counter = Counter()
+    by_class: Counter = Counter()
     by_health: Counter = Counter()
     issues: Counter = Counter()
     connectivity: Counter = Counter()
@@ -467,6 +468,7 @@ def endpoint_stats(db: Session) -> dict[str, Any]:
         iss = device_svc.device_issues(d, now)
         health = device_svc.health_from_issues(d, iss)
         by_os[d.os_family] += 1
+        by_class[d.device_class or "unknown"] += 1
         by_health[health] += 1
         connectivity[device_svc.connectivity(d, now)] += 1
         versions[d.agent_version or "unknown"] += 1
@@ -482,9 +484,12 @@ def endpoint_stats(db: Session) -> dict[str, Any]:
         "suspended": suspended, "outdated": outdated, "latest_agent_version": latest,
         "by_os": dict(by_os), "by_health": {k: by_health.get(k, 0) for k in ("healthy", "warning", "critical",
                                                                                "unknown")},
+        "by_class": {k: by_class.get(k, 0) for k in ("workstation", "server", "domain_controller", "unknown")},
         "connectivity": {k: connectivity.get(k, 0) for k in ("active", "stale", "inactive", "never")},
         "issues": [{"code": c, "title": device_svc.ISSUE_DEFS[c][1], "severity": device_svc.ISSUE_DEFS[c][0],
                     "devices": n} for c, n in sorted(issues.items(), key=lambda x: (-x[1], x[0]))],
+        # Missing OS updates (Windows Update report, app/services/os_updates.py).
+        "os_updates": os_updates.fleet(devices, now),
         "agent_versions": [{"version": v, "devices": n}
                            for v, n in sorted(versions.items(), key=lambda x: version_sort_key(x[0]), reverse=True)],
     }

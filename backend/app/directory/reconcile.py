@@ -535,8 +535,19 @@ def coverage(db: Session) -> dict[str, Any]:
     managed = db.scalar(select(func.count(func.distinct(machine)))
                         .join(Device, Device.id == DirectoryComputer.device_id)
                         .where(*where, Device.status == "active")) or 0
+    # Split by device class (workstation / server / domain controller, from the
+    # directory attributes); a machine whose records disagree counts in each class.
+    totals = dict(db.execute(select(DirectoryComputer.device_class, func.count(func.distinct(machine)))
+                             .where(*where).group_by(DirectoryComputer.device_class)).all())
+    managed_by = dict(db.execute(select(DirectoryComputer.device_class, func.count(func.distinct(machine)))
+                                 .join(Device, Device.id == DirectoryComputer.device_id)
+                                 .where(*where, Device.status == "active").group_by(DirectoryComputer.device_class))
+                      .all())
+    by_class = {c or "unknown": {"directory_computers": n, "managed": managed_by.get(c, 0),
+                                 "pct": round(managed_by.get(c, 0) * 100.0 / n, 1) if n else None}
+                for c, n in totals.items()}
     return {"directory_computers": total, "managed": managed,
-            "pct": round(managed * 100.0 / total, 1) if total else None}
+            "pct": round(managed * 100.0 / total, 1) if total else None, "by_class": by_class}
 
 
 def in_source(source_id: str):

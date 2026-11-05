@@ -36,6 +36,46 @@ function CoverageTile({ cov, unmanaged, days }: { cov: DirectorySummary["coverag
   );
 }
 
+const CLASS_ROWS = [
+  { key: "workstation", label: "Workstations" },
+  { key: "server", label: "Servers" },
+  { key: "domain_controller", label: "Domain controllers" },
+];
+
+/** Agent coverage per device class: directory machines with / without an agent when a
+ * directory is connected, else the managed devices per class. */
+function ClassCoverage({ byClass, dirByClass }: { byClass: Record<string, number>; dirByClass?: DirectorySummary["coverage"]["by_class"] }) {
+  const rows = CLASS_ROWS.map((c) => {
+    const dirc = dirByClass?.[c.key];
+    const agents = byClass[c.key] ?? 0;
+    if (dirc && dirc.directory_computers > 0) {
+      const without = Math.max(0, dirc.directory_computers - dirc.managed);
+      return {
+        key: c.key,
+        label: c.label,
+        total: dirc.directory_computers,
+        valueLabel: `${dirc.managed} of ${dirc.directory_computers}`,
+        segments: [
+          { key: "with", label: `${dirc.managed} with agent`, count: dirc.managed, color: "var(--color-good)" },
+          { key: "without", label: `${without} without agent`, count: without, color: SEV_COLOR.high },
+        ],
+        to: href("/it-assets/discovery", { view: "computers", status: "all", class: c.key }),
+        hint: `${c.label} in your directories: ${dirc.pct ?? 0}% have an agent (${agents} enrolled devices)`,
+      };
+    }
+    return {
+      key: c.key,
+      label: c.label,
+      total: agents,
+      valueLabel: `${agents}`,
+      segments: [{ key: "agents", label: `${agents} enrolled`, count: agents, color: CAT_COLORS[0] }],
+      to: href("/devices", { class: c.key }),
+      hint: `Enrolled ${c.label.toLowerCase()}`,
+    };
+  });
+  return <BarRows labelWidth="9rem" rows={rows} />;
+}
+
 export default function EndpointsTab({ range }: TabProps) {
   // Devices are not tied to a cloud account, so the account filter does not apply here.
   const { data: d, error } = useApi(() => api.dashEndpoints({ range }), [range], 60000);
@@ -60,10 +100,11 @@ export default function EndpointsTab({ range }: TabProps) {
   const vMax = Math.max(1, ...Object.values(d.vulnerabilities.by_severity));
   const verMax = Math.max(1, ...d.agent_versions.map((v) => v.devices));
   const conn = d.connectivity;
+  const osu = d.os_updates;
 
   return (
     <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
-      <div className={`grid grid-cols-1 gap-4 sm:grid-cols-2 lg:col-span-12 ${dir && dir.sources > 0 ? "xl:grid-cols-5" : "xl:grid-cols-4"}`}>
+      <div className={`grid grid-cols-1 gap-4 sm:grid-cols-2 lg:col-span-12 ${["xl:grid-cols-4", "xl:grid-cols-5", "xl:grid-cols-6"][(dir && dir.sources > 0 ? 1 : 0) + (osu && osu.reporting > 0 ? 1 : 0)]}`}>
         {dir && dir.sources > 0 && <CoverageTile cov={dir.coverage} unmanaged={dir.counts.not_managed ?? 0} days={days} />}
         <KpiTile label="Managed devices" value={k.managed.value} to="/devices" delta={k.managed.delta} better="up" days={days} segments={osParts} />
         <KpiTile
@@ -81,6 +122,23 @@ export default function EndpointsTab({ range }: TabProps) {
         />
         <KpiTile label="Sign-in suspended" value={k.suspended.value} to="/devices" hint="Devices with sign-in suspended (host isolation)" delta={k.suspended.delta} days={days}
           footer={`${d.managed - k.suspended.value!} devices allow sign-in`} />
+        {osu && osu.reporting > 0 && (
+          <KpiTile
+            label="Missing security updates"
+            value={osu.devices_missing_security}
+            to={href("/devices", { updates: "security" })}
+            hint="Windows devices missing security or critical OS updates (Windows Update report); open them"
+            days={days}
+            segments={[
+              { key: "critical", label: "Critical (MSRC)", count: osu.devices_missing_critical, color: SEV_COLOR.critical, to: href("/devices", { issue: "os_critical_updates_missing" }) },
+              { key: "security", label: "Other security", count: osu.devices_missing_security - osu.devices_missing_critical, color: SEV_COLOR.high, to: href("/devices", { updates: "security" }) },
+              { key: "ok", label: "No security update missing", count: osu.reporting - osu.devices_missing_security, color: "var(--color-good)", to: href("/devices", { updates: "none" }) },
+            ].filter((s) => s.count > 0)}
+            footer={osu.oldest_security_days !== null
+              ? `Oldest missing security update: ${osu.oldest_security_days} days · ${osu.reporting} devices reporting`
+              : `${osu.reporting} devices reporting`}
+          />
+        )}
         <KpiTile
           label="Outdated agent"
           value={k.outdated.value}
@@ -94,6 +152,17 @@ export default function EndpointsTab({ range }: TabProps) {
           ].filter((s) => s.count > 0)}
         />
       </div>
+
+      {d.by_class && (
+        <DashCard
+          title="Coverage by device class"
+          sub={dir && dir.sources > 0 ? "Directory machines with an agent: workstations, servers and domain controllers" : "Enrolled devices per class"}
+          right={<ViewLink to="/devices" />}
+          className="lg:col-span-12"
+        >
+          <ClassCoverage byClass={d.by_class} dirByClass={dir && dir.sources > 0 ? dir.coverage.by_class : undefined} />
+        </DashCard>
+      )}
 
       <DashCard title="Failing posture checks" sub="Devices per issue" right={<ViewLink to="/devices" />} className="lg:col-span-6 xl:col-span-5">
         {d.issues.length === 0 ? (

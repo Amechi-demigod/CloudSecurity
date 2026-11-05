@@ -23,6 +23,10 @@ func platformCollect(ctx context.Context, c collector, _ Options) {
 		}
 	}
 	c.r.Device.DirectoryJoin = linuxJoin(ctx, c.r.Device.Hostname)
+	c.guard("classification", func() error {
+		c.r.Device.Classification = linuxClassification()
+		return nil
+	})
 	for _, name := range []string{"disk_encryption", "firewall", "antivirus"} {
 		c.r.Posture[name] = model.Unknown("not supported on this platform yet", nil)
 	}
@@ -47,4 +51,14 @@ func linuxJoin(ctx context.Context, hostname string) *model.DirectoryJoin {
 		return ParseRealmList(string(out), hostname)
 	}
 	return nil
+}
+
+// linuxClassification: DMI facts, CPUID and the role heuristic (LinuxRole).
+func linuxClassification() *model.Classification {
+	f := ReadDMIDir("/sys/class/dmi/id")
+	f.CPUIDVendor = cpuidHypervisor()
+	c := &model.Classification{}
+	classifyFirmware(f, c)
+	c.Role, c.RoleSource = LinuxRole(c, GraphicalDefaultTarget("/"))
+	return c
 }

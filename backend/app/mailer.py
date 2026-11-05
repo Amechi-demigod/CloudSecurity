@@ -1,4 +1,4 @@
-"""Platform transactional email (invitations), through the same senders as the
+"""Platform transactional email (invitations, compliance reports), through the same senders as the
 email notification channel (app/notifications/channels.py: SMTP with
 STARTTLS / TLS and the SSRF guard, or Azure Communication Services).
 
@@ -39,10 +39,12 @@ def _channel() -> tuple[dict, dict]:
             {"connection_string": s.platform_acs_connection_string or ""})
 
 
-def send(to: str, subject: str, text: str, html: str, *, reply_to: str | None = None) -> MailResult:
+def send(to: str, subject: str, text: str, html: str, *, reply_to: str | None = None,
+         attachments: list[tuple[str, str, bytes]] | None = None) -> MailResult:
     """Send one transactional email (plain text + HTML alternative), not the
     alert layout of the notification channel. `reply_to`: one plain address
-    (validated by the caller; CR/LF never reach a header). Never raises."""
+    (validated by the caller; CR/LF never reach a header). `attachments`:
+    (file name, media type, bytes), e.g. a compliance report PDF. Never raises."""
     from .notifications import channels as ch
 
     if not configured():
@@ -52,7 +54,8 @@ def send(to: str, subject: str, text: str, html: str, *, reply_to: str | None = 
     if reply_to:
         cfg["reply_to"] = reply_to
     try:
-        ch.send("email", cfg, secrets, {}, uuid.uuid4().hex, rendered=(subject, text, html))
+        extra = {"attachments": attachments} if attachments else {}
+        ch.send("email", cfg, secrets, {}, uuid.uuid4().hex, rendered=(subject, text, html), **extra)
         return MailResult(True)
     except (ch.PermanentError, ch.TransientError) as e:
         log.warning("platform mail to %s failed: %s", to.split("@")[-1], e)

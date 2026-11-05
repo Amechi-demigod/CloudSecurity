@@ -7,7 +7,9 @@
 // agent, with parameters validated against the signed schema (internal/scripts);
 // wipe_device only works on Windows devices that opted in at install time
 // (internal/wipe); start_remote_session never captures anything before the
-// signed-in user allows it (internal/remote).
+// signed-in user allows it (internal/remote); the built-in endpoint actions
+// (services, uninstall, USB storage) refuse protected services and the agent
+// itself and save every value they replace (internal/actions).
 package commands
 
 import (
@@ -20,8 +22,10 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/actions"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/directory"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/model"
+	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/osupdates"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/remote"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/scripts"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/wipe"
@@ -55,6 +59,16 @@ const (
 	// (read-only LDAP over TLS) to the server (internal/directory). It runs in
 	// the background; the result only says whether it started.
 	DirectorySync = directory.CommandType
+	// Built-in endpoint actions (internal/actions; Windows only in this
+	// version, "unsupported on this OS" elsewhere).
+	ManageService     = actions.ManageService
+	UninstallSoftware = actions.UninstallSoftware
+	BlockUSBStorage   = actions.BlockUSBStorage
+	UnblockUSBStorage = actions.UnblockUSBStorage
+	// ScanOSUpdates starts a read-only Windows Update search in the background
+	// (internal/osupdates); the report is uploaded when it completes and the
+	// result only says whether it started.
+	ScanOSUpdates = osupdates.CommandType
 )
 
 // Lost-mode message limits (also enforced server-side).
@@ -84,6 +98,11 @@ var allowedParams = map[string][]string{
 	RestoreHost:           {},
 	StartRemoteSession:    remote.AllowedParams,
 	DirectorySync:         directory.AllowedParams,
+	ManageService:         actions.AllowedParams[actions.ManageService],
+	UninstallSoftware:     actions.AllowedParams[actions.UninstallSoftware],
+	BlockUSBStorage:       actions.AllowedParams[actions.BlockUSBStorage],
+	UnblockUSBStorage:     actions.AllowedParams[actions.UnblockUSBStorage],
+	ScanOSUpdates:         {},
 }
 
 // incidentIDRe matches an optional, operator-supplied incident reference
@@ -161,6 +180,8 @@ func Validate(c model.Command, deviceID string, now time.Time) error {
 		_, err = remote.ParseParams(c.Params)
 	case DirectorySync:
 		_, err = directory.ParseParams(c.Params)
+	case ManageService, UninstallSoftware:
+		err = actions.ValidateParams(c)
 	}
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrRejected, err)
@@ -225,6 +246,12 @@ type Deps struct {
 	// at once (succeeded = started). Its output must never contain the
 	// command's credential or upload token.
 	DirectorySync func(ctx context.Context, c model.Command) Outcome
+	// EndpointAction runs manage_service / uninstall_software /
+	// block_usb_storage / unblock_usb_storage (internal/actions).
+	EndpointAction func(ctx context.Context, c model.Command) Outcome
+	// ScanOSUpdates starts a Windows Update search in the background and
+	// returns at once (succeeded = started or already running).
+	ScanOSUpdates func(ctx context.Context, c model.Command) Outcome
 }
 
 // Outcome of an executed command. After (if set) runs once the result has been
@@ -233,8 +260,9 @@ type Outcome struct {
 	Status   string // succeeded | failed | rejected
 	Output   string
 	After    func()
-	ExitCode *int // run_script
-	// ResultData is isolate_host/restore_host/start_remote_session only:
+	ExitCode *int // run_script, uninstall_software
+	// ResultData is isolate_host/restore_host/start_remote_session and the
+	// endpoint actions only:
 	// pre-flight findings, crash-recovery outcomes or the remote-session
 	// error_code, sent as result_data on the result POST and strictly
 	// validated server-side against schemas_devices.RESULT_DATA_SCHEMAS.
@@ -330,6 +358,16 @@ func Execute(ctx context.Context, c model.Command, d Deps, restart func()) Outco
 			return Outcome{Status: "rejected", Output: "directory sync is not available in this agent mode"}
 		}
 		return d.DirectorySync(ctx, c)
+	case ManageService, UninstallSoftware, BlockUSBStorage, UnblockUSBStorage:
+		if d.EndpointAction == nil {
+			return Outcome{Status: "rejected", Output: "endpoint actions are not available in this agent mode"}
+		}
+		return d.EndpointAction(ctx, c)
+	case ScanOSUpdates:
+		if d.ScanOSUpdates == nil {
+			return Outcome{Status: "rejected", Output: "OS update reports are not available in this agent mode"}
+		}
+		return d.ScanOSUpdates(ctx, c)
 	}
 	return Outcome{Status: "rejected", Output: "command type not in allowlist"}
 }

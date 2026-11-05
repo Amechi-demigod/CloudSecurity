@@ -17,13 +17,16 @@ Linux is not supported yet. The code is split so it can be added later: see [Add
 - [Roll out to all devices](#roll-out-to-all-devices) (one pre-configured MSI / pkg: GPO, Intune, SCCM, Jamf, Kandji)
 - [Enrolling devices](#enrolling-devices) one by one: [Windows](#windows-1011) and [macOS](#macos)
 - [What data is collected](#what-data-is-collected) (privacy)
+- [Device class](#device-class) (workstation / server / domain controller, virtual machines, cloud VMs)
 - [Device health and issues](#device-health-and-issues)
+- [Missing OS updates (Windows)](PATCHING.md) (read-only Windows Update report, agent 1.4.0+)
 - [Remote actions](#remote-actions)
 - [Two-person approval](#two-person-approval)
 - [Lost mode](#lost-mode)
 - [Suspend sign-in](#suspend-sign-in)
 - [Remote wipe (Windows)](#remote-wipe-windows)
 - [Remote sessions (Windows)](#remote-sessions-windows) (attended remote desktop)
+- [Endpoint actions](#endpoint-actions) (services, uninstall, USB storage block; Windows)
 - [Approved scripts](#approved-scripts) (details: [DEVICE_SCRIPTS.md](DEVICE_SCRIPTS.md))
 - [Security model](#security-model)
 - [Service install, upgrade and uninstall](#service-install-upgrade-and-uninstall) (and **[automatic, signed agent updates](AGENT_UPDATES.md)**)
@@ -288,10 +291,61 @@ Everything is **read-only** and uses OS-native tools with timeouts, so the user 
 | Platform | Secure Boot (`Confirm-SecureBootUEFI`), TPM (`Get-Tpm`) | SIP (`csrutil status`), Gatekeeper (`spctl --status`) |
 | Local admins | members of the Administrators group (by SID, so it works in any language) | members of the `admin` group |
 | Software | uninstall registry keys: HKLM 64-bit, HKLM 32-bit and loaded user hives (name, version, publisher, install date; system components and updates excluded) | `.app` bundles in `/Applications` (2 levels) and `~/Applications` (name, version, bundle id) |
+| Services (agent 1.4.0+) | Win32 services from the Service Control Manager: name, display name, status, startup type | – |
+| USB storage (agent 1.4.0+) | whether USB mass storage is blocked: `USBSTOR` start type, the Removable Disks / All Removable Storage deny policies, and whether the agent set them | – |
 
 **Directory membership** (agent 1.3.0+): the AD domain, NetBIOS name, forest, domain and computer-account SIDs, DNS host name, Entra ID device / tenant id and join type, and Intune enrollment id, all read locally (LSA, `NetGetAadJoinInformation`, registry; `dsconfigad -show` on macOS, `realm list` on Linux). See [DIRECTORY_DISCOVERY.md](DIRECTORY_DISCOVERY.md#domain-join-facts).
 
 **Privacy note.** The agent does **not** collect files, documents, browsing data, screenshots, keystrokes, location, process lists or network traffic. It records the user names of signed-in users and local administrators, IP and MAC addresses, the serial number and the installed applications. Tell your users about it as your policies require. Data is kept until the device is deleted. Posture history is capped per device (`DEVICE_HISTORY_LIMIT`, default 200 snapshots).
+
+## Device class
+
+The console tells user workstations from servers, domain controllers and virtual machines. Agents **1.4.0+** report a
+`classification` with every check-in, read locally and offline (no network call, never a cloud metadata service / IMDS):
+
+| Field | Windows | macOS | Linux |
+|---|---|---|---|
+| Role | OS product type `HKLM\SYSTEM\CurrentControlSet\Control\ProductOptions\ProductType` (the value `RtlGetVersion` reports): `WinNT` workstation, `ServerNT` server, `LanmanNT` domain controller | always workstation | heuristic, see below |
+| Form factor | SMBIOS chassis type (type 3) from the raw table (`GetSystemFirmwareTable('RSMB')`, no WMI) | battery present (`ioreg AppleSmartBattery`) or a `MacBook*` model: laptop, else desktop | `/sys/class/dmi/id/chassis_type` |
+| Virtual / hypervisor | SMBIOS vendor / product / BIOS strings, confirmed by the CPUID hypervisor leaf (`0x40000000`) | `kern.hv_vmm_present`, model (`VirtualMac`, `VMware`, `Parallels`) | DMI strings, CPUID |
+| Cloud + instance id | Azure: chassis asset tag `7783-7084-3265-9085-8269-3286-77`, VM id = SMBIOS system UUID; AWS: vendor `Amazon EC2` (or a UUID starting `ec2`), instance id from the baseboard asset tag (Nitro); GCP: product `Google Compute Engine` (no instance id in SMBIOS) | — | same as Windows, from DMI |
+
+Chassis types map to *laptop* (portable, laptop, notebook, sub-notebook, convertible, detachable), *desktop* (desktop,
+tower, mini PC, all-in-one, ...), *server* (main server chassis, rack mount, blade, multi-system), *tablet* (tablet, hand
+held) or *other*. A virtual machine's chassis type is meaningless (Hyper-V says "desktop"), so VMs report *other*.
+
+Hypervisors: `vmware`, `hyper-v`, `kvm` (also QEMU, Proxmox, OpenStack, Google Compute Engine), `xen`, `virtualbox`,
+`parallels`, `nitro` (AWS), `apple` (Apple Virtualization), `other`. A physical Windows PC with virtualisation-based
+security (Credential Guard, HVCI) runs as the Hyper-V root partition and reports the `Microsoft Hv` CPUID signature,
+so that signature alone never makes a machine virtual: SMBIOS strings decide, CPUID only fills in for other hypervisors.
+Bare-metal EC2 instances (`*.metal`) are physical but still `aws`.
+
+**Linux role heuristic.** A Linux host is a **server** unless it is clearly a user machine: a *physical* laptop,
+tablet or desktop chassis, or a graphical boot target (systemd `default.target` -> `graphical.target`, which desktop
+distributions use and server installs do not). A VM is never a workstation because of its chassis type, only because
+of a graphical target. The device detail shows which rule applied (`role_source`: `product_type`, `chassis`,
+`graphical_target`, `linux_default`, `macos`).
+
+**Older agents** (before 1.4.0) are classified from what they already send and the class is marked **inferred**:
+Windows with "Server" in the OS name is a server (a domain controller cannot be told apart from a member server this
+way), other Windows and macOS are workstations, Linux is a server; virtual machines are recognised from the make /
+model strings ("VMware", "Virtual Machine", "QEMU", "Amazon EC2", ...). Migration `0026_device_classification`
+applies the same rules to existing devices. The next check-in of an upgraded agent replaces the inferred class.
+
+**Cloud VMs.** When the agent reports a cloud instance id and the organisation's cloud inventory has the resource
+(Connectors & scans), the device's *Hardware* card links to it ("Cloud VM -> resource"): AWS by instance id (the
+`instance/<id>` ARN), Azure by VM id (also matching the other SMBIOS UUID byte order older firmware uses), GCP by
+instance name (GCE puts no instance id into SMBIOS; linked only when the name is unique).
+
+**Where it shows.** Devices list: *Class* column (with a *Virtual* tag) and *Class* / *Virtual* filters
+(`GET /api/devices?device_class=server&virtual=true`); device detail: *Hardware* card; Endpoints dashboard: coverage
+split into workstations, servers and domain controllers; IT assets: the asset type ([ASSET_MANAGEMENT.md](ASSET_MANAGEMENT.md#agent-devices));
+Discovery: class of directory computers without an agent ([DIRECTORY_DISCOVERY.md](DIRECTORY_DISCOVERY.md)).
+Servers and domain controllers never get an IT asset owner from the signed-in user (that is an administrator).
+
+**Confirmation dialogs.** Suspend sign-in (isolation), lock, lost mode, remote wipe, remote sessions and scripts show a
+prominent warning when the target is a server or a domain controller ("This is a domain controller — isolating it will
+affect the whole domain"). Approval policies are unchanged: the class only adds the warning.
 
 ## Device health and issues
 
@@ -310,6 +364,7 @@ The server derives **issues** from the latest posture and timestamps whenever a 
 | `secure_boot_off` | medium | Secure Boot reported off |
 | `stale` | medium | no contact for more than `DEVICE_STALE_HOURS` (24) |
 | `inactive` | high | no contact for more than `DEVICE_INACTIVE_DAYS` (7) |
+| `os_critical_updates_missing`, `os_security_updates_missing`, `os_reboot_pending`, `windows_update_disabled`, `os_update_scan_stale` | high / medium | from the Windows Update report of agents 1.4.0+: see [PATCHING.md](PATCHING.md#issues-and-notifications). Once a device has a report, `os_updates_pending` is no longer raised for it |
 
 **Health** is *At risk* if any issue is high, *Warning* if there are only medium or low issues, *Healthy* if there are none, and *No data* before the first check-in. The dashboard tile and the Devices page show fleet totals: device counts, % encrypted, % with the firewall on, and stale devices. Checks that report `unknown` (for example BitLocker on Windows Server, or Secure Boot on a VM) never raise issues.
 
@@ -331,7 +386,11 @@ There is no generic "run command". Only the following actions exist, and each on
 | `wipe_device` | admin **+ a second admin** | Windows only, device opted in at install time: factory-resets the device through `MDM_RemoteWipe` ([Remote wipe](#remote-wipe-windows)). Never queued directly: `POST /api/devices/{id}/wipe` creates an approval request |
 | `run_script` | admin (**+ a second admin** unless the signed manifest says `risk: low`) | runs one approved, signed script with validated parameters ([Approved scripts](#approved-scripts)) |
 | `directory_sync` | admin | **Deprecated** (legacy sources only; new sources use the dedicated directory collector). Agent 1.3.0+ designated as a **directory collector** only: reads Active Directory over LDAPS / StartTLS (never plain LDAP) with fixed filters and attributes and uploads the objects in batches to the server ([Directory discovery](DIRECTORY_DISCOVERY.md)). Never queued directly: directory sources queue it on schedule or with Sync now. Read-only: it changes nothing in the directory |
+| `scan_os_updates` | analyst | Windows, agent 1.4.0+: "Check for updates now", a **read-only** Windows Update search against the device's configured source (WSUS / WUfB / Microsoft Update) in the background; the report is uploaded when it completes ([PATCHING.md](PATCHING.md)). Never queued directly: `POST /api/devices/{id}/os-updates/scan`. The agent also searches on its own about every 12 hours |
 | `start_remote_session` | analyst (View only) / admin (View and control) | Windows only: opens an attended remote session after the signed-in user allows it ([Remote sessions](#remote-sessions-windows)). Never queued directly: `POST /api/devices/{id}/remote-sessions` |
+| `manage_service` | admin | Agent 1.4.0+, Windows: stop / start a service, set its startup type to Disabled, restore the startup type it had before. Protected services are refused ([Endpoint actions](#endpoint-actions)) |
+| `uninstall_software` | admin | Agent 1.4.0+, Windows: removes a program from the software inventory with `msiexec /x {ProductCode} /qn /norestart` or its own `QuietUninstallString`, nothing else; never the agent ([Endpoint actions](#endpoint-actions)) |
+| `block_usb_storage` / `unblock_usb_storage` | admin | Agent 1.4.0+, Windows: blocks USB mass storage (USBSTOR driver + Removable Disks deny policy) and restores the previous values exactly ([Endpoint actions](#endpoint-actions)) |
 
 Every action requires a **reason**. Creating one is written to the audit log (`device_command_created`, with actor, device, type, parameters and reason), and so are cancellation, completion (reported by the device), log-bundle downloads, token creation and revocation, enrollment, re-enrollment, revocation and deletion.
 
@@ -675,6 +734,65 @@ hardware before relying on it:
 * Capturing the secure desktop (UAC, sign-in screen), clipboard, file transfer, session recording.
 * A relay for the Azure deployment (a single-replica relay app).
 
+## Endpoint actions
+
+Built-in, allow-listed actions for everyday endpoint administration (agent **1.4.0+**, feature `endpoint_actions`). **Windows only in this version**: the command types and parameters are OS-neutral, an agent on macOS / Linux answers "unsupported on this OS", and the console disables the buttons with the reason. Devices with an older agent show **Agent update required**.
+
+| Action | Console | What the agent does | Undo |
+|---|---|---|---|
+| Stop / start a service | Device → **Services** tab, per row | asks the Service Control Manager to stop / start it and waits up to 60 s for the new state; the startup type is not changed | the opposite action |
+| Disable a service | Services tab → **Disable** | saves the current startup type (incl. *Automatic (delayed start)*) in `endpoint-actions.json` in the protected state directory **before** changing anything, then sets *Disabled* with `ChangeServiceConfig(SERVICE_NO_CHANGE…)` (only the start type: the service account and password are never rewritten). A running service keeps running until stopped or the device restarts | **Restore startup type** puts back exactly the saved value (the server also records it from the result and sends it as a fallback) |
+| Uninstall a program | Device → **Software** tab, per row | re-reads the program's registry `Uninstall` entry (it must still have the same display name), then runs **only** a silent, verifiable uninstaller: MSI (`WindowsInstaller=1` and a `{ProductCode}` key) → `%SystemRoot%\System32\msiexec.exe /x {ProductCode} /qn /norestart`; otherwise its `QuietUninstallString` (absolute `.exe`, run directly, never through a shell, never `cmd` / PowerShell / script hosts); otherwise it refuses: *no silent uninstaller — use a script*. 30-minute timeout. Afterwards it checks that the entry is gone and checks in, so the software list refreshes | none: reinstall the program |
+| Block USB storage | Device → **Actions** tab, or several devices from the Devices list | saves the current values, then sets `HKLM\SYSTEM\CurrentControlSet\Services\USBSTOR\Start = 4` and the policy *Removable Disks: Deny read / write / execute access* (`HKLM\SOFTWARE\Policies\Microsoft\Windows\RemovableStorageDevices\{53f5630d-b6bf-11d0-94f2-00a0c91efb8b}\Deny_Read`, `Deny_Write`, `Deny_Execute = 1`) | **Unblock USB storage** writes back every saved value, deletes values that did not exist and removes the policy keys it created |
+
+**Who and how.** Admins only (viewers and analysts see the Services tab and the state but get 403); a reason is required; **no second-admin approval** (every action is reversible or, for uninstall, limited to the program's own silent uninstaller). Each request is audited (`device_command_created`; refusals before queueing as `endpoint_action_refused`), each result as `endpoint_action_succeeded` / `_failed` / `_rejected`, and every action appears in the device's Commands tab and the Actions tab's *Recent endpoint actions*, with the status shown inline next to the service or program. One action per service / program / USB at a time.
+
+**Protected services** (refused by the server *and* the agent for stop and disable; starting them is allowed): the agent's own service `CNAPPAgent`; `RpcSs`, `RpcEptMapper`, `DcomLaunch`, `LSM`, `SamSs`, `PlugPlay`, `Power`, `BrokerInfrastructure`, `SystemEventsBroker`, `CoreMessagingRegistrar`, `ProfSvc`, `UserManager`, `gpsvc`, `Netlogon` (boot, RPC / COM, sessions, sign-in, Group Policy); `EventLog`, `Winmgmt`, `Schedule` (manageability and audit trail); `Dhcp`, `Dnscache`, `nsi` (the agent must keep reaching the server); `WinDefend`, `WdNisSvc`, `Sense`, `SecurityHealthService`, `wscsvc`, `mpssvc`, `BFE`, `CryptSvc`, `KeyIso` (security). `TermService` is protected while a remote session is open on the device. The list lives in `backend/app/services/endpoint_actions.py` and `endpoint-agent/internal/actions/services.go`.
+
+**Uninstall exit codes** (Windows Installer conventions): `0` uninstalled; `3010` uninstalled, **restart required** (succeeded, flagged in the result and notified); `1641` uninstalled, the uninstaller started a restart; `1605` / `1614` not installed / already uninstalled (succeeded); `1618` another installation is in progress (failed: try later); `1602` cancelled, `1603` fatal error, `1625` forbidden by policy and anything else: failed with the code. Exit 0 while the program stays registered is reported as **failed** (some EXE uninstallers hand off to a child process, so the agent waits up to 2 minutes). Refused outright: per-user installs (`registry_user`: the agent runs as LocalSystem, not as the user), programs with no silent uninstaller, and the agent itself (by name or because the entry points into the agent's directory).
+
+### USB storage block
+
+Why both mechanisms: `USBSTOR Start = 4` stops the USB mass-storage class driver from loading, so newly connected USB drives get no volume, but it does not cover UASP drives (`UASPStor`), card readers with their own drivers, or drives already connected. The **Removable Disks** deny policy (the same values the Group Policy *System → Removable Storage Access* settings write) makes Windows refuse access to every removable disk whatever its driver, including drives that are already plugged in (new handles are denied). It does not affect phones (WPD / MTP), CD / DVD, or non-storage USB devices (keyboards, mice, headsets, cameras, printers, docks). Together they are the standard, documented and fully reversible way to block USB mass storage without an MDM.
+
+* The previous values (and whether each value and key existed) are saved first; a failure part-way restores them at once.
+* Blocking twice keeps the original saved values. Unblock without saved values changes nothing: if USB storage is blocked by something else (for example Group Policy) the result says so.
+* A domain GPO that manages *Removable Storage Access* wins over the agent at the next policy refresh; manage the device either by GPO or from here, not both.
+* `endpoint-actions.json` is deliberately kept by `uninstall --purge` so a block or a disabled service can still be undone after re-installing the agent. Unblock before uninstalling the agent if the device should not stay blocked.
+* Every check-in reports the state (posture check `usb_storage`, data only): the device page shows *USB storage blocked*, the Devices list has a **USB storage** column and filter (`?usb=blocked|allowed|unknown`), and the Actions tab says whether the agent or something else set it.
+
+### Services inventory
+
+Agents 1.4.0+ on Windows send their Win32 services (name, display name, status, startup type; at most 2,000) with each check-in, read directly from the Service Control Manager with query-only rights. They are stored in `device_services` (migration `0023_endpoint_actions`) and listed on the Services tab (`GET /api/devices/{id}/services`, viewer).
+
+### Bulk actions
+
+Admins can select devices in the Devices list and **Block / Unblock USB storage**, **Stop a service** or **Disable a service** (by service name) on all of them (`POST /api/devices/bulk-commands`, at most 500 devices). Each device goes through exactly the same checks as from its own page; devices that are not Windows, run an older agent, do not report the service or where it is protected are skipped with the reason. Audit: one `device_command_created` (with `bulk: true`) per queued device and one `device_bulk_command` summary.
+
+### Notifications
+
+Failures go to the **Endpoint actions** notification source (`endpoint_action`): `action_failed` (medium), `action_rejected` (low: refused by the agent, e.g. protected service, no silent uninstaller, unsupported OS) and `restart_required` (low: an uninstall needs a restart). The *Endpoint device* source keeps sending `command_succeeded` / `command_failed` / `command_rejected` for every remote action.
+
+### Manual test checklist (real Windows machine, not exercised in CI)
+
+Use a Windows 10 / 11 test machine (not a production device) with agent 1.4.0 enrolled against a test server.
+
+1. [ ] Check-in: the device's **Services** tab lists the services with the right status and startup type (compare with `services.msc`); the Actions tab shows **USB storage: Allowed**.
+2. [ ] Stop **Print Spooler**: the command succeeds, `Get-Service Spooler` is *Stopped*, the startup type is unchanged. Start it again.
+3. [ ] Disable **Windows Search** (`WSearch`, *Automatic (delayed start)*): `sc qc WSearch` shows `DISABLED`; `endpoint-actions.json` in `C:\ProgramData\CNAPP Agent` contains `auto_delayed`. Restart the agent service; then **Restore startup type**: it is back to *Automatic (delayed start)* (`sc qc` + `DelayedAutostart` value). Check a service running as a domain / local user account still starts after disable + restore (its password was not touched).
+4. [ ] Try to stop `RpcSs`, `WinDefend`, `CNAPPAgent` from the API with curl: 409 from the server; edit the server's list locally to let one through and confirm the agent refuses it too (`rejected`, `ERR_PROTECTED_SERVICE`).
+5. [ ] Start a remote session, then try to disable `TermService`: refused while the session is open.
+6. [ ] Uninstall an MSI program (e.g. 7-Zip MSI): result *uninstalled*, exit code 0, the program disappears from Apps & features and from the Software tab after the follow-up check-in. Event log *MsiInstaller* event 1034.
+7. [ ] Uninstall an EXE program that registers a `QuietUninstallString` (e.g. Notepad++ `/S`): succeeds; one with only an interactive `UninstallString`: rejected with *no silent uninstaller — use a script* and nothing happens on the desktop.
+8. [ ] Uninstall something that needs a restart (exit 3010): result succeeded with **Restart required**; notification `restart_required`; the device is not restarted.
+9. [ ] The **CNAPP Endpoint Agent** row has no enabled Uninstall button; a per-user install (e.g. user-scope Zoom / VS Code) shows the per-user reason.
+10. [ ] Plug in a USB stick, **Block USB storage**: the open drive becomes inaccessible ("Access is denied"), a newly plugged stick gets no drive letter / access, a USB keyboard and mouse still work, a phone still charges / shows MTP. `reg query HKLM\SYSTEM\CurrentControlSet\Services\USBSTOR /v Start` = 4; the policy key has `Deny_Read/Write/Execute = 1`. The Devices list shows *Blocked*; the `?usb=blocked` filter finds it.
+11. [ ] **Unblock USB storage**: `Start` is back to its previous value (normally 3), the `Deny_*` values and the policy key the agent created are gone (`reg query` fails), sticks work again after re-plugging.
+12. [ ] Pre-set `Deny_Read = 0` under the Removable Disks key, block, unblock: `Deny_Read` is back to `0` (not deleted).
+13. [ ] Set `USBSTOR Start = 4` by hand, then **Unblock**: refused with *blocked, but not by this agent*; nothing changed.
+14. [ ] Bulk: select a Windows 1.4.0 device, an older agent and a Mac in the Devices list → Block USB storage: one queued, two skipped with *Agent update required* / *Windows only*.
+15. [ ] Audit log: `device_command_created`, `endpoint_action_succeeded` / `_failed` / `_rejected`, `endpoint_action_refused`, `device_bulk_command` entries with actor, device and reason.
+
 ## Approved scripts
 
 Admins can run **approved scripts** from a signed library on a device (**Devices > device > Run script**, or **Devices > Scripts** for the library and run history): Windows PowerShell or macOS zsh/bash, run as SYSTEM / root with a timeout, the exit code and truncated stdout/stderr returned. Scripts live in [`device-scripts/`](../device-scripts) and only change by reviewed pull request; a tag `scripts-vX.Y.Z` signs them with the **script-signing key** (separate from the agent release key) and the server imports the bundle. Read-only scripts marked `risk: low` run with one admin; `medium` / `high` need a second admin. Full guide, threat model and setup: **[DEVICE_SCRIPTS.md](DEVICE_SCRIPTS.md)**; why this keeps the agent bounded: **[ADR-0001](ADR-0001-signed-device-scripts.md)**.
@@ -769,14 +887,14 @@ Agent API (device credential):
 | Method & path | Body / response |
 |---|---|
 | `POST /api/agent/enroll` | `{token, device:{hostname, os_family, os_name, os_version, serial_number, machine_id, agent_version}}` → `{device_id, device_secret, check_in_interval_seconds, command_poll_seconds, server_time, reenrolled}` |
-| `POST /api/agent/checkin` | `{schema_version:1, collected_at, device:{...}, posture:{name:{status,detail,error,data}}, software:[...] or null, errors:{}}` → `{device_id, server_time, pending_commands, issues}` |
+| `POST /api/agent/checkin` | `{schema_version:1, collected_at, device:{...}, posture:{name:{status,detail,error,data}}, software:[...] or null, services:[{name, display_name, status, start_type}] or null (1.4.0+, Windows), errors:{}}` → `{device_id, server_time, pending_commands, issues}` |
 | `GET /api/agent/commands` | → `{server_time, commands:[{id, device_id, type, params, nonce, issued_at, expires_at}]}` |
-| `POST /api/agent/commands/{id}/result` | `{nonce, status: succeeded / failed / rejected, output, result_data?}` → 204. `result_data` is `isolate_host`/`restore_host` only (pre-flight findings, crash-recovery outcome); any other command type sending a non-empty one gets 422, and each of those two is validated against its own strict schema (unknown keys rejected) |
+| `POST /api/agent/commands/{id}/result` | `{nonce, status: succeeded / failed / rejected, output, exit_code?, result_data?}` → 204. `result_data` is `isolate_host`/`restore_host` (pre-flight findings, crash-recovery outcome), `start_remote_session` (error code) and the endpoint actions (service state and previous startup type, uninstall method / restart required / verified, USB state) only; any other command type sending a non-empty one gets 422, and each is validated against its own strict schema (unknown keys rejected). `exit_code`: `run_script` and `uninstall_software` |
 | `POST /api/agent/commands/{id}/logs` | gzip body, header `X-Command-Nonce` → `{id, size_bytes, sha256}` |
 | `POST /api/agent/commands/{id}/ack` | `wipe_device` only: `{nonce}` → `{proceed: true}` (once; the agent wipes only after it) |
 | `GET /api/agent/scripts/bundles/{id}/manifest`, `GET .../scripts/{name}` | signed script manifest envelope; script bytes (only while a `run_script` is delivered to the device) |
 
-User API (session; viewer unless noted): `GET /api/devices` (filters `q`, `os`, `health`, `issue`, `connectivity`, `status`), `GET /api/devices/summary`, `GET /api/devices/issue-types`, `GET /api/devices/{id}`, `.../software?q=`, `.../history`, `.../commands`, `POST .../commands` (role per action, `{type, reason, params}`), `POST .../commands/{cid}/cancel` (same role as the action), `GET .../log-bundles/{bid}` (analyst), `POST .../revoke` and `DELETE /api/devices/{id}?reason=` (admin), and `GET/POST /api/devices/enrollment-tokens`, `POST .../enrollment-tokens/{id}/revoke` and `GET /api/devices/enrollment/info` (admin). Device detail also returns `lost_mode`, `wipe` and `isolation` (Suspend sign-in: status, since, requested-by, agent-reported state, pre-flight readiness, crash-recovery outcome), and every device `device_state` (`active` / `lost` / `wipe_pending` / `isolated` / `revoked`). `POST /api/devices/{id}/wipe` (admin, `{reason, confirm_hostname, mode: protected|standard}`) creates an approval request.
+User API (session; viewer unless noted): `GET /api/devices` (filters `q`, `os`, `health`, `issue`, `connectivity`, `status`, `usb`), `GET /api/devices/summary`, `GET /api/devices/issue-types`, `GET /api/devices/{id}`, `.../software?q=`, `.../services?q=`, `.../history`, `.../commands`, `POST .../commands` (role per action, `{type, reason, params}`), `POST .../commands/{cid}/cancel` (same role as the action), `GET .../log-bundles/{bid}` (analyst), `POST .../revoke` and `DELETE /api/devices/{id}?reason=` (admin), and `GET/POST /api/devices/enrollment-tokens`, `POST .../enrollment-tokens/{id}/revoke` and `GET /api/devices/enrollment/info` (admin). Device detail also returns `lost_mode`, `wipe` and `isolation` (Suspend sign-in: status, since, requested-by, agent-reported state, pre-flight readiness, crash-recovery outcome), and every device `device_state` (`active` / `lost` / `wipe_pending` / `isolated` / `revoked`). `POST /api/devices/{id}/wipe` (admin, `{reason, confirm_hostname, mode: protected|standard}`) creates an approval request. Device detail also returns `endpoint_actions` (supported / reason / agent update required, USB state, protected services) and every device `usb_storage` (`blocked` / `allowed` / null); `POST /api/devices/bulk-commands` (admin, `{device_ids, type: block_usb_storage|unblock_usb_storage|manage_service, params, reason}`) → `{queued, skipped, results}`.
 
 Approvals (admin): `GET /api/approvals?status=open|pending|approved|final|all&device_id=`, `GET /api/approvals/summary` (badge counts + settings), `GET /api/approvals/{id}`, `POST .../{id}/approve` (`{reason?, confirm_hostname?}`), `POST .../{id}/reject` and `.../cancel` (`{reason}`). Scripts: see [DEVICE_SCRIPTS.md](DEVICE_SCRIPTS.md#api).
 

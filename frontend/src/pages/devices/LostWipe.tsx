@@ -2,6 +2,7 @@
 import { useState, type FormEvent, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { ApiError, api, type DeviceDetail as Device, type WipeMode } from "../../api";
+import { ServerTargetWarning } from "../../components/deviceClass";
 import { Button, Card, Field, Modal, Tag } from "../../components/ui";
 import { fmtAgo, fmtTime } from "../../lib/format";
 
@@ -101,6 +102,7 @@ export function LostModeDialog({ device, open, onClose, onDone }: { device: Devi
   return (
     <Modal open={open} onClose={close} title={`${enabling ? "Enable lost mode" : "Exit lost mode"}: ${device.hostname}`}>
       <form className="space-y-3" onSubmit={submit}>
+        {enabling && <ServerTargetWarning device={device} action="locking it in lost mode" />}
         {enabling ? (
           <LostModeHelp os={device.os_family} />
         ) : (
@@ -249,6 +251,7 @@ export function WipeDialog({ device, open, onClose, onDone }: { device: Device; 
             <strong className="text-sev-critical">This erases the device.</strong> All data and apps are removed and Windows is reset. It cannot be
             undone.
           </div>
+          <ServerTargetWarning device={device} action="wiping it" />
           <div className="rounded border border-line bg-surface-2 p-3">
             <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-ink-3">Readiness reported by the agent</div>
             <WipeReadiness device={device} />
@@ -382,6 +385,7 @@ export function SuspendSignInDialog({ device, open, onClose, onDone }: { device:
   return (
     <Modal open={open} onClose={close} title={`${suspending ? "Suspend sign-in" : "Restore sign-in"}: ${device.hostname}`}>
       <form className="space-y-3" onSubmit={submit}>
+        {suspending && <ServerTargetWarning device={device} action="isolating it (suspending sign-in)" />}
         {suspending ? (
           <div className="space-y-2 text-sm text-ink-2">
             <p>

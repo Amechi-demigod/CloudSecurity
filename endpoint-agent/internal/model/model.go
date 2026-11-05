@@ -51,6 +51,37 @@ type DeviceInfo struct {
 	// DirectoryJoin: domain / cloud-directory membership facts (nil when the
 	// machine is not joined to anything this agent can detect).
 	DirectoryJoin *DirectoryJoin `json:"directory_join,omitempty"`
+	// Classification: role, form factor and virtualisation (agents 1.4.0+;
+	// nil when nothing could be determined).
+	Classification *Classification `json:"classification,omitempty"`
+}
+
+// Device roles and form factors (Classification).
+const (
+	RoleWorkstation      = "workstation"
+	RoleServer           = "server"
+	RoleDomainController = "domain_controller"
+
+	FormLaptop  = "laptop"
+	FormDesktop = "desktop"
+	FormServer  = "server"
+	FormTablet  = "tablet"
+	FormOther   = "other"
+)
+
+// Classification tells workstations from servers, domain controllers and
+// virtual machines. Everything is read locally (OS product type, SMBIOS /
+// DMI, CPUID); no network calls, no cloud metadata service. Fields are ""
+// / nil when unknown.
+type Classification struct {
+	Role            string `json:"role"`
+	RoleSource      string `json:"role_source"`
+	FormFactor      string `json:"form_factor"`
+	ChassisType     *int   `json:"chassis_type"`
+	IsVirtual       *bool  `json:"is_virtual"`
+	Hypervisor      string `json:"hypervisor"`
+	CloudProvider   string `json:"cloud_provider"`
+	CloudInstanceID string `json:"cloud_instance_id"`
 }
 
 // DirectoryJoin describes the directories this computer is joined to, used by
@@ -95,6 +126,17 @@ type Software struct {
 	Source      string `json:"source"`
 }
 
+// Service is one Windows service (agents 1.4.0+, internal/actions): the
+// inventory the console's Services tab and endpoint actions work from.
+type Service struct {
+	Name        string `json:"name"`
+	DisplayName string `json:"display_name"`
+	// Status: running | stopped | start_pending | stop_pending | paused | other.
+	Status string `json:"status"`
+	// StartType: boot | system | auto | auto_delayed | manual | disabled.
+	StartType string `json:"start_type"`
+}
+
 // Report is the check-in document (POST /api/agent/checkin).
 type Report struct {
 	SchemaVersion int                     `json:"schema_version"`
@@ -102,7 +144,9 @@ type Report struct {
 	Device        DeviceInfo              `json:"device"`
 	Posture       map[string]PostureCheck `json:"posture"`
 	Software      []Software              `json:"software"`
-	Errors        map[string]string       `json:"errors"`
+	// Services is Windows only (nil elsewhere, then omitted).
+	Services []Service         `json:"services,omitempty"`
+	Errors   map[string]string `json:"errors"`
 	// MachineID is the SHA-256 of the OS machine identifier; sent at enrollment only.
 	MachineID string `json:"-"`
 }

@@ -175,6 +175,12 @@ export function AssetFormModal({ open, asset, settings, onClose, onSaved }: {
     <Modal open={open} onClose={onClose} title={asset ? `Edit ${asset.asset_tag}` : "Add asset"}>
       <form className="max-h-[70vh] space-y-3 overflow-y-auto pr-1" onSubmit={submit}>
         <FormError error={error} />
+        {asset?.asset_type_source === "auto" && (
+          <p className="text-xs text-ink-3">
+            The type follows the device: server for servers and domain controllers, laptop / desktop from the form factor. Choosing a type
+            here keeps it.
+          </p>
+        )}
         <div className="grid grid-cols-2 gap-3">
           <Field label="Asset tag" id="af-tag" required maxLength={64} {...input("asset_tag")} placeholder="WK-LAP-0001" />
           <SelectField label="Type" id="af-type" value={form.asset_type} onChange={set("asset_type")}>

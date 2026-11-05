@@ -118,6 +118,11 @@ func platformCollect(ctx context.Context, c collector, o Options) {
 	d := &c.r.Device
 	d.Architecture = nativeArch()
 	d.DirectoryJoin = windowsJoin()
+	c.guard("classification", func() error {
+		cl, err := windowsClassification()
+		d.Classification = cl
+		return err
+	})
 	c.guard("system", func() error {
 		var s winSysInfo
 		if err := ps(ctx, 90*time.Second, psSysInfo, &s); err != nil {

@@ -16,7 +16,10 @@ export default function Inventory() {
   const [exposed, setExposed] = useUrlState("exposed");
   const [source, setSource] = useUrlState("source");
   const [q, setQ] = useState("");
-  const [selected, setSelected] = useState<string | null>(null);
+  // ?asset=<id> opens the drawer (links from device pages: "Cloud VM -> resource").
+  const [selectedId, setSelectedId] = useUrlState("asset");
+  const selected = selectedId || null;
+  const setSelected = (id: string | null) => setSelectedId(id ?? "");
 
   const { data: facets } = useApi(api.facets, []);
   const { data, error, loading } = useApi(

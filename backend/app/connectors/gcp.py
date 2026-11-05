@@ -542,6 +542,7 @@ class GcpConnector(Connector):
                     resource_group=",".join(sorted(nets)) or None, tags=labels, internet_exposed=exposed,
                     sensitive_data=sens, **base,
                     properties={"zone": zone, "status": inst.get("status"), "machine_type": _last(inst.get("machineType")),
+                                "instance_id": str(inst.get("id") or ""),
                                 "external_ips": ext_ips, "public_ips": ext_ips, "network_tags": sorted(tags),
                                 "service_account": sa_email, "scopes": scopes, "full_api_access": FULL_API_SCOPE in scopes,
                                 "default_service_account": bool(sa_email and sa_email.endswith(

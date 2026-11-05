@@ -40,9 +40,11 @@ type fakeServer struct {
 	exitCode   map[string]any
 	resultData map[string]map[string]any // result_data sent with each command's result, by command id
 	checkin    *model.Report
-	offer      string   // JSON of the "update" field of check-in responses ("" = none)
-	features   string   // X-CNAPP-Agent-Features of the last check-in
-	dirBatches []string // directory_sync uploads: "path|token|encoding"
+	offer      string           // JSON of the "update" field of check-in responses ("" = none)
+	features   string           // X-CNAPP-Agent-Features of the last check-in
+	dirBatches []string         // directory_sync uploads: "path|token|encoding"
+	osReports  []map[string]any // /api/agent/os-updates uploads
+	osFail     int              // fail this many os-updates uploads first (503)
 }
 
 func (f *fakeServer) handler(t *testing.T) http.Handler {
@@ -117,6 +119,16 @@ func (f *fakeServer) handler(t *testing.T) http.Handler {
 			f.dirBatches = append(f.dirBatches, r.URL.Path+"|"+r.Header.Get("X-Directory-Sync-Token")+"|"+
 				r.Header.Get("Content-Encoding"))
 			_, _ = io.WriteString(w, `{"accepted":0,"duplicate":false}`)
+		case r.URL.Path == "/api/agent/os-updates":
+			if f.osFail > 0 {
+				f.osFail--
+				w.WriteHeader(503)
+				return
+			}
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			f.osReports = append(f.osReports, body)
+			w.WriteHeader(204)
 		case strings.HasSuffix(r.URL.Path, "/logs"):
 			f.bundle, _ = io.ReadAll(r.Body)
 			w.WriteHeader(201)

@@ -204,6 +204,45 @@ class AddToAssetsIn(_Strict):
     computer_ids: list[DeviceId] = Field(min_length=1, max_length=1000)
 
 
+# ----------------------------------------------------------------------------- agent deployment
+DeployRoute = Literal["gpo", "intune", "rmm", "manual"]
+
+
+class DeploySelection(_Strict):
+    """Either explicit directory computers, or every computer issue matching a
+    Discovery filter (resolved by the server, at most 5000 machines)."""
+
+    computer_ids: list[DeviceId] = Field(default_factory=list, max_length=5000)
+    issue_type: Annotated[str, StringConstraints(pattern=r"^[a-z_]{1,32}$")] | None = None
+    source_id: DeviceId | None = None
+    q: Annotated[str, StringConstraints(max_length=255)] | None = None
+    domain: Annotated[str, StringConstraints(max_length=255)] | None = None
+    use_filter: bool = False
+
+    @model_validator(mode="after")
+    def _one(self):
+        if self.use_filter == bool(self.computer_ids):
+            raise ValueError("give either computer_ids or use_filter with the issue filter")
+        return self
+
+
+class DeploymentCreate(DeploySelection):
+    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=128)]
+    # Route chosen per machine where it differs from the suggestion (must be an allowed one).
+    routes: dict[DeviceId, DeployRoute] = Field(default_factory=dict, max_length=5000)
+    expires_in_days: int = Field(14, ge=1, le=90)
+    device_group: Annotated[str, StringConstraints(strip_whitespace=True, max_length=64,
+                                                   pattern=r"^[A-Za-z0-9][A-Za-z0-9 ._\-]*$")] | None = None
+    # Also mint a plain token for command-line enrollment (shown once).
+    command_line_token: bool = False
+
+
+class DeployInstallerIn(_Strict):
+    platform: Literal["windows-msi", "macos-pkg"]
+    # None: include the private CA when the server has one configured.
+    include_ca: bool | None = None
+
+
 class CollectorOut(BaseModel):
     id: str
     hostname: str
@@ -326,6 +365,8 @@ class ComputerOut(BaseModel):
     serial_number: str = ""
     primary_user: str = ""
     agent_expected: bool = True
+    # workstation | server | domain_controller | None (from the directory attributes).
+    device_class: str | None = None
     # Every record of this physical machine ({"id", "source_id", "type", "kind"}).
     sources: list[dict] = []
 

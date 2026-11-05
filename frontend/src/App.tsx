@@ -15,6 +15,7 @@ import {
   PlugZap,
   Route as RouteIcon,
   ScrollText,
+  ShieldCheck,
   Siren,
   Sun,
   Users2,
@@ -33,9 +34,13 @@ import Approvals from "./pages/Approvals";
 import AssetDetail from "./pages/assets/AssetDetail";
 import Assets from "./pages/assets/Assets";
 import AssetSettings from "./pages/assets/AssetSettings";
+import DeployAgent from "./pages/assets/DeployAgent";
+import DeploymentDetail from "./pages/assets/DeploymentDetail";
+import Deployments from "./pages/assets/Deployments";
 import Discovery from "./pages/assets/Discovery";
 import Offboarding from "./pages/assets/Offboarding";
 import AttackPaths from "./pages/AttackPaths";
+import Compliance from "./pages/Compliance";
 import Connectors from "./pages/Connectors";
 import AgentUpdates from "./pages/devices/AgentUpdates";
 import DeviceDetail from "./pages/devices/DeviceDetail";
@@ -63,7 +68,13 @@ type NavItem = { to: string; label: string; icon: LucideIcon; role?: Role; badge
 
 // Grouped by what the user is looking after; the order inside a group follows a typical triage.
 const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
-  { title: "", items: [{ to: "/", label: "Dashboards", icon: LayoutDashboard }] },
+  {
+    title: "",
+    items: [
+      { to: "/", label: "Dashboards", icon: LayoutDashboard },
+      { to: "/compliance", label: "Compliance", icon: ShieldCheck },
+    ],
+  },
   {
     title: "Cloud security",
     items: [
@@ -305,6 +316,7 @@ function Shell() {
           )}
           <Routes>
             <Route path="/" element={<DashboardPage />} />
+            <Route path="/compliance" element={<Compliance />} />
             <Route path="/inventory" element={<Inventory />} />
             <Route path="/findings" element={<Findings />} />
             <Route path="/findings/:id" element={<FindingDetail />} />
@@ -322,6 +334,9 @@ function Shell() {
             <Route path="/it-assets" element={<Assets />} />
             <Route path="/it-assets/offboarding" element={<Offboarding />} />
             <Route path="/it-assets/discovery" element={<Discovery />} />
+            <Route path="/it-assets/discovery/deploy" element={<RequireRole role="admin"><DeployAgent /></RequireRole>} />
+            <Route path="/it-assets/discovery/deployments" element={<Deployments />} />
+            <Route path="/it-assets/discovery/deployments/:id" element={<DeploymentDetail />} />
             <Route path="/it-assets/settings" element={<RequireRole role="admin"><AssetSettings /></RequireRole>} />
             <Route path="/it-assets/:id" element={<AssetDetail />} />
             <Route path="/notifications" element={<RequireRole role="analyst"><Notifications /></RequireRole>} />

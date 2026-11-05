@@ -41,6 +41,9 @@ class ItAsset(TenantMixin, Base):
     asset_tag: Mapped[str] = mapped_column(String(64))
     serial_number: Mapped[str] = mapped_column(String(128), default="", index=True)
     asset_type: Mapped[str] = mapped_column(String(32), default="other", index=True)
+    # "auto": set from the agent device / directory computer (device class, form
+    # factor; follows it); "manual": chosen by a person (never overwritten).
+    asset_type_source: Mapped[str] = mapped_column(String(8), default="manual", server_default="manual")
     manufacturer: Mapped[str] = mapped_column(String(128), default="")
     model: Mapped[str] = mapped_column(String(128), default="")
     status: Mapped[str] = mapped_column(String(24), default="in_stock", index=True)

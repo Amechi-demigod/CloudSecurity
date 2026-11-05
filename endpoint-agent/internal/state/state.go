@@ -48,6 +48,9 @@ type State struct {
 	// ScriptBundleVersion is the highest signed script-bundle version this agent
 	// has run a script from; older bundles are refused (anti-rollback).
 	ScriptBundleVersion string `json:"script_bundle_version,omitempty"`
+	// OSUpdatesLastScan is when the last Windows Update search finished
+	// (internal/osupdates), so restarts do not trigger extra searches.
+	OSUpdatesLastScan time.Time `json:"os_updates_last_scan,omitempty"`
 }
 
 // Paths are the agent's directories.

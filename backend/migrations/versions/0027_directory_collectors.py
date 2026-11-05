@@ -5,8 +5,8 @@ dedicated collectors of a source (directory_sources.collector_ids; existing
 sources keep their endpoint-agent collectors as "legacy"), the collector of a
 run, and the signed collector binaries imported with agent releases.
 
-Revision ID: 0022_directory_collectors
-Revises: 0021_directory_cloud_sources
+Revision ID: 0027_directory_collectors
+Revises: 0026_device_classification
 Create Date: 2026-11-04
 """
 from __future__ import annotations
@@ -16,8 +16,8 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '0022_directory_collectors'
-down_revision: str | None = '0021_directory_cloud_sources'
+revision: str = '0027_directory_collectors'
+down_revision: str | None = '0026_device_classification'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

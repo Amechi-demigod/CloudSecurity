@@ -449,7 +449,8 @@ def test_matching_findings_and_notifications(admin, collector):
     assert csv_text.splitlines()[0].startswith("type,kind,name") and "UNMANAGED1" in csv_text
     # Summary / coverage: 6 enabled computers (DISABLED1 excluded), 3 managed (COLLECTOR1, PC1, PC2).
     summary = admin.get("/api/directory/summary").json()
-    assert summary["coverage"] == {"directory_computers": 6, "managed": 3, "pct": 50.0}
+    cov = {k: v for k, v in summary["coverage"].items() if k != "by_class"}
+    assert cov == {"directory_computers": 6, "managed": 3, "pct": 50.0}
     assert summary["sources"] == 1 and summary["users"] == 2
     # Notifications: one "not managed" event; re-evaluating with the same count adds none.
     with db.get_session("default") as s:
