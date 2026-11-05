@@ -42,7 +42,7 @@ attributes in JSON) and the matching tiers are shared by every source type.
 ## Contents
 
 - [Architecture](#architecture)
-- [Dedicated collectors](#dedicated-collectors) (recommended setup: member server + gMSA; transports; Test)
+- [Dedicated collectors](#dedicated-collectors) (recommended setup: member server + gMSA; [installing the MSI](#installing-the-collector-msi): silent, GPO, Intune, upgrades; transports; Test)
 - [Collector requirements](#collector-requirements)
 - [Network ports](#network-ports)
 - [Authentication options](#authentication-options)
@@ -139,28 +139,136 @@ notification (once per outage, *collector online* when it is back).
   installing: *Domain controllers are your most sensitive servers; we recommend
   a member server. This collector cannot run commands, scripts or remote
   sessions (it only reads the directory), so it is allowed.* A silent install on
-  a DC needs `-AllowDomainController`.
+  a DC needs `ALLOW_DOMAIN_CONTROLLER=1` (MSI) or `-AllowDomainController` (zip).
 * **Identity.** The Kerberos bind (SSPI) always uses the service's own identity:
   under LocalSystem that is the computer account; as a gMSA it is the gMSA. The
   bind code is the same; the collector reports which identity it uses.
 
-### Installing
+### Installing the collector (MSI)
 
-*Connectors & scans → Collectors → Add collector → Installer* downloads a zip
-with `cnapp-collector.exe` (the signed binary bundled in the server image),
-`collector.json` (server URL, a fresh **single-use** enrollment token, the
-private CA if needed, the service display name, optionally the gMSA) and two
-scripts:
+The recommended way is the guided setup, **Add directory → Active Directory**
+([setting up a source](#setting-up-a-source)): when the organisation has no
+online collector, step 2 downloads the installer, shows the install command and
+waits until the new collector enrolls, then selects it. *Connectors & scans →
+Collectors → Add collector* offers the same download (second collector, gMSA,
+manual installs).
+
+The download is a **pre-configured Windows Installer package**
+(`<BRAND_NAME>-Collector.msi`, x64), generated per organisation by the server
+exactly like the agent's pre-configured MSI: the generic MSI built by CI with
+WiX (`endpoint-agent/packaging/windows/msi/cnapp-collector.wxs`, bundled in the
+backend image with its SHA-256 in `manifest.json`) is copied and its fixed-length
+`CNAPP_PRESET` property is overwritten in place (`services/msipatch.py`) with
+`collector.json`: server URL, a fresh **single-use** collector enrollment token
+(`cnct_…`, valid 24 hours), the private CA if the server certificate is not
+publicly trusted, the service display name and the optional gMSA. Each download
+also gets a new package code and its **own ProductCode**, so installing a second
+download over the first is an upgrade instead of *another version of this
+product is already installed*. Downloads are admin-only, rate limited
+(`AGENT_INSTALLER_RATE_LIMIT`, shared with the agent installers) and audited
+(`directory_collector_installer_downloaded` with the SHA-256 of the file); the
+plaintext token only exists in the file.
+
+**Install:**
+
+* **Double-click** it on a domain-joined member server: a small setup window
+  (what the collector does, which account it runs as), *Install*, done. On a
+  **domain controller** it shows the DC warning first (*Install anyway* /
+  *Cancel*).
+* **Silent** (elevated):
 
 ```powershell
-.\Install-Collector.ps1                                  # interactive
-.\Install-Collector.ps1 -Quiet                           # silent (deployment tools)
-.\Install-Collector.ps1 -Quiet -Gmsa 'CORP\svc-collector$'
-.\Uninstall-Collector.ps1                                # service, program files, credential, logs
+msiexec /i Travound-Collector.msi /qn
+msiexec /i Travound-Collector.msi /qn GMSA=CORP\svc-collector$          # run as a gMSA
+msiexec /i Travound-Collector.msi /qn ALLOW_DOMAIN_CONTROLLER=1         # on a DC (not recommended)
+msiexec /i Travound-Collector.msi /qn /l*v collector-install.log        # with a Windows Installer log
 ```
 
-The service enrolls on start and deletes the token. Nothing listens: it polls
+| Property | Values | |
+|---|---|---|
+| `GMSA` | `DOMAIN\name$`, or `LocalSystem` | Run the service as this group Managed Service Account. The installer grants it **Log on as a service**, full control of `%ProgramData%\CNAPP Collector`, modify on its program folder (signed self-update) and start/stop of its own service, exactly like `Install-Collector.ps1 -Gmsa`. A malformed value or a gMSA this computer cannot use fails the install **before anything changes** (exit code 1603; the reason is in the collector log). Default: the gMSA chosen when downloading, else what the existing service runs as, else what the previous install recorded, else **LocalSystem** (the computer account). `LocalSystem` switches back. |
+| `ALLOW_DOMAIN_CONTROLLER` | `1` | Required for a **silent first install** on a DC (`MsiNTProductType` 2). The interactive installer asks instead. Upgrades of a collector already installed there do not ask again. |
+| `CNAPP_SERVER`, `CNAPP_TOKEN`, `CNAPP_CA_B64` | URL, `cnct_…` token, base64 PEM | Generic (unconfigured) MSI only, e.g. a copy you re-sign: enrollment on the command line (they win over a preset). Tokens: *Collectors → enrollment tokens* (`POST /api/collectors/enrollment-tokens`). |
+| `CNAPP_KEEP_STATE` | `1` | Uninstall keeps the credential and logs. |
+
+The service (`CNAPPCollector`, automatic delayed start, restart on failure)
+enrolls on start and deletes the token. Nothing listens: it polls
 `/api/collector/commands` every minute and sends a heartbeat every 5 minutes.
+It appears in the wizard and under *Collectors* within a minute.
+
+**How the MSI works.** It installs `cnapp-collector.exe` to
+`%ProgramFiles%\CNAPP Collector`, stops an existing `CNAPPCollector` service, and
+runs `cnapp-collector msi-install` as SYSTEM (a deferred custom action with the
+properties above, hidden from the MSI log). That command validates the gMSA,
+the DC rule and the enrollment first, then writes the pending enrollment (never
+on an already enrolled host), records the identity in
+`%ProgramData%\CNAPP Collector\service.json` and (re)creates the service the same
+way the zip's script does. The service is created by the collector rather than
+by the MSI's ServiceInstall table because a gMSA needs the rights above and its
+identity must survive upgrades. Uninstall stops and deletes the service and runs
+`cnapp-collector purge` (credential, pending enrollment, settings, logs).
+
+**Upgrade, repair and self-update.** A newer MSI (or another download) upgrades
+in place: the old version is removed without purging, the new one keeps the
+enrollment and the identity — nothing to pass again. **The MSI always installs
+its own binary:** the File table carries a version for `cnapp-collector.exe`,
+so Windows Installer replaces the unversioned binary a signed **self-update**
+(or a zip install) left on disk, also on repair (`msiexec /fa`). Afterwards the
+collector's self-update moves it to the organisation's update-ring target if
+that is newer (a downgrade by an older MSI is therefore temporary; self-update
+never offers an older version). *Apps* shows the MSI's version until then; the
+console shows the running one. Self-update side files are removed on uninstall.
+
+**Taking over a zip-installed collector.** Install the MSI on the same host
+(double-click or `/qn`): it stops the zip-installed service, replaces the
+binary, keeps the enrollment (no new collector, no new token used — even an
+already used download works) and the identity the service ran as (LocalSystem
+or the gMSA), and from then on the collector is managed through *Apps* /
+`msiexec /x`. Remove it with the MSI only (not `Uninstall-Collector.ps1`).
+
+**Group Policy software installation.** Put the downloaded MSI on a share the
+collector computers can read (`\\corp.example.com\SYSVOL\…` or a DFS share),
+then *Computer Configuration → Policies → Software Settings → Software
+installation → New → Package → Assigned*. It installs at the next boot as
+SYSTEM, silently, with the preset; for a gMSA, create a transform or pass
+`GMSA` via a startup script instead (`msiexec /i \\share\Travound-Collector.msi
+/qn GMSA=CORP\svc-collector$`). The token is single-use: one download per
+collector, or create a multi-use collector token and deploy the **generic MSI**
+with `CNAPP_SERVER` / `CNAPP_TOKEN` (`msiexec` startup script).
+
+**Intune (Win32 app).** Wrap the MSI with the Microsoft Win32 Content Prep Tool
+(`IntuneWinAppUtil.exe -c . -s Travound-Collector.msi -o out`), add it as a
+*Windows app (Win32)*: install command `msiexec /i Travound-Collector.msi /qn`
+(append `GMSA=…` if needed), uninstall command `msiexec /x {ProductCode} /qn`
+(shown by Intune from the MSI), install behaviour **System**, detection rule
+**MSI** (product code, filled in automatically), assign to the collector
+servers' device group. Same single-use token rule as GPO.
+
+**Signing.** Like the agent's pre-configured MSI, a download is modified per
+organisation, so it cannot carry an Authenticode signature of its own (the
+binaries' signatures in the cabinet are untouched). Where only signed packages
+are allowed, sign the **generic** MSI (`build-msi.ps1 -Product collector`, then
+`signtool`) and deploy it with `CNAPP_SERVER` / `CNAPP_TOKEN`.
+
+**Windows on Arm64** and fully scripted installs use the zip below.
+
+#### Zip with PowerShell scripts (advanced / scripted; deprecated for x64)
+
+*Add collector → Installer → Advanced / scripted install* (or `format: "zip"`)
+downloads `cnapp-collector.exe` (the binary bundled in the server image),
+`collector.json` and two scripts:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\Install-Collector.ps1                  # interactive
+powershell -ExecutionPolicy Bypass -File .\Install-Collector.ps1 -Quiet           # silent
+powershell -ExecutionPolicy Bypass -File .\Install-Collector.ps1 -Quiet -Gmsa 'CORP\svc-collector$'
+powershell -ExecutionPolicy Bypass -File .\Uninstall-Collector.ps1                # service, program files, credential, logs
+```
+
+Run them from the unzipped folder in an elevated PowerShell. The zip stays for
+Arm64 and scripted environments; for x64 it is **deprecated** in favour of the
+MSI (which takes over a zip install, see above) and will be removed from the
+console in a later release.
 
 ### gMSA (recommended)
 
@@ -178,11 +286,15 @@ domain, gMSA name and collector computers filled in:
 4. On each collector: `Install-ADServiceAccount svc-collector; Test-ADServiceAccount
    svc-collector` (must print `True`; a computer just added to the principals
    reboots or purges its tickets first).
-5. Install with `-Gmsa 'CORP\svc-collector$'`, or switch an installed collector:
-   `sc.exe config CNAPPCollector obj= "CORP\svc-collector$" password= ""`. The
+5. Install (or re-install over an installed collector) with
+   `msiexec /i Travound-Collector.msi /qn GMSA=CORP\svc-collector$`, or download
+   the MSI with the gMSA filled in; zip: `-Gmsa 'CORP\svc-collector$'`. The
    installer grants the gMSA **Log on as a service**, full control of its state
    folder (`%ProgramData%\CNAPP Collector`), modify on its program folder (signed
-   self-update) and start/stop on its own service; nothing else.
+   self-update) and start/stop on its own service; nothing else. (`sc.exe config
+   CNAPPCollector obj= "CORP\svc-collector$" password= ""` also works but grants
+   none of that, and a later MSI upgrade returns to the identity the last install
+   recorded: prefer `GMSA=`.)
 
 A read-only **service account** with a password stays available for collectors
 that are not domain-joined (simple bind, always inside TLS, stored encrypted on
@@ -330,23 +442,38 @@ collectors only StartTLS (go-ldap negotiates no SASL security layer). Kerberos
 
 ## Setting up a source
 
-1. Add two [dedicated collectors](#dedicated-collectors) on domain-joined member
-   servers that stay on (gMSA recommended).
-2. **Connectors & scans → Directories → Add directory → Active Directory.** Enter the
-   domain (e.g. `corp.example.com`), choose the collectors (order = failover), keep
-   *Collector's identity* (computer account / gMSA) or switch to *Read-only service
-   account*. Transport: *Kerberos signing & sealing (port 389, no certificate
-   needed)* by default; LDAPS / StartTLS selectable. Advanced: DCs (default: DC
-   locator), base DNs (default: domain root), port, extra CA, stale threshold
-   (90 days), sync interval (6 h), objects (computers, users).
-3. Optional: copy the manual **pre-check script** (the console's Test runs the same
-   checks on the collector).
-4. **Test & save.** The source is saved and the collector runs its diagnostics
-   (DC locator, port, certificate, bind, 5-object read) and reports each step;
-   collectors pick up commands within about a minute. Legacy sources still queue
-   a test sync (at most 10 objects, nothing stored but their names).
-5. The first full sync runs on schedule (immediately for a new source) or with
-   **Sync now**. Results: **IT assets → Discovery**.
+**Connectors & scans → Directories → Add directory → Active Directory** is a
+guided setup in four steps (the step bar stays visible while the page scrolls):
+
+1. **Domain**: the DNS domain (e.g. `corp.example.com`) and a name.
+2. **Collector**: if the organisation has online dedicated collectors, pick them
+   (the first is the primary, the others fail over in order). If it has none,
+   the step shows the [collector installer](#installing-the-collector-msi)
+   inline: package (MSI recommended; zip under *Advanced*), optional gMSA,
+   *Download collector installer (MSI)*, the double-click / `msiexec` command,
+   and then *Waiting for the collector to come online…*. The page polls the
+   collector list and selects the collector that enrolled with **that
+   download's token** (collectors report `enrollment_token_id`), showing its
+   host, the identity it runs as and the domain-controller warning if
+   applicable. *Install another collector* adds a second one; the gMSA guide is
+   one click away (*Production: run the collector as a gMSA*).
+3. **Test**: the primary collector runs its diagnostics on the settings **before
+   anything is saved** (`POST /api/collectors/{id}/test` with `config`) and
+   reports PASS / WARN / FAIL per step: DC locator (including the stale SRV
+   warning), port, certificate (skipped when sealed), bind as its identity with
+   *signed+sealed*, read 5 objects. *Advanced* sets explicit DCs, base DNs,
+   transport and port, then *Test again*. A failing test can still be saved.
+4. **Save**: the source is created with the collector's identity (Kerberos, no
+   secret), computers and users, a 90-day stale threshold and a 6-hour interval,
+   and its **first sync starts** at once; *Open Discovery* shows the results
+   (**IT assets → Discovery**).
+
+Everything else is under **Edit** on the source afterwards: read-only *service
+account* (LDAPS / StartTLS only), extra CA, port, objects, stale threshold,
+interval, collectors. The edit form keeps the optional manual **pre-check
+script** and *Test & save*. The *Collectors* section stays for a second
+collector, gMSA setup, rename / revoke and manual installers. Legacy sources
+on endpoint agents are unaffected (Edit → *Switch to dedicated collectors*).
 
 ## Server-side collection
 
@@ -891,6 +1018,18 @@ Source bodies: `{"type": "ad", "config": {...AD...}, "collector_device_ids": [..
 "<service-account JSON>"}` (the key is write-only; PATCH with `google_key`
 replaces it; `service_account_email`, `client_id` and `key_id` are set by the server).
 
+Dedicated collectors, under `/api/collectors` (console session):
+
+| Method | Path | Role |
+|---|---|---|
+| GET | `` (list: state, host, run-as identity, DC flag, `enrollment_token_id`, last diagnostics), `/{id}` | viewer |
+| PATCH / DELETE | `/{id}` (rename; delete after revoke), POST `/{id}/revoke` | admin |
+| POST | `/{id}/test` (`{"source_id": …}` for a saved source, or `{"config": {"domain": …, "servers", "base_dns", "security", "port"}}` for settings not saved yet; the collector's identity only) | admin |
+| GET | `/installer/info` (`msi` and per-arch `arches` availability, version, file name, `ca_configured`) | viewer |
+| POST | `/installer` (`format`: `msi` (default, x64) or `zip`; `arch`, `name`, `gmsa`, `expires_in_hours`, `include_ca`; returns the file with `X-Enrollment-Token-Id`, `X-Content-SHA256`, `X-Collector-Version`; rate limited) | admin |
+| GET / POST | `/enrollment-tokens/list`, `/enrollment-tokens`, `/enrollment-tokens/{id}/revoke` | viewer / admin |
+| GET | `/setup/scripts` (gMSA and pre-check PowerShell) | viewer |
+
 Agent: `POST /api/agent/directory/runs/{run_id}/batches` (device credential +
 `X-Directory-Sync-Token`, `Content-Encoding: gzip`, JSON `{seq, final,
 computers[], users[], status, error, truncated, totals, duration_ms, server}`).
@@ -908,6 +1047,13 @@ computers[], users[], status, error, truncated, totals, duration_ms, server}`).
 
 | Symptom | Check |
 |---|---|
+| Collector MSI: *Setup failed* / `msiexec` exit code **1603** | The reason is in `%ProgramData%\CNAPP Collector\logs\agent.log` (*MSI install failed*): a malformed `GMSA` (must be `DOMAIN\name$`), a gMSA this computer cannot use (`Install-ADServiceAccount` / `Test-ADServiceAccount` first), or a domain controller without `ALLOW_DOMAIN_CONTROLLER=1`. Nothing was changed. For the full Windows Installer log add `/l*v install.log`. |
+| Collector MSI: *This computer is a domain controller …* (silent install) | Install on a member server, or add `ALLOW_DOMAIN_CONTROLLER=1`. |
+| Collector MSI: *A newer version of CNAPP Collector is already installed* | The host runs a newer collector; downgrades through the MSI are refused. Uninstall it first if you really want the older one. |
+| Wizard keeps *Waiting for the collector to come online…* | On the host: `sc.exe query CNAPPCollector` must be RUNNING and `"C:\Program Files\CNAPP Collector\cnapp-collector.exe" status` shows `enrolled`. Not enrolled: the log shows why (server not reachable over HTTPS 443, a TLS / CA error, or *invalid, expired or used-up collector enrollment token*: each download's token is single-use and valid 24 hours — download a new installer). A collector installed from **another** download still appears in the list; pick it there. |
+| Collector installed but enrolls as the old collector | Expected: re-installing on the same machine (MSI, zip, take-over) keeps its record (same machine id). |
+| Execution policy / *running scripts is disabled* (zip) | Use the MSI, or `powershell -ExecutionPolicy Bypass -File .\Install-Collector.ps1` from the unzipped folder. |
+| *the enrollment token is missing or malformed (expected cne_...)* at install | The 1.4.0 collector zip (fixed in the next collector release: collectors accept `cnct_` tokens); use the MSI or a zip from a server with the fixed release. |
 | No collectors listed | Agent < 1.3.0, or not enrolled in this organisation. |
 | "no healthy collector" | The collector agents must be online (seen in 10 min); computer-account auth needs Windows collectors. |
 | `no domain controller accepted the connection` | DNS SRV lookup, firewall to 636/389, DC certificate trust (paste the CA), host name in the certificate. |
@@ -937,13 +1083,23 @@ wldap32 layer is unit-tested with a fake):
 
 1. [ ] Import a release with collector binaries (`cnapp-ctl agent-release fetch`); the
    output lists the collector platforms. Deploy migration `0027_directory_collectors`.
-2. [ ] *Collectors → Add collector*: download the installer, run `Install-Collector.ps1`
-   on a member server: the collector appears online with host, domain and
-   `CORP\HOST$ (computer account)`. It is **not** under Devices or IT assets.
-3. [ ] Install on a DC: the installer warns and asks; the console shows the DC warning.
+2. [ ] *Add directory → Active Directory* with no collector: download the MSI in step 2,
+   **double-click** it on a member server: the wizard switches from *Waiting…* to the
+   collector (host, domain, `CORP\HOST$ (computer account)`) and selects it; step 3's
+   Test passes; Save starts the first sync. It is **not** under Devices or IT assets.
+3. [ ] Install on a DC: double-click warns and asks (*Install anyway* / *Cancel*);
+   `msiexec /qn` without `ALLOW_DOMAIN_CONTROLLER=1` fails with the DC message, with it
+   succeeds; the console shows the DC warning.
 4. [ ] gMSA: run the console's KDS / New-ADServiceAccount / Install-ADServiceAccount
-   scripts, `Test-ADServiceAccount` is True; reinstall with `-Gmsa`: run-as shows
-   `CORP\svc-collector$ (gMSA)`; a sync works; the state folder and self-update work.
+   scripts, `Test-ADServiceAccount` is True; `msiexec /i … /qn GMSA=CORP\svc-collector$`
+   over the installed collector: run-as shows `CORP\svc-collector$ (gMSA)`, no
+   re-enrollment; a sync works; the state folder and self-update work; a later MSI
+   upgrade keeps the gMSA. `GMSA=CORP\svc-collector` (no `$`) is refused.
+4b. [ ] GPO assigned install and an Intune Win32 deployment of the MSI enroll a collector;
+   *Apps* uninstall removes it cleanly (service, folders).
+4c. [ ] A collector installed with the 1.4.x zip: install the MSI over it: same collector,
+   no new enrollment, identity kept; self-update to a newer ring release, then an MSI
+   upgrade: the MSI's binary is in place and self-update follows the ring again.
 5. [ ] On a domain **without** LDAPS certificates: new source with the default
    transport → **Test**: all PASS, *signed+sealed: yes*; Sync now succeeds.
    Capture with Wireshark: LDAP payloads after the bind are sealed (SASL wrapped).

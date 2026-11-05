@@ -8,17 +8,16 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { collectorApi, directoryApi, type AdConfig, type DedicatedCollector, type DirectorySecurity, type DirectorySource } from "../directoryApi";
 import { useDiagnostics } from "../lib/collectors";
-import { errMsg, inputCls, useRun } from "../lib/directory";
+import { RUN_COLOR, RUN_TEXT, errMsg, inputCls, useRun } from "../lib/directory";
 import { fmtAgo } from "../lib/format";
 import { useApi } from "../lib/useApi";
 import { CollectorInstaller, DcWarning, DiagnosticsResult, GmsaSetup } from "./collectors";
-import { RunResult } from "./directoryShared";
 import { Button, ErrorNote, Field, Tag } from "./ui";
 
 const STEPS = ["Domain", "Collector", "Test", "Save"] as const;
 const DOMAIN_RE = /^(?=.{3,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
 const RUN_AS: Record<DedicatedCollector["run_as_kind"], string> = {
-  computer_account: "computer account (LocalSystem)",
+  computer_account: "computer account, LocalSystem",
   gmsa: "gMSA",
   user: "user account",
   unknown: "unknown identity",
@@ -38,8 +37,9 @@ const split = (s: string) =>
 function Stepper({ step }: { step: number }) {
   return (
     <ol
-      aria-label="Steps"
-      className="sticky top-0 z-10 -mx-1 mb-4 flex flex-wrap items-center gap-x-2.5 gap-y-1.5 border-b border-line bg-surface-1 px-1 pb-3 pt-1"
+      aria-label="Active Directory setup steps"
+      // -top-5: flush with the top of the page's scroll area (main has py-5), so nothing shows above it.
+      className="sticky -top-5 z-10 -mx-1 mb-4 flex flex-wrap items-center gap-x-2.5 gap-y-1.5 border-b border-line bg-surface-1 px-1 pb-3 pt-2"
     >
       {STEPS.map((t, i) => (
         <li key={t} aria-current={i === step ? "step" : undefined} className="flex items-center gap-2 text-sm">
@@ -427,7 +427,23 @@ export function AdWizard({ onDone, onCancel }: { onDone: (s: DirectorySource) =>
                 <p className="text-sm text-ink">
                   <strong>{saved.name}</strong> is saved. {runId ? "The first sync has started:" : "The first sync starts within a minute."}
                 </p>
-                {runId && <RunResult run={run} error={runErr} />}
+                {runId && (
+                  <div className="text-sm">
+                    <ErrorNote error={runErr} />
+                    {run && (
+                      <>
+                        <span className={`font-medium ${RUN_COLOR[run.status]}`}>{RUN_TEXT[run.status]}</span>
+                        {run.device_hostname && <span className="text-ink-2"> on {run.device_hostname}</span>}
+                        <span className="text-ink-3">
+                          {run.status === "queued"
+                            ? " · the collector picks it up within about a minute"
+                            : ` · ${run.computers_seen.toLocaleString()} computers, ${run.users_seen.toLocaleString()} users so far`}
+                        </span>
+                        {run.error && <span className="block break-words text-xs text-ink-3">{run.error}</span>}
+                      </>
+                    )}
+                  </div>
+                )}
                 <p className="text-sm">
                   <Link to="/it-assets/discovery" className="text-accent hover:underline">
                     Open Discovery
