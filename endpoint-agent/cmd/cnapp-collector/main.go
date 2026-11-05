@@ -56,6 +56,7 @@ key compiled into this binary.
 func main() {
 	service.UseCollector("")
 	state.ProductDir = "CNAPP Collector"
+	state.TokenPrefix = state.CollectorTokenPrefix
 	update.Product = "cnapp-collector"
 	directory.SealedEnabled = true
 	setServiceAccountSID()
