@@ -34,6 +34,7 @@ from .api import remote_sessions as remote_sessions_api
 from .asset_lifecycle import api as it_assets_api
 from .directory import agent_api as directory_agent_api
 from .directory import api as directory_api
+from .directory import deploy_api as directory_deploy_api
 from .directory.scheduler import DirectoryScheduler
 from .notifications import api as notifications_api
 from .notifications import settings as notification_settings
@@ -207,6 +208,7 @@ def create_app() -> FastAPI:
     app.include_router(mfa_sso_api.admin_router)
     app.include_router(it_assets_api.router)  # /api/it-assets/*: viewer reads, analyst/admin writes
     app.include_router(directory_api.router)  # /api/directory/*: viewer reads, admin writes
+    app.include_router(directory_deploy_api.router)  # /api/directory/deployments/*: viewer reads, admin writes
     app.include_router(agent_updates_api.router)  # /api/updates/*: viewer reads, admin writes (all audited)
     app.include_router(approvals_api.router)  # /api/approvals/*: admin only (two-person rule)
     app.include_router(device_scripts_api.router)  # /api/scripts/*: viewer reads, admin imports / runs
