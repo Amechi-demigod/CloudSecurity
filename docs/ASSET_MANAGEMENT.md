@@ -78,7 +78,7 @@ servers and domain controllers (physical or virtual; the device page shows the v
 *automatic* (`asset_type_source: auto`) and follows the device when its class changes, for example after the agent is
 upgraded. **A type chosen by a person is never overwritten**: changing the type in the console, the API or a CSV import
 makes it *manual*. Assets added from Discovery are *server* for servers and domain controllers. Migration
-`0022_device_classification` marks existing agent and directory assets of type computer / laptop / desktop / server as
+`0026_device_classification` marks existing agent and directory assets of type computer / laptop / desktop / server as
 automatic and every other existing type as manual.
 
 With a directory source, IT asset owners also show their **directory identity** (display name, email, department, disabled) next to the username, as display-only enrichment: the agent-always-wins username owner rule below is unchanged. Directory computers without an agent are listed under **IT assets → Discovery** ([DIRECTORY_DISCOVERY.md](DIRECTORY_DISCOVERY.md)).

@@ -126,6 +126,17 @@ type Software struct {
 	Source      string `json:"source"`
 }
 
+// Service is one Windows service (agents 1.4.0+, internal/actions): the
+// inventory the console's Services tab and endpoint actions work from.
+type Service struct {
+	Name        string `json:"name"`
+	DisplayName string `json:"display_name"`
+	// Status: running | stopped | start_pending | stop_pending | paused | other.
+	Status string `json:"status"`
+	// StartType: boot | system | auto | auto_delayed | manual | disabled.
+	StartType string `json:"start_type"`
+}
+
 // Report is the check-in document (POST /api/agent/checkin).
 type Report struct {
 	SchemaVersion int                     `json:"schema_version"`
@@ -133,7 +144,9 @@ type Report struct {
 	Device        DeviceInfo              `json:"device"`
 	Posture       map[string]PostureCheck `json:"posture"`
 	Software      []Software              `json:"software"`
-	Errors        map[string]string       `json:"errors"`
+	// Services is Windows only (nil elsewhere, then omitted).
+	Services []Service         `json:"services,omitempty"`
+	Errors   map[string]string `json:"errors"`
 	// MachineID is the SHA-256 of the OS machine identifier; sent at enrollment only.
 	MachineID string `json:"-"`
 }

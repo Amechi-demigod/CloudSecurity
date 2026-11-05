@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/actions"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/backoff"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/client"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/collect"
@@ -68,12 +69,22 @@ type Agent struct {
 	Signin       *signin.Manager
 	// Remote runs attended remote sessions (nil: not available).
 	Remote *remote.Controller
+	// Actions runs the built-in endpoint actions (services, uninstall, USB
+	// storage) and reports the services inventory and USB state (nil: not available).
+	Actions *actions.Manager
 	// DirectoryConnect connects to the directory for directory_sync
 	// (nil: the real LDAP backend; replaced in tests).
 	DirectoryConnect     directory.Connector
 	directoryRetryDelays []time.Duration
 	dirRunning           atomic.Bool
 	dirWG                sync.WaitGroup
+	// OSUpdateScan runs one Windows Update search (nil: osupdates.Scan;
+	// replaced in tests); osUpd* track the background search and its schedule.
+	OSUpdateScan        func(ctx context.Context) (model.OSUpdateReport, error)
+	osUpdRunning        atomic.Bool
+	osUpdWG             sync.WaitGroup
+	nextOSUpdateScan    time.Time
+	osUpdateRetryDelays []time.Duration
 	// baseCtx is Run's context: background work (directory syncs) outlives
 	// the command poll that started it but stops with the agent.
 	baseCtx context.Context
@@ -111,6 +122,8 @@ func Load(p state.Paths) (*Agent, error) {
 	base, secret, pinned, insecure := c.RelayConfig()
 	a.Remote = remote.New(remote.DefaultPlatform(), remote.NewDialer(remote.DialConfig{
 		ServerURL: base, Secret: secret, TLS: pinned, InsecureDev: insecure}))
+	a.Actions = actions.New(p)
+	a.Actions.RemoteActive = a.Remote.Busy
 	if keys, err := scripts.BuiltinKeys(); err != nil {
 		slog.Error("script-signing keys unusable; scripts disabled", "err", err)
 	} else {
@@ -236,6 +249,8 @@ func (a *Agent) handle(ctx context.Context, c model.Command) {
 		RestoreHost:    a.restoreHost,
 		RemoteSession:  a.remoteSession,
 		DirectorySync:  a.directorySync,
+		EndpointAction: a.endpointAction,
+		ScanOSUpdates:  a.scanOSUpdates,
 	}, a.Restart)
 	log.Info("command finished", "status", out.Status, "output", out.Output)
 	if err := a.client.ResultFull(ctx, c, out.Status, out.Output, out.ExitCode, out.ResultData); err != nil {
@@ -415,6 +430,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		}
 		a.maybeRelock(ctx)
 		a.maybeReenforceSignin(ctx)
+		a.maybeScanOSUpdates()
 	}
 }
 

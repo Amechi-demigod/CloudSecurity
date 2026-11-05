@@ -13,12 +13,16 @@ import { fmtAgo, fmtTime } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
 import { useUrlState } from "../../lib/useUrlState";
 import { AssetRecordLink } from "../assets/AssetRecordLink";
+import { endpointActionLabel } from "../../endpointActionsApi";
+import { ActionsTab, EndpointActionDialog, ServicesTab, UninstallCell, type PendingAction } from "./EndpointActions";
+import { OsUpdatesTab } from "./OsUpdates";
 import { IsolationCard, LostModeDialog, LostWipeCard, SuspendSignInDialog, WipeDialog } from "./LostWipe";
 import { RemoteSessionButton, RemoteSessionsCard } from "./RemoteSessions";
 import { RunScriptDialog } from "./RunScriptDialog";
 import { PendingUpdateView, UpdateNowButton } from "./UpdateAutomation";
 
-const TABS = ["Overview", "Posture", "Software", "Vulnerabilities", "History", "Commands", "Updates"] as const;
+// "Updates" is the agent's own version / rollout; "OS updates" the Windows Update report (Windows only).
+const TABS = ["Overview", "Posture", "Software", "Services", "Vulnerabilities", "OS updates", "History", "Actions", "Commands", "Updates"] as const;
 type TabName = (typeof TABS)[number];
 
 const ACTIONS: { type: CommandType; label: string; role: Role; help: string; danger?: boolean }[] = [
@@ -38,11 +42,12 @@ const EXTRA_LABEL: Partial<Record<CommandType, string>> = {
   isolate_host: "Suspend sign-in",
   restore_host: "Restore sign-in",
   start_remote_session: "Remote session",
+  scan_os_updates: "Check for OS updates",
 };
 
 function commandLabel(c: DeviceCommand): string {
   if (c.type === "run_script") return `Run script ${String(c.params.script ?? "")}`.trim();
-  return ACTIONS.find((a) => a.type === c.type)?.label ?? EXTRA_LABEL[c.type] ?? c.type;
+  return ACTIONS.find((a) => a.type === c.type)?.label ?? EXTRA_LABEL[c.type] ?? endpointActionLabel(c) ?? c.type;
 }
 
 const STATUS_TONE: Record<DeviceCommand["status"], "default" | "warn" | "good" | "accent"> = {
@@ -426,9 +431,14 @@ function DirectoryCard({ device }: { device: Device }) {
   );
 }
 
-function SoftwareTab({ id }: { id: string }) {
+function SoftwareTab({ device, commands, reload }: { device: Device; commands: DeviceCommand[] | null; reload: () => void }) {
+  const id = device.id;
+  const { can } = useAuth();
   const [q, setQ] = useState("");
-  const { data, error } = useApi(() => api.deviceSoftware(id, q.trim() || undefined), [id, q]);
+  const [pending, setPending] = useState<PendingAction | null>(null);
+  const { data, error, reload: reloadSoftware } = useApi(() => api.deviceSoftware(id, q.trim() || undefined), [id, q]);
+  // Uninstall: Windows devices, admins (the button explains when the agent is too old).
+  const uninstall = can("admin") && device.os_family === "windows" && device.status === "active";
   return (
     <Card title={`Installed software${data ? ` (${data.length})` : ""}`} actions={
       <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filter by name or publisher" aria-label="Filter software"
@@ -438,18 +448,24 @@ function SoftwareTab({ id }: { id: string }) {
       {data && data.length === 0 ? (
         <Empty>No software reported.</Empty>
       ) : (
-        <Table head={["Name", "Version", "Publisher", "Installed", "Source"]}>
+        <Table head={["Name", "Version", "Publisher", "Installed", "Source", ...(uninstall ? [""] : [])]}>
           {(data ?? []).map((s, i) => (
-            <tr key={`${s.name}-${s.version}-${i}`}>
+            <tr key={`${s.name}-${s.version}-${i}`} className="align-top">
               <td className="px-3 py-1.5">{s.name}</td>
               <td className="px-3 py-1.5 font-mono text-xs text-ink-2">{s.version || "—"}</td>
               <td className="px-3 py-1.5 text-ink-2">{s.publisher || "—"}</td>
               <td className="px-3 py-1.5 text-xs text-ink-3">{s.install_date || "—"}</td>
               <td className="px-3 py-1.5 text-xs text-ink-3">{s.source}</td>
+              {uninstall && (
+                <td className="px-3 py-1.5">
+                  <UninstallCell device={device} software={s} commands={commands} onAsk={setPending} />
+                </td>
+              )}
             </tr>
           ))}
         </Table>
       )}
+      <EndpointActionDialog device={device} action={pending} onClose={() => setPending(null)} onDone={() => { reload(); reloadSoftware(); }} />
     </Card>
   );
 }
@@ -786,6 +802,8 @@ export default function DeviceDetail() {
     setTab("Commands");
   }
   const active = device.status === "active";
+  const tabs = TABS.filter((t) => t !== "OS updates" || device.os_family === "windows");
+  const tabId = (t: TabName) => `device-tab-${t.replace(" ", "-")}`;
   const suspendSignInBlockedReason = !device.isolation.supported
     ? "Not supported by this agent version"
     : device.lost_mode.status
@@ -805,6 +823,7 @@ export default function DeviceDetail() {
             {device.device_class && device.device_class !== "workstation" && <DeviceClassTag device={device} />}
             {device.device_state === "wipe_pending" && <Tag tone="critical">Wipe pending</Tag>}
             {device.device_state === "isolated" && <Tag tone="warn">Sign-in suspended</Tag>}
+            {device.usb_storage === "blocked" && <Tag tone="warn">USB storage blocked</Tag>}
             <ConnectivityTag value={device.connectivity} />
             <AssetRecordLink deviceId={device.id} />
           </div>
@@ -919,21 +938,22 @@ export default function DeviceDetail() {
         className="mb-4 flex gap-1 overflow-x-auto border-b border-line"
         onKeyDown={(e) => {
           // WAI-ARIA tabs: arrows move between tabs, Home / End jump to the ends
-          const i = TABS.indexOf(tab);
-          const next = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: TABS.length - 1 }[e.key];
+          const i = tabs.indexOf(tab);
+          const next = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: tabs.length - 1 }[e.key];
           if (next === undefined) return;
           e.preventDefault();
-          const t = TABS[(next + TABS.length) % TABS.length];
+          const t = tabs[(next + tabs.length) % tabs.length];
           setTab(t);
-          document.getElementById(`device-tab-${t}`)?.focus();
+          document.getElementById(tabId(t))?.focus();
         }}
       >
-        {TABS.map((t) => {
-          const count = t === "Software" ? device.software_count : t === "Posture" ? device.issues.length : null;
+        {tabs.map((t) => {
+          const count = t === "Software" ? device.software_count : t === "Posture" ? device.issues.length
+            : t === "OS updates" ? device.os_updates?.security ?? null : null;
           return (
             <button
               key={t}
-              id={`device-tab-${t}`}
+              id={tabId(t)}
               role="tab"
               aria-selected={tab === t}
               aria-controls="device-tabpanel"
@@ -945,7 +965,7 @@ export default function DeviceDetail() {
             >
               {t}
               {!!count && (
-                <span className={`rounded-full px-1.5 text-[11px] leading-5 ${t === "Posture" ? "bg-sev-high/15 text-sev-high" : "bg-surface-2 text-ink-2"}`}>
+                <span className={`rounded-full px-1.5 text-[11px] leading-5 ${t === "Posture" || t === "OS updates" ? "bg-sev-high/15 text-sev-high" : "bg-surface-2 text-ink-2"}`}>
                   {count}
                 </span>
               )}
@@ -956,11 +976,13 @@ export default function DeviceDetail() {
           );
         })}
       </div>
-      <div role="tabpanel" id="device-tabpanel" aria-labelledby={`device-tab-${tab}`}>
+      <div role="tabpanel" id="device-tabpanel" aria-labelledby={tabId(tab)}>
       {tab === "Overview" && <Overview device={device} />}
       {tab === "Posture" && <PostureCards device={device} />}
-      {tab === "Software" && <SoftwareTab id={device.id} />}
+      {tab === "Software" && <SoftwareTab device={device} commands={cmds.data} reload={cmds.reload} />}
+      {tab === "Services" && <ServicesTab device={device} commands={cmds.data} reload={cmds.reload} />}
       {tab === "Vulnerabilities" && <VulnerabilitiesTab id={device.id} />}
+      {tab === "OS updates" && <OsUpdatesTab device={device} onChanged={() => { cmds.reload(); reload(); }} />}
       {tab === "History" && (
         <>
           <RemoteSessionsCard deviceId={device.id} />
@@ -968,6 +990,7 @@ export default function DeviceDetail() {
         </>
       )}
       {tab === "Updates" && <UpdatesTab id={device.id} admin={can("admin") && active} analyst={can("analyst") && active} />}
+      {tab === "Actions" && <ActionsTab device={device} commands={cmds.data} error={cmds.error} reload={() => { cmds.reload(); reload(); }} />}
       {tab === "Commands" && <CommandsTab device={device} commands={cmds.data} error={cmds.error} reload={cmds.reload} />}
       {tab === "Commands" && can("admin") && <DeviceApprovals id={device.id} onChanged={() => { cmds.reload(); reload(); }} />}
       </div>

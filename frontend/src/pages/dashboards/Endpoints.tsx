@@ -100,10 +100,11 @@ export default function EndpointsTab({ range }: TabProps) {
   const vMax = Math.max(1, ...Object.values(d.vulnerabilities.by_severity));
   const verMax = Math.max(1, ...d.agent_versions.map((v) => v.devices));
   const conn = d.connectivity;
+  const osu = d.os_updates;
 
   return (
     <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
-      <div className={`grid grid-cols-1 gap-4 sm:grid-cols-2 lg:col-span-12 ${dir && dir.sources > 0 ? "xl:grid-cols-5" : "xl:grid-cols-4"}`}>
+      <div className={`grid grid-cols-1 gap-4 sm:grid-cols-2 lg:col-span-12 ${["xl:grid-cols-4", "xl:grid-cols-5", "xl:grid-cols-6"][(dir && dir.sources > 0 ? 1 : 0) + (osu && osu.reporting > 0 ? 1 : 0)]}`}>
         {dir && dir.sources > 0 && <CoverageTile cov={dir.coverage} unmanaged={dir.counts.not_managed ?? 0} days={days} />}
         <KpiTile label="Managed devices" value={k.managed.value} to="/devices" delta={k.managed.delta} better="up" days={days} segments={osParts} />
         <KpiTile
@@ -121,6 +122,23 @@ export default function EndpointsTab({ range }: TabProps) {
         />
         <KpiTile label="Sign-in suspended" value={k.suspended.value} to="/devices" hint="Devices with sign-in suspended (host isolation)" delta={k.suspended.delta} days={days}
           footer={`${d.managed - k.suspended.value!} devices allow sign-in`} />
+        {osu && osu.reporting > 0 && (
+          <KpiTile
+            label="Missing security updates"
+            value={osu.devices_missing_security}
+            to={href("/devices", { updates: "security" })}
+            hint="Windows devices missing security or critical OS updates (Windows Update report); open them"
+            days={days}
+            segments={[
+              { key: "critical", label: "Critical (MSRC)", count: osu.devices_missing_critical, color: SEV_COLOR.critical, to: href("/devices", { issue: "os_critical_updates_missing" }) },
+              { key: "security", label: "Other security", count: osu.devices_missing_security - osu.devices_missing_critical, color: SEV_COLOR.high, to: href("/devices", { updates: "security" }) },
+              { key: "ok", label: "No security update missing", count: osu.reporting - osu.devices_missing_security, color: "var(--color-good)", to: href("/devices", { updates: "none" }) },
+            ].filter((s) => s.count > 0)}
+            footer={osu.oldest_security_days !== null
+              ? `Oldest missing security update: ${osu.oldest_security_days} days · ${osu.reporting} devices reporting`
+              : `${osu.reporting} devices reporting`}
+          />
+        )}
         <KpiTile
           label="Outdated agent"
           value={k.outdated.value}

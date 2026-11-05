@@ -3,7 +3,8 @@
 Once per UTC day, for every active organisation, the job stores the
 point-in-time dashboard metrics (`dashboards.current_metrics`) for all cloud
 accounts together and for each cloud account (`DashboardSnapshot`, one row per
-organisation, day and account scope). The dashboards compare today's numbers
+organisation, day and account scope), and the compliance summary of every
+framework (app/compliance/service.py, `ComplianceSnapshot`). The dashboards compare today's numbers
 with the snapshot taken `range` days earlier; with no snapshot for that day the
 change is unknown (null) and not shown. Trends therefore fill in from the day
 this job first runs.
@@ -23,6 +24,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from .. import tenancy
+from ..compliance import service as compliance_service
 from ..locks import LeaderLock
 from ..models import utcnow
 from . import dashboards
@@ -34,6 +36,7 @@ log = logging.getLogger(__name__)
 class SnapshotTick:
     leader: bool
     written: dict[str, int] = field(default_factory=dict)  # organisation id -> rows written
+    compliance: dict[str, int] = field(default_factory=dict)  # organisation id -> compliance snapshots written
 
 
 class DashboardSnapshotWorker:
@@ -81,6 +84,13 @@ class DashboardSnapshotWorker:
             except Exception:
                 db.rollback()
                 log.exception("dashboard snapshot of organisation %s failed", org_id)
+            try:
+                n = compliance_service.snapshot_all(db, day)
+                if n:
+                    result.compliance[org_id] = n
+            except Exception:
+                db.rollback()
+                log.exception("compliance snapshot of organisation %s failed", org_id)
         return result
 
     def _run(self) -> None:

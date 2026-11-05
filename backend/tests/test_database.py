@@ -65,7 +65,8 @@ MIGRATION_CHAIN = ["0001_baseline", "0002_device_management", "0003_notification
                    "0011_vulnerability_matching", "0013_organizations", "0014_host_isolation",
                    "0015_command_result_data", "0016_dashboard_snapshots", "0017_onboarding_dismissed",
                    "0018_remote_sessions", "0019_offboarding_username", "0020_directory_discovery",
-                   "0021_directory_cloud_sources", "0022_device_classification"]
+                   "0021_directory_cloud_sources", "0022_windows_updates", "0023_endpoint_actions",
+                   "0024_agent_deployments", "0025_compliance_reports", "0026_device_classification"]
 
 
 def test_migration_history_is_linear():
@@ -609,6 +610,50 @@ def test_directory_cloud_sources_migration(tmp_path):
         eng.dispose()
 
 
+def test_windows_updates_migration(tmp_path):
+    """0022 adds the per-device missing-updates table on top of 0021; downgrading removes it."""
+    if IS_POSTGRES:
+        reset_database()
+        eng = db.create_db_engine(TEST_DATABASE_URL)
+    else:
+        eng = db.create_db_engine(f"sqlite:///{tmp_path / 'os-updates.db'}")
+    try:
+        db.run_migrations(eng, "0021_directory_cloud_sources")
+        assert not inspect(eng).has_table("device_os_updates")
+        db.run_migrations(eng)
+        assert inspect(eng).has_table("device_os_updates")
+        assert _schema_diff(eng) == []
+
+        from alembic import command
+
+        command.downgrade(db.alembic_config(eng), "0021_directory_cloud_sources")
+        assert not inspect(eng).has_table("device_os_updates")
+    finally:
+        eng.dispose()
+
+
+def test_endpoint_actions_migration(tmp_path):
+    """0023 adds the Windows services inventory on top of 0022; downgrading removes it."""
+    if IS_POSTGRES:
+        reset_database()
+        eng = db.create_db_engine(TEST_DATABASE_URL)
+    else:
+        eng = db.create_db_engine(f"sqlite:///{tmp_path / 'endpoint-actions.db'}")
+    try:
+        db.run_migrations(eng, "0022_windows_updates")
+        assert not inspect(eng).has_table("device_services")
+        db.run_migrations(eng)
+        assert inspect(eng).has_table("device_services")
+        assert _schema_diff(eng) == []
+
+        from alembic import command
+
+        command.downgrade(db.alembic_config(eng), "0022_windows_updates")
+        assert not inspect(eng).has_table("device_services")
+    finally:
+        eng.dispose()
+
+
 def _insert_row(conn, table: str, values: dict) -> None:
     """Insert a row giving every NOT NULL column without a server default a value."""
     from datetime import datetime
@@ -628,7 +673,7 @@ def _insert_row(conn, table: str, values: dict) -> None:
 
 
 def test_device_classification_migration(tmp_path):
-    """0022 classifies existing devices from OS name and model ("inferred"),
+    """0026 classifies existing devices from OS name and model ("inferred"),
     classifies directory computers (SERVER_TRUST_ACCOUNT = domain controller)
     and marks agent / directory asset types as automatic; downgrade removes it."""
     if IS_POSTGRES:
@@ -637,7 +682,7 @@ def test_device_classification_migration(tmp_path):
     else:
         eng = db.create_db_engine(f"sqlite:///{tmp_path / 'device_class.db'}")
     try:
-        db.run_migrations(eng, "0021_directory_cloud_sources")
+        db.run_migrations(eng, "0025_compliance_reports")
         with eng.begin() as conn:
             base = {"organization_id": "default", "os_version": "", "os_build": "", "architecture": "",
                     "serial_number": "", "machine_id": "", "agent_version": "1.3.0", "status": "active"}
@@ -678,7 +723,7 @@ def test_device_classification_migration(tmp_path):
 
         from alembic import command
 
-        command.downgrade(db.alembic_config(eng), "0021_directory_cloud_sources")
+        command.downgrade(db.alembic_config(eng), "0025_compliance_reports")
         assert "device_class" not in {c["name"] for c in inspect(eng).get_columns("devices")}
         assert "asset_type_source" not in {c["name"] for c in inspect(eng).get_columns("it_assets")}
     finally:

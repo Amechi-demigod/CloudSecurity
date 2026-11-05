@@ -30,6 +30,7 @@ from ..models import (
 from ..notifications import device_source
 from ..schemas_devices import MAX_INTERVAL_SECONDS, MIN_INTERVAL_SECONDS, CheckinRequest
 from ..vulnmatch import state as vuln_state
+from . import os_updates
 
 ENROLL_TOKEN_PREFIX = "cne_"  # noqa: S105 (a public prefix, not a secret)
 DEVICE_SECRET_PREFIX = "cnd_"  # noqa: S105
@@ -165,6 +166,10 @@ def apply_checkin(db: Session, device: Device, body: CheckinRequest, ip: str | N
         vuln_state.inventory_changed(db, vuln_state.DEVICE, device.id,
                                      vuln_state.device_inventory_digest(device, rows), now)
 
+    from . import endpoint_actions  # (imports this module)
+
+    endpoint_actions.apply_services(db, device, body.services)
+
     # Issue codes at the previous check-in (None: first check-in), to notify about new ones only.
     prev = db.scalar(select(DevicePostureSnapshot.issues).where(DevicePostureSnapshot.device_id == device.id)
                      .order_by(DevicePostureSnapshot.id.desc()).limit(1))
@@ -299,6 +304,12 @@ ISSUE_DEFS: dict[str, tuple[str, str]] = {
     "revoked": ("low", "Device credential revoked"),
     "lost_mode": ("high", "Device is in lost mode"),
     "wipe_pending": ("critical", "Remote wipe requested / in progress"),
+    # Windows Update report (agents 1.4.0+, app/services/os_updates.py, docs/PATCHING.md).
+    "os_critical_updates_missing": ("high", "Critical security updates missing"),
+    "os_security_updates_missing": ("medium", "Security updates missing"),
+    "os_reboot_pending": ("medium", "Restart pending to finish installing updates"),
+    "windows_update_disabled": ("high", "Windows Update service is disabled"),
+    "os_update_scan_stale": ("medium", "No successful update search for over a week"),
 }
 
 LOST_STATES = ("enabling", "active", "disabling")
@@ -336,11 +347,14 @@ def device_issues(device: Device, now: datetime | None = None) -> list[dict[str,
     age = av.get("signature_age_days")
     if isinstance(age, int | float) and age > s.device_av_signature_max_age_days:
         add("av_signatures_outdated", f"signatures are {age:g} days old")
-    if device.updates_pending_since is not None:
+    # A Windows Update report (os_updates below) supersedes the posture's pending count.
+    if device.updates_pending_since is not None and device.os_updates is None:
         days = (now - device.updates_pending_since).total_seconds() / 86400
         if days >= s.device_updates_grace_days:
             n = _pending_updates(p)
             add("os_updates_pending", f"{n if n is not None else 'some'} update(s) pending for {int(days)} days")
+    for code, detail in os_updates.issues(device, now):
+        add(code, detail)
     conn = connectivity(device, now)
     if conn == "inactive":
         add("inactive")
@@ -374,9 +388,17 @@ def summarize(device: Device, now: datetime | None = None) -> dict[str, Any]:
         "logged_in_users": list(inv.get("logged_in_users") or [])[:10],
         "device_group": device.device_group,
         "health": health_from_issues(device, issues), "connectivity": connectivity(device, now), "issues": issues,
-        "device_state": device_state(device),
+        "device_state": device_state(device), "usb_storage": usb_storage_state(device),
+        "os_updates": os_updates.summary(device, now),
         **device_class.summary(device),
     }
+
+
+def usb_storage_state(device: Device) -> str | None:
+    """blocked | allowed as last reported (posture check usb_storage, agents 1.4.0+ on Windows)."""
+    data = ((device.posture or {}).get("usb_storage") or {}).get("data") or {}
+    blocked = data.get("blocked")
+    return ("blocked" if blocked else "allowed") if isinstance(blocked, bool) else None
 
 
 def device_state(device: Device) -> str:

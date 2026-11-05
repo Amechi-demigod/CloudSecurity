@@ -682,6 +682,8 @@ class Device(TenantMixin, Base):
     hypervisor: Mapped[str | None] = mapped_column(String(32), nullable=True)
     cloud_provider: Mapped[str | None] = mapped_column(String(16), nullable=True)
     cloud_instance_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    # Latest Windows Update report (docs/PATCHING.md); None until an agent 1.4.0+ reports one.
+    os_updates: Mapped[DeviceOsUpdates | None] = relationship(lazy="selectin", uselist=False, viewonly=True)
 
 
 class DeviceCredential(TenantMixin, Base):
@@ -729,6 +731,20 @@ class DeviceSoftware(TenantMixin, Base):
     identifier: Mapped[str] = mapped_column(String(255), default="")  # bundle id / registry key
     install_date: Mapped[str] = mapped_column(String(32), default="")
     source: Mapped[str] = mapped_column(String(32), default="")  # registry_hklm64 | applications | ...
+
+
+class DeviceService(TenantMixin, Base):
+    """Windows services (latest inventory, agents 1.4.0+): what the console's
+    Services tab and the manage_service endpoint action work from."""
+
+    __tablename__ = "device_services"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    device_id: Mapped[str] = mapped_column(String(32), ForeignKey("devices.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(256))
+    display_name: Mapped[str] = mapped_column(String(256), default="")
+    status: Mapped[str] = mapped_column(String(16), default="")  # running | stopped | ...
+    start_type: Mapped[str] = mapped_column(String(16), default="")  # auto | auto_delayed | manual | disabled | ...
 
 
 class DeviceCommand(TenantMixin, Base):
@@ -855,6 +871,48 @@ class DeviceLogBundle(TenantMixin, Base):
     sha256: Mapped[str] = mapped_column(String(64))
     content_type: Mapped[str] = mapped_column(String(64), default="application/gzip")
     data: Mapped[bytes] = mapped_column(LargeBinary)
+
+
+class DeviceOsUpdates(TenantMixin, Base):
+    """Missing OS updates of one device (docs/PATCHING.md): the latest report
+    of the agent's Windows Update search, replaced on every report. Read-only:
+    nothing here installs anything. The per-update list is deferred so fleet
+    views (health, Devices list, dashboard) only load the summary columns."""
+
+    __tablename__ = "device_os_updates"
+
+    device_id: Mapped[str] = mapped_column(String(32), ForeignKey("devices.id", ondelete="CASCADE"), primary_key=True)
+    # First and latest report received.
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    reported_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    # When the agent ran the search, how it ended (ok | failed) and why it failed.
+    scanned_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    scan_status: Mapped[str] = mapped_column(String(16), default="ok")
+    scan_error: Mapped[str] = mapped_column(String(1024), default="")
+    scan_trigger: Mapped[str] = mapped_column(String(16), default="schedule")  # schedule | command
+    scan_duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Last search that succeeded (ours or Windows' own, whichever is later).
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_install_success_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # When the search that produced the stored update list ran (None: no search succeeded yet,
+    # so the list and counts below are unknown rather than "nothing missing").
+    listed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Configured update source: wsus | wufb | microsoft_update | windows_update | unknown.
+    source: Mapped[str] = mapped_column(String(24), default="unknown")
+    source_detail: Mapped[str] = mapped_column(String(255), default="")
+    # Windows Update service (wuauserv): state and start type as reported.
+    service_state: Mapped[str] = mapped_column(String(24), default="")
+    service_start_type: Mapped[str] = mapped_column(String(24), default="")
+    reboot_pending: Mapped[bool] = mapped_column(Boolean, default=False)
+    # First report that said a restart is pending (cleared when none is).
+    reboot_pending_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    missing_count: Mapped[int] = mapped_column(Integer, default=0)
+    # Security / critical classification, and MSRC severity Critical.
+    security_count: Mapped[int] = mapped_column(Integer, default=0)
+    critical_count: Mapped[int] = mapped_column(Integer, default=0)
+    oldest_security_release: Mapped[date | None] = mapped_column(Date, nullable=True)
+    oldest_critical_release: Mapped[date | None] = mapped_column(Date, nullable=True)
+    updates: Mapped[list] = mapped_column(JSON, default=list, deferred=True)
 
 
 REMOTE_SESSION_OPEN_STATES = ("requested", "awaiting_consent", "active")
@@ -1104,7 +1162,8 @@ class OidcAuthRequest(Base):
 # Notification tables live in their own module; import them so they are part of
 # Base.metadata (create_all on SQLite, Alembic autogenerate / schema checks).
 # Same for the IT asset lifecycle tables (hardware assets, custody, offboarding, certificates)
-# and directory discovery (docs/DIRECTORY_DISCOVERY.md).
+# directory discovery (docs/DIRECTORY_DISCOVERY.md) and compliance reports (docs/COMPLIANCE.md).
 from .asset_lifecycle import models as _asset_lifecycle_models  # noqa: E402, F401
+from .compliance import models as _compliance_models  # noqa: E402, F401
 from .directory import models as _directory_models  # noqa: E402, F401
 from .notifications import models as _notification_models  # noqa: E402, F401

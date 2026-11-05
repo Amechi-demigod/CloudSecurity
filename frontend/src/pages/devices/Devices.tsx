@@ -1,7 +1,7 @@
 import { Laptop } from "lucide-react";
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { api } from "../../api";
+import { api, type DeviceSummary } from "../../api";
 import { useAuth } from "../../auth/context";
 import { DeviceClassTag } from "../../components/deviceClass";
 import { CLASS_FILTER_OPTIONS, CLASS_LABEL } from "../../lib/deviceClass";
@@ -12,6 +12,24 @@ import { fmtAgo } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
 import { useSort } from "../../lib/useSort";
 import { useUrlState } from "../../lib/useUrlState";
+import { BulkActionsBar } from "./BulkActions";
+
+/** Missing OS updates on a Devices row (Windows Update report, docs/PATCHING.md). */
+function OsUpdatesCell({ d }: { d: DeviceSummary }) {
+  const u = d.os_updates;
+  if (!u) return <span className="text-xs text-ink-3">{d.os_family === "windows" ? "not reported" : "—"}</span>;
+  if (!u.listed) return <span className="text-xs text-sev-high">search failed</span>;
+  if (u.missing === 0) return <Tag tone="good">Up to date</Tag>;
+  return (
+    <div title={u.oldest_security_days !== null ? `Oldest security update released ${u.oldest_security_days} days ago` : undefined}>
+      {u.security > 0 ? <Tag tone={u.critical > 0 ? "critical" : "warn"}>{u.security} security</Tag> : <Tag>{u.missing} missing</Tag>}
+      <div className="text-[11px] text-ink-3">
+        {u.missing} total{u.reboot_pending ? " · restart pending" : ""}
+        {u.scan_status === "failed" ? " · last check failed" : ""}
+      </div>
+    </div>
+  );
+}
 
 export default function Devices() {
   const navigate = useNavigate();
@@ -25,11 +43,20 @@ export default function Devices() {
   const [status, setStatus] = useUrlState("status", "active");
   const [deviceClass, setDeviceClass] = useUrlState("class");
   const [virtual, setVirtual] = useUrlState("virtual");
-  const filters = { q: q.trim() || undefined, os, health, issue, connectivity, status, device_class: deviceClass || undefined, virtual: virtual || undefined };
-  const { data, error, loading } = useApi(() => api.devices(filters), [q, os, health, issue, connectivity, status, deviceClass, virtual], 30000);
+  const [usb, setUsb] = useUrlState("usb");
+  // Missing OS updates (Windows Update report): security | any | none | unknown
+  const [updates, setUpdates] = useUrlState("updates");
+  const [selected, setSelected] = useState<string[]>([]);
+  const filters = { q: q.trim() || undefined, os, health, issue, connectivity, status, usb, updates, device_class: deviceClass || undefined, virtual: virtual || undefined };
+  const { data, error, loading, reload } = useApi(() => api.devices(filters), [q, os, health, issue, connectivity, status, usb, updates, deviceClass, virtual], 30000);
   const { data: summary } = useApi(api.deviceSummary, [], 30000);
-  const filtered = !!(q || os || health || issue || connectivity || deviceClass || virtual) || status !== "active";
+  const filtered = !!(q || os || health || issue || connectivity || usb || updates || deviceClass || virtual) || status !== "active";
   const CLASS_RANK: Record<string, number> = { domain_controller: 3, server: 2, workstation: 1 };
+  // Bulk endpoint actions (admins): the selection is limited to the rows shown.
+  const bulk = can("admin");
+  const shown = new Set((data ?? []).map((d) => d.id));
+  const picked = selected.filter((id) => shown.has(id));
+  const toggle = (id: string) => setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
   const HEALTH_RANK: Record<string, number> = { critical: 3, warning: 2, unknown: 1, healthy: 0 };
   const sorted = useSort(
     data,
@@ -42,9 +69,11 @@ export default function Devices() {
       issues: (d) => d.issues.length,
       seen: (d) => (d.last_seen_at ? Date.parse(d.last_seen_at) : null),
       agent: (d) => d.agent_version,
+      usb: (d) => (d.usb_storage === "blocked" ? 2 : d.usb_storage === "allowed" ? 1 : 0),
+      updates: (d) => (d.os_updates ? d.os_updates.security * 10000 + d.os_updates.missing : null),
     },
     { key: "name", dir: "asc" },
-    { health: "desc", issues: "desc", seen: "desc" },
+    { health: "desc", issues: "desc", seen: "desc", updates: "desc" },
   );
   const { data: issueTypes } = useApi(api.deviceIssueTypes, []);
 
@@ -137,6 +166,29 @@ export default function Devices() {
             ]}
           />
           <Select
+            label="USB storage"
+            value={usb}
+            onChange={setUsb}
+            options={[
+              { value: "", label: "Any" },
+              { value: "blocked", label: "Blocked" },
+              { value: "allowed", label: "Allowed" },
+              { value: "unknown", label: "Not reported" },
+            ]}
+          />
+          <Select
+            label="Missing updates"
+            value={updates}
+            onChange={setUpdates}
+            options={[
+              { value: "", label: "Any" },
+              { value: "security", label: "Security updates missing" },
+              { value: "any", label: "Any update missing" },
+              { value: "none", label: "Up to date" },
+              { value: "unknown", label: "Not reported" },
+            ]}
+          />
+          <Select
             label="Status"
             value={status}
             onChange={setStatus}
@@ -148,15 +200,27 @@ export default function Devices() {
           />
         </div>
         <ErrorNote error={error} />
+        {bulk && <BulkActionsBar selected={picked} onClear={() => setSelected([])} onDone={reload} />}
           <Table
             head={[
+              ...(bulk
+                ? [{
+                    label: (
+                      <input type="checkbox" aria-label="Select all devices shown" className="accent-accent"
+                        checked={!!data?.length && picked.length === data.length}
+                        onChange={(e) => setSelected(e.target.checked ? (data ?? []).filter((d) => d.status === "active").map((d) => d.id) : [])} />
+                    ),
+                  }]
+                : []),
               { label: "Device", sort: "name" },
               { label: "Class", sort: "class" },
               { label: "OS", sort: "os" },
               { label: "User", sort: "user" },
               { label: "Health", sort: "health" },
               { label: "Issues", sort: "issues" },
+              { label: "OS updates", sort: "updates" },
               { label: "Last seen", sort: "seen" },
+              { label: "USB storage", sort: "usb" },
               { label: "Agent", sort: "agent" },
             ]}
             sort={sorted.sort}
@@ -187,6 +251,12 @@ export default function Devices() {
                 className="cursor-pointer hover:bg-surface-2"
                 onClick={() => navigate(`/devices/${d.id}`)}
               >
+                {bulk && (
+                  <td className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
+                    <input type="checkbox" aria-label={`Select ${d.hostname}`} className="accent-accent" disabled={d.status !== "active"}
+                      checked={selected.includes(d.id)} onChange={() => toggle(d.id)} />
+                  </td>
+                )}
                 <td className="px-3 py-2">
                   <Link to={`/devices/${d.id}`} className="font-medium hover:text-accent" onClick={(e) => e.stopPropagation()}>
                     {d.hostname}
@@ -216,8 +286,14 @@ export default function Devices() {
                   <IssueList issues={d.issues} compact />
                 </td>
                 <td className="px-3 py-2">
+                  <OsUpdatesCell d={d} />
+                </td>
+                <td className="px-3 py-2">
                   <ConnectivityTag value={d.connectivity} />
                   <div className="text-[11px] text-ink-3">{d.last_seen_at ? fmtAgo(d.last_seen_at) : "—"}</div>
+                </td>
+                <td className="px-3 py-2">
+                  {d.usb_storage === "blocked" ? <Tag tone="warn">Blocked</Tag> : d.usb_storage === "allowed" ? <span className="text-xs text-ink-2">Allowed</span> : <span className="text-xs text-ink-3">—</span>}
                 </td>
                 <td className="px-3 py-2 text-xs text-ink-3">{d.agent_version || "—"}</td>
               </tr>

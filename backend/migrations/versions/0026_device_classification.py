@@ -9,8 +9,8 @@ Existing assets created by the agent or from directory discovery with a
 computer type keep following their device ("auto"); every other type counts
 as chosen by hand.
 
-Revision ID: 0022_device_classification
-Revises: 0021_directory_cloud_sources
+Revision ID: 0026_device_classification
+Revises: 0025_compliance_reports
 Create Date: 2026-11-04
 """
 from __future__ import annotations
@@ -20,8 +20,8 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '0022_device_classification'
-down_revision: str | None = '0021_directory_cloud_sources'
+revision: str = '0026_device_classification'
+down_revision: str | None = '0025_compliance_reports'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

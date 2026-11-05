@@ -33,6 +33,9 @@ DEVICE = "device"
 CHECKIN_ISSUES = (
     "disk_encryption_off", "firewall_off", "antivirus_off", "av_signatures_outdated", "os_updates_pending",
     "screen_lock_off", "sip_disabled", "gatekeeper_off", "secure_boot_off",
+    # Windows Update report (app/services/os_updates.py): raised with the next check-in.
+    "os_critical_updates_missing", "os_security_updates_missing", "os_reboot_pending", "windows_update_disabled",
+    "os_update_scan_stale",
 )
 CONNECTIVITY_ISSUES = ("stale", "inactive")
 COMMAND_RESULTS = {"succeeded": "command_succeeded", "failed": "command_failed", "rejected": "command_rejected"}
@@ -40,7 +43,9 @@ EVENT_TYPES = CHECKIN_ISSUES + CONNECTIVITY_ISSUES + tuple(COMMAND_RESULTS.value
 # Human-facing override for command types whose internal name must never
 # appear in user-visible text (isolate_host/restore_host are "Suspend sign-in"
 # / "Restore sign-in" - see endpoint-agent/internal/signin).
-ACTION_LABELS = {"isolate_host": "suspend sign-in", "restore_host": "restore sign-in"}
+ACTION_LABELS = {"isolate_host": "suspend sign-in", "restore_host": "restore sign-in",
+                 "manage_service": "service action", "uninstall_software": "uninstall",
+                 "block_usb_storage": "block USB storage", "unblock_usb_storage": "unblock USB storage"}
 POLL_SECONDS = 300.0
 MAX_TRACKED = 20000
 
@@ -135,6 +140,7 @@ def poll_connectivity(db: Session, state: dict, now: datetime) -> tuple[list[Eve
 
 register_source(EventSource(
     DEVICE, "Endpoint device", EVENT_TYPES,
-    "Device posture issues (encryption, firewall, antivirus, updates), devices that stop checking in, "
+    "Device posture issues (encryption, firewall, antivirus, updates, missing OS updates), devices that stop "
+    "checking in, "
     "and remote action results.",
     poll=poll_connectivity, poll_interval=lambda: POLL_SECONDS))

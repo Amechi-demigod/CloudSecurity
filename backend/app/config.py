@@ -171,6 +171,15 @@ class Settings:
     dashboard_snapshot_worker_enabled: bool = field(
         default_factory=lambda: _bool("DASHBOARD_SNAPSHOT_WORKER_ENABLED", True))
 
+    # Compliance reports (docs/COMPLIANCE.md). Internal: run the (leader-elected)
+    # scheduled-report thread in this process (tests drive it explicitly).
+    compliance_report_worker_enabled: bool = field(
+        default_factory=lambda: _bool("COMPLIANCE_REPORT_WORKER_ENABLED", True))
+    # A generated PDF larger than this is not emailed (the failing items listed
+    # per check are already capped; this guards very large estates).
+    compliance_report_max_bytes: int = field(
+        default_factory=lambda: max(256 << 10, min(int(os.getenv("COMPLIANCE_REPORT_MAX_BYTES") or 8 << 20), 20 << 20)))
+
     # Directory discovery (docs/DIRECTORY_DISCOVERY.md). Safety cap on the objects
     # one sync may return (all scopes together); a run that hits it is kept but
     # does not mark missing objects.
@@ -337,6 +346,19 @@ class Settings:
         default_factory=lambda: float(os.getenv("DEVICE_UPDATES_GRACE_DAYS", "14")))
     device_av_signature_max_age_days: float = field(
         default_factory=lambda: float(os.getenv("DEVICE_AV_SIGNATURE_MAX_AGE_DAYS", "7")))
+    # Missing OS updates (Windows Update report, docs/PATCHING.md): a device gets
+    # an issue when a missing update rated Critical by Microsoft (MSRC) was
+    # released more than ..._CRITICAL_DAYS ago, any other missing security /
+    # critical update more than ..._SECURITY_DAYS ago, a restart has been
+    # pending for ..._REBOOT_DAYS, or no update search succeeded for ..._SCAN_STALE_DAYS.
+    device_os_updates_critical_days: float = field(
+        default_factory=lambda: float(os.getenv("DEVICE_OS_UPDATES_CRITICAL_DAYS", "14")))
+    device_os_updates_security_days: float = field(
+        default_factory=lambda: float(os.getenv("DEVICE_OS_UPDATES_SECURITY_DAYS", "30")))
+    device_os_updates_reboot_days: float = field(
+        default_factory=lambda: float(os.getenv("DEVICE_OS_UPDATES_REBOOT_DAYS", "7")))
+    device_os_updates_scan_stale_days: float = field(
+        default_factory=lambda: float(os.getenv("DEVICE_OS_UPDATES_SCAN_STALE_DAYS", "7")))
     # Posture snapshots kept per device (older ones are pruned on check-in).
     device_history_limit: int = field(default_factory=lambda: int(os.getenv("DEVICE_HISTORY_LIMIT", "200")))
     # Default lifetime of a queued remote command.

@@ -68,7 +68,7 @@ from ..models import (
     Vulnerability,
     utcnow,
 )
-from . import analytics
+from . import analytics, os_updates
 from . import devices as device_svc
 from . import exposure as exposure_svc
 from .agent_updates import version_sort_key
@@ -488,6 +488,8 @@ def endpoint_stats(db: Session) -> dict[str, Any]:
         "connectivity": {k: connectivity.get(k, 0) for k in ("active", "stale", "inactive", "never")},
         "issues": [{"code": c, "title": device_svc.ISSUE_DEFS[c][1], "severity": device_svc.ISSUE_DEFS[c][0],
                     "devices": n} for c, n in sorted(issues.items(), key=lambda x: (-x[1], x[0]))],
+        # Missing OS updates (Windows Update report, app/services/os_updates.py).
+        "os_updates": os_updates.fleet(devices, now),
         "agent_versions": [{"version": v, "devices": n}
                            for v, n in sorted(versions.items(), key=lambda x: version_sort_key(x[0]), reverse=True)],
     }

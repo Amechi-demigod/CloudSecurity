@@ -255,3 +255,54 @@ class DirectoryFinding(TenantMixin, Base):
     detail: Mapped[str] = mapped_column(String(500), default="")
     first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     last_evaluated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+# ----------------------------------------------------------------------------- agent deployment
+class AgentDeployment(TenantMixin, Base):
+    """A "Deploy agent" batch started from Discovery (docs/DIRECTORY_DISCOVERY.md#deploying-the-agent).
+
+    Read-only towards the directories: the platform only plans the rollout,
+    issues enrollment tokens and installers, and tracks which of the selected
+    machines have since enrolled (through the existing directory matching).
+    The tokens are ordinary `enrollment_tokens` rows (hashes only); their ids
+    are kept here so revoking the deployment revokes them."""
+
+    __tablename__ = "agent_deployments"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(128))
+    # Selected machines per route, and the ones left out per reason, at creation:
+    # {"gpo": 12, "intune": 3, ...} / {"has_agent": 2, "unsupported_os": 1, ...}.
+    route_counts: Mapped[dict] = mapped_column(JSON, default=dict)
+    excluded_counts: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Issue filter the selection came from (type, source_id, q, domain), if any.
+    selection_filter: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    device_group: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    token_ids: Mapped[list] = mapped_column(JSON, default=list)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    created_by: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    revoked_by: Mapped[str | None] = mapped_column(String(320), nullable=True)
+
+
+class AgentDeploymentItem(TenantMixin, Base):
+    """One selected machine of a deployment. `computer_id` is the machine's
+    representative directory record at creation; name / OS / route are copied so
+    the progress view still reads well once the record is gone."""
+
+    __tablename__ = "agent_deployment_items"
+    __table_args__ = (UniqueConstraint("deployment_id", "computer_id", name="uq_agent_deployment_items_computer"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    deployment_id: Mapped[str] = mapped_column(String(32), ForeignKey("agent_deployments.id", ondelete="CASCADE"),
+                                               index=True)
+    computer_id: Mapped[str] = mapped_column(String(32))
+    route: Mapped[str] = mapped_column(String(16))
+    name: Mapped[str] = mapped_column(String(256), default="")
+    platform: Mapped[str] = mapped_column(String(16), default="")
+    os: Mapped[str] = mapped_column(String(256), default="")
+    domain: Mapped[str] = mapped_column(String(255), default="")
+    ou: Mapped[str] = mapped_column(Text, default="")
+    # Record kinds of the machine at creation (ad, entra, intune, endpoint).
+    kinds: Mapped[list] = mapped_column(JSON, default=list)

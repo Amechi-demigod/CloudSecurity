@@ -285,6 +285,7 @@ The *Endpoint device* source ([device management](DEVICE_MANAGEMENT.md)) raises:
 | `disk_encryption_off`, `firewall_off`, `antivirus_off`, `sip_disabled` | high | the issue appears on a check-in (first check-in, or it was not present at the previous one) |
 | `av_signatures_outdated`, `os_updates_pending` (past the grace period), `gatekeeper_off`, `secure_boot_off` | medium | same |
 | `screen_lock_off` | low | same |
+| `os_critical_updates_missing`, `windows_update_disabled` / `os_security_updates_missing`, `os_reboot_pending`, `os_update_scan_stale` | high / medium | same, from the Windows Update report of agents 1.4.0+ ([PATCHING.md](PATCHING.md#issues-and-notifications)); raised with the check-in after the report |
 | `stale` / `inactive` | medium / high | a device stops checking in (polled every 5 minutes by the dispatcher leader; the first poll only records a baseline). Notifies again if the device comes back and later goes quiet again |
 | `command_succeeded` / `command_failed` / `command_rejected` | low / medium / medium | the agent reports the result of a remote action (lock device, collect logs, ...) |
 
@@ -292,6 +293,11 @@ Each event links to the device page, uses the issue code (or the command type)
 as its rule id, so the *rule ids* filter works too (e.g. `firewall_*`,
 `lock_device`), and is grouped per device and issue for throttling. Revoked
 devices are not reported. Producing an event never fails a check-in.
+
+The *Endpoint actions* source (`endpoint_action`, [built-in endpoint actions](DEVICE_MANAGEMENT.md#endpoint-actions):
+services, uninstall, USB storage) raises `action_failed` (medium), `action_rejected` (low: refused by the agent, e.g.
+a protected service or no silent uninstaller) and `restart_required` (low: an uninstall needs a restart), with the
+command type as rule id.
 
 ## IT asset lifecycle events
 
