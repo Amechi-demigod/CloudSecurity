@@ -124,3 +124,28 @@ func TestDecodePreset(t *testing.T) {
 		}
 	}
 }
+
+// Each program accepts only its own tokens: the agent cne_..., the dedicated
+// collector cnct_... (the 1.4.0 collector rejected its own token at install).
+func TestEnrollTokenPrefixPerProduct(t *testing.T) {
+	defer func(p string) { TokenPrefix = p }(TokenPrefix)
+	cfg := func(tok string) *EnrollConfig {
+		return &EnrollConfig{Version: 1, ServerURL: "https://cnapp.example.com", Token: tok}
+	}
+	TokenPrefix = AgentTokenPrefix
+	if err := cfg("cne_abcdefghijklmnop").Validate(); err != nil {
+		t.Fatalf("agent token refused by the agent: %v", err)
+	}
+	if err := cfg("cnct_abcdefghijklmnop").Validate(); err == nil {
+		t.Fatal("collector token accepted by the agent")
+	}
+	TokenPrefix = CollectorTokenPrefix
+	if err := cfg("cnct_abcdefghijklmnop").Validate(); err != nil {
+		t.Fatalf("collector token refused by the collector: %v", err)
+	}
+	for _, tok := range []string{"cne_abcdefghijklmnop", "cnct_short", "cnct_bad token!", ""} {
+		if err := cfg(tok).Validate(); err == nil {
+			t.Fatalf("collector accepted %q", tok)
+		}
+	}
+}

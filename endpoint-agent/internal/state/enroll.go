@@ -29,7 +29,17 @@ var ErrNoEnrollConfig = errors.New("no pending enrollment configuration")
 // MaxEnrollConfigBytes caps enroll.json (the CA bundle is the only large part).
 const MaxEnrollConfigBytes = 256 << 10
 
-var tokenRe = regexp.MustCompile(`^cne_[A-Za-z0-9_-]{8,124}$`)
+// TokenPrefix is the enrollment-token prefix this program accepts: "cne_" for
+// the endpoint agent; the dedicated collector (cmd/cnapp-collector) sets
+// CollectorTokenPrefix, matching the server's collector tokens.
+var TokenPrefix = AgentTokenPrefix
+
+const (
+	AgentTokenPrefix     = "cne_"
+	CollectorTokenPrefix = "cnct_"
+)
+
+var tokenRe = regexp.MustCompile(`^[A-Za-z0-9_-]{8,124}$`)
 
 // EnrollConfig is the content of enroll.json.
 type EnrollConfig struct {
@@ -61,8 +71,8 @@ func (c *EnrollConfig) Validate() error {
 	}
 	c.ServerURL = server
 	c.Token = strings.TrimSpace(c.Token)
-	if !tokenRe.MatchString(c.Token) {
-		return errors.New("the enrollment token is missing or malformed (expected cne_...)")
+	if !strings.HasPrefix(c.Token, TokenPrefix) || !tokenRe.MatchString(strings.TrimPrefix(c.Token, TokenPrefix)) {
+		return fmt.Errorf("the enrollment token is missing or malformed (expected %s...)", TokenPrefix)
 	}
 	c.CAPEM = strings.TrimSpace(c.CAPEM)
 	if c.CAPEM != "" {
