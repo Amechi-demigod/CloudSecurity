@@ -9,17 +9,40 @@ import (
 	"path/filepath"
 )
 
-// Names used by both platforms.
-const (
+// Names used by both platforms. Variables (not constants) so the dedicated
+// directory collector (cmd/cnapp-collector) can install its own, separate
+// service with UseCollector; the endpoint agent never changes them.
+var (
 	WindowsServiceName = "CNAPPAgent"
 	DisplayName        = "CNAPP Endpoint Agent"
 	Description        = "Reports device inventory and security posture to the CNAPP server and runs allow-listed remote actions."
 	LaunchdLabel       = "com.cloudsecurity.cnapp-agent"
+	// InstallDirName / BinaryName: %ProgramFiles%\<InstallDirName>\<BinaryName> (Windows).
+	InstallDirName = "CNAPP Agent"
+	BinaryName     = "cnapp-agent.exe"
 )
+
+// UseCollector switches the names to the directory collector's service
+// ("CNAPPCollector", displayed as displayName, e.g. "Travound Collector").
+func UseCollector(displayName string) {
+	WindowsServiceName = "CNAPPCollector"
+	if displayName == "" {
+		displayName = "CNAPP Collector"
+	}
+	DisplayName = displayName
+	Description = "Reads Active Directory (read-only) for the directory discovery of the CNAPP server. " +
+		"It runs no other commands: no scripts, remote sessions or device actions."
+	LaunchdLabel = "com.cloudsecurity.cnapp-collector"
+	InstallDirName = "CNAPP Collector"
+	BinaryName = "cnapp-collector.exe"
+}
 
 // Options for Install.
 type Options struct {
 	Home string // optional --home passed to the service (non-default state/log location)
+	// RunAs: a group Managed Service Account (DOMAIN\name$) for the service
+	// logon instead of LocalSystem (collector only; Windows).
+	RunAs string
 }
 
 // copyFile copies src to dst (replacing it) with the given mode.

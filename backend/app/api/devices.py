@@ -156,7 +156,8 @@ def enrollment_info():
 
 @router.get("/enrollment-tokens", response_model=list[EnrollmentTokenOut], dependencies=[Depends(require_admin)])
 def list_tokens(db: Session = Depends(get_db)):
-    return [_token_out(t) for t in db.scalars(select(EnrollmentToken).order_by(EnrollmentToken.created_at.desc()))]
+    return [_token_out(t) for t in db.scalars(select(EnrollmentToken).where(EnrollmentToken.kind == "agent")
+                                                .order_by(EnrollmentToken.created_at.desc()))]
 
 
 @router.post("/enrollment-tokens", response_model=EnrollmentTokenCreated, status_code=201)

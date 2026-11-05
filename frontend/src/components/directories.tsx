@@ -12,7 +12,11 @@ import {
   type DirectorySecurity,
   type DirectorySource,
   type DirectoryType,
+  type DedicatedCollector,
+  collectorApi,
 } from "../directoryApi";
+import { useDiagnostics } from "../lib/collectors";
+import { DcWarning, DiagnosticsResult } from "./collectors";
 import { FINAL, RUN_COLOR, RUN_TEXT, RUN_TEXT_SERVER, TRIGGER_TEXT, errMsg, inputCls, runDuration, useRun } from "../lib/directory";
 import { fmtAgo, fmtHours, fmtTime, fmtUntil } from "../lib/format";
 import { useApi } from "../lib/useApi";
@@ -34,12 +38,14 @@ function precheckScript(o: { domain: string; servers: string[]; port: number; se
   return [
     "# Directory pre-check (read-only: it only resolves, connects and reads 5 objects; it changes nothing).",
     "# Run it on the collector in Windows PowerShell 5.1+.",
-    "# Computer-account test (the default): run as SYSTEM, e.g. PsExec64.exe -s -i powershell.exe",
+    "# The console's Test runs these checks on the collector itself; this script is an optional manual tool.",
+    "# Computer-account test: run as SYSTEM, e.g. PsExec64.exe -s -i powershell.exe (gMSA: a scheduled task as the gMSA)",
     "# Service-account test: answer y at the prompt and enter the read-only account.",
     `$Domain = '${ps(domain)}'`,
     `$Servers = @(${servers})   # empty = use the DC locator (DNS SRV)`,
     `$Port = ${o.port}`,
     `$StartTls = $${o.security === "starttls" ? "true" : "false"}`,
+    `$Sealed = $${o.security === "sealed" ? "true" : "false"}   # Kerberos signing + sealing on 389: no certificate`,
     `$BaseDn = '${ps(base)}'`,
     "function Pass($m) { Write-Host \"PASS  $m\" -ForegroundColor Green }",
     "function Fail($m) { Write-Host \"FAIL  $m\" -ForegroundColor Red }",
@@ -63,9 +69,9 @@ function precheckScript(o: { domain: string; servers: string[]; port: number; se
     "  Info \"--- $($dc):$Port\"",
     "  # 2. Network",
     "  $t = Test-NetConnection -ComputerName $dc -Port $Port -WarningAction SilentlyContinue",
-    "  if ($t.TcpTestSucceeded) { Pass \"TCP $Port reachable\" } else { Fail \"TCP $Port not reachable (firewall?)\"; continue }",
+    "  if ($t.TcpTestSucceeded) { Pass \"TCP $Port reachable\" } else { Fail \"TCP $Port not reachable (firewall, or a stale DC SRV record?)\"; continue }",
     "  # 3. Certificate of the domain controller (LDAPS)",
-    "  if (-not $StartTls) {",
+    "  if (-not $StartTls -and -not $Sealed) {",
     "    try {",
     "      $script:tlsErr = 'None'",
     "      $tcp = New-Object Net.Sockets.TcpClient($dc, $Port)",
@@ -84,7 +90,8 @@ function precheckScript(o: { domain: string; servers: string[]; port: number; se
     "    $conn.SessionOptions.ProtocolVersion = 3",
     "    $conn.SessionOptions.ReferralChasing = 'None'",
     "    $conn.Timeout = [TimeSpan]::FromSeconds(30)",
-    "    if ($StartTls) { $conn.SessionOptions.StartTransportLayerSecurity($null) } else { $conn.SessionOptions.SecureSocketLayer = $true }",
+    "    if ($Sealed) { $conn.SessionOptions.Signing = $true; $conn.SessionOptions.Sealing = $true }",
+    "    elseif ($StartTls) { $conn.SessionOptions.StartTransportLayerSecurity($null) } else { $conn.SessionOptions.SecureSocketLayer = $true }",
     "    if ($cred) { $conn.AuthType = 'Basic'; $conn.Credential = $cred.GetNetworkCredential() } else { $conn.AuthType = 'Negotiate' }",
     "    $conn.Bind()",
     "    $who = if ($cred) { $cred.UserName } else { \"$($env:COMPUTERNAME)$ (this computer account)\" }",
@@ -114,6 +121,8 @@ interface FormState {
   staleDays: number;
   intervalHours: number;
   collectors: string[];
+  /** legacy source still on endpoint agents (until switched) */
+  legacy: boolean;
   auth: DirectoryAuth;
   username: string;
   password: string;
@@ -132,14 +141,15 @@ function initialForm(src: AdSource | null): FormState {
     domain: c?.domain ?? "",
     servers: (c?.servers ?? []).join("\n"),
     baseDns: (c?.base_dns ?? []).join("\n"),
-    security: c?.security ?? "ldaps",
-    port: c?.port ?? 636,
+    security: c?.security ?? "sealed",
+    port: c?.port ?? 389,
     caPem: c?.ca_pem ?? "",
     computers: c ? c.scopes.includes("computers") : true,
     users: c ? c.scopes.includes("users") : true,
     staleDays: c?.stale_days ?? 90,
     intervalHours: c?.interval_hours ?? 6,
-    collectors: src?.collector_device_ids ?? [],
+    collectors: src?.legacy_collectors ? src.collector_device_ids : (src?.collector_ids ?? []),
+    legacy: !!src?.legacy_collectors,
     auth: c?.auth ?? "computer_account",
     username: "",
     password: "",
@@ -184,6 +194,44 @@ function CollectorPicker({ collectors, selected, onChange, auth }: { collectors:
   );
 }
 
+function DedicatedPicker({ collectors, selected, onChange }: { collectors: DedicatedCollector[] | null; selected: string[]; onChange: (ids: string[]) => void }) {
+  if (collectors === null) return <p className="text-sm text-ink-3">Loading collectors…</p>;
+  const usable = collectors.filter((c) => c.status === "active");
+  if (usable.length === 0)
+    return (
+      <p className="rounded border border-line bg-surface-2 px-3 py-2 text-sm text-ink-2">
+        No collector yet. Add one under <a href="#collectors" className="text-accent hover:underline">Collectors</a> (a small program on a
+        domain-joined member server), then pick it here.
+      </p>
+    );
+  return (
+    <ul className="max-h-56 space-y-1 overflow-y-auto rounded border border-line p-1.5" aria-label="Collectors">
+      {usable.map((c) => {
+        const idx = selected.indexOf(c.id);
+        return (
+          <li key={c.id}>
+            <label className="flex cursor-pointer flex-wrap items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-surface-2">
+              <input
+                type="checkbox"
+                checked={idx >= 0}
+                onChange={(e) => onChange(e.target.checked ? [...selected, c.id] : selected.filter((x) => x !== c.id))}
+              />
+              <span aria-hidden className={`inline-block h-2 w-2 rounded-full ${c.healthy ? "bg-good" : "bg-ink-3"}`} />
+              <span className="font-medium text-ink">{c.name}</span>
+              <span className="text-xs text-ink-3">
+                {c.hostname || "not enrolled"}
+                {c.domain ? ` · ${c.domain}` : ""} · {c.run_as || "?"} · {c.healthy ? "online" : c.last_seen_at ? `offline, seen ${fmtAgo(c.last_seen_at)}` : "offline"}
+              </span>
+              {idx >= 0 && selected.length > 1 && <Tag>{idx === 0 ? "primary" : `failover ${idx}`}</Tag>}
+              {c.is_domain_controller && <Tag tone="warn">domain controller</Tag>}
+            </label>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
 /** Add or edit an Active Directory source: settings, collectors, auth, the pre-check script and "Test & save". */
 function DirectoryForm({ source, onDone, onCancel }: { source: AdSource | null; onDone: (s: DirectorySource) => void; onCancel: () => void }) {
   const [f, setF] = useState<FormState>(() => initialForm(source));
@@ -193,6 +241,10 @@ function DirectoryForm({ source, onDone, onCancel }: { source: AdSource | null; 
   const [runId, setRunId] = useState<string | null>(null);
   const { run, error: runErr } = useRun(runId);
   const collectors = useApi(directoryApi.collectors, [], 30000);
+  const dedicated = useApi(collectorApi.list, [], 30000);
+  const [diagFor, setDiagFor] = useState<{ collector: string; command: string } | null>(null);
+  const diag = useDiagnostics(diagFor?.collector ?? null, diagFor?.command ?? null);
+  const pickedDCs = (dedicated.data ?? []).filter((c) => !f.legacy && f.collectors.includes(c.id) && c.is_domain_controller);
   const set = <K extends keyof FormState>(k: K, v: FormState[K]) => setF((x) => ({ ...x, [k]: v }));
   const id = source?.id ?? "new";
 
@@ -200,14 +252,15 @@ function DirectoryForm({ source, onDone, onCancel }: { source: AdSource | null; 
     () => precheckScript({ domain: f.domain, servers: split(f.servers), port: f.port, security: f.security, baseDn: split(f.baseDns)[0] ?? "" }),
     [f.domain, f.servers, f.port, f.security, f.baseDns],
   );
-  const nonWindows = f.auth === "computer_account" && (collectors.data ?? []).some((c) => f.collectors.includes(c.id) && c.os_family !== "windows");
+  const nonWindows = f.legacy && f.auth === "computer_account" && (collectors.data ?? []).some((c) => f.collectors.includes(c.id) && c.os_family !== "windows");
 
   async function submit(e: FormEvent) {
     e.preventDefault();
     setErr(null);
     const scopes: DirectoryScope[] = [...(f.computers ? (["computers"] as const) : []), ...(f.users ? (["users"] as const) : [])];
     if (scopes.length === 0) return setErr("Choose computers, users or both.");
-    if (f.collectors.length === 0) return setErr("Choose at least one collector agent.");
+    if (f.collectors.length === 0) return setErr("Choose at least one collector.");
+    if (f.security === "sealed" && f.auth === "service_account") return setErr("A service-account password is only sent inside TLS: choose LDAPS or StartTLS.");
     const config: AdConfig = {
       domain: f.domain.trim().toLowerCase(),
       servers: split(f.servers),
@@ -229,15 +282,21 @@ function DirectoryForm({ source, onDone, onCancel }: { source: AdSource | null; 
         ? await directoryApi.updateSource(saved.id, {
             name: f.name.trim(),
             config,
-            collector_device_ids: f.collectors,
+            ...(f.legacy ? { collector_device_ids: f.collectors } : { collector_ids: f.collectors }),
             credential,
             clear_credential: f.auth === "computer_account" && saved.has_credential,
           })
-        : await directoryApi.createSource({ type: "ad", name: f.name.trim(), config, collector_device_ids: f.collectors, credential });
+        : await directoryApi.createSource({ type: "ad", name: f.name.trim(), config, collector_ids: f.collectors, credential });
       setSaved(s);
       set("password", "");
-      const r = await directoryApi.test(s.id);
-      setRunId(r.id);
+      if (s.legacy_collectors) {
+        const r = await directoryApi.test(s.id);
+        setRunId(r.id);
+      } else {
+        // Diagnostics ON the collector: DC locator, port, certificate, bind as its identity, 5-object read.
+        const r = await collectorApi.test(f.collectors[0], s.id);
+        setDiagFor({ collector: f.collectors[0], command: r.command_id });
+      }
     } catch (ex) {
       setErr(errMsg(ex));
     } finally {
@@ -246,7 +305,7 @@ function DirectoryForm({ source, onDone, onCancel }: { source: AdSource | null; 
   }
 
   const label = "mb-1 block text-sm font-medium text-ink-2";
-  const testing = !!runId && (!run || !FINAL.has(run.status));
+  const testing = (!!runId && (!run || !FINAL.has(run.status))) || (!!diagFor && (!diag || diag.status === "queued"));
 
   return (
     <div className="grid grid-cols-1 gap-5 lg:grid-cols-[1fr_1.1fr]">
@@ -264,9 +323,27 @@ function DirectoryForm({ source, onDone, onCancel }: { source: AdSource | null; 
           hint="One domain per source. Add a source per domain or forest you want to discover."
         />
         <div>
-          <span className={label}>Collector agents</span>
-          <CollectorPicker collectors={collectors.data} selected={f.collectors} onChange={(v) => set("collectors", v)} auth={f.auth} />
+          <span className={label}>{f.legacy ? "Collector agents (legacy)" : "Collectors"}</span>
+          {f.legacy ? (
+            <>
+              <div role="note" className="mb-2 rounded border border-sev-medium/60 bg-sev-medium/10 px-3 py-2 text-sm">
+                <strong>Legacy: uses endpoint agents</strong> — move to a dedicated collector. Dedicated collectors cannot run commands and
+                support Kerberos signing &amp; sealing (no DC certificate). Objects, issues and history are kept.
+                <div className="mt-1.5">
+                  <Button onClick={() => setF((x) => ({ ...x, legacy: false, collectors: [] }))}>Switch to dedicated collectors</Button>
+                </div>
+              </div>
+              <CollectorPicker collectors={collectors.data} selected={f.collectors} onChange={(v) => set("collectors", v)} auth={f.auth} />
+            </>
+          ) : (
+            <DedicatedPicker collectors={dedicated.data} selected={f.collectors} onChange={(v) => set("collectors", v)} />
+          )}
           <p className="mt-1 text-xs text-ink-3">Syncs run on the first online collector in the order chosen; the others are failovers.</p>
+          {pickedDCs.length > 0 && (
+            <div className="mt-2">
+              <DcWarning name={pickedDCs.map((c) => c.name).join(", ")} />
+            </div>
+          )}
         </div>
         <fieldset>
           <legend className={label}>Authentication</legend>
@@ -274,15 +351,24 @@ function DirectoryForm({ source, onDone, onCancel }: { source: AdSource | null; 
             <label className="flex items-start gap-2">
               <input type="radio" name={`ds-${id}-auth`} className="mt-1" checked={f.auth === "computer_account"} onChange={() => set("auth", "computer_account")} />
               <span>
-                <span className="font-medium text-ink">Collector&apos;s computer account</span>
-                <span className="block text-xs text-ink-3">Kerberos from a domain-joined Windows collector. No secret is stored.</span>
+                <span className="font-medium text-ink">Collector&apos;s identity: computer account or gMSA (recommended)</span>
+                <span className="block text-xs text-ink-3">
+                  Kerberos as the collector service&apos;s account: LocalSystem (the computer account) or a group Managed Service Account. No
+                  secret is stored.
+                </span>
               </span>
             </label>
             <label className="flex items-start gap-2">
-              <input type="radio" name={`ds-${id}-auth`} className="mt-1" checked={f.auth === "service_account"} onChange={() => set("auth", "service_account")} />
+              <input
+                type="radio"
+                name={`ds-${id}-auth`}
+                className="mt-1"
+                checked={f.auth === "service_account"}
+                onChange={() => setF((x) => ({ ...x, auth: "service_account", ...(x.security === "sealed" ? { security: "ldaps", port: 636 } : {}) }))}
+              />
               <span>
                 <span className="font-medium text-ink">Read-only service account</span>
-                <span className="block text-xs text-ink-3">For Linux, macOS or non-joined collectors. Stored encrypted, sent only to the collector over TLS, never shown again.</span>
+                <span className="block text-xs text-ink-3">For collectors that are not domain-joined. Stored encrypted, sent only to the collector, and only ever used inside TLS (LDAPS / StartTLS); never shown again.</span>
               </span>
             </label>
           </div>
@@ -330,8 +416,37 @@ function DirectoryForm({ source, onDone, onCancel }: { source: AdSource | null; 
           <Field label="Stale after (days)" id={`ds-${id}-stale`} type="number" min={7} max={3650} value={f.staleDays} onChange={(e) => set("staleDays", Number(e.target.value))} />
           <Field label="Sync every (hours)" id={`ds-${id}-every`} type="number" min={1} max={168} value={f.intervalHours} onChange={(e) => set("intervalHours", Number(e.target.value))} />
         </div>
-        <details className="rounded border border-line px-3 py-2" open={!!(f.servers || f.baseDns || f.caPem || f.security !== "ldaps")}>
-          <summary className="cursor-pointer text-sm font-medium text-ink-2">Advanced: servers, base DNs, TLS</summary>
+        <div>
+          <span className={label}>Transport</span>
+          <div role="radiogroup" aria-label="Transport security" className="space-y-1.5 text-sm">
+            <label className={`flex items-start gap-2 ${f.legacy || f.auth === "service_account" ? "opacity-60" : ""}`}>
+              <input
+                type="radio"
+                className="mt-1"
+                disabled={f.legacy || f.auth === "service_account"}
+                checked={f.security === "sealed"}
+                onChange={() => setF((x) => ({ ...x, security: "sealed", port: 389 }))}
+              />
+              <span>
+                <span className="font-medium text-ink">Kerberos signing &amp; sealing (port 389, no certificate needed)</span>
+                <span className="block text-xs text-ink-3">
+                  No DC certificate required. Signed and encrypted by Kerberos; works where DCs require LDAP signing. Never falls back to unsigned LDAP.
+                  {f.auth === "service_account" && " Not for service-account passwords (TLS only)."}
+                </span>
+              </span>
+            </label>
+            <label className="flex items-center gap-2">
+              <input type="radio" checked={f.security === "ldaps"} onChange={() => setF((x) => ({ ...x, security: "ldaps", port: x.port === 389 ? 636 : x.port }))} /> LDAPS (636) - needs a
+              DC certificate the collector trusts
+            </label>
+            <label className="flex items-center gap-2">
+              <input type="radio" checked={f.security === "starttls"} onChange={() => setF((x) => ({ ...x, security: "starttls", port: x.port === 636 ? 389 : x.port }))} /> StartTLS
+              (389) - needs a DC certificate
+            </label>
+          </div>
+        </div>
+        <details className="rounded border border-line px-3 py-2" open={!!(f.servers || f.baseDns || f.caPem)}>
+          <summary className="cursor-pointer text-sm font-medium text-ink-2">Advanced: servers, base DNs, port, CA</summary>
           <div className="mt-2 space-y-3">
             <div>
               <label htmlFor={`ds-${id}-servers`} className={label}>
@@ -348,20 +463,13 @@ function DirectoryForm({ source, onDone, onCancel }: { source: AdSource | null; 
               <p className="mt-1 text-xs text-ink-3">One per line. Empty: the whole domain.</p>
             </div>
             <div>
-              <span className={label}>Transport</span>
-              <div role="radiogroup" aria-label="Transport security" className="flex flex-wrap gap-4 text-sm">
-                <label className="flex items-center gap-2">
-                  <input type="radio" checked={f.security === "ldaps"} onChange={() => setF((x) => ({ ...x, security: "ldaps", port: x.port === 389 ? 636 : x.port }))} /> LDAPS (636)
-                </label>
-                <label className="flex items-center gap-2">
-                  <input type="radio" checked={f.security === "starttls"} onChange={() => setF((x) => ({ ...x, security: "starttls", port: x.port === 636 ? 389 : x.port }))} /> StartTLS (389)
-                </label>
+              <div className="flex flex-wrap gap-4 text-sm">
                 <label className="flex items-center gap-2">
                   Port
                   <input type="number" min={1} max={65535} aria-label="Port" className="w-24 rounded border border-line bg-surface-2 px-2 py-1 text-sm text-ink" value={f.port} onChange={(e) => set("port", Number(e.target.value))} />
                 </label>
               </div>
-              <p className="mt-1 text-xs text-ink-3">Plain, unencrypted LDAP is never used. Use 3269 for a Global Catalog over LDAPS.</p>
+              <p className="mt-1 text-xs text-ink-3">Unsigned, unencrypted LDAP is never used. Global Catalog: 3268 sealed, 3269 over LDAPS.</p>
             </div>
             <div>
               <label htmlFor={`ds-${id}-ca`} className={label}>
@@ -380,10 +488,18 @@ function DirectoryForm({ source, onDone, onCancel }: { source: AdSource | null; 
           <Button disabled={busy} onClick={() => (saved && !source ? onDone(saved) : onCancel())}>
             {saved && !source ? "Done" : "Cancel"}
           </Button>
+          {saved && diag && diag.status !== "queued" && <Button onClick={() => onDone(saved)}>{diag.status === "succeeded" ? "Finish" : "Close (keep settings)"}</Button>}
           {saved && run && FINAL.has(run.status) && (
             <Button onClick={() => onDone(saved)}>{run.status === "succeeded" ? "Finish" : "Close (keep settings)"}</Button>
           )}
         </div>
+        {diagFor && (
+          <div className="pt-1">
+            <h4 className="mb-1.5 text-[13px] font-semibold text-ink">Test on the collector</h4>
+            <DiagnosticsResult d={diag ?? { command_id: diagFor.command, at: new Date().toISOString(), status: "queued", steps: [] }} />
+            {saved && !source && <p className="mt-1.5 text-xs text-ink-3">The source is saved; the first full sync runs on schedule or with Sync now.</p>}
+          </div>
+        )}
         {runId && (
           <div className="pt-1">
             <RunResult run={run} error={runErr} />
@@ -392,7 +508,7 @@ function DirectoryForm({ source, onDone, onCancel }: { source: AdSource | null; 
         )}
       </form>
       <div className="min-w-0">
-        <h3 className="mb-2 text-[13px] font-semibold text-ink">Optional · Pre-check on the collector</h3>
+        <h3 className="mb-2 text-[13px] font-semibold text-ink">Optional · Manual pre-check (Test runs it on the collector for you)</h3>
         <CodeBox
           text={script}
           note="Read-only: resolves domain controllers, checks the port and the DC certificate, binds and reads 5 computer objects. It never writes anything."
@@ -417,7 +533,7 @@ function sourceSubtitle(src: DirectorySource): string {
   return (
     `${DIRECTORY_NAME.ad} · ${c.domain} · ${state} · ` +
     `${c.auth === "service_account" ? `service account ${src.credential_username_hint ?? ""}` : "computer account (Kerberos)"} · ` +
-    `${c.security === "ldaps" ? "LDAPS" : "StartTLS"} ${c.port}`
+    `${c.security === "ldaps" ? "LDAPS" : c.security === "sealed" ? "Kerberos signed+sealed" : "StartTLS"} ${c.port}`
   );
 }
 
@@ -427,7 +543,10 @@ function SourceCard({ src, isAdmin, onChanged }: { src: DirectorySource; isAdmin
   const [err, setErr] = useState<string | null>(null);
   const runs = useApi(() => directoryApi.runs(src.id, 8), [src.id, src.last_sync_at, src.active_run?.status], src.active_run ? 5000 : undefined);
   const active = src.active_run;
-  const healthy = src.collectors.filter((c) => c.healthy).length;
+  const cols = src.legacy_collectors
+    ? src.collectors.map((c) => ({ name: c.hostname, healthy: c.healthy, dc: false }))
+    : (src.dedicated_collectors ?? []).map((c) => ({ name: c.name, healthy: c.healthy, dc: c.is_domain_controller }));
+  const healthy = cols.filter((c) => c.healthy).length;
   const server = src.collection === "server";
   const runText = server ? RUN_TEXT_SERVER : RUN_TEXT;
 
@@ -522,12 +641,23 @@ function SourceCard({ src, isAdmin, onChanged }: { src: DirectorySource; isAdmin
         ) : (
           <StatCell
             label="Collectors"
-            value={`${healthy} / ${src.collectors.length} online`}
+            value={`${healthy} / ${cols.length} online`}
             valueClass={healthy === 0 ? "text-sev-high" : "text-ink"}
-            sub={src.collectors.map((c) => c.hostname).join(", ")}
+            sub={cols.map((c) => c.name + (c.dc ? " (DC)" : "")).join(", ")}
           />
         )}
       </div>
+      {src.legacy_collectors && (
+        <div role="note" className="mt-3 rounded border border-sev-medium/60 bg-sev-medium/10 px-3 py-2 text-sm">
+          <strong>Legacy: uses endpoint agents</strong> — move to a dedicated collector (Edit → Switch to dedicated collectors). Objects, issues
+          and history are kept.
+        </div>
+      )}
+      {!server && cols.some((c) => c.dc) && (
+        <div className="mt-3">
+          <DcWarning name={cols.filter((c) => c.dc).map((c) => c.name).join(", ")} compact />
+        </div>
+      )}
       {server && Object.keys(src.scope_status).length > 0 && (
         <div className="mt-3 px-1">
           <ScopeChips status={src.scope_status} />
@@ -603,7 +733,7 @@ const CHOICES: DirectoryChoice[] = [
     title: "Active Directory",
     blurb: "On-prem domain: computers and users over LDAPS.",
     how: "Read by one of your enrolled agents inside your network",
-    steps: ["Choose a collector agent", "Optionally run the pre-check on it", "Test & save"],
+    steps: ["Add a collector (member server, gMSA recommended)", "Choose it for the domain", "Test & save: checks run on the collector"],
   },
   {
     type: "entra",

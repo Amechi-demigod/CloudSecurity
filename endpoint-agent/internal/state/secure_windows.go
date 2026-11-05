@@ -19,7 +19,7 @@ func defaultPaths() Paths {
 	if pd == "" {
 		pd = `C:\ProgramData`
 	}
-	base := filepath.Join(pd, "CNAPP Agent")
+	base := filepath.Join(pd, ProductDir)
 	return Paths{StateDir: base, LogDir: filepath.Join(base, "logs")}
 }
 
@@ -32,7 +32,12 @@ func SecureDir(dir string) error {
 }
 
 func applySDDL(path string) error {
-	sd, err := windows.SecurityDescriptorFromString(stateSDDL)
+	sddl := stateSDDL
+	if ServiceAccountSID != "" {
+		// The collector service running as a gMSA keeps full control of its own files.
+		sddl += "(A;OICI;FA;;;" + ServiceAccountSID + ")"
+	}
+	sd, err := windows.SecurityDescriptorFromString(sddl)
 	if err != nil {
 		return err
 	}
@@ -70,6 +75,9 @@ func checkPrivilegedOwner(path string) error {
 		return err
 	}
 	if owner.IsWellKnown(windows.WinLocalSystemSid) || owner.IsWellKnown(windows.WinBuiltinAdministratorsSid) {
+		return nil
+	}
+	if ServiceAccountSID != "" && owner.String() == ServiceAccountSID {
 		return nil
 	}
 	return fmt.Errorf("owned by %s, not SYSTEM or Administrators", owner.String())

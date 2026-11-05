@@ -13,6 +13,9 @@
     python scripts/agent_release.py verify cnapp-agent-update-1.4.0.tar.gz --keys endpoint-agent/internal/update/trusted_keys.txt
 
 Binary file names must be cnapp-agent-<goos>-<goarch>[.exe] (as built by CI).
+The dedicated directory collector (cnapp-collector-windows-<goarch>.exe) is
+added with --collector: it gets its own signed manifest (collector-manifest.json,
+product cnapp-collector, same keys and version) so agents never see it.
 The private key is read from AGENT_UPDATE_SIGNING_KEY (PEM, PKCS#8) or --key-file;
 it is never written anywhere by `bundle`. Several keys (rotation) may be given
 as --key-file more than once: the manifest then carries one signature per key.
@@ -36,6 +39,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey,
 
 SIG_CONTEXT = b"cnapp-agent-update-manifest-v1\x00"
 NAME_RE = re.compile(r"^cnapp-agent-(windows|darwin)-(amd64|arm64)(\.exe)?$")
+COLLECTOR_NAME_RE = re.compile(r"^cnapp-collector-(windows)-(amd64|arm64)(\.exe)$")
 SEMVER_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$")
 
 
@@ -91,19 +95,19 @@ def _key_pems(a: argparse.Namespace) -> list[bytes]:
 
 
 def build_manifest(version: str, binaries: list[Path], *, days: int, min_supported: str, notes: str,
-                   rollback_from: list[str], now: datetime | None = None) -> dict:
+                   rollback_from: list[str], now: datetime | None = None, product: str = "cnapp-agent") -> dict:
     if not SEMVER_RE.match(version):
         raise SystemExit(f"error: {version!r} is not a semantic version")
     now = (now or datetime.now(UTC)).replace(microsecond=0)
     arts = []
     for b in binaries:
-        m = NAME_RE.match(b.name)
+        m = (COLLECTOR_NAME_RE if product == "cnapp-collector" else NAME_RE).match(b.name)
         if not m:
-            raise SystemExit(f"error: {b.name}: binaries must be named cnapp-agent-<goos>-<goarch>[.exe]")
+            raise SystemExit(f"error: {b.name}: binaries must be named {product}-<goos>-<goarch>[.exe]")
         data = b.read_bytes()
         arts.append({"os": m[1], "arch": m[2], "name": b.name, "sha256": hashlib.sha256(data).hexdigest(),
                      "size": len(data)})
-    m = {"schema": 1, "product": "cnapp-agent", "version": version,
+    m = {"schema": 1, "product": product, "version": version,
          "released_at": now.isoformat().replace("+00:00", "Z"),
          "expires_at": (now + timedelta(days=days)).isoformat().replace("+00:00", "Z"),
          "min_supported_version": min_supported, "artifacts": arts}
@@ -121,7 +125,8 @@ def sign_manifest(manifest: dict, keys: list[Ed25519PrivateKey]) -> bytes:
     return json.dumps({"payload": base64.b64encode(payload).decode(), "signatures": sigs}, indent=1).encode()
 
 
-def write_bundle(out: Path, envelope: bytes, binaries: list[Path]) -> None:
+def write_bundle(out: Path, envelope: bytes, binaries: list[Path], collector_envelope: bytes | None = None,
+                 collector_binaries: list[Path] | None = None) -> None:
     with tarfile.open(out, "w:gz") as tf:
         def add(name: str, data: bytes, mode: int) -> None:
             ti = tarfile.TarInfo(name)
@@ -130,6 +135,10 @@ def write_bundle(out: Path, envelope: bytes, binaries: list[Path]) -> None:
         add("manifest.json", envelope, 0o644)
         for b in binaries:
             add(b.name, b.read_bytes(), 0o755)
+        if collector_envelope is not None:
+            add("collector-manifest.json", collector_envelope, 0o644)
+            for b in collector_binaries or []:
+                add(b.name, b.read_bytes(), 0o755)
 
 
 def cmd_bundle(a: argparse.Namespace) -> int:
@@ -137,8 +146,14 @@ def cmd_bundle(a: argparse.Namespace) -> int:
     bins = [Path(p) for p in a.binaries]
     m = build_manifest(a.version, bins, days=a.valid_days, min_supported=a.min_supported_version, notes=a.notes,
                        rollback_from=a.rollback_allowed_from or [])
-    write_bundle(Path(a.out), sign_manifest(m, keys), bins)
-    print(f"{a.out}: version {a.version}, {len(bins)} artifact(s), signed by "
+    cbins = [Path(p) for p in a.collector or []]
+    cenv = None
+    if cbins:
+        cm = build_manifest(a.version, cbins, days=a.valid_days, min_supported=a.min_supported_version,
+                            notes=a.notes, rollback_from=[], product="cnapp-collector")
+        cenv = sign_manifest(cm, keys)
+    write_bundle(Path(a.out), sign_manifest(m, keys), bins, cenv, cbins)
+    print(f"{a.out}: version {a.version}, {len(bins)} agent + {len(cbins)} collector artifact(s), signed by "
           f"{', '.join(key_id(public_bytes(k)) for k in keys)}, expires {m['expires_at']}")
     return 0
 
@@ -151,17 +166,23 @@ def cmd_verify(a: argparse.Namespace) -> int:
             keys[f[0]] = base64.b64decode(f[1])
     with tarfile.open(a.bundle, "r:gz") as tf:
         files = {m.name: tf.extractfile(m).read() for m in tf.getmembers() if m.isfile()}
-    env = json.loads(files.pop("manifest.json"))
-    payload = base64.b64decode(env["payload"])
-    ok = [s["key_id"] for s in env["signatures"] if s["key_id"] in keys and _verify(keys[s["key_id"]], s, payload)]
-    if not ok:
-        raise SystemExit("INVALID: no valid signature from a trusted key")
-    m = json.loads(payload)
-    for art in m["artifacts"]:
-        data = files.get(art["name"], b"")
-        if len(data) != art["size"] or hashlib.sha256(data).hexdigest() != art["sha256"]:
-            raise SystemExit(f"INVALID: {art['name']} does not match the manifest")
-    print(f"OK: version {m['version']} signed by {', '.join(ok)}; {len(m['artifacts'])} artifact(s) match")
+    for manifest in ("manifest.json", "collector-manifest.json"):
+        if manifest not in files:
+            if manifest == "manifest.json":
+                raise SystemExit("INVALID: no manifest.json")
+            continue
+        env = json.loads(files[manifest])
+        payload = base64.b64decode(env["payload"])
+        ok = [s["key_id"] for s in env["signatures"] if s["key_id"] in keys and _verify(keys[s["key_id"]], s, payload)]
+        if not ok:
+            raise SystemExit(f"INVALID: {manifest}: no valid signature from a trusted key")
+        m = json.loads(payload)
+        for art in m["artifacts"]:
+            data = files.get(art["name"], b"")
+            if len(data) != art["size"] or hashlib.sha256(data).hexdigest() != art["sha256"]:
+                raise SystemExit(f"INVALID: {art['name']} does not match {manifest}")
+        print(f"OK: {manifest} ({m['product']}) version {m['version']} signed by {', '.join(ok)}; "
+              f"{len(m['artifacts'])} artifact(s) match")
     return 0
 
 
@@ -195,6 +216,8 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--rollback-allowed-from", action="append",
                    help="allow agents running exactly this (newer) version to install this release (signed downgrade)")
     b.add_argument("--notes", default="")
+    b.add_argument("--collector", action="append",
+                   help="a cnapp-collector-windows-<arch>.exe binary (repeat); signed as collector-manifest.json")
     b.add_argument("binaries", nargs="+")
     b.set_defaults(func=cmd_bundle)
     v = sub.add_parser("verify", help="verify a bundle against a trusted-keys file")

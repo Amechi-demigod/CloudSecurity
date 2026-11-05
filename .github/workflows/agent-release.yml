@@ -68,9 +68,15 @@ jobs:
               -ldflags "-s -w -X github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/version.Version=${VERSION}" \
               -o "dist/cnapp-agent-${os}-${arch}${ext}" ./cmd/cnapp-agent
           done
+          # The dedicated directory collector (Windows), signed into the same bundle as collector-manifest.json.
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=windows GOARCH=$arch go build -trimpath \
+              -ldflags "-s -w -X github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/version.Version=${VERSION}" \
+              -o "dist/cnapp-collector-windows-${arch}.exe" ./cmd/cnapp-collector
+          done
           # Never publish a test-only build (the remote_fake remote-session backend).
-          ../scripts/agent_build_check.sh dist/cnapp-agent-*
-          (cd dist && sha256sum cnapp-agent-* > SHA256SUMS && cat SHA256SUMS)
+          ../scripts/agent_build_check.sh dist/cnapp-agent-* dist/cnapp-collector-*
+          (cd dist && sha256sum cnapp-agent-* cnapp-collector-* > SHA256SUMS && cat SHA256SUMS)
       - name: Sign the update manifest
         env:
           AGENT_UPDATE_SIGNING_KEY: ${{ secrets.AGENT_UPDATE_SIGNING_KEY }}
@@ -83,6 +89,7 @@ jobs:
           d=endpoint-agent/dist
           python scripts/agent_release.py bundle --version "$VERSION" --out "$d/cnapp-agent-update.tar.gz" \
             --notes "CNAPP agent $VERSION (${GITHUB_SHA::7})" \
+            --collector "$d/cnapp-collector-windows-amd64.exe" --collector "$d/cnapp-collector-windows-arm64.exe" \
             "$d/cnapp-agent-windows-amd64.exe" "$d/cnapp-agent-windows-arm64.exe" "$d/cnapp-agent-darwin-amd64" "$d/cnapp-agent-darwin-arm64"
           # Agents only accept keys compiled into them: refuse to publish a bundle they would reject.
           python scripts/agent_release.py verify "$d/cnapp-agent-update.tar.gz" --keys endpoint-agent/internal/update/trusted_keys.txt
@@ -94,4 +101,4 @@ jobs:
           d=endpoint-agent/dist
           gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "CNAPP agent ${TAG#agent-v}" --verify-tag \
             --notes "Signed agent auto-update bundle: cnapp-agent-update.tar.gz. Import on-prem with \`sudo cnapp-ctl agent-release fetch --tag $TAG\`." \
-            "$d/cnapp-agent-update.tar.gz" "$d"/cnapp-agent-windows-* "$d"/cnapp-agent-darwin-* "$d/SHA256SUMS"
+            "$d/cnapp-agent-update.tar.gz" "$d"/cnapp-agent-windows-* "$d"/cnapp-agent-darwin-* "$d"/cnapp-collector-windows-* "$d/SHA256SUMS"

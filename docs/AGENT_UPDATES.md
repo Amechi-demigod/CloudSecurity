@@ -14,6 +14,8 @@ shipping a new agent version is:
 
 1. **Tag**: `git tag agent-v1.4.0 && git push origin agent-v1.4.0`.
 2. **Approve** the *Agent release* workflow run in GitHub (environment `agent-release`).
+   The bundle also carries the dedicated directory collector (`collector-manifest.json`,
+   signed with the same key; see [DIRECTORY_DISCOVERY.md](DIRECTORY_DISCOVERY.md#updates-and-release-import)).
    It builds, signs and publishes `cnapp-agent-update.tar.gz` as a GitHub Release.
 3. **Done.** Within an hour the server imports it by itself (*auto-import*, on
    by default on-prem; signature, sizes and SHA-256 are verified exactly as for

@@ -12,7 +12,7 @@ import (
 
 func defaultPaths() Paths {
 	if isDarwin {
-		return Paths{StateDir: "/Library/Application Support/CNAPP Agent", LogDir: "/Library/Logs/CNAPP Agent"}
+		return Paths{StateDir: "/Library/Application Support/" + ProductDir, LogDir: "/Library/Logs/" + ProductDir}
 	}
 	return Paths{StateDir: "/var/lib/cnapp-agent", LogDir: "/var/log/cnapp-agent"}
 }

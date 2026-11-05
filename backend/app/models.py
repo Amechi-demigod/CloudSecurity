@@ -587,6 +587,9 @@ class EnrollmentToken(TenantMixin, Base):
     package_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # Group label applied to devices enrolling with this token.
     device_group: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # "agent" (endpoint agents) or "collector" (dedicated directory collectors):
+    # each enrollment endpoint only accepts its own kind.
+    kind: Mapped[str] = mapped_column(String(16), default="agent", server_default="agent")
 
 
 class Device(TenantMixin, Base):

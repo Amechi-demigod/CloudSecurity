@@ -20,7 +20,7 @@ from .events import Event, EventSource, emit, register_source
 log = logging.getLogger(__name__)
 
 SOURCE = "directory_source"
-EVENT_TYPES = ("sync_failed", "not_managed_changed")
+EVENT_TYPES = ("sync_failed", "not_managed_changed", "collector_offline", "collector_online")
 
 
 def sync_failed(db: Session, src, run) -> None:
@@ -58,10 +58,42 @@ def not_managed_changed(db: Session, src, previous: int | None, current: int) ->
         log.exception("failed to queue directory coverage notification")
 
 
+def collector_offline(db: Session, c, sources: list[dict]) -> None:
+    try:
+        used = ", ".join(s["name"] for s in sources) or "no directory source yet"
+        emit(db, Event(
+            source=SOURCE, event_type="collector_offline", severity="high" if sources else "medium",
+            title=f"Directory collector offline: {c.name}",
+            summary=f"{c.name} ({c.hostname or 'unknown host'}) has not reported for 15 minutes. Used by: {used}.",
+            entity_id=c.id, group_key=f"{SOURCE}:collector:{c.id}", rule_id="collector_offline",
+            link_path="/connectors#collectors",
+            attributes={"asset_type": "directory_collector", "asset_name": c.name, "hostname": c.hostname,
+                        "domain": c.domain, "version": c.version,
+                        "last_seen_at": c.last_seen_at.isoformat() + "Z" if c.last_seen_at else None,
+                        "sources": [s["name"] for s in sources]},
+        ))
+    except Exception:
+        log.exception("failed to queue collector offline notification")
+
+
+def collector_online(db: Session, c) -> None:
+    try:
+        emit(db, Event(
+            source=SOURCE, event_type="collector_online", severity="info",
+            title=f"Directory collector back online: {c.name}",
+            summary=f"{c.name} ({c.hostname or 'unknown host'}) is reporting again.",
+            entity_id=c.id, group_key=f"{SOURCE}:collector:{c.id}", rule_id="collector_offline",
+            link_path="/connectors#collectors",
+            attributes={"asset_type": "directory_collector", "asset_name": c.name, "hostname": c.hostname},
+        ))
+    except Exception:
+        log.exception("failed to queue collector online notification")
+
+
 register_source(EventSource(
     SOURCE,
     "Directory discovery",
     EVENT_TYPES,
-    "Directory (Active Directory) syncs that fail, and changes in the number of directory computers "
-    "that have no agent.",
+    "Directory (Active Directory) syncs that fail, dedicated directory collectors that go offline, and "
+    "changes in the number of directory computers that have no agent.",
 ))

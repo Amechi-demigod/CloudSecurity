@@ -102,12 +102,29 @@ def collector(admin):
     return add_device(admin, "COLLECTOR1", "1" * 64, join_facts=join("COLLECTOR1", 1100))
 
 
-def make_source(admin, collector_ids, **over) -> dict:
-    body = {"type": "ad", "name": "Corp AD", "config": {"domain": DOMAIN}, "collector_device_ids": collector_ids}
-    body.update(over)
-    r = admin.post("/api/directory/sources", json=body)
-    assert r.status_code == 201, r.text
+def legacy_source(admin, collector_ids, *, org: str = "default", credential: dict | None = None, **over) -> dict:
+    """An AD source whose collectors are endpoint agents. New sources can only use
+    dedicated collectors (test_directory_collectors.py), so this plays an existing
+    source created before them: stored directly, then read through the API."""
+    from app.directory import service as dsvc
+    from app.directory.schemas import parse_config
+
+    with db.get_session(org) as s:
+        cfg = dsvc.resolve_transport(parse_config("ad", over.pop("config", {"domain": DOMAIN})), dedicated=False)
+        src = DirectorySource(type="ad", name=over.pop("name", "Corp AD"), config=cfg, enabled=over.pop("enabled", True),
+                              collector_device_ids=list(collector_ids), collector_ids=[], **over)
+        if credential:
+            dsvc.set_credential(src, credential["username"], credential["password"])
+        dsvc.validate_source(s, src)
+        s.add(src)
+        s.commit()
+        sid = src.id
+    r = admin.get(f"/api/directory/sources/{sid}")
+    assert r.status_code == 200, r.text
     return r.json()
+
+
+make_source = legacy_source
 
 
 def fetch_sync(agent) -> dict:
@@ -170,20 +187,24 @@ def test_source_validation_and_secret_handling(admin, collector, caplog):
     mac_agent, mac = add_device(admin, "MAC1", "2" * 64, os_family="macos")
     _, old = add_device(admin, "OLD1", "3" * 64, collector=False)
     base = {"type": "ad", "name": "Corp", "config": {"domain": DOMAIN}}
-    # Unknown device / no collector feature / Kerberos needs Windows / service account needs a credential.
-    assert admin.post("/api/directory/sources", json={**base, "collector_device_ids": ["f" * 32]}).status_code == 404
-    assert admin.post("/api/directory/sources", json={**base, "collector_device_ids": [old]}).status_code == 422
-    assert admin.post("/api/directory/sources", json={**base, "collector_device_ids": [mac]}).status_code == 422
-    sa = {**base, "config": {"domain": DOMAIN, "auth": "service_account"}, "collector_device_ids": [mac]}
-    assert admin.post("/api/directory/sources", json=sa).status_code == 422
-    # Plain LDAP is refused; bad domains and DNs too.
-    for cfg in ({"domain": DOMAIN, "port": 389}, {"domain": "not a domain"}, {"domain": DOMAIN, "base_dns": ["OU=x"]},
-                {"domain": DOMAIN, "security": "none"}):
-        assert admin.post("/api/directory/sources", json={**base, "config": cfg,
-                                                          "collector_device_ids": [dev]}).status_code == 422
-    r = admin.post("/api/directory/sources", json={**sa, "credential": {"username": "CORP\\svc-ldap",
-                                                                        "password": PASSWORD}})
-    assert r.status_code == 201, r.text
+    # New sources cannot pick endpoint agents any more (dedicated collectors only).
+    assert admin.post("/api/directory/sources", json={**base, "collector_device_ids": [dev]}).status_code == 422
+    legacy = legacy_source(admin, [dev])
+    url = f"/api/directory/sources/{legacy['id']}"
+    # Legacy source: unknown device / no collector feature / Kerberos needs Windows / service account needs a credential.
+    assert admin.patch(url, json={"collector_device_ids": ["f" * 32]}).status_code == 404
+    assert admin.patch(url, json={"collector_device_ids": [old]}).status_code == 422
+    assert admin.patch(url, json={"collector_device_ids": [mac]}).status_code == 422
+    assert admin.patch(url, json={"config": {"domain": DOMAIN, "auth": "service_account"},
+                                  "collector_device_ids": [mac]}).status_code == 422
+    # Plain LDAP is refused; bad domains and DNs too; sealed LDAP needs a dedicated collector.
+    for cfg in ({"domain": DOMAIN, "port": 389, "security": "ldaps"}, {"domain": "not a domain"},
+                {"domain": DOMAIN, "base_dns": ["OU=x"]}, {"domain": DOMAIN, "security": "none"},
+                {"domain": DOMAIN, "security": "sealed"}):
+        assert admin.patch(url, json={"config": cfg}).status_code == 422, cfg
+    r = admin.patch(url, json={"config": {"domain": DOMAIN, "auth": "service_account"}, "collector_device_ids": [mac],
+                               "credential": {"username": "CORP\\svc-ldap", "password": PASSWORD}})
+    assert r.status_code == 200, r.text
     src = r.json()
     assert src["has_credential"] and src["credential_username_hint"] == "CORP\\sv••••"
     assert PASSWORD not in r.text and "svc-ldap" not in r.text
@@ -217,7 +238,7 @@ def test_source_validation_and_secret_handling(admin, collector, caplog):
         details = json.dumps([a.detail for a in s.scalars(select(AuditLog))])
         assert PASSWORD not in details
         actions = {a.action for a in s.scalars(select(AuditLog))}
-    assert {"directory_source_created", "directory_source_updated", "directory_sync_requested"} <= actions
+    assert {"directory_source_updated", "directory_sync_requested"} <= actions
     assert PASSWORD not in caplog.text
 
 
@@ -566,7 +587,7 @@ def test_tenant_isolation(admin, collector, scheduler):
         assert r.status_code == 404, (method, path, r.status_code)
     # A source in acme cannot use the default organisation's devices as collectors.
     r = acme.post("/api/directory/sources", json={"type": "ad", "name": "x", "config": {"domain": DOMAIN},
-                                                  "collector_device_ids": [dev]})
+                                                  "collector_ids": [dev]})
     assert r.status_code == 404
     # The acme agent cannot upload into the default organisation's run (even with its token).
     admin.post(f"/api/directory/sources/{sid}/sync")

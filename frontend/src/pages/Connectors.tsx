@@ -4,6 +4,7 @@ import { api } from "../api";
 import type { Connector, ConnectorSchedule, ScanRun, ScanSchedule } from "../api";
 import { useAuth } from "../auth/context";
 import { ConnectCloud, ConnectionForm, ProviderMark } from "../components/cloudConnect";
+import { CollectorsSection } from "../components/collectors";
 import { DirectoriesSection } from "../components/directories";
 import { Button, Card, ErrorNote, PageHeader, SeverityBadge, Table, Tag } from "../components/ui";
 import { CLOUD_NAME, CLOUD_PROVIDERS, CLOUD_ROLE, CLOUD_SCOPE } from "../lib/cloudSetup";
@@ -453,6 +454,9 @@ export default function Connectors() {
       )}
 
       <DirectoriesSection isAdmin={isAdmin} />
+      <div className="mt-4">
+        <CollectorsSection isAdmin={isAdmin} />
+      </div>
 
       <Card title="Scan history" className="mt-4">
         {scans.data?.length === 0 ? (

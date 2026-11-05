@@ -66,7 +66,8 @@ MIGRATION_CHAIN = ["0001_baseline", "0002_device_management", "0003_notification
                    "0015_command_result_data", "0016_dashboard_snapshots", "0017_onboarding_dismissed",
                    "0018_remote_sessions", "0019_offboarding_username", "0020_directory_discovery",
                    "0021_directory_cloud_sources", "0022_windows_updates", "0023_endpoint_actions",
-                   "0024_agent_deployments", "0025_compliance_reports", "0026_device_classification"]
+                   "0024_agent_deployments", "0025_compliance_reports", "0026_device_classification",
+                   "0027_directory_collectors"]
 
 
 def test_migration_history_is_linear():
@@ -726,5 +727,38 @@ def test_device_classification_migration(tmp_path):
         command.downgrade(db.alembic_config(eng), "0025_compliance_reports")
         assert "device_class" not in {c["name"] for c in inspect(eng).get_columns("devices")}
         assert "asset_type_source" not in {c["name"] for c in inspect(eng).get_columns("it_assets")}
+    finally:
+        eng.dispose()
+
+
+def test_directory_collectors_migration(tmp_path):
+    """0027 adds dedicated collectors; existing AD sources keep their endpoint-agent
+    collectors (legacy: collector_ids = []) and existing tokens are agent tokens."""
+    if IS_POSTGRES:
+        reset_database()
+        eng = db.create_db_engine(TEST_DATABASE_URL)
+    else:
+        eng = db.create_db_engine(f"sqlite:///{tmp_path / 'collectors.db'}")
+    try:
+        db.run_migrations(eng, "0026_device_classification")
+        with eng.begin() as conn:
+            conn.execute(text(
+                "INSERT INTO directory_sources (id, organization_id, type, name, enabled, config, collector_device_ids,"
+                " computers_count, users_count, created_at, updated_at, scope_status) VALUES ('s1', 'default', 'ad',"
+                " 'AD', true, '{}', '[\"d1\"]', 0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, '{}')"))
+            conn.execute(text(
+                "INSERT INTO enrollment_tokens (id, organization_id, name, token_hash, token_prefix, use_count,"
+                " created_at, expires_at) VALUES ('t1', 'default', 'x', 'h', 'cne_', 0, CURRENT_TIMESTAMP,"
+                " CURRENT_TIMESTAMP)"))
+        db.run_migrations(eng)
+        assert _schema_diff(eng) == []
+        with eng.connect() as conn:
+            assert conn.execute(text("SELECT collector_ids FROM directory_sources")).scalar() in ("[]", [])
+            assert conn.execute(text("SELECT kind FROM enrollment_tokens")).scalar() == "agent"
+        from alembic import command
+
+        command.downgrade(db.alembic_config(eng), "0026_device_classification")
+        assert not inspect(eng).has_table("directory_collectors")
+        assert "kind" not in {c["name"] for c in inspect(eng).get_columns("enrollment_tokens")}
     finally:
         eng.dispose()

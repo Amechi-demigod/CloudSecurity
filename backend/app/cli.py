@@ -221,6 +221,16 @@ def agent_release_import(args: argparse.Namespace) -> int:
         plats = ", ".join(f"{a.os}/{a.arch}" for a in rel.artifacts)
         print(f"Imported agent release {rel.version} (id {rel.id}), signed by {rel.key_id}, "
               f"expires {rel.expires_at:%Y-%m-%d}; platforms: {plats}")
+        from sqlalchemy import select as _select
+
+        from .directory.models import CollectorRelease, CollectorReleaseArtifact
+
+        crel = s.scalar(_select(CollectorRelease).where(CollectorRelease.agent_release_id == rel.id))
+        if crel is not None:
+            cplats = ", ".join(f"{o}/{a}" for o, a in s.execute(_select(
+                CollectorReleaseArtifact.os, CollectorReleaseArtifact.arch).where(
+                CollectorReleaseArtifact.release_id == crel.id)).all())
+            print(f"  with the directory collector {crel.version} (signed collector manifest); platforms: {cplats}")
         from .services import agent_update_auto
 
         if agent_update_auto.get_settings(s).mode == "automatic":

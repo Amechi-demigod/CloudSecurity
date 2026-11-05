@@ -17,7 +17,9 @@ GUID_RE = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 _CTRL = re.compile(r"[\x00-\x1f\x7f]")
 
 Scope = Literal["computers", "users"]
-Security = Literal["ldaps", "starttls"]
+# sealed: LDAP on 389 with a Kerberos (Negotiate) bind and SASL signing +
+# sealing (dedicated Windows collectors only; no DC certificate needed).
+Security = Literal["ldaps", "starttls", "sealed"]
 AuthMode = Literal["computer_account", "service_account"]
 
 MAX_BATCH_OBJECTS = 5000
@@ -33,8 +35,10 @@ class AdConfig(_Strict):
 
     domain: Annotated[str, StringConstraints(min_length=3, max_length=253, to_lower=True)]
     servers: list[Annotated[str, StringConstraints(pattern=SERVER_RE)]] = Field(default_factory=list, max_length=10)
-    port: int = Field(636, ge=1, le=65535)
-    security: Security = "ldaps"
+    # None: chosen by the server (sealed for the computer account / gMSA on
+    # dedicated collectors, else LDAPS); port None: the transport's default.
+    port: int | None = Field(None, ge=1, le=65535)
+    security: Security | None = None
     base_dns: list[Annotated[str, StringConstraints(min_length=4, max_length=1024)]] = Field(
         default_factory=list, max_length=10)
     scopes: list[Scope] = Field(default_factory=lambda: ["computers", "users"], min_length=1, max_length=2)
@@ -75,6 +79,10 @@ class AdConfig(_Strict):
     def _transport(self) -> AdConfig:
         if self.security == "ldaps" and self.port == 389:
             raise ValueError("port 389 is plain LDAP: use security=starttls (or LDAPS on 636)")
+        if self.security == "sealed" and self.port in (636, 3269):
+            raise ValueError("Kerberos signing & sealing runs on LDAP port 389 (or 3268), not on an LDAPS port")
+        if self.security == "sealed" and self.auth == "service_account":
+            raise ValueError("a service-account password is only ever sent inside TLS: use LDAPS or StartTLS")
         return self
 
 
@@ -159,7 +167,9 @@ class SourceCreate(_Strict):
     enabled: bool = True
     # Validated per type (AdConfig, EntraConfig, GoogleConfig).
     config: dict
-    # AD: the collector agents (at least one); cloud types: none.
+    # AD: the dedicated collectors (at least one); cloud types: none.
+    collector_ids: list[DeviceId] = Field(default_factory=list, max_length=10)
+    # Endpoint agents as collectors: legacy, refused for new sources.
     collector_device_ids: list[DeviceId] = Field(default_factory=list, max_length=10)
     credential: Credential | None = None
     # Google Workspace: the service account's JSON key (write-only).
@@ -168,7 +178,7 @@ class SourceCreate(_Strict):
     @model_validator(mode="after")
     def _config(self) -> SourceCreate:
         self.config = parse_config(self.type, self.config)
-        if self.type != "ad" and (self.collector_device_ids or self.credential):
+        if self.type != "ad" and (self.collector_device_ids or self.collector_ids or self.credential):
             raise ValueError("cloud directories are read by the server: no collectors or AD credential")
         if self.google_key is not None and self.type != "google":
             raise ValueError("google_key only applies to Google Workspace sources")
@@ -180,6 +190,10 @@ class SourceUpdate(_Strict):
     enabled: bool | None = None
     # Validated against the source's type by the API.
     config: dict | None = None
+    # Dedicated collectors; on a legacy source this switches it to them (its
+    # endpoint-agent collectors are dropped; objects and history are kept).
+    collector_ids: list[DeviceId] | None = Field(None, max_length=10)
+    # Legacy sources only: their endpoint-agent collectors.
     collector_device_ids: list[DeviceId] | None = Field(None, max_length=10)
     credential: Credential | None = None
     clear_credential: bool = False
@@ -240,6 +254,7 @@ class CollectorOut(BaseModel):
 
 
 class RunOut(BaseModel):
+    collector_id: str | None = None
     id: str
     source_id: str
     trigger: str
@@ -272,6 +287,11 @@ class SourceOut(BaseModel):
     credential_username_hint: str | None
     collector_device_ids: list[str]
     collectors: list[CollectorOut]
+    # Dedicated collectors (directory/collectors.py collector_out) and whether
+    # the source still uses endpoint agents (legacy).
+    collector_ids: list[str] = []
+    dedicated_collectors: list[dict] = []
+    legacy_collectors: bool = False
     last_sync_at: UTCDateTime | None
     last_sync_status: str | None
     last_sync_error: str | None
@@ -452,3 +472,79 @@ class BatchIn(_Upload):
         if self.final and self.status is None:
             raise ValueError("the final batch needs a status")
         return self
+
+
+# ----------------------------------------------------------------------------- dedicated collectors
+_HOST = Annotated[str, StringConstraints(max_length=255, pattern=r"^[A-Za-z0-9._-]{0,255}$")]
+_TEXT64 = Annotated[str, StringConstraints(max_length=64)]
+
+
+class CollectorFacts(_Strict):
+    """What a collector reports about its host (enrollment and heartbeat)."""
+
+    hostname: _HOST = ""
+    dns_hostname: _HOST = ""
+    domain: Annotated[str, StringConstraints(max_length=255, to_lower=True, pattern=r"^[a-z0-9.-]{0,255}$")] = ""
+    os_name: Annotated[str, StringConstraints(max_length=128)] = ""
+    os_version: _TEXT64 = ""
+    architecture: Annotated[str, StringConstraints(max_length=16)] = ""
+    version: _TEXT64 = ""
+    run_as: Annotated[str, StringConstraints(max_length=256)] = ""
+    run_as_kind: Literal["computer_account", "gmsa", "user", "unknown"] = "unknown"
+    is_domain_controller: bool = False
+    features: Annotated[str, StringConstraints(max_length=256, pattern=r"^[a-z0-9_,]{0,256}$")] = ""
+
+    @field_validator("run_as", "os_name")
+    @classmethod
+    def _plain(cls, v: str) -> str:
+        if _CTRL.search(v):
+            raise ValueError("must not contain control characters")
+        return v
+
+
+class CollectorEnrollIn(_Strict):
+    token: Annotated[str, StringConstraints(min_length=10, max_length=128)]
+    machine_id: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")] | Literal[""] = ""
+    facts: CollectorFacts
+
+
+class CollectorHeartbeatIn(_Strict):
+    facts: CollectorFacts
+
+
+class CollectorResultIn(_Strict):
+    nonce: Annotated[str, StringConstraints(min_length=16, max_length=64)]
+    status: Literal["succeeded", "failed", "rejected"]
+    output: Annotated[str, StringConstraints(max_length=8000)] = ""
+    result_data: dict | None = None
+
+
+class CollectorUpdateStatusIn(_Strict):
+    release_id: Annotated[str, StringConstraints(max_length=32)] = ""
+    from_version: _TEXT64 = ""
+    to_version: _TEXT64 = ""
+    status: Literal["downloading", "verified", "installing", "installed", "rolled_back", "failed", "rejected"]
+    detail: Annotated[str, StringConstraints(max_length=500)] = ""
+
+
+class CollectorRename(_Strict):
+    name: Name
+
+
+class CollectorTokenIn(_Strict):
+    name: Name = "collector"
+    max_uses: int | None = Field(1, ge=1, le=100)
+    expires_in_hours: int = Field(24, ge=1, le=24 * 30)
+
+
+class CollectorTestIn(_Strict):
+    source_id: DeviceId | None = None
+
+
+class CollectorInstallerIn(_Strict):
+    name: Name = "collector"
+    arch: Literal["amd64", "arm64"] = "amd64"
+    expires_in_hours: int = Field(24, ge=1, le=24 * 30)
+    # gMSA to run the service as (DOMAIN\name$); empty: LocalSystem (computer account).
+    gmsa: Annotated[str, StringConstraints(max_length=256, pattern=r"^([A-Za-z0-9.-]{1,64}\\[A-Za-z0-9._-]{1,63}\$)?$")] = ""
+    include_ca: bool = True

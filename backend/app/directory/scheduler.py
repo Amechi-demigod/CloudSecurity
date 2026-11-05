@@ -35,8 +35,9 @@ from ..auth import audit
 from ..locks import LeaderLock
 from ..models import DeviceCommand, utcnow
 from . import cloud, reconcile
+from . import collectors as coll
 from . import service as svc
-from .models import CLOUD_TYPES, DirectorySource, DirectorySyncRun
+from .models import CLOUD_TYPES, CollectorCommand, DirectorySource, DirectorySyncRun
 
 log = logging.getLogger(__name__)
 
@@ -90,6 +91,12 @@ class DirectoryScheduler:
         return out
 
     def tick_org(self, db: Session, org_id: str, now: datetime, out: dict[str, list[str]]) -> None:
+        try:
+            coll.check_offline(db, now)  # "collector offline" notifications (once per outage)
+            db.commit()
+        except Exception:
+            db.rollback()
+            log.exception("collector health check of organisation %s failed", org_id)
         sources = list(db.scalars(select(DirectorySource)))
         if not sources:
             return
@@ -134,7 +141,8 @@ class DirectoryScheduler:
             return
         reason = None
         if run.status == "queued":
-            cmd = db.get(DeviceCommand, run.command_id) if run.command_id else None
+            model = CollectorCommand if run.collector_id else DeviceCommand
+            cmd = db.get(model, run.command_id) if run.command_id else None
             if cmd is None or cmd.status in ("expired", "cancelled"):
                 reason = "the collector did not pick up the sync (command expired or cancelled)"
             elif now - run.queued_at >= svc.PICKUP_TIMEOUT:
@@ -160,7 +168,8 @@ class DirectoryScheduler:
         except svc.DirectoryError:
             return  # no other healthy collector: the failure stands (and was notified)
         audit(db, "directory_sync_failed_over", actor_email=svc.SYSTEM, target=f"directory-source:{src.id}",
-              from_run=run.id, run_id=nxt.id, device_id=nxt.device_id, attempt=nxt.attempt)
+              from_run=run.id, run_id=nxt.id, device_id=nxt.device_id, collector_id=nxt.collector_id,
+              attempt=nxt.attempt)
         out["failed_over"].append(nxt.id)
 
     def _maybe_queue(self, db: Session, src: DirectorySource, now: datetime, out: dict[str, list[str]],

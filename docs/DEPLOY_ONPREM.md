@@ -53,7 +53,7 @@ To size up, edit `/opt/cnapp/cnapp.env` and run `sudo cnapp-ctl restart`:
 | Vulnerability (CVE) matching (on by default, [VULNERABILITIES.md](VULNERABILITIES.md)) | `services.nvd.nist.gov`, `api.osv.dev`, `www.cisa.gov`, `api.first.org` |
 
 The backend uses `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` from `cnapp.env` (passed through by the compose file;
-`localhost`, `127.0.0.1` and the stack's service names are always exempt), and `cnapp-ctl agent-release fetch`
+`localhost`, `127.0.0.1` and the stack's service names are always exempt), and `cnapp-ctl agent-release fetch` (it also imports the signed directory collector binaries in the bundle, see [DIRECTORY_DISCOVERY.md](DIRECTORY_DISCOVERY.md#updates-and-release-import))
 uses the same values for `curl`. Without internet access the auto-import only logs and shows "offline" in the
 console; import bundles with `cnapp-ctl agent-release import` instead (or set `AGENT_UPDATE_AUTO_IMPORT=false`).
 
