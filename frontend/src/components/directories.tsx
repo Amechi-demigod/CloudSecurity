@@ -16,6 +16,7 @@ import {
   collectorApi,
 } from "../directoryApi";
 import { useDiagnostics } from "../lib/collectors";
+import { AdWizard } from "./adWizard";
 import { DcWarning, DiagnosticsResult } from "./collectors";
 import { FINAL, RUN_COLOR, RUN_TEXT, RUN_TEXT_SERVER, TRIGGER_TEXT, errMsg, inputCls, runDuration, useRun } from "../lib/directory";
 import { fmtAgo, fmtHours, fmtTime, fmtUntil } from "../lib/format";
@@ -731,9 +732,9 @@ const CHOICES: DirectoryChoice[] = [
   {
     type: "ad",
     title: "Active Directory",
-    blurb: "On-prem domain: computers and users over LDAPS.",
-    how: "Read by one of your enrolled agents inside your network",
-    steps: ["Add a collector (member server, gMSA recommended)", "Choose it for the domain", "Test & save: checks run on the collector"],
+    blurb: "On-prem domain: computers and users, read-only.",
+    how: "Read by a collector you install inside your network (guided: domain, collector, test, save)",
+    steps: ["Domain", "Collector", "Test", "Save"],
   },
   {
     type: "entra",
@@ -808,7 +809,7 @@ export function DirectoriesSection({ isAdmin }: { isAdmin: boolean }) {
               <div className="min-w-0">
                 <h3 className="text-base font-semibold text-ink">No directory connected</h3>
                 <p className="mt-1 max-w-2xl text-sm text-ink-3">
-                  Connect on-prem Active Directory (read by one of your agents over LDAPS), Microsoft Entra ID + Intune or Google Workspace
+                  Connect on-prem Active Directory (read by a collector inside your network), Microsoft Entra ID + Intune or Google Workspace
                   (read by the server over their APIs). Everything is read-only. Discovery then shows machines without an agent, stale and disabled
                   accounts, and admins at risk.
                 </p>
@@ -838,6 +839,16 @@ export function DirectoriesSection({ isAdmin }: { isAdmin: boolean }) {
             {!choice ? (
               <div className="mt-3">
                 <DirectoryChooser onPick={setAdding} />
+              </div>
+            ) : choice.type === "ad" ? (
+              <div className="mt-3">
+                <AdWizard
+                  onCancel={() => setAdding(null)}
+                  onDone={() => {
+                    setAdding(null);
+                    sources.reload();
+                  }}
+                />
               </div>
             ) : (
               <>

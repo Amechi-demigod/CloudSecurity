@@ -157,7 +157,8 @@ def collector_out(c: DirectoryCollector, now: datetime | None = None,
             "os_version": c.os_version, "architecture": c.architecture, "version": c.version,
             "run_as": c.run_as, "run_as_kind": c.run_as_kind, "is_domain_controller": c.is_domain_controller,
             "enrolled_at": _iso(c.enrolled_at), "last_seen_at": _iso(c.last_seen_at), "last_ip": c.last_ip,
-            "revoked_at": _iso(c.revoked_at), "update_status": c.update_status,
+            "revoked_at": _iso(c.revoked_at), "enrollment_token_id": c.enrollment_token_id,
+            "update_status": c.update_status,
             "update_status_detail": c.update_status_detail, "diagnostics": dict(c.diagnostics or {}),
             "sources": sources or []}
 
@@ -250,10 +251,12 @@ def delivered_command(db: Session, c: DirectoryCollector, command_id: str, nonce
 DIAG_STEPS = ("dc_locator", "port", "certificate", "bind", "read")
 
 
-def diagnostics_params(src: DirectorySource | None, c: DirectoryCollector) -> dict[str, Any]:
+def diagnostics_params(src: DirectorySource | None, c: DirectoryCollector,
+                       config: dict[str, Any] | None = None) -> dict[str, Any]:
     """Params of an on-collector Test (stored; the service-account credential is
-    only added to the delivered copy, as for directory_sync)."""
-    cfg = (src.config or {}) if src is not None else {}
+    only added to the delivered copy, as for directory_sync). `config`: settings
+    not saved yet (the Add directory wizard), tested as the collector's identity."""
+    cfg = config if config is not None else ((src.config or {}) if src is not None else {})
     domain = cfg.get("domain") or c.domain
     if not domain:
         raise CollectorError(422, "the collector reports no domain: pick a directory source to test against")

@@ -49,7 +49,22 @@ func applySDDL(path string) error {
 		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, dacl, nil)
 }
 
-func restrictFile(f *os.File) error { return applySDDL(f.Name()) }
+func restrictFile(f *os.File) error {
+	if err := applySDDL(f.Name()); err != nil {
+		return err
+	}
+	// Owned by BUILTIN\Administrators rather than by the elevated user who ran the
+	// installer: files created by the built-in Administrator account (UAC admin
+	// approval off, common on servers) are owned by that user, and
+	// checkPrivilegedOwner would then refuse them (enroll.json written by
+	// `cnapp-collector install` was never picked up). Best effort: a gMSA service
+	// cannot assign that owner and keeps its own, which is accepted as ServiceAccountSID.
+	if sid, err := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid); err == nil {
+		_ = windows.SetNamedSecurityInfo(f.Name(), windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION,
+			sid, nil, nil, nil)
+	}
+	return nil
+}
 
 func replaceFile(src, dst string) error {
 	from, err := windows.UTF16PtrFromString(src)

@@ -38,6 +38,9 @@ UA = "cnapp-collector/1.4.0 (windows; amd64)"
 
 @pytest.fixture()
 def admin(empty_client):
+    from app.api import devices as devices_api
+
+    devices_api.installer_limiter.reset()
     return empty_client
 
 
@@ -409,7 +412,7 @@ def test_installer_zip(admin, tmp_path, monkeypatch):
     config.reload_settings()
     info = admin.get("/api/collectors/installer/info").json()
     assert info["arches"]["amd64"]["available"] and not info["arches"]["arm64"]["available"]
-    r = admin.post("/api/collectors/installer", json={"name": "Lagos", "gmsa": "CORP\\svc-collector$"})
+    r = admin.post("/api/collectors/installer", json={"name": "Lagos", "format": "zip", "gmsa": "CORP\\svc-collector$"})
     assert r.status_code == 200, r.text
     z = zipfile.ZipFile(io.BytesIO(r.content))
     assert set(z.namelist()) == {"cnapp-collector.exe", "collector.json", "Install-Collector.ps1",
@@ -423,8 +426,11 @@ def test_installer_zip(admin, tmp_path, monkeypatch):
     t = next(x for x in admin.get("/api/collectors/enrollment-tokens/list").json() if x["package"])
     assert t["max_uses"] == 1
     assert preset["token"] not in admin.get("/api/collectors/enrollment-tokens/list").text
-    assert admin.post("/api/collectors/installer", json={"gmsa": "not-a-gmsa"}).status_code == 422
-    assert admin.post("/api/collectors/installer", json={"arch": "arm64"}).status_code == 503
+    assert admin.post("/api/collectors/installer", json={"format": "zip", "gmsa": "not-a-gmsa"}).status_code == 422
+    assert admin.post("/api/collectors/installer", json={"format": "zip", "arch": "arm64"}).status_code == 503
+    # No MSI in this bundle: the (default) MSI download says so instead of building something else.
+    assert not info["msi"]["available"] and "zip" in info["msi"]["reason"]
+    assert admin.post("/api/collectors/installer", json={}).status_code == 503
     scripts = admin.get("/api/collectors/setup/scripts", params={"domain": DOMAIN, "gmsa": "svc-collector",
                                                                  "hosts": "COLL01 COLL02"}).json()
     assert "Add-KdsRootKey" in scripts["kds_root_key"] and "10 hours" in scripts["kds_root_key"]

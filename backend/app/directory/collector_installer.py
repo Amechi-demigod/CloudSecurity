@@ -1,18 +1,27 @@
-"""Pre-configured collector installers and setup scripts (Connectors & scans >
-Collectors > Add collector).
+"""Pre-configured collector installers and setup scripts (Add directory >
+Active Directory, and Connectors & scans > Collectors > Add collector).
 
-The signed collector binaries built by CI (``cnapp-collector-windows-<arch>.exe``)
-are bundled in the backend image next to the agent installers
-(``AGENT_INSTALLERS_DIR``, listed with their SHA-256 in ``manifest.json``). A
-download is a zip built in memory:
+What CI builds is bundled in the backend image next to the agent installers
+(``AGENT_INSTALLERS_DIR``, listed with their SHA-256 in ``manifest.json``):
+the generic collector MSI (``cnapp-collector-windows-x64.msi``, WiX, built
+from endpoint-agent/packaging/windows/msi/cnapp-collector.wxs) and the
+collector binaries (``cnapp-collector-windows-<arch>.exe``). A download is
+built in memory:
 
-* ``cnapp-collector.exe``: the binary, byte for byte (its SHA-256 is checked
-  against manifest.json first);
-* ``collector.json``: server URL, a fresh single-use collector enrollment token,
-  the private CA when the server certificate is not publicly trusted, the
-  service display name ("<BRAND_NAME> Collector") and the optional gMSA;
-* ``Install-Collector.ps1`` / ``Uninstall-Collector.ps1``: silent-installable
-  wrappers around ``cnapp-collector install`` / ``uninstall --purge``.
+* **MSI** (recommended, x64): a copy of the generic MSI whose ``CNAPP_PRESET``
+  placeholder is overwritten in place with ``collector.json`` (below), exactly
+  like the agent's pre-configured MSI (services/msipatch.py), plus a fresh
+  package code and ProductCode, so a second download installs over the first
+  as an upgrade. ``msiexec /i <file>.msi /qn [GMSA=..] [ALLOW_DOMAIN_CONTROLLER=1]``.
+* **zip** (advanced / scripted, and Arm64; deprecated for x64):
+  ``cnapp-collector.exe`` (byte for byte, SHA-256 checked against
+  manifest.json), ``collector.json`` and ``Install-Collector.ps1`` /
+  ``Uninstall-Collector.ps1`` wrappers around ``cnapp-collector install`` /
+  ``uninstall --purge``.
+
+``collector.json``: server URL, a fresh single-use collector enrollment token,
+the private CA when the server certificate is not publicly trusted, the
+service display name ("<BRAND_NAME> Collector") and the optional gMSA.
 
 The plaintext token only exists inside the returned bytes.
 """
@@ -24,9 +33,11 @@ import re
 import zipfile
 
 from .. import config
-from ..services import installers
+from ..services import installers, msipatch
 
 ARCHES = ("amd64", "arm64")
+FORMATS = ("msi", "zip")
+MSI_ARTIFACT = "cnapp-collector-windows-x64.msi"
 TOKEN_RE = re.compile(r"^cnct_[A-Za-z0-9_\-]{8,124}$")
 GMSA_RE = re.compile(r"^[A-Za-z0-9.-]{1,64}\\[A-Za-z0-9._-]{1,63}\$$")
 
@@ -38,7 +49,11 @@ def binary_name(arch: str) -> str:
     return f"cnapp-collector-windows-{arch}.exe"
 
 
-def download_name(arch: str) -> str:
+def download_name(arch: str, fmt: str = "zip") -> str:
+    if fmt == "msi":
+        # e.g. Travound-Collector.msi (what the console's install instructions show)
+        brand = re.sub(r"[^A-Za-z0-9]+", "-", config.settings.brand_name).strip("-") or "CNAPP"
+        return f"{brand}-Collector.msi"
     return f"collector-setup-windows-{arch}.zip"
 
 
@@ -71,14 +86,44 @@ def _binary(arch: str, *, verify: bool = True) -> tuple[bytes, str, str]:
     return data, expected, str(man.get("version") or "unknown")
 
 
+def _msi(*, verify: bool = True) -> tuple[bytes, str, str]:
+    """(bytes, sha256, version) of the bundled generic collector MSI."""
+    man = installers._manifest()
+    expected = str((man.get("files") or {}).get(MSI_ARTIFACT, "")).lower()
+    path = installers.installers_dir() / MSI_ARTIFACT
+    if not path.is_file() or not re.fullmatch(r"[0-9a-f]{64}", expected):
+        raise InstallerUnavailable(f"the collector MSI {MSI_ARTIFACT} is not bundled with this server build (expected "
+                                   f"{path} listed in manifest.json); use a CI-built backend image, set "
+                                   "AGENT_INSTALLERS_DIR, or download the zip (Advanced)")
+    if path.stat().st_size > installers.MAX_ARTIFACT_BYTES:
+        raise InstallerUnavailable(f"{path.name} is larger than {installers.MAX_ARTIFACT_BYTES} bytes")
+    data = path.read_bytes() if verify else b""
+    if verify:
+        import hashlib
+
+        if hashlib.sha256(data).hexdigest() != expected:
+            raise InstallerUnavailable(f"{MSI_ARTIFACT} does not match its SHA-256 in manifest.json; refusing to use it")
+    return data, expected, str(man.get("version") or "unknown")
+
+
 def availability() -> dict:
-    out = {"service_display_name": service_display_name(), "server_url": server_url(), "arches": {}}
+    out = {"service_display_name": service_display_name(), "server_url": server_url(), "arches": {},
+           "ca_configured": False}
+    try:
+        out["ca_configured"] = installers.server_ca_pem() is not None
+    except InstallerConfigError:
+        pass
     for arch in ARCHES:
         try:
             _, sha, version = _binary(arch, verify=False)
             out["arches"][arch] = {"available": True, "version": version, "filename": download_name(arch)}
         except InstallerUnavailable as e:
             out["arches"][arch] = {"available": False, "reason": str(e), "filename": download_name(arch)}
+    try:
+        _, _, version = _msi(verify=False)
+        out["msi"] = {"available": True, "version": version, "filename": download_name("amd64", "msi"), "arch": "amd64"}
+    except InstallerUnavailable as e:
+        out["msi"] = {"available": False, "reason": str(e), "filename": download_name("amd64", "msi"), "arch": "amd64"}
     return out
 
 
@@ -162,6 +207,21 @@ Write-Host '__DISPLAY__ removed.'
 """
 
 
+def build_msi(token: str, *, include_ca: bool, gmsa: str, name: str) -> tuple[bytes, str, bool]:
+    """The pre-configured collector MSI (x64), the collector version and whether the CA is in it."""
+    server = installers.server_url()
+    ca = installers.server_ca_pem() if include_ca else None
+    base, _, version = _msi()
+    doc = preset(server, token, ca, gmsa, name)
+    if not installers._build_slots.acquire(timeout=60):
+        raise InstallerUnavailable("too many installer builds in progress; try again shortly")
+    try:
+        data = msipatch.inject(base, doc, new_product_code=True)
+    finally:
+        installers._build_slots.release()
+    return data, version, ca is not None
+
+
 def build(arch: str, token: str, *, include_ca: bool, gmsa: str, name: str) -> tuple[bytes, str]:
     """The installer zip and the collector version."""
     server = installers.server_url()
@@ -175,7 +235,11 @@ def build(arch: str, token: str, *, include_ca: bool, gmsa: str, name: str) -> t
         z.writestr("Install-Collector.ps1", INSTALL_PS1.replace("__DISPLAY__", display).replace("__SERVER__", server))
         z.writestr("Uninstall-Collector.ps1", UNINSTALL_PS1.replace("__DISPLAY__", display))
         z.writestr("README.txt", (
-            f"{display} {version}\r\n\r\nSilent install (elevated):\r\n"
+            f"{display} {version}\r\n\r\n"
+            "Advanced / scripted install. For x64 the MSI installer (Add directory > Active Directory, or\r\n"
+            "Collectors > Add collector) is recommended: double-click, or msiexec /i <file>.msi /qn.\r\n"
+            "Installing the MSI later takes this collector over and keeps its enrollment.\r\n\r\n"
+            "Silent install (elevated):\r\n"
             "  powershell -ExecutionPolicy Bypass -File Install-Collector.ps1 -Quiet\r\n"
             "Run as a gMSA:\r\n  ... -File Install-Collector.ps1 -Quiet -Gmsa 'CORP\\svc-collector$'\r\n"
             "Uninstall:\r\n  powershell -ExecutionPolicy Bypass -File Uninstall-Collector.ps1\r\n\r\n"
@@ -218,8 +282,9 @@ dsacls $ou /I:T /G "{netbios}\\{acct}$:GR"   # generic read, inherited by child 
 #    A collector computer added to the principals must reboot (or run 'klist -li 0x3e7 purge') once.
 Install-ADServiceAccount -Identity {_ps_quote(acct)}
 Test-ADServiceAccount -Identity {_ps_quote(acct)}   # must print True"""
-    switch = f"""# 5. Run the collector service as the gMSA
-#    (or install with: .\\Install-Collector.ps1 -Gmsa '{netbios}\\{acct}$').
+    switch = f"""# 5. Run the collector service as the gMSA. Easiest: install (or re-install) with
+#      msiexec /i <Collector>.msi /qn GMSA={netbios}\\{acct}$
+#    (zip: .\\Install-Collector.ps1 -Gmsa '{netbios}\\{acct}$'). Or switch an installed collector:
 #    The gMSA needs "Log on as a service" (sc.exe grants it on member servers; check your GPO if it is managed).
 sc.exe config CNAPPCollector obj= "{netbios}\\{acct}$" password= ""
 Restart-Service CNAPPCollector

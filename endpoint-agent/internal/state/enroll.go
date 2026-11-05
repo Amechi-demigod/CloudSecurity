@@ -214,6 +214,17 @@ const (
 // DecodePreset returns the enrollment config carried by an MSI preset, or nil
 // for the generic MSI's placeholder (or an empty value).
 func DecodePreset(s string) (*EnrollConfig, error) {
+	raw, err := DecodePresetBytes(s)
+	if raw == nil || err != nil {
+		return nil, err
+	}
+	return ParseEnrollConfig(raw)
+}
+
+// DecodePresetBytes returns the JSON document carried by an MSI preset, or nil
+// for the placeholder / an empty value. The directory collector's MSI carries
+// its own document (collector.json) in the same property.
+func DecodePresetBytes(s string) ([]byte, error) {
 	s = strings.TrimRight(strings.TrimSpace(s), ".")
 	switch {
 	case s == "" || strings.HasPrefix(s, presetUnset):
@@ -223,7 +234,10 @@ func DecodePreset(s string) (*EnrollConfig, error) {
 		if err != nil {
 			return nil, fmt.Errorf("MSI enrollment preset is not valid base64: %w", err)
 		}
-		return ParseEnrollConfig(raw)
+		if len(raw) > MaxEnrollConfigBytes {
+			return nil, errors.New("MSI enrollment preset is too large")
+		}
+		return raw, nil
 	default:
 		return nil, errors.New("unrecognized MSI enrollment preset")
 	}

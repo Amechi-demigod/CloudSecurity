@@ -181,15 +181,15 @@ func writeSecure(dir, dst string, data []byte) error {
 }
 
 // Remove deletes the state file, the stored CA bundle, the local policy, the
-// lost-mode record, the suspend-sign-in record and any pending enrollment
-// config (uninstall --purge).
+// lost-mode record, the suspend-sign-in record, the collector's service
+// settings and any pending enrollment config (uninstall --purge).
 func Remove(p Paths) error {
 	if err := RemoveEnrollConfig(p); err != nil {
 		return err
 	}
 	for _, f := range []string{p.StateFile(), p.CAFile(), p.PolicyFile(),
 		filepath.Join(p.StateDir, "lostmode.json"), filepath.Join(p.StateDir, "signin.json"),
-		filepath.Join(p.StateDir, "signin-recovery.json")} {
+		filepath.Join(p.StateDir, "signin-recovery.json"), p.ServiceFile()} {
 		if err := os.Remove(f); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}

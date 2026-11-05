@@ -48,6 +48,9 @@ func ParsePreset(b []byte) (*Preset, error) {
 	if len(p.ServiceDisplayName) > 80 || strings.ContainsAny(p.ServiceDisplayName, "\r\n\x00") {
 		return nil, errors.New("collector.json: invalid service_display_name")
 	}
+	if p.RunAs != "" && !ValidGMSA(p.RunAs) {
+		return nil, errors.New(`collector.json: run_as must be a gMSA like CORP\svc-collector$`)
+	}
 	return &p, nil
 }
 

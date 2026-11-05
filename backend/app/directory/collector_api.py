@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -23,6 +24,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .. import config, tenancy
 from ..api.agent import _deny, _require_active_org, device_limiter, enroll_failure_limiter, enroll_limiter
+from ..api.devices import installer_limiter
 from ..auth import audit, client_ip, require_admin, require_viewer
 from ..db import get_db
 from ..models import EnrollmentToken, User, utcnow
@@ -338,15 +340,17 @@ def test_collector(body: CollectorTestIn, request: Request, collector_id: str = 
         src = db.get(DirectorySource, body.source_id)
         if src is None or src.type != "ad":
             raise HTTPException(404, "Active Directory source not found")
+    config = body.config.model_dump() if body.config is not None else None
     try:
-        params = coll.diagnostics_params(src, c)
+        params = coll.diagnostics_params(src, c, config)
         cmd = coll.new_command(db, c, coll.DIAGNOSTICS, params, "collector test", actor=admin.email,
                                ttl=coll.DIAGNOSTICS_TTL)
     except coll.CollectorError as e:
         raise HTTPException(e.status, e.detail) from None
     c.diagnostics = {"command_id": cmd.id, "at": utcnow().isoformat() + "Z", "status": "queued", "steps": []}
     audit(db, "directory_collector_test_requested", actor=admin, target=f"directory-collector:{c.id}",
-          ip=client_ip(request), command_id=cmd.id, source_id=body.source_id)
+          ip=client_ip(request), command_id=cmd.id, source_id=body.source_id,
+          domain=params["domain"] if config is not None else None)
     db.commit()
     return {"command_id": cmd.id, "status": "queued"}
 
@@ -397,25 +401,52 @@ def installer_info():
 @admin_router.post("/installer")
 def download_installer(body: CollectorInstallerIn, request: Request, admin: User = Depends(require_admin),
                        db: Session = Depends(get_db)):
-    """A pre-configured collector installer (zip: the signed collector binary, a
-    silent install script and the enrollment preset with a fresh single-use token)."""
+    """A pre-configured collector installer with a fresh single-use enrollment token:
+    the MSI (x64, recommended) or the zip (signed binary, install scripts and the
+    enrollment preset; advanced / scripted and Arm64). Rate limited like the
+    agent installers; the plaintext token only exists in the returned file."""
+    s = config.settings
+    if body.format == "msi" and body.arch != "amd64":
+        raise HTTPException(422, "the collector MSI is x64 only; use the zip for Windows on Arm64")
+    if not installer_limiter.hit(f"user:{admin.id}", s.agent_installer_rate_limit,
+                                 s.agent_installer_rate_window_seconds):
+        raise HTTPException(429, "too many installer downloads; try again later", headers={"Retry-After": "60"})
     t, raw = coll.new_token(db, name=body.name, max_uses=1, expires_in_hours=body.expires_in_hours,
-                            actor=admin.email, package=f"collector-{body.arch}")
+                            actor=admin.email,  # package_platform is at most 16 characters
+                            package="collector-msi" if body.format == "msi" else f"collector-{body.arch}")
+    ca_included = None
     try:
-        data, version = collector_installer.build(body.arch, raw, include_ca=body.include_ca, gmsa=body.gmsa,
-                                                  name=body.name)
+        if body.format == "msi":
+            data, version, ca_included = collector_installer.build_msi(raw, include_ca=body.include_ca,
+                                                                       gmsa=body.gmsa, name=body.name)
+            media_type = "application/x-msi"
+        else:
+            data, version = collector_installer.build(body.arch, raw, include_ca=body.include_ca, gmsa=body.gmsa,
+                                                      name=body.name)
+            media_type = "application/zip"
     except collector_installer.InstallerUnavailable as e:
         db.rollback()
         raise HTTPException(503, str(e)) from None
     except collector_installer.InstallerConfigError as e:
         db.rollback()
         raise HTTPException(409, str(e)) from None
+    except Exception:
+        db.rollback()
+        log.exception("building the collector %s installer failed", body.format)
+        raise HTTPException(500, "building the installer failed; see the server log") from None
+    del raw  # the plaintext token now only exists inside `data`
+    digest = hashlib.sha256(data).hexdigest()
+    t.package_sha256 = digest
     audit(db, "directory_collector_installer_downloaded", actor=admin, target=f"enrollment-token:{t.id}",
-          ip=client_ip(request), arch=body.arch, gmsa=body.gmsa or None, version=version)
+          ip=client_ip(request), format=body.format, arch=body.arch, gmsa=body.gmsa or None, version=version,
+          sha256=digest, size_bytes=len(data), ca_included=ca_included, expires_at=t.expires_at.isoformat() + "Z",
+          server_url=collector_installer.server_url())
     db.commit()
-    return Response(content=data, media_type="application/zip", headers={
-        "Content-Disposition": f'attachment; filename="{collector_installer.download_name(body.arch)}"',
-        "Cache-Control": "no-store", "X-Collector-Version": version, "X-Enrollment-Token-Id": t.id})
+    filename = collector_installer.download_name(body.arch, body.format)
+    return Response(content=data, media_type=media_type, headers={
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "Cache-Control": "no-store", "X-Collector-Version": version, "X-Enrollment-Token-Id": t.id,
+        "X-Content-SHA256": digest})
 
 
 @admin_router.get("/setup/scripts")

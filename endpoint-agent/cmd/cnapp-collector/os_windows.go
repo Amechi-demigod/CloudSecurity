@@ -5,6 +5,7 @@ package main
 import (
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
+	"golang.org/x/sys/windows/svc/mgr"
 
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/service"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/state"
@@ -30,6 +31,26 @@ func accountSID(account string) (string, error) {
 		return "", err
 	}
 	return sid.String(), nil
+}
+
+// installedServiceAccount is the logon account of an existing CNAPPCollector
+// service ("" when there is none), e.g. a zip-installed collector the MSI takes over.
+func installedServiceAccount() string {
+	m, err := mgr.Connect()
+	if err != nil {
+		return ""
+	}
+	defer m.Disconnect()
+	s, err := m.OpenService(service.WindowsServiceName)
+	if err != nil {
+		return ""
+	}
+	defer s.Close()
+	cfg, err := s.Config()
+	if err != nil {
+		return ""
+	}
+	return cfg.ServiceStartName
 }
 
 func machineGUID() string {
