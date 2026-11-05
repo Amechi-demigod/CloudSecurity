@@ -11,7 +11,7 @@ import { SEV_RANK, useSort } from "../lib/useSort";
 import { useUrlState } from "../lib/useUrlState";
 
 export default function Findings() {
-  // Deep links: ?severity=, ?status=, ?provider=, ?compliance=, ?category=, ?subscription= (dashboards); ?finding=<id> redirects below
+  // Deep links: ?severity=, ?status=, ?provider=, ?compliance=, ?category=, ?subscription= (dashboards); ?rule= (compliance); ?finding=<id> redirects below
   const [params] = useSearchParams();
   const linked = params.get("finding");
   const [severity, setSeverity] = useUrlState("severity");
@@ -22,6 +22,7 @@ export default function Findings() {
   // Set by dashboard links only (no control on this page): finding category and cloud account.
   const [category, setCategory] = useUrlState("category");
   const [subscription, setSubscription] = useUrlState("subscription");
+  const [rule, setRule] = useUrlState("rule");
   const [expanded, setExpanded] = useState<string | null>(null);
   const [asset, setAsset] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -37,8 +38,9 @@ export default function Findings() {
         compliance: compliance || undefined,
         category: category || undefined,
         subscription_id: subscription || undefined,
+        rule_id: rule || undefined,
       }),
-    [severity, status, source, provider, compliance, category, subscription],
+    [severity, status, source, provider, compliance, category, subscription, rule],
   );
   const sorted = useSort(
     data,
@@ -92,6 +94,7 @@ export default function Findings() {
         {[
           { label: "Category", value: category, clear: () => setCategory("") },
           { label: "Account", value: subscription, clear: () => setSubscription("") },
+          { label: "Rule", value: rule, clear: () => setRule("") },
         ]
           .filter((f) => f.value)
           .map((f) => (
@@ -126,7 +129,7 @@ export default function Findings() {
             loading={loading}
             rowCount={data?.length ?? 0}
             empty={
-              <Empty icon={ShieldCheck} title={status === "open" && !severity && !provider && !source && !compliance && !category && !subscription ? "No open findings" : "No findings match these filters"}>
+              <Empty icon={ShieldCheck} title={status === "open" && !severity && !provider && !source && !compliance && !category && !subscription && !rule ? "No open findings" : "No findings match these filters"}>
                 {status === "open" ? "Nothing to fix here right now. Run a scan under Connectors & scans to re-check." : "Try another status or clear a filter."}
               </Empty>
             }

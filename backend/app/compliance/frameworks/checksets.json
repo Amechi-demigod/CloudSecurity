@@ -1,0 +1,110 @@
+{
+ "about": "Named groups of automated checks, referenced from the framework files as \"@<name>\" (docs/COMPLIANCE.md). Every cloud posture rule belongs to at least one set (tests/test_compliance.py).",
+ "mapping_version": 1,
+ "sets": {
+  "public-network-exposure": {
+   "title": "Network exposure to the internet",
+   "checks": ["cloud:AZ-NSG-001", "cloud:AZ-NSG-002", "cloud:AZ-NSG-003", "cloud:AZ-NSG-004", "cloud:AZ-VM-001",
+              "cloud:AZ-VMSS-001", "cloud:AZ-SQL-001", "cloud:AZ-SQL-003", "cloud:AZ-SQL-004", "cloud:AZ-STG-004",
+              "cloud:AZ-KV-003", "cloud:AZ-KV-004", "cloud:AZ-AKS-002", "cloud:AZ-FW-001", "cloud:AZ-FW-002",
+              "cloud:AZ-FW-005", "cloud:AZ-APP-007", "cloud:AZ-APP-011", "cloud:AZ-FN-007", "cloud:AZ-FN-011",
+              "cloud:AZ-PG-001", "cloud:AZ-PG-002", "cloud:AZ-PG-009", "cloud:AZ-MYSQL-001", "cloud:AZ-MYSQL-002",
+              "cloud:AZ-MYSQL-009", "cloud:AZ-COSMOS-001", "cloud:AZ-COSMOS-005", "cloud:AZ-REDIS-003",
+              "cloud:AZ-REDIS-006", "cloud:AZ-SQLMI-001", "cloud:AWS-EC2-001", "cloud:AWS-SG-001", "cloud:AWS-SG-002",
+              "cloud:AWS-SG-003", "cloud:AWS-RDS-001", "cloud:AWS-EKS-001", "cloud:GCP-FW-001", "cloud:GCP-FW-002",
+              "cloud:GCP-FW-003", "cloud:GCP-GCE-001", "cloud:GCP-GKE-002", "cloud:GCP-GKE-003", "cloud:GCP-SQL-001",
+              "cloud:GCP-SQL-002"]
+  },
+  "public-data-access": {
+   "title": "Anonymous or public access to data and functions",
+   "checks": ["cloud:AZ-STG-001", "cloud:AWS-S3-001", "cloud:AWS-S3-002", "cloud:GCP-GCS-001", "cloud:GCP-IAM-003",
+              "cloud:AWS-LMB-001", "cloud:GCP-RUN-001", "cloud:GCP-FN-001", "cloud:AZ-APP-008", "cloud:AZ-FN-008"]
+  },
+  "encryption-in-transit": {
+   "title": "TLS / HTTPS enforced",
+   "checks": ["cloud:AZ-STG-002", "cloud:AZ-STG-003", "cloud:AZ-SQL-005", "cloud:AZ-APP-001", "cloud:AZ-APP-002",
+              "cloud:AZ-APP-003", "cloud:AZ-FN-001", "cloud:AZ-FN-002", "cloud:AZ-FN-003", "cloud:AZ-PG-003",
+              "cloud:AZ-PG-004", "cloud:AZ-MYSQL-003", "cloud:AZ-MYSQL-004", "cloud:AZ-COSMOS-003",
+              "cloud:AZ-REDIS-001", "cloud:AZ-REDIS-002", "cloud:AZ-SQLMI-002", "cloud:AWS-S3-003", "cloud:GCP-SQL-003"]
+  },
+  "encryption-at-rest-cloud": {
+   "title": "Cloud disks and databases encrypted",
+   "checks": ["cloud:AZ-VM-002", "cloud:AZ-VMSS-002", "cloud:AWS-RDS-002"]
+  },
+  "key-management": {
+   "title": "Keys and secrets rotated and recoverable",
+   "checks": ["cloud:AZ-KV-001", "cloud:AZ-KV-002", "cloud:AWS-KMS-001", "cloud:GCP-KMS-001", "cloud:GCP-IAM-002",
+              "cloud:AWS-IAM-005"]
+  },
+  "mfa": {
+   "title": "Multi-factor authentication for cloud console users",
+   "checks": ["cloud:AWS-IAM-001", "cloud:AWS-IAM-004"]
+  },
+  "password-policy": {
+   "title": "Password policy",
+   "checks": ["cloud:AWS-IAM-003"]
+  },
+  "service-authentication": {
+   "title": "Services use managed identities / directory sign-in instead of keys",
+   "checks": ["cloud:AZ-PG-006", "cloud:AZ-MYSQL-006", "cloud:AZ-SQLMI-003", "cloud:AZ-COSMOS-002",
+              "cloud:AZ-REDIS-004", "cloud:AZ-APP-005", "cloud:AZ-FN-005", "cloud:AZ-APP-010", "cloud:AZ-FN-010",
+              "cloud:GCP-GKE-004"]
+  },
+  "privileged-access": {
+   "title": "Privileged access limited",
+   "checks": ["cloud:AZ-ID-001", "cloud:AZ-SUB-001", "cloud:AZ-SUB-002", "cloud:AZ-AKS-001", "cloud:AWS-IAM-002",
+              "cloud:AWS-IAM-006", "cloud:AWS-IAM-007", "cloud:GCP-IAM-001", "cloud:GCP-IAM-004", "cloud:GCP-IAM-005",
+              "cloud:GCP-GCE-002", "cloud:GCP-GKE-001", "directory:privileged_disabled", "directory:privileged_stale"]
+  },
+  "account-lifecycle": {
+   "title": "Directory accounts disabled and removed on time",
+   "checks": ["directory:disabled_user_signed_in", "directory:stale_user_signed_in", "directory:privileged_disabled",
+              "directory:privileged_stale", "directory:stale_computer", "directory:disabled_but_active"]
+  },
+  "cloud-logging": {
+   "title": "Audit logging in cloud accounts",
+   "checks": ["cloud:AWS-CT-001", "cloud:AWS-CT-002", "cloud:AZ-SQL-002", "cloud:AWS-EKS-002"]
+  },
+  "backup": {
+   "title": "Backups configured",
+   "checks": ["cloud:AWS-RDS-003", "cloud:AZ-PG-005", "cloud:AZ-MYSQL-005", "cloud:AZ-COSMOS-004", "cloud:GCP-SQL-004"]
+  },
+  "eol-software": {
+   "title": "No end-of-life runtimes or engines",
+   "checks": ["cloud:AZ-APP-009", "cloud:AZ-FN-009", "cloud:AZ-PG-007", "cloud:AZ-PG-008", "cloud:AZ-MYSQL-007",
+              "cloud:AZ-MYSQL-008", "cloud:AZ-REDIS-005"]
+  },
+  "secure-config-cloud": {
+   "title": "Secure configuration of cloud workloads",
+   "checks": ["cloud:AZ-POD-001", "cloud:AZ-APP-004", "cloud:AZ-FN-004", "cloud:AZ-APP-006", "cloud:AZ-FN-006",
+              "cloud:AWS-EC2-002", "cloud:AZ-FW-004", "cloud:GCP-GCS-002"]
+  },
+  "network-threat-protection": {
+   "title": "Network threat detection on",
+   "checks": ["cloud:AZ-FW-003", "cloud:AZ-FW-006"]
+  },
+  "vulnerability-management": {
+   "title": "Known vulnerabilities remediated",
+   "checks": ["vuln:kev", "vuln:critical_sla", "vuln:high_sla", "endpoint:os_updates"]
+  },
+  "endpoint-malware": {
+   "title": "Anti-malware on devices",
+   "checks": ["endpoint:antivirus", "endpoint:av_signatures"]
+  },
+  "endpoint-hardening": {
+   "title": "Device hardening",
+   "checks": ["endpoint:firewall", "endpoint:screen_lock", "endpoint:sip", "endpoint:gatekeeper",
+              "endpoint:secure_boot"]
+  },
+  "device-compliance": {
+   "title": "Devices managed and compliant in the directory",
+   "checks": ["directory:non_compliant", "directory:not_in_intune", "directory:not_domain_joined",
+              "directory:not_managed"]
+  },
+  "asset-inventory": {
+   "title": "Asset inventory complete and current",
+   "checks": ["inventory:cloud_scan", "inventory:directory_sync", "directory:not_managed",
+              "directory:unknown_to_directory", "endpoint:checkin"]
+  }
+ }
+}

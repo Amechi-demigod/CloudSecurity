@@ -171,6 +171,15 @@ class Settings:
     dashboard_snapshot_worker_enabled: bool = field(
         default_factory=lambda: _bool("DASHBOARD_SNAPSHOT_WORKER_ENABLED", True))
 
+    # Compliance reports (docs/COMPLIANCE.md). Internal: run the (leader-elected)
+    # scheduled-report thread in this process (tests drive it explicitly).
+    compliance_report_worker_enabled: bool = field(
+        default_factory=lambda: _bool("COMPLIANCE_REPORT_WORKER_ENABLED", True))
+    # A generated PDF larger than this is not emailed (the failing items listed
+    # per check are already capped; this guards very large estates).
+    compliance_report_max_bytes: int = field(
+        default_factory=lambda: max(256 << 10, min(int(os.getenv("COMPLIANCE_REPORT_MAX_BYTES") or 8 << 20), 20 << 20)))
+
     # Directory discovery (docs/DIRECTORY_DISCOVERY.md). Safety cap on the objects
     # one sync may return (all scopes together); a run that hits it is kept but
     # does not mark missing objects.
