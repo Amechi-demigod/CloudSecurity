@@ -3,7 +3,9 @@
 viewer  : read everything except log bundles
 analyst : + recheck_posture, collect_logs, download log bundles
 admin   : + lock_device, restart_agent, update_check_in_interval, lost mode
-          (enable_lost_mode / disable_lost_mode), enrollment tokens, revoke /
+          (enable_lost_mode / disable_lost_mode), the built-in endpoint actions
+          (manage_service, uninstall_software, block / unblock_usb_storage;
+          app/services/endpoint_actions.py), enrollment tokens, revoke /
           delete devices, and *request* a remote wipe (Windows only; executed
           only after a second admin approves, see app/services/approvals.py)
 
@@ -17,7 +19,7 @@ from datetime import datetime, timedelta
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response
-from pydantic import BaseModel, ConfigDict, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
@@ -29,6 +31,7 @@ from ..models import (
     DeviceCommand,
     DeviceLogBundle,
     DevicePostureSnapshot,
+    DeviceService,
     DeviceSoftware,
     EnrollmentToken,
     User,
@@ -47,10 +50,11 @@ from ..schemas_devices import (
     EnrollmentTokenCreated,
     EnrollmentTokenOut,
     InstallerCreate,
+    ServiceOut,
     SnapshotOut,
     SoftwareOut,
 )
-from ..services import approvals, installers, remote_sessions
+from ..services import approvals, endpoint_actions, installers, os_updates, remote_sessions
 from ..services import devices as svc
 
 log = logging.getLogger(__name__)
@@ -84,6 +88,10 @@ def list_devices(db: Session = Depends(get_db),
                                                    description="offline = stale or inactive (no check-in for 24 h+)"),
                  status: str = Query("active", pattern="^(active|revoked|all)$"),
                  group: str | None = Query(None, max_length=64),
+                 usb: str | None = Query(None, pattern="^(blocked|allowed|unknown)$",
+                                         description="USB mass storage as last reported (Windows, agent 1.4.0+)"),
+                 updates: str | None = Query(None, pattern="^(security|any|none|unknown)$",
+                                             description="missing OS updates (Windows Update report)"),
                  limit: int = Query(500, ge=1, le=5000)):
     stmt = select(Device)
     if status != "all":
@@ -105,6 +113,10 @@ def list_devices(db: Session = Depends(get_db),
         if connectivity and sm["connectivity"] not in (("stale", "inactive") if connectivity == "offline" else (connectivity,)):
             continue
         if issue and issue not in {i["code"] for i in sm["issues"]}:
+            continue
+        if usb and (sm["usb_storage"] or "unknown") != usb:
+            continue
+        if updates and not os_updates.matches_filter(d, updates):
             continue
         out.append(sm)
         if len(out) >= limit:
@@ -263,7 +275,7 @@ def device_detail(device_id: str = DeviceId, db: Session = Depends(get_db)):
             "updates_pending_since": d.updates_pending_since, "revoked_at": d.revoked_at,
             "inventory": d.inventory or {}, "posture": d.posture or {}, "collection_errors": d.collection_errors or {},
             "lost_mode": svc.lost_mode_info(d), "wipe": svc.wipe_info(d), "isolation": svc.isolation_info(db, d),
-            "directory_join": d.directory_join or {}}
+            "directory_join": d.directory_join or {}, "endpoint_actions": endpoint_actions.info(db, d)}
 
 
 @router.get("/{device_id}/software", response_model=list[SoftwareOut])
@@ -275,6 +287,18 @@ def device_software(device_id: str = DeviceId, q: str | None = Query(None, max_l
         like = f"%{q.lower()}%"
         stmt = stmt.where(or_(DeviceSoftware.name.ilike(like), DeviceSoftware.publisher.ilike(like)))
     return list(db.scalars(stmt.order_by(DeviceSoftware.name, DeviceSoftware.version)))
+
+
+@router.get("/{device_id}/services", response_model=list[ServiceOut])
+def device_services(device_id: str = DeviceId, q: str | None = Query(None, max_length=255),
+                    db: Session = Depends(get_db)):
+    """Windows services as last reported (agents 1.4.0+)."""
+    _get_device(db, device_id)
+    stmt = select(DeviceService).where(DeviceService.device_id == device_id)
+    if q:
+        like = f"%{q.lower()}%"
+        stmt = stmt.where(or_(DeviceService.name.ilike(like), DeviceService.display_name.ilike(like)))
+    return list(db.scalars(stmt.order_by(DeviceService.display_name, DeviceService.name)))
 
 
 @router.get("/{device_id}/vulnerabilities")
@@ -331,7 +355,15 @@ def create_command(body: CommandCreate, request: Request, device_id: str = Devic
     if device.status != "active":
         raise HTTPException(409, "device is revoked")
     try:
-        params = svc.validate_params(body.type, body.params)
+        if body.type in endpoint_actions.TYPES:
+            params = endpoint_actions.prepare(db, device, body.type, body.params)
+        else:
+            params = svc.validate_params(body.type, body.params)
+    except endpoint_actions.ActionError as e:
+        audit(db, "endpoint_action_refused", actor=user, target=f"device:{device.id}", ip=client_ip(request),
+              hostname=device.hostname, type=body.type, params=body.params, reason=body.reason, detail=e.detail)
+        db.commit()
+        raise HTTPException(e.status, e.detail) from None
     except ValueError as e:
         raise HTTPException(422, str(e)) from None
     if body.type == "enable_lost_mode":
@@ -366,6 +398,56 @@ def create_command(body: CommandCreate, request: Request, device_id: str = Devic
         host_isolation_source.notify(db, device, "restore_requested", actor=user.email, reason=body.reason)
     db.commit()
     return cmd
+
+
+class BulkCommand(BaseModel):
+    """The same endpoint action on several devices (Devices list selection)."""
+    model_config = ConfigDict(extra="forbid")
+
+    device_ids: list[Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{32}$")]] = Field(min_length=1,
+                                                                                           max_length=500)
+    type: Literal["block_usb_storage", "unblock_usb_storage", "manage_service"]
+    params: dict = Field(default_factory=dict)
+    reason: Annotated[str, StringConstraints(strip_whitespace=True, min_length=3, max_length=500)]
+
+
+@router.post("/bulk-commands")
+def bulk_commands(body: BulkCommand, request: Request, admin: User = Depends(require_admin),
+                  db: Session = Depends(get_db)):
+    """Queue an endpoint action on each selected device. Devices where it
+    cannot run (not Windows, agent too old, protected or unknown service,
+    already queued) are skipped with the reason; the others are queued and
+    audited exactly as from the device page."""
+    ip = client_ip(request)
+    results = []
+    for device_id in dict.fromkeys(body.device_ids):
+        device = db.get(Device, device_id)
+        if device is None:
+            results.append({"device_id": device_id, "hostname": None, "status": "skipped",
+                            "detail": "device not found"})
+            continue
+        if device.status != "active":
+            results.append({"device_id": device_id, "hostname": device.hostname, "status": "skipped",
+                            "detail": "device is revoked"})
+            continue
+        try:
+            params = endpoint_actions.prepare(db, device, body.type, body.params)
+        except endpoint_actions.ActionError as e:
+            results.append({"device_id": device_id, "hostname": device.hostname, "status": "skipped",
+                            "detail": e.detail})
+            continue
+        cmd = svc.new_command(db, device, body.type, params, body.reason, requested_by_id=admin.id,
+                              requested_by_email=admin.email)
+        audit(db, "device_command_created", actor=admin, target=f"device:{device.id}", ip=ip,
+              hostname=device.hostname, command_id=cmd.id, type=cmd.type, params=params, reason=body.reason,
+              bulk=True)
+        results.append({"device_id": device_id, "hostname": device.hostname, "status": "queued",
+                        "command_id": cmd.id})
+    queued = sum(r["status"] == "queued" for r in results)
+    audit(db, "device_bulk_command", actor=admin, ip=ip, type=body.type, params=body.params, reason=body.reason,
+          devices=len(results), queued=queued)
+    db.commit()
+    return {"queued": queued, "skipped": len(results) - queued, "results": results}
 
 
 @router.post("/{device_id}/commands/{command_id}/cancel", response_model=CommandOut)

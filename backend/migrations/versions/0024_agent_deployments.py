@@ -1,8 +1,8 @@
 """Agent deployments: "Deploy agent" batches started from Discovery, with the
 machines they cover (docs/DIRECTORY_DISCOVERY.md#deploying-the-agent).
 
-Revision ID: 0022_agent_deployments
-Revises: 0021_directory_cloud_sources
+Revision ID: 0024_agent_deployments
+Revises: 0023_endpoint_actions
 Create Date: 2026-11-04
 """
 from __future__ import annotations
@@ -12,8 +12,8 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '0022_agent_deployments'
-down_revision: str | None = '0021_directory_cloud_sources'
+revision: str = '0024_agent_deployments'
+down_revision: str | None = '0023_endpoint_actions'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

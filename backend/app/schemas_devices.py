@@ -31,12 +31,23 @@ COMMAND_ROLES: dict[str, str] = {
     # scripts go through /api/scripts/run (approval unless the signed risk is low).
     "wipe_device": "admin",
     "run_script": "admin",
+    # Never queued through POST /commands: POST /api/devices/{id}/os-updates/scan
+    # ("Check for updates now", read-only Windows Update search, app/services/os_updates.py).
+    "scan_os_updates": "analyst",
     # Never queued through POST /commands: directory sources (admin) queue it
     # for their designated collectors (app/directory/service.py).
     "directory_sync": "admin",
+    # Built-in endpoint actions (agent 1.4.0+, Windows only for now,
+    # app/services/endpoint_actions.py). No second-admin approval; every
+    # request and result is audited.
+    "manage_service": "admin",
+    "uninstall_software": "admin",
+    "block_usb_storage": "admin",
+    "unblock_usb_storage": "admin",
 }
 CommandType = Literal["recheck_posture", "collect_logs", "lock_device", "restart_agent", "update_check_in_interval",
-                      "enable_lost_mode", "disable_lost_mode", "check_for_update", "isolate_host", "restore_host"]
+                      "enable_lost_mode", "disable_lost_mode", "check_for_update", "isolate_host", "restore_host",
+                      "manage_service", "uninstall_software", "block_usb_storage", "unblock_usb_storage"]
 CommandStatus = Literal["pending", "delivered", "succeeded", "failed", "rejected", "expired", "cancelled"]
 OsFamily = Literal["windows", "macos", "linux"]
 MIN_INTERVAL_SECONDS = 300
@@ -169,6 +180,14 @@ class SoftwareItem(Strict):
     source: Annotated[str, StringConstraints(max_length=32)] = ""
 
 
+class ServiceItem(Strict):
+    """One Windows service (agents 1.4.0+)."""
+    name: Annotated[str, StringConstraints(min_length=1, max_length=256)]
+    display_name: Annotated[str, StringConstraints(max_length=256)] = ""
+    status: Literal["running", "stopped", "start_pending", "stop_pending", "paused", "other"]
+    start_type: Literal["boot", "system", "auto", "auto_delayed", "manual", "disabled", "other"]
+
+
 class CheckinRequest(Strict):
     schema_version: Literal[1] = 1
     collected_at: datetime | None = None
@@ -176,6 +195,8 @@ class CheckinRequest(Strict):
     posture: dict[CheckName, PostureCheck] = Field(default_factory=dict, max_length=40)
     # None = not collected this time (keep the previous list).
     software: list[SoftwareItem] | None = Field(None, max_length=10000)
+    # Windows services (agents 1.4.0+); None = not collected (keep the previous list).
+    services: list[ServiceItem] | None = Field(None, max_length=2000)
     errors: dict[CheckName, Str1k] = Field(default_factory=dict, max_length=40)
 
 
@@ -236,17 +257,58 @@ class RemoteSessionResultData(Strict):
     error_code: Annotated[str, StringConstraints(pattern=r"^ERR_[A-Z_]{1,40}$")] | None = None
 
 
+StartType = Literal["boot", "system", "auto", "auto_delayed", "manual", "disabled", "other", ""]
+ActionErrorCode = Annotated[str, StringConstraints(pattern=r"^ERR_[A-Z_]{1,40}$")]
+
+
+class ManageServiceResultData(Strict):
+    """manage_service: the service's state after the action and, for disable /
+    restore, the startup type it had before (restore puts that back)."""
+    service: Str255 = ""
+    action: Literal["stop", "start", "disable", "restore", ""] = ""
+    status: Literal["running", "stopped", "start_pending", "stop_pending", "paused", "other", ""] = ""
+    start_type: StartType = ""
+    previous_start_type: StartType = ""
+    restored_start_type: StartType = ""
+    error_code: ActionErrorCode | None = None
+
+
+class UninstallResultData(Strict):
+    name: Str255 = ""
+    version: Str128 = ""
+    method: Literal["msi", "quiet_uninstall_string", ""] = ""
+    reboot_required: bool | None = None
+    verified: bool | None = None
+    already_removed: bool | None = None
+    error_code: ActionErrorCode | None = None
+
+
+class UsbStorageResultData(Strict):
+    """block / unblock_usb_storage: the USB storage state after the action."""
+    blocked: bool | None = None
+    usbstor_start: int | None = Field(None, ge=0, le=2**32)
+    removable_disks_deny_read: bool | None = None
+    removable_disks_deny_write: bool | None = None
+    deny_all_removable: bool | None = None
+    error_code: ActionErrorCode | None = None
+
+
 RESULT_DATA_SCHEMAS: dict[str, type[Strict]] = {
     "isolate_host": IsolateHostResultData,
     "restore_host": RestoreHostResultData,
     "start_remote_session": RemoteSessionResultData,
+    "manage_service": ManageServiceResultData,
+    "uninstall_software": UninstallResultData,
+    "block_usb_storage": UsbStorageResultData,
+    "unblock_usb_storage": UsbStorageResultData,
 }
 
 
 def validate_result_data(cmd_type: str, data: dict[str, Any]) -> dict[str, Any]:
     """Strictly validate a command result's result_data: only isolate_host,
-    restore_host and start_remote_session may send any, each against its own
-    schema (unknown keys rejected); every other command type must send an empty dict."""
+    restore_host, start_remote_session and the endpoint actions may send any,
+    each against its own schema (unknown keys rejected); every other command
+    type must send an empty dict."""
     schema = RESULT_DATA_SCHEMAS.get(cmd_type)
     if schema is None:
         if data:
@@ -293,6 +355,10 @@ class DeviceSummaryOut(ORM):
     issues: list[DeviceIssue]
     # active | lost | wipe_pending | revoked (for asset / lifecycle views)
     device_state: str = "active"
+    # USB mass storage as last reported (agents 1.4.0+, Windows): blocked | allowed | None (unknown).
+    usb_storage: Literal["blocked", "allowed"] | None = None
+    # Missing OS updates summary (Windows, agent 1.4.0+); None = no report.
+    os_updates: dict[str, Any] | None = None
 
 
 class DeviceDetailOut(DeviceSummaryOut):
@@ -310,6 +376,8 @@ class DeviceDetailOut(DeviceSummaryOut):
     isolation: dict[str, Any] = {}
     # Directory membership reported by the agent (docs/DIRECTORY_DISCOVERY.md).
     directory_join: dict[str, Any] = {}
+    # Built-in endpoint actions: supported / why not, USB state, protected services.
+    endpoint_actions: dict[str, Any] = {}
 
 
 class SoftwareOut(ORM):
@@ -319,6 +387,13 @@ class SoftwareOut(ORM):
     identifier: str
     install_date: str
     source: str
+
+
+class ServiceOut(ORM):
+    name: str
+    display_name: str
+    status: str
+    start_type: str
 
 
 class SnapshotOut(ORM):
