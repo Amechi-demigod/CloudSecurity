@@ -43,7 +43,9 @@ EVENT_TYPES = CHECKIN_ISSUES + CONNECTIVITY_ISSUES + tuple(COMMAND_RESULTS.value
 # Human-facing override for command types whose internal name must never
 # appear in user-visible text (isolate_host/restore_host are "Suspend sign-in"
 # / "Restore sign-in" - see endpoint-agent/internal/signin).
-ACTION_LABELS = {"isolate_host": "suspend sign-in", "restore_host": "restore sign-in"}
+ACTION_LABELS = {"isolate_host": "suspend sign-in", "restore_host": "restore sign-in",
+                 "manage_service": "service action", "uninstall_software": "uninstall",
+                 "block_usb_storage": "block USB storage", "unblock_usb_storage": "unblock USB storage"}
 POLL_SECONDS = 300.0
 MAX_TRACKED = 20000
 

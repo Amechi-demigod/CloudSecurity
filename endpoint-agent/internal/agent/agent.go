@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/actions"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/backoff"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/client"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/collect"
@@ -68,6 +69,9 @@ type Agent struct {
 	Signin       *signin.Manager
 	// Remote runs attended remote sessions (nil: not available).
 	Remote *remote.Controller
+	// Actions runs the built-in endpoint actions (services, uninstall, USB
+	// storage) and reports the services inventory and USB state (nil: not available).
+	Actions *actions.Manager
 	// DirectoryConnect connects to the directory for directory_sync
 	// (nil: the real LDAP backend; replaced in tests).
 	DirectoryConnect     directory.Connector
@@ -118,6 +122,8 @@ func Load(p state.Paths) (*Agent, error) {
 	base, secret, pinned, insecure := c.RelayConfig()
 	a.Remote = remote.New(remote.DefaultPlatform(), remote.NewDialer(remote.DialConfig{
 		ServerURL: base, Secret: secret, TLS: pinned, InsecureDev: insecure}))
+	a.Actions = actions.New(p)
+	a.Actions.RemoteActive = a.Remote.Busy
 	if keys, err := scripts.BuiltinKeys(); err != nil {
 		slog.Error("script-signing keys unusable; scripts disabled", "err", err)
 	} else {
@@ -243,6 +249,7 @@ func (a *Agent) handle(ctx context.Context, c model.Command) {
 		RestoreHost:    a.restoreHost,
 		RemoteSession:  a.remoteSession,
 		DirectorySync:  a.directorySync,
+		EndpointAction: a.endpointAction,
 		ScanOSUpdates:  a.scanOSUpdates,
 	}, a.Restart)
 	log.Info("command finished", "status", out.Status, "output", out.Output)

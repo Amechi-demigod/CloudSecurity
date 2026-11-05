@@ -294,6 +294,11 @@ as its rule id, so the *rule ids* filter works too (e.g. `firewall_*`,
 `lock_device`), and is grouped per device and issue for throttling. Revoked
 devices are not reported. Producing an event never fails a check-in.
 
+The *Endpoint actions* source (`endpoint_action`, [built-in endpoint actions](DEVICE_MANAGEMENT.md#endpoint-actions):
+services, uninstall, USB storage) raises `action_failed` (medium), `action_rejected` (low: refused by the agent, e.g.
+a protected service or no silent uninstaller) and `restart_required` (low: an uninstall needs a restart), with the
+command type as rule id.
+
 ## IT asset lifecycle events
 
 The *IT asset lifecycle* source (`asset_lifecycle`, see [IT asset management](ASSET_MANAGEMENT.md)) raises:

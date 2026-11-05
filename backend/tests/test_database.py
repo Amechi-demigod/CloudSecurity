@@ -65,7 +65,7 @@ MIGRATION_CHAIN = ["0001_baseline", "0002_device_management", "0003_notification
                    "0011_vulnerability_matching", "0013_organizations", "0014_host_isolation",
                    "0015_command_result_data", "0016_dashboard_snapshots", "0017_onboarding_dismissed",
                    "0018_remote_sessions", "0019_offboarding_username", "0020_directory_discovery",
-                   "0021_directory_cloud_sources", "0022_windows_updates"]
+                   "0021_directory_cloud_sources", "0022_windows_updates", "0023_endpoint_actions"]
 
 
 def test_migration_history_is_linear():
@@ -627,5 +627,27 @@ def test_windows_updates_migration(tmp_path):
 
         command.downgrade(db.alembic_config(eng), "0021_directory_cloud_sources")
         assert not inspect(eng).has_table("device_os_updates")
+    finally:
+        eng.dispose()
+
+
+def test_endpoint_actions_migration(tmp_path):
+    """0023 adds the Windows services inventory on top of 0022; downgrading removes it."""
+    if IS_POSTGRES:
+        reset_database()
+        eng = db.create_db_engine(TEST_DATABASE_URL)
+    else:
+        eng = db.create_db_engine(f"sqlite:///{tmp_path / 'endpoint-actions.db'}")
+    try:
+        db.run_migrations(eng, "0022_windows_updates")
+        assert not inspect(eng).has_table("device_services")
+        db.run_migrations(eng)
+        assert inspect(eng).has_table("device_services")
+        assert _schema_diff(eng) == []
+
+        from alembic import command
+
+        command.downgrade(db.alembic_config(eng), "0022_windows_updates")
+        assert not inspect(eng).has_table("device_services")
     finally:
         eng.dispose()
