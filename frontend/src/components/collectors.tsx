@@ -150,7 +150,7 @@ function AddCollector({ open, onClose, domain }: { open: boolean; onClose: () =>
   const tabCls = (t: string) =>
     `px-3 py-1 text-sm ${tab === t ? "bg-accent/15 font-semibold text-accent" : "text-ink-2 hover:bg-surface-2"}`;
   return (
-    <Modal open={open} onClose={onClose} title={`Add a collector${info.data ? ` (${info.data.service_display_name})` : ""}`}>
+    <Modal size="lg" open={open} onClose={onClose} title={`Add a collector${info.data ? ` (${info.data.service_display_name})` : ""}`}>
       <div className="space-y-3">
         <div className="inline-flex overflow-hidden rounded border border-line" role="tablist">
           <button type="button" role="tab" aria-selected={tab === "installer"} className={tabCls("installer")} onClick={() => setTab("installer")}>

@@ -327,8 +327,16 @@ function SkeletonRows({ cols, rows = 6 }: { cols: number; rows?: number }) {
   );
 }
 
-/** Accessible modal dialog: focus moves in on open, Escape / backdrop closes, focus is restored on close. */
-export function Modal({ open, onClose, title, children }: { open: boolean; onClose: () => void; title: string; children: ReactNode }) {
+/** Accessible modal dialog: focus moves in on open, Escape / backdrop closes, focus is restored on close.
+ * Never taller than the window: the title bar (and its close button) stays put and the body scrolls. */
+export function Modal({ open, onClose, title, size = "md", children }: {
+  open: boolean;
+  onClose: () => void;
+  title: string;
+  /** md: forms and confirmations; lg: wide content such as scripts. */
+  size?: "md" | "lg";
+  children: ReactNode;
+}) {
   const ref = useRef<HTMLDivElement>(null);
   const closeRef = useRef(onClose);
   useEffect(() => {
@@ -357,29 +365,33 @@ export function Modal({ open, onClose, title, children }: { open: boolean; onClo
       }
     };
     window.addEventListener("keydown", h);
+    // The page behind must not scroll while the dialog is open.
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
     return () => {
       window.removeEventListener("keydown", h);
+      document.body.style.overflow = overflow;
       prev?.focus();
     };
   }, [open]);
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
       <div
         ref={ref}
         role="dialog"
         aria-modal="true"
         aria-label={title}
-        className="w-full max-w-md rounded-lg border border-line bg-surface-1 shadow-2xl"
+        className={`flex max-h-full w-full flex-col rounded-lg border border-line bg-surface-1 shadow-2xl ${size === "lg" ? "max-w-3xl" : "max-w-md"}`}
         onClick={(e) => e.stopPropagation()}
       >
-        <header className="flex items-center justify-between border-b border-line px-5 py-3">
+        <header className="flex shrink-0 items-center justify-between gap-3 border-b border-line px-5 py-3">
           <h2 className="text-base font-semibold">{title}</h2>
           <button className="rounded text-ink-3 hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent" onClick={onClose} aria-label="Close">
             ✕
           </button>
         </header>
-        <div className="p-5">{children}</div>
+        <div className="min-h-0 overflow-y-auto p-5">{children}</div>
       </div>
     </div>
   );
