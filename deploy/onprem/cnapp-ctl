@@ -1145,12 +1145,13 @@ site_cert_import() { # site_cert_import CERT KEY [CHAIN] [NAMES] [APPLY] -> tls/
 }
 
 cmd_site_enable() {
-  local names=() console="" contact="" cert="" key="" chain="" force=0 h x canonical
+  local names=() console="" contact="" cert="" key="" chain="" proxy="-" force=0 h x canonical
   while [[ $# -gt 0 ]]; do
     case $1 in
       --hostname) while read -r x; do names+=("$x"); done < <(csv_items "$2"); shift 2 ;;
       --console-url) console=$2; shift 2 ;;
       --contact-to) contact=$2; shift 2 ;;
+      --proxy) proxy=${2,,}; shift 2 ;;
       --cert) cert=$2; shift 2 ;;
       --key) key=$2; shift 2 ;;
       --chain) chain=$2; shift 2 ;;
@@ -1180,6 +1181,17 @@ cmd_site_enable() {
   if [[ -n $contact ]]; then
     [[ $contact =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$ ]] || die "--contact-to: one email address expected"
   fi
+  if [[ $proxy != - ]]; then
+    [[ $proxy == none ]] && proxy=""
+    if [[ -n $proxy && $proxy != cloudflare ]]; then
+      local c
+      while read -r c; do
+        [[ $c =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?$ || $c =~ ^[0-9a-f:]+:[0-9a-f:]*(/[0-9]{1,3})?$ ]] \
+          || die "--proxy: '$c' is not cloudflare, none or a CIDR of your proxy"
+        [[ $c != 0.0.0.0/0 && $c != ::/0 ]] || die "--proxy must not trust every address ($c)"
+      done < <(csv_items "$proxy")
+    fi
+  fi
   [[ "$(conf_get CNAPP_FIREWALL)" == false ]] && warn "CNAPP_FIREWALL=false: cnapp-ctl does not manage the firewall here; allow 80/443 from anywhere yourself"
 
   # A certificate given here is applied with everything else below.
@@ -1200,6 +1212,7 @@ cmd_site_enable() {
   conf_set SITE_HOSTNAMES "$list"
   [[ -n $console ]] && conf_set SITE_CONSOLE_URL "$console"
   [[ -n $contact ]] && conf_set CONTACT_TO "$contact"
+  [[ $proxy != - ]] && conf_set SITE_PROXY "$proxy"
   ensure_log_dir
   if [[ "$(conf_get CNAPP_FIREWALL)" != false ]]; then fw_configure_ufw; fw_apply_docker; fi
   log "Applying (frontend and backend are recreated with the new settings)"
@@ -1254,6 +1267,8 @@ cmd_site_status() {
   echo "  Names:        ${names//,/ }   (canonical: ${names%%,*})"
   local console; console=$(conf_get SITE_CONSOLE_URL)
   echo "  Log in links: ${console:-$(public_url)}"
+  local proxy; proxy=$(conf_get SITE_PROXY)
+  echo "  Proxy:        ${proxy:-none (visitors connect directly)}"
   echo "  CONTACT_TO:   $(conf_get CONTACT_TO)$([[ -z "$(conf_get CONTACT_TO)" ]] && echo '(not set: the form answers 503)')"
   local crt=$TLS_DIR/server.crt h
   [[ -f "$TLS_DIR/site.crt" ]] && crt=$TLS_DIR/site.crt
@@ -1273,7 +1288,7 @@ cmd_site() {
     enable) cmd_site_enable "$@" ;;
     disable) cmd_site_disable "$@" ;;
     status) cmd_site_status "$@" ;;
-    *) die "usage: cnapp-ctl site enable --hostname NAME [--hostname NAME ...] [--console-url URL] [--contact-to EMAIL] [--cert C --key K [--chain I]] | disable | status" ;;
+    *) die "usage: cnapp-ctl site enable --hostname NAME [--hostname NAME ...] [--console-url URL] [--contact-to EMAIL] [--proxy cloudflare|none|CIDR,...] [--cert C --key K [--chain I]] | disable | status" ;;
   esac
 }
 
@@ -1427,6 +1442,9 @@ PUBLIC_AGENT_URL=
 # (sent through PLATFORM_SMTP_*; never shown on the site or by any API).
 SITE_HOSTNAMES=
 SITE_CONSOLE_URL=
+# CDN / reverse proxy in front of the website names only: cloudflare, or CIDRs of
+# your proxies (cnapp-ctl site enable --proxy); empty = visitors connect directly.
+SITE_PROXY=
 CONTACT_TO=
 
 # --- Sizing (defaults for 2 vCPU / 4 GB; see docs/DEPLOY_ONPREM.md) ------------
@@ -2749,10 +2767,11 @@ Operations
                                 PUBLIC_AGENT_URL for installers
   public-agent disable [--forget-hostname] | status
   site enable --hostname NAME [--hostname NAME ...] [--console-url URL] [--contact-to EMAIL]
-              [--cert C --key K [--chain I]] [--force]
+              [--proxy cloudflare|none|CIDR,...] [--cert C --key K [--chain I]] [--force]
                                 serve the public website (website/) for these names, any client: first name
                                 canonical (others 301 to it), http -> https, only the site and POST /api/contact
-                                (demo requests emailed to CONTACT_TO); opens 80/443 to everyone in the firewall
+                                (demo requests emailed to CONTACT_TO); opens 80/443 to everyone in the firewall;
+                                --proxy: the website names sit behind Cloudflare / your proxies (real visitor IPs)
   site disable | status         back to the console only (keeps tls/site.crt)
   tls import --for site --cert C --key K [--chain I]    the website's own certificate (SNI), e.g. Let's Encrypt
   create-admin --email E [--role admin|analyst|viewer] [--generate]
