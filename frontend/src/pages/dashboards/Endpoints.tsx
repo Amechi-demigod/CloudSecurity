@@ -36,6 +36,46 @@ function CoverageTile({ cov, unmanaged, days }: { cov: DirectorySummary["coverag
   );
 }
 
+const CLASS_ROWS = [
+  { key: "workstation", label: "Workstations" },
+  { key: "server", label: "Servers" },
+  { key: "domain_controller", label: "Domain controllers" },
+];
+
+/** Agent coverage per device class: directory machines with / without an agent when a
+ * directory is connected, else the managed devices per class. */
+function ClassCoverage({ byClass, dirByClass }: { byClass: Record<string, number>; dirByClass?: DirectorySummary["coverage"]["by_class"] }) {
+  const rows = CLASS_ROWS.map((c) => {
+    const dirc = dirByClass?.[c.key];
+    const agents = byClass[c.key] ?? 0;
+    if (dirc && dirc.directory_computers > 0) {
+      const without = Math.max(0, dirc.directory_computers - dirc.managed);
+      return {
+        key: c.key,
+        label: c.label,
+        total: dirc.directory_computers,
+        valueLabel: `${dirc.managed} of ${dirc.directory_computers}`,
+        segments: [
+          { key: "with", label: `${dirc.managed} with agent`, count: dirc.managed, color: "var(--color-good)" },
+          { key: "without", label: `${without} without agent`, count: without, color: SEV_COLOR.high },
+        ],
+        to: href("/it-assets/discovery", { view: "computers", status: "all", class: c.key }),
+        hint: `${c.label} in your directories: ${dirc.pct ?? 0}% have an agent (${agents} enrolled devices)`,
+      };
+    }
+    return {
+      key: c.key,
+      label: c.label,
+      total: agents,
+      valueLabel: `${agents}`,
+      segments: [{ key: "agents", label: `${agents} enrolled`, count: agents, color: CAT_COLORS[0] }],
+      to: href("/devices", { class: c.key }),
+      hint: `Enrolled ${c.label.toLowerCase()}`,
+    };
+  });
+  return <BarRows labelWidth="9rem" rows={rows} />;
+}
+
 export default function EndpointsTab({ range }: TabProps) {
   // Devices are not tied to a cloud account, so the account filter does not apply here.
   const { data: d, error } = useApi(() => api.dashEndpoints({ range }), [range], 60000);
@@ -112,6 +152,17 @@ export default function EndpointsTab({ range }: TabProps) {
           ].filter((s) => s.count > 0)}
         />
       </div>
+
+      {d.by_class && (
+        <DashCard
+          title="Coverage by device class"
+          sub={dir && dir.sources > 0 ? "Directory machines with an agent: workstations, servers and domain controllers" : "Enrolled devices per class"}
+          right={<ViewLink to="/devices" />}
+          className="lg:col-span-12"
+        >
+          <ClassCoverage byClass={d.by_class} dirByClass={dir && dir.sources > 0 ? dir.coverage.by_class : undefined} />
+        </DashCard>
+      )}
 
       <DashCard title="Failing posture checks" sub="Devices per issue" right={<ViewLink to="/devices" />} className="lg:col-span-6 xl:col-span-5">
         {d.issues.length === 0 ? (

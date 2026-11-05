@@ -671,6 +671,17 @@ class Device(TenantMixin, Base):
     ad_domain: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     ad_computer_sid: Mapped[str | None] = mapped_column(String(184), nullable=True, index=True)
     entra_device_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    # Classification (app/device_class.py): workstation | server | domain_controller,
+    # reported by the agent (class_source "agent", 1.4.0+) or inferred from the OS
+    # name and model ("inferred"); form factor laptop | desktop | server | tablet |
+    # other; virtualisation and cloud (instance id from SMBIOS, never IMDS).
+    device_class: Mapped[str | None] = mapped_column(String(24), nullable=True, index=True)
+    class_source: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    form_factor: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    is_virtual: Mapped[bool | None] = mapped_column(Boolean, nullable=True, index=True)
+    hypervisor: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    cloud_provider: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    cloud_instance_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     # Latest Windows Update report (docs/PATCHING.md); None until an agent 1.4.0+ reports one.
     os_updates: Mapped[DeviceOsUpdates | None] = relationship(lazy="selectin", uselist=False, viewonly=True)
 

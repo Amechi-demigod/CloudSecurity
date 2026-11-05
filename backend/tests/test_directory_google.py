@@ -318,7 +318,8 @@ def test_sync_paging_matching_roles_and_issues(admin, fake, key_json):
     assert not comps["CB-101"]["agent_expected"] and not comps["iPhone 15"]["agent_expected"]
     assert not comps["HOME-PC"]["agent_expected"]
     # Coverage: WIN-LAPTOP1 (agent), MAC-1, OLD-BOX.
-    assert admin.get("/api/directory/summary").json()["coverage"] == {"directory_computers": 3, "managed": 1,
+    cov = {k: v for k, v in admin.get("/api/directory/summary").json()["coverage"].items() if k != "by_class"}
+    assert cov == {"directory_computers": 3, "managed": 1,
                                                                      "pct": 33.3}
     roles = {u["user_principal_name"]: u["privileged_roles"] for u in
              admin.get("/api/directory/users?privileged=true").json()["items"]}

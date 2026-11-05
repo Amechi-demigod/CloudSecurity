@@ -1019,7 +1019,8 @@ class AzureConnector(Connector):
                 add(AssetRecord(
                     id=vid, name=vm.name, type="vm", region=vm.location, resource_group=_rg(vm.id),
                     tags=dict(vm.tags or {}), **base,
-                    properties={"size": _g(vm, "hardware_profile", "vm_size"),
+                    # vm_id: the VM's unique id (SMBIOS system UUID), links agent devices.
+                    properties={"size": _g(vm, "hardware_profile", "vm_size"), "vm_id": _s(_g(vm, "vm_id", default="")).lower(),
                                 "os": _s(_g(vm, "storage_profile", "os_disk", "os_type", default="")),
                                 "public_ips": [c["public_ip"]["ip"] for c in ctxs if c.get("public_ip")],
                                 "private_ips": [ip for c in ctxs for ip in c["ips"]],

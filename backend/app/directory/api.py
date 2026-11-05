@@ -453,6 +453,7 @@ ComputerStatus = Query("all", pattern="^(all|not_in_assets|matched|unmatched|amb
 def list_computers(q: str | None = Query(None, max_length=255),
                    source_id: str | None = Query(None, pattern=r"^[0-9a-f]{32}$"),
                    domain: str | None = Query(None, max_length=255), status: str = ComputerStatus,
+                   device_class: str | None = Query(None, pattern="^(workstation|server|domain_controller|unknown)$"),
                    limit: int = Query(100, ge=1, le=1000), offset: int = Query(0, ge=0),
                    db: Session = Depends(get_db)):
     # One row per physical machine (its representative record; `sources` lists
@@ -476,6 +477,10 @@ def list_computers(q: str | None = Query(None, max_length=255),
                                                                      member.missing_since.is_(None))))
     if domain:
         stmt = stmt.where(DirectoryComputer.domain == domain.strip().lower())
+    if device_class == "unknown":
+        stmt = stmt.where(DirectoryComputer.device_class.is_(None))
+    elif device_class:
+        stmt = stmt.where(DirectoryComputer.device_class == device_class)
     if q:
         like = f"%{q.strip().lower()}%"
         stmt = stmt.where(or_(func.lower(DirectoryComputer.name).like(like), DirectoryComputer.dns_hostname.like(like),
@@ -494,7 +499,7 @@ def list_computers(q: str | None = Query(None, max_length=255),
         "device_id": r.device_id, "device_hostname": names.get(r.device_id or ""), "it_asset_id": r.it_asset_id,
         "in_it_assets": r.it_asset_id is not None, "device_kind": r.device_kind, "platform": r.platform,
         "compliance": r.compliance, "encrypted": r.encrypted, "serial_number": r.serial_number,
-        "primary_user": r.primary_user, "agent_expected": r.agent_expected,
+        "primary_user": r.primary_user, "agent_expected": r.agent_expected, "device_class": r.device_class,
         "sources": members.get(r.id) or [{"id": r.id, "source_id": r.source_id, "type": types.get(r.source_id, ""),
                                           "kind": r.device_kind}]} for r in rows]}
 
@@ -568,9 +573,10 @@ def add_to_assets(body: AddToAssetsIn, request: Request, admin: User = Depends(r
             continue
         os_text = f"{c.operating_system} {c.os_version}".strip()
         where = c.domain or reconcile.KIND_LABEL.get(c.device_kind, c.device_kind)
-        asset_type = ("server" if "server" in c.operating_system.lower() else
+        asset_type = ("server" if c.device_class in ("server", "domain_controller") else
                       "phone" if c.platform in ("ios", "android") else "computer")
         asset = ItAsset(asset_tag=_dir_tag(db, c), source="directory", status="in_stock", asset_type=asset_type,
+                        asset_type_source="auto",
                         serial_number=c.serial_number or "",
                         currency=st["default_currency"], custom_fields={},
                         notes=f"Added from directory {where}: {c.dns_hostname or c.name}"

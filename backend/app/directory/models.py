@@ -166,6 +166,9 @@ class DirectoryComputer(_DirectoryObject, TenantMixin, Base):
     # False for devices an agent cannot or should not run on (phones, ChromeOS,
     # personal / registered-only devices): never "no agent", not in coverage.
     agent_expected: Mapped[bool] = mapped_column(Boolean, default=True)
+    # workstation | server | domain_controller | None, from the directory itself
+    # (app/device_class.py directory_class: AD SERVER_TRUST_ACCOUNT, OS names).
+    device_class: Mapped[str | None] = mapped_column(String(24), nullable=True, index=True)
     # Intune complianceState (compliant, noncompliant, inGracePeriod, ...).
     compliance: Mapped[str | None] = mapped_column(String(24), nullable=True)
     encrypted: Mapped[bool | None] = mapped_column(Boolean, nullable=True)

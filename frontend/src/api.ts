@@ -467,11 +467,22 @@ export interface DeviceSummary {
   health: DeviceHealth;
   connectivity: Connectivity;
   issues: DeviceIssue[];
+  /** workstation / server / domain controller; null = unknown */
+  device_class?: DeviceClass | null;
+  /** "agent" (reported by agent 1.4.0+) or "inferred" (from the OS name / model) */
+  class_source?: "agent" | "inferred" | null;
+  form_factor?: "laptop" | "desktop" | "server" | "tablet" | "other" | null;
+  is_virtual?: boolean | null;
+  hypervisor?: string | null;
+  cloud_provider?: string | null;
+  cloud_instance_id?: string | null;
   /** USB mass storage as last reported (Windows, agent 1.4.0+); null = unknown. */
   usb_storage?: "blocked" | "allowed" | null;
   /** Missing OS updates (Windows, agent 1.4.0+); null = no report. */
   os_updates?: OsUpdatesSummary | null;
 }
+
+export type DeviceClass = "workstation" | "server" | "domain_controller";
 
 export interface PostureCheck {
   status: CheckStatus;
@@ -548,6 +559,8 @@ export interface DeviceDetail extends DeviceSummary {
   isolation: IsolationState;
   /** Directory membership reported by the agent (1.3.0+); {} when not joined / older agents. */
   directory_join?: DirectoryJoin;
+  /** The scanned cloud resource this VM is (matched by instance / VM id). */
+  cloud_resource?: { id: string; name: string; type: string; provider: string; region: string | null } | null;
   /** Built-in endpoint actions (services, uninstall, USB storage; agent 1.4.0+, Windows). */
   endpoint_actions?: EndpointActionsInfo;
 }
@@ -666,6 +679,8 @@ export interface DeviceFleetSummary {
   total: number;
   revoked: number;
   by_os: Record<string, number>;
+  by_class?: Record<DeviceClass | "unknown", number>;
+  virtual?: number;
   by_health: Record<DeviceHealth, number>;
   connectivity: Record<Connectivity, number>;
   issues: Record<string, number>;
@@ -1127,6 +1142,8 @@ export interface EndpointStats {
   outdated: number;
   latest_agent_version: string | null;
   by_os: Record<string, number>;
+  /** managed devices per class: workstation / server / domain_controller / unknown */
+  by_class?: Record<string, number>;
   by_health: { healthy: number; warning: number; critical: number; unknown: number };
   connectivity: { active: number; stale: number; inactive: number; never: number };
   issues: { code: string; title: string; severity: Severity; devices: number }[];

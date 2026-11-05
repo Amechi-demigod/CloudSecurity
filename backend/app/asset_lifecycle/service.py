@@ -14,7 +14,7 @@ from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .. import config, tenancy
+from .. import config, device_class, tenancy
 from ..models import Device, utcnow
 from .models import ItAsset, ItAssetEvent, ItAssetOffboarding, ItAssetSettings
 
@@ -137,7 +137,8 @@ def reported_user(inventory: dict | None) -> tuple[str, str] | None:
 def sync_owners(db: Session, *, asset_id: str | None = None, limit: int = 5000) -> int:
     """Make the agent's signed-in user the owner of in-stock / assigned agent assets.
 
-    The agent always wins: a different user replaces the current owner (also one
+    Servers and domain controllers are skipped (an administrator signing in
+    does not own the machine). The agent always wins: a different user replaces the current owner (also one
     set by hand), the email and department are cleared (the agent only knows the
     username) and an in-stock asset becomes assigned. Nothing happens when no user
     is signed in (the last owner stays), when the owner already is that user, or
@@ -147,8 +148,11 @@ def sync_owners(db: Session, *, asset_id: str | None = None, limit: int = 5000) 
     record a change only once. Returns the number of assets changed."""
     from ..auth import audit
 
+    # Servers and domain controllers have no owner: whoever signs in is an admin.
     stmt = (select(ItAsset, Device.inventory, Device.hostname).join(Device, Device.id == ItAsset.device_id)
-            .where(ItAsset.status.in_(AUTO_OWNER_STATUSES)).order_by(ItAsset.id).limit(limit))
+            .where(ItAsset.status.in_(AUTO_OWNER_STATUSES),
+                   or_(Device.device_class.is_(None), Device.device_class.not_in(("server", "domain_controller"))))
+            .order_by(ItAsset.id).limit(limit))
     if asset_id:
         stmt = stmt.where(ItAsset.id == asset_id)
     changed = 0
@@ -277,7 +281,8 @@ def sync_devices(db: Session, *, limit: int = 2000) -> int:
         created += _link_or_create(db, d) == "created"
     # Fill blanks of linked assets (serial may only arrive with a later check-in).
     rows = db.execute(select(ItAsset, Device).join(Device, Device.id == ItAsset.device_id)
-                      .where(or_(ItAsset.serial_number == "", ItAsset.manufacturer == "", ItAsset.model == ""))
+                      .where(or_(ItAsset.serial_number == "", ItAsset.manufacturer == "", ItAsset.model == "",
+                                 ItAsset.asset_type_source == "auto"))
                       .limit(limit)).all()
     changed = False
     for asset, d in rows:
@@ -314,7 +319,7 @@ def _link_or_create(db: Session, d: Device) -> str | None:
             result = "linked"
         else:
             asset = ItAsset(asset_tag=_auto_tag(db, d), device_id=d.id, source="agent", status="in_stock",
-                            asset_type=guess_type(d.manufacturer, d.model), serial_number=serial[:128],
+                            asset_type=device_asset_type(d), asset_type_source="auto", serial_number=serial[:128],
                             manufacturer=(d.manufacturer or "")[:128], model=(d.model or "")[:128],
                             currency=get_settings(db)["default_currency"], custom_fields={},
                             created_by=SYSTEM, created_at=utcnow(), updated_at=utcnow())
@@ -346,8 +351,21 @@ def sync_device(db: Session, device: Device) -> int:
     return sync_owners(db, asset_id=asset.id)
 
 
+def device_asset_type(d: Device) -> str:
+    """Asset type of an agent device: server for servers / domain controllers
+    (physical or virtual), laptop / desktop / tablet from the form factor the
+    agent reports, else a guess from make and model."""
+    return device_class.asset_type(d, guess_type(d.manufacturer, d.model))
+
+
 def _fill_from_device(asset: ItAsset, d: Device) -> bool:
     changed = False
+    # Types set automatically follow the device class; a type chosen by hand stays.
+    if asset.asset_type_source == "auto" and (d.device_class or d.form_factor):
+        new_type = device_asset_type(d)
+        if new_type != asset.asset_type:
+            asset.asset_type = new_type
+            changed = True
     for field, value in (("serial_number", d.serial_number), ("manufacturer", d.manufacturer), ("model", d.model)):
         value = (value or "").strip()[:128]
         if value and not getattr(asset, field):

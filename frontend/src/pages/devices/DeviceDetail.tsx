@@ -3,6 +3,8 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { ApiError, api, type CommandType, type DeviceCommand, type DeviceDetail as Device, type Role } from "../../api";
 import { useAuth } from "../../auth/context";
 import { CheckBadge, ConnectivityTag, HealthBadge, IssueList } from "../../components/devices";
+import { DeviceClassTag, ServerTargetWarning } from "../../components/deviceClass";
+import { CLOUD_LABEL, HYPERVISOR_LABEL } from "../../lib/deviceClass";
 import { ApprovalList } from "../../components/approvals";
 import { VulnTable } from "../../components/vulns";
 import { Breadcrumbs, Button, Card, Empty, ErrorNote, Field, Modal, PageHeader, Table, Tag } from "../../components/ui";
@@ -125,6 +127,7 @@ function ActionDialog({ device, action, onClose, onDone }: {
       {action && (
         <form className="space-y-3" onSubmit={submit}>
           <p className="text-sm text-ink-2">{action.help}</p>
+          {action.danger && <ServerTargetWarning device={device} action={action.type === "lock_device" ? "locking it" : "this action"} />}
           <p className="text-xs text-ink-3">
             Queued commands are picked up on the agent's next poll (about a minute while the device is online) and expire after 24 hours.
           </p>
@@ -259,6 +262,54 @@ function PostureCards({ device }: { device: Device }) {
   );
 }
 
+const FORM_LABEL: Record<string, string> = { laptop: "Laptop", desktop: "Desktop", server: "Server chassis", tablet: "Tablet", other: "Other" };
+
+/** Device class, form factor, virtualisation and cloud (agent 1.4.0+; inferred for older agents). */
+function HardwareCard({ device }: { device: Device }) {
+  const inferred = device.class_source === "inferred";
+  const cloud = device.cloud_resource;
+  return (
+    <Card title="Hardware">
+      <dl>
+        <Row label="Class">
+          <DeviceClassTag device={device} showVirtual={false} />
+          {inferred && <div className="text-xs text-ink-3">Inferred from the OS name and model; agent 1.4.0+ reports it exactly.</div>}
+        </Row>
+        <Row label="Form factor">
+          {device.is_virtual && device.form_factor === "other"
+            ? "n/a (virtual machine)"
+            : device.form_factor
+              ? FORM_LABEL[device.form_factor] ?? device.form_factor
+              : ""}
+        </Row>
+        <Row label="Virtualisation">
+          {device.is_virtual === true
+            ? `Virtual machine${device.hypervisor ? ` · ${HYPERVISOR_LABEL[device.hypervisor] ?? device.hypervisor}` : ""}`
+            : device.is_virtual === false
+              ? "Physical"
+              : ""}
+        </Row>
+        {device.cloud_provider && (
+          <Row label="Cloud">
+            {CLOUD_LABEL[device.cloud_provider] ?? device.cloud_provider}
+            {device.cloud_instance_id && <span className="ml-1 font-mono text-xs text-ink-3">{device.cloud_instance_id}</span>}
+            <div className="text-xs">
+              {cloud ? (
+                <Link to={`/inventory?asset=${encodeURIComponent(cloud.id)}`} className="text-accent hover:underline">
+                  Cloud VM → {cloud.name}
+                </Link>
+              ) : (
+                <span className="text-ink-3">Not in the scanned cloud inventory (connect the account under Connectors &amp; scans).</span>
+              )}
+            </div>
+          </Row>
+        )}
+        <Row label="Make / model">{[device.manufacturer, device.model].filter(Boolean).join(" ")}</Row>
+      </dl>
+    </Card>
+  );
+}
+
 function Overview({ device }: { device: Device }) {
   const inv = device.inventory;
   return (
@@ -266,6 +317,7 @@ function Overview({ device }: { device: Device }) {
       <Card title="Issues">
         <IssueList issues={device.issues} />
       </Card>
+      <HardwareCard device={device} />
       <LostWipeCard device={device} />
       <IsolationCard device={device} />
       <Card title="Device">
@@ -768,6 +820,7 @@ export default function DeviceDetail() {
           <div className="flex flex-wrap items-center gap-2">
             {active ? <HealthBadge health={device.health} /> : <Tag tone="warn">Revoked</Tag>}
             {device.device_state === "lost" && <Tag tone="warn">Lost</Tag>}
+            {device.device_class && device.device_class !== "workstation" && <DeviceClassTag device={device} />}
             {device.device_state === "wipe_pending" && <Tag tone="critical">Wipe pending</Tag>}
             {device.device_state === "isolated" && <Tag tone="warn">Sign-in suspended</Tag>}
             {device.usb_storage === "blocked" && <Tag tone="warn">USB storage blocked</Tag>}

@@ -270,6 +270,8 @@ class AssetOut(BaseModel):
     asset_tag: str
     serial_number: str
     asset_type: str
+    # auto: follows the device class / form factor; manual: chosen by a person.
+    asset_type_source: str = "manual"
     manufacturer: str
     model: str
     status: str

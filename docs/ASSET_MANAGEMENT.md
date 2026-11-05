@@ -69,7 +69,17 @@ On every agent **check-in**, and when someone opens the IT assets list or dashbo
 
 1. If an asset without an agent has the **same serial number** (case-insensitive), the device is linked to it. This covers a laptop that IT recorded before it was enrolled, so no duplicate is created.
 2. If an admin added the device's **directory computer** to IT assets (source *directory*, [Directory discovery](DIRECTORY_DISCOVERY.md#adding-computers-to-it-assets)), the device is linked to that asset.
-3. Otherwise a new record is created with status *in stock*, source *agent*, tag `AGT-<first 8 hex digits of the device id>`, and a type guessed from the model ("MacBook", "ThinkPad", "Latitude" give *laptop*; "iMac", "OptiPlex" give *desktop*; anything else gives *computer*).
+3. Otherwise a new record is created with status *in stock*, source *agent* and tag `AGT-<first 8 hex digits of the device id>`.
+
+**Asset type.** Agent assets get their type from the [device class](DEVICE_MANAGEMENT.md#device-class): *server* for
+servers and domain controllers (physical or virtual; the device page shows the virtual flag), *laptop* / *desktop* /
+*tablet* from the form factor the agent reports (1.4.0+), otherwise a guess from the model ("MacBook", "ThinkPad",
+"Latitude" give *laptop*; "iMac", "OptiPlex" give *desktop*; anything else gives *computer*). Such a type is
+*automatic* (`asset_type_source: auto`) and follows the device when its class changes, for example after the agent is
+upgraded. **A type chosen by a person is never overwritten**: changing the type in the console, the API or a CSV import
+makes it *manual*. Assets added from Discovery are *server* for servers and domain controllers. Migration
+`0026_device_classification` marks existing agent and directory assets of type computer / laptop / desktop / server as
+automatic and every other existing type as manual.
 
 With a directory source, IT asset owners also show their **directory identity** (display name, email, department, disabled) next to the username, as display-only enrichment: the agent-always-wins username owner rule below is unchanged. Directory computers without an agent are listed under **IT assets → Discovery** ([DIRECTORY_DISCOVERY.md](DIRECTORY_DISCOVERY.md)).
 
@@ -83,6 +93,8 @@ The agent reports the users signed in to the computer (`logged_in_users` in its 
 - **Username only.** The owner becomes that username, with any `DOMAIN\` prefix removed (`CORP\musao` becomes `musao`); the original form is kept in the custody note. The owner email and department are cleared. An *in stock* asset becomes *assigned*.
 - **The agent always wins.** When the reported user is different from the current owner (compared case-insensitively), it replaces that owner, including an owner set by hand. Reassigning an agent device by hand therefore lasts only until the next check-in or page view while a different user is signed in.
 - **Nobody signed in:** the last owner stays.
+- **Not for servers and domain controllers.** Whoever signs in to a server is an administrator, not its owner, so
+  servers never get an owner automatically and are never nagged about one.
 - **Only in stock or assigned assets** are changed. In repair, retrieval pending, retrieved, lost, stolen and disposed assets are never touched, so an offboarding is not undone by the leaver signing in again.
 - **History.** Each automatic change is a custody event *Assigned* by `system` with the note "assigned automatically from agent: signed-in user ...", the previous and new owner, and the reported user and hostname in the details. It is also audited (`it_asset_auto_assigned`). Nothing is recorded when the owner is already that user.
 

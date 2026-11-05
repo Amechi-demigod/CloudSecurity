@@ -584,6 +584,8 @@ def _apply_update(a: ItAsset, body: AssetUpdate, st: dict) -> dict[str, list[Any
         if before != v:
             setattr(a, f, v)
             changes[f] = [before, v]
+            if f == "asset_type":
+                a.asset_type_source = "manual"  # a person chose it: device sync leaves it alone
     if data.get("custom_fields") is not None:
         merged = data["custom_fields"]
         if merged != (a.custom_fields or {}):

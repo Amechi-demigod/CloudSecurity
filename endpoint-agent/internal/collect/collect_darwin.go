@@ -96,6 +96,14 @@ func platformCollect(ctx context.Context, c collector, o Options) {
 		}
 		return err
 	})
+	c.guard("classification", func() error {
+		// Battery present -> laptop (Apple Silicon identifiers such as
+		// "Mac14,2" do not say whether the Mac is a MacBook).
+		bat, _ := run(ctx, ioregBin, "-r", "-c", "AppleSmartBattery", "-d", "1")
+		d.Classification = MacClassification(d.Model, strings.Contains(bat, "AppleSmartBattery"),
+			sysctl(ctx, "kern.hv_vmm_present") == "1")
+		return nil
+	})
 	c.guard("uptime", func() error {
 		out, err := run(ctx, sysctlBin, "-n", "kern.boottime")
 		if err != nil {
