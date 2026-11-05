@@ -1177,6 +1177,20 @@ jobs:
           test "$(ext -k https://203.0.113.1/api/auth/me)" = 404
           sudo tail -n 3 /var/log/cnapp/edge-access.log
           if sudo grep "\"$SITE\"" /var/log/cnapp/edge-access.log | grep -q ' blocked$'; then echo "::error::website visitors logged as blocked (fail2ban)"; exit 1; fi
+          # Behind Cloudflare (--proxy): the visitor address is taken from CF-Connecting-IP only on
+          # connections from Cloudflare's ranges, and only on the website names.
+          if sudo cnapp-ctl site enable --proxy 0.0.0.0/0; then echo "::error::accepted a proxy that trusts everyone"; exit 1; fi
+          sudo cnapp-ctl site enable --proxy cloudflare
+          test "$(conf SITE_PROXY)" = cloudflare
+          sudo cnapp-ctl site status | grep -Eq "Proxy: +cloudflare"
+          docker exec cnapp-frontend-1 grep -q 'real_ip_header CF-Connecting-IP;' /etc/nginx/conf.d/zz-cnapp-site.conf
+          if docker exec cnapp-frontend-1 sh -c 'grep -l set_real_ip_from /etc/nginx/conf.d/*' | grep -v zz-cnapp-site.conf; then
+            echo "::error::real-IP trust outside the website server blocks"; exit 1; fi
+          test "$(ext "${S[@]}" -H 'CF-Connecting-IP: 192.0.2.77' "https://$SITE/")" = 200
+          test "$(ext --cacert "$CA" --resolve "$HOST:443:203.0.113.1" "https://$HOST/")" = 404
+          if sudo grep -q '^192\.0\.2\.77 ' /var/log/cnapp/edge-access.log; then echo "::error::CF-Connecting-IP trusted from outside Cloudflare"; exit 1; fi
+          sudo cnapp-ctl site enable --proxy none
+          test -z "$(conf SITE_PROXY)"
           # Renewal: re-import (nginx reload), still served.
           sudo cnapp-ctl tls import --for site --cert "$RUNNER_TEMP/site.crt" --key "$RUNNER_TEMP/site.key"
           e2e site --site "$SITE" --alias "www.$SITE" --site-ca "$RUNNER_TEMP/site.crt"

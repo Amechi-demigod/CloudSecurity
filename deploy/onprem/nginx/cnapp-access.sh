@@ -20,6 +20,11 @@
 #                          first name is canonical (the others redirect to it);
 #                          tls/site.crt|key if present, else server.crt
 #   SITE_CONSOLE_URL       where the site's "Log in" links point (default https://CNAPP_HOSTNAME)
+#   SITE_PROXY             optional CDN / reverse proxy in front of the website names only:
+#                          "cloudflare" (client address from CF-Connecting-IP, trusted only
+#                          from Cloudflare's published ranges) or CIDRs of your own proxies
+#                          (client address from X-Forwarded-For, trusted only from them);
+#                          empty = clients connect directly
 #
 # Policy: /api/agent/* is reachable from anywhere (rate limited per external IP);
 # everything else answers 404 to clients outside CNAPP_INTERNAL_CIDRS. The website
@@ -70,6 +75,41 @@ console_url=${SITE_CONSOLE_URL:-https://$main_host}
 console_url=${console_url%/}
 if [ -n "$site_names" ]; then
   echo "$console_url" | grep -Eq '^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?$' || fail "invalid SITE_CONSOLE_URL (https://NAME[:PORT])"
+fi
+
+# Website behind a CDN / reverse proxy (SITE_PROXY): nginx takes the visitor's
+# address from the proxy's header, but only on connections from the proxy's own
+# ranges (anyone else sending the header is ignored), so the per-IP limits, the
+# edge log and the backend (X-Forwarded-For) see visitors, not the proxy.
+# Cloudflare's ranges: https://www.cloudflare.com/ips/ (update with an image release).
+CLOUDFLARE_CIDRS="173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 141.101.64.0/18
+108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 197.234.240.0/22 198.41.128.0/17 162.158.0.0/15
+104.16.0.0/13 104.24.0.0/14 172.64.0.0/13 131.0.72.0/22 2400:cb00::/32 2606:4700::/32 2803:f800::/32
+2405:b500::/32 2405:8100::/32 2a06:98c0::/29 2c0f:f248::/32"
+site_proxy=$(lc "${SITE_PROXY:-}")
+site_realip="# no SITE_PROXY: visitors connect directly"
+proxy_cidrs=""
+proxy_header=""
+case $site_proxy in
+  ''|none) ;;
+  cloudflare) proxy_cidrs=$CLOUDFLARE_CIDRS; proxy_header=CF-Connecting-IP ;;
+  *)
+    for c in $(echo "$site_proxy" | tr ',;' '  '); do
+      echo "$c" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?$|^[0-9a-f:]+:[0-9a-f:]*(/[0-9]{1,3})?$' \
+        || fail "invalid SITE_PROXY entry: $c (\"cloudflare\" or CIDRs of your proxies)"
+      case $c in 0.0.0.0/0|::/0) fail "SITE_PROXY must not trust every address ($c)" ;; esac
+      proxy_cidrs="${proxy_cidrs:+$proxy_cidrs }$c"
+    done
+    proxy_header=X-Forwarded-For ;;
+esac
+if [ -n "$proxy_cidrs" ]; then
+  site_realip="# SITE_PROXY=$site_proxy: client address from $proxy_header, trusted only from these ranges."
+  for c in $proxy_cidrs; do site_realip="$site_realip
+  set_real_ip_from $c;"; done
+  site_realip="$site_realip
+  real_ip_header $proxy_header;"
+  [ "$proxy_header" = X-Forwarded-For ] && site_realip="$site_realip
+  real_ip_recursive on;"
 fi
 
 # ---------------------------------------------------------------- http level
@@ -306,6 +346,7 @@ server {
   listen 8080;
   server_name $site_names;
   server_tokens off;
+  $site_realip
   $logs
   location / {
     return 301 https://$canonical\$request_uri;
@@ -321,6 +362,7 @@ server {
   http2 on;
   server_name $aliases;
   server_tokens off;
+  $site_realip
   $tls_block
   $logs
   add_header Strict-Transport-Security "max-age=31536000" always;
@@ -337,6 +379,7 @@ server {
   http2 on;
   server_name $canonical;
   server_tokens off;
+  $site_realip
   root /usr/share/nginx/site;
   index index.html;
   $tls_block
@@ -401,6 +444,6 @@ server {
 }
 EOF
   } >"$out/zz-cnapp-site.conf"
-  echo "$me: public website for $site_names (canonical https://$canonical, certificate: $cert.crt, console links: $console_url)"
+  echo "$me: public website for $site_names (canonical https://$canonical, certificate: $cert.crt, console links: $console_url, proxy: ${site_proxy:-none})"
 fi
 echo "$me: public agent endpoint: $public; internal: ${CNAPP_INTERNAL_CIDRS:-127.0.0.0/8 only}; agent rate $rate_v burst $burst_v"
