@@ -591,8 +591,38 @@ third-party requests). `cnapp-ctl site enable` serves it on its own hostnames (e
    the page and check the `CONTACT_TO` inbox (`cnapp-ctl logs backend | grep 'contact request'`).
 
 Disable: `sudo cnapp-ctl site disable` (keeps `tls/site.crt`). **Settings** (`cnapp.env`): `SITE_HOSTNAMES`
-(comma-separated, empty = off), `SITE_CONSOLE_URL` (optional), `CONTACT_TO`. The nginx server blocks are generated at
+(comma-separated, empty = off), `SITE_CONSOLE_URL` (optional), `CONTACT_TO`, `SITE_PROXY` (optional, below). The nginx server blocks are generated at
 container start by `deploy/onprem/nginx/cnapp-access.sh` (`zz-cnapp-site.conf`).
+
+### Website behind Cloudflare (or another CDN / reverse proxy)
+
+Put only the **website names** behind the proxy; keep the **console name DNS only**:
+
+| Record | Proxy | Why |
+|---|---|---|
+| website (`@`, `www`) | proxied | CDN / DDoS protection for the public page |
+| console (`CNAPP_HOSTNAME`) | **DNS only** | agents cannot solve browser challenges; per-IP limits, audit IPs and fail2ban need real addresses; remote sessions use long-lived WebSockets; certificate renewal answers on port 80 directly |
+| mail (`MX`, `mail`, `autodiscover`, `autoconfig`) and DKIM (`*._domainkey` CNAMEs) | **DNS only** | a CDN proxies HTTP only: proxied mail names break mail clients, proxied DKIM CNAMEs stop resolving (mail then fails DKIM) |
+
+Then tell nginx so visitors' addresses are used instead of the proxy's (per-IP limits on the demo form, edge log,
+fail2ban, backend audit):
+
+```bash
+sudo cnapp-ctl site enable --proxy cloudflare        # or: --proxy 10.1.0.0/16,2001:db8::/32 (your proxies), --proxy none
+sudo cnapp-ctl site status                           # Proxy: cloudflare
+```
+
+With `cloudflare`, nginx takes the address from `CF-Connecting-IP`, but only on connections from Cloudflare's
+published ranges (https://www.cloudflare.com/ips/, kept in `nginx/cnapp-access.sh`); anyone else sending the header is
+ignored. With CIDRs, it uses `X-Forwarded-For` from those proxies only (`0.0.0.0/0` is refused). It applies to the
+website server blocks only, never to the console or agent names.
+
+Cloudflare settings: **SSL/TLS mode Full (strict)** (the origin already has a valid certificate; *Flexible* would make
+Cloudflare connect over http and loop on the redirect). Let's Encrypt renewal (HTTP-01, `certbot --standalone`) still
+works through the proxy as long as Cloudflare forwards `http://NAME/.well-known/acme-challenge/` to the origin:
+leave **Always Use HTTPS** off (nginx already redirects to https) or exclude that path; check with
+`sudo certbot renew --dry-run --cert-name NAME`. Do not keep a wildcard (`*`) record pointing elsewhere: names
+without a record of their own (e.g. a missing console record) then resolve to it.
 
 ## 6. Updates (pull-based)
 

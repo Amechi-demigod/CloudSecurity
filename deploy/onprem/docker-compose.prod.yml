@@ -233,6 +233,9 @@ services:
       # its "Log in" links point (empty = https://CNAPP_HOSTNAME).
       SITE_HOSTNAMES: ${SITE_HOSTNAMES:-}
       SITE_CONSOLE_URL: ${SITE_CONSOLE_URL:-}
+      # CDN / reverse proxy in front of the website names only (cnapp-ctl site enable --proxy):
+      # "cloudflare" or CIDRs; empty = visitors connect directly.
+      SITE_PROXY: ${SITE_PROXY:-}
     # nginx (uid 101) reads the TLS key through this group (key: root:cnapp-tls 0640).
     group_add:
       - "${CNAPP_TLS_GID:?run cnapp-ctl install (CNAPP_TLS_GID missing)}"
