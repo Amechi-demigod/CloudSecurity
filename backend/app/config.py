@@ -583,6 +583,14 @@ class Settings:
                              .rstrip("/"))
     kev_url: str = field(default_factory=lambda: (os.getenv("KEV_URL") or (
         "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json")).strip())
+    # Microsoft Security Update Guide CVRF API (free, no key): which Windows update (KB) and
+    # build fixes a Windows CVE, plus Microsoft's mitigations / workarounds.
+    msrc_enabled: bool = field(default_factory=lambda: _bool("MSRC_ENABLED", True))
+    msrc_api_url: str = field(default_factory=lambda: (
+        os.getenv("MSRC_API_URL") or "https://api.msrc.microsoft.com/cvrf/v3.0").strip().rstrip("/"))
+    # How many monthly security-update documents (newest first) are kept; Windows CVEs older than
+    # that fall back to the generic "install the latest cumulative update" guidance.
+    msrc_months: int = field(default_factory=lambda: max(1, min(36, int(_checked_float("MSRC_MONTHS", 12.0)))))
     epss_enabled: bool = field(default_factory=lambda: _bool("EPSS_ENABLED", True))
     epss_api_url: str = field(default_factory=lambda: (
         os.getenv("EPSS_API_URL") or "https://api.first.org/data/v1/epss").strip())

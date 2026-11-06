@@ -49,6 +49,7 @@ os.environ.update({
     "NVD_API_URL": "https://nvd.invalid/rest/json/cves/2.0",
     "OSV_API_URL": "https://osv.invalid",
     "KEV_URL": "https://kev.invalid/kev.json",
+    "MSRC_API_URL": "https://msrc.invalid/cvrf/v3.0",
     "EPSS_API_URL": "https://epss.invalid/data/v1/epss",
 })
 for k in ("AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET", "AZURE_SUBSCRIPTION_IDS", "AZURE_AUTH_MODE",

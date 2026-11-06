@@ -3,7 +3,7 @@
 Every tick (default 30 s) the leader (one per deployment, see app/locks.py):
 
 1. refreshes the CISA KEV catalog when it is older than VULN_KEV_REFRESH_HOURS
-   (and EPSS scores of open CVEs), re-flags matching vulnerabilities and
+   (and EPSS scores of open CVEs; the Microsoft MSRC update data likewise), re-flags matching vulnerabilities and
    notifies about CVEs that just became known-exploited;
 2. queues every device / asset whose last match is older than
    VULN_REMATCH_INTERVAL_HOURS (new CVEs are published daily), and devices /
@@ -44,7 +44,7 @@ from ..models import (
     get_asset,
     utcnow,
 )
-from . import feeds, matcher
+from . import feeds, matcher, msrc
 from .notify import Item, notify
 from .state import ASSET, DEVICE
 
@@ -144,6 +144,21 @@ def refresh_epss(db, now: datetime) -> None:
                                                     Vulnerability.status == "open")):
         v.epss = scores.get(v.cve_id)
     db.commit()
+
+
+def refresh_msrc(db, now: datetime, *, force: bool = False) -> bool:
+    """Refresh the (global) Microsoft Security Update Guide data when due and when any device runs
+    Windows. Failures are recorded in vuln_feed_status and never raised. Commits."""
+    s = config.settings
+    if not s.msrc_enabled:
+        return False
+    if not force and not _due(db.get(VulnFeedStatus, "msrc"), timedelta(hours=s.vuln_kev_refresh_hours), now):
+        return False
+    if db.scalar(select(Device.id).where(Device.os_family == "windows").limit(1)) is None:
+        return False
+    ok, _err = msrc.refresh(db, now)
+    db.commit()
+    return ok
 
 
 def _item(db, v: Vulnerability) -> Item:
@@ -260,6 +275,12 @@ def run_once(now: datetime | None = None, *, force: bool = False) -> TickResult:
             db.rollback()
             log.exception("vulnerability matching of organisation %s failed", org_id)
             res.errors.append(f"organisation {org_id}: {e}")
+    with dbmod.get_session(unscoped=True) as g:
+        try:
+            refresh_msrc(g, now)  # Windows CVE -> KB / fixed build (read by the console, not by matching)
+        except Exception:
+            g.rollback()
+            log.exception("MSRC refresh failed")
     with dbmod.get_session(unscoped=True) as g:
         refresh_epss(g, now)  # scores are global; written to every organisation's open vulnerabilities
     return res

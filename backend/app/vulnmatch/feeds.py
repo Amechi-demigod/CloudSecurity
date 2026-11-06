@@ -179,8 +179,13 @@ def compact_cve(cve: dict, key: str) -> dict | None:
         return None
     score, sev, vector = pick_cvss(cve.get("metrics") or {})
     desc = next((d.get("value", "") for d in cve.get("descriptions") or [] if d.get("lang") == "en"), "")
-    return {"cvss": score, "sev": sev, "vec": vector, "pub": cve.get("published"), "desc": desc[:DESC_MAX],
-            "cfg": cfg}
+    out = {"cvss": score, "sev": sev, "vec": vector, "pub": cve.get("published"), "desc": desc[:DESC_MAX],
+           "cfg": cfg}
+    cwes = sorted({d.get("value", "") for w in cve.get("weaknesses") or [] for d in w.get("description") or []
+                   if str(d.get("value", "")).startswith("CWE-")})
+    if cwes:
+        out["cwe"] = cwes[:5]
+    return out
 
 
 def nvd_cpe_prefix(cpe: str) -> str:
