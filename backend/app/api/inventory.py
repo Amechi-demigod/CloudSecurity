@@ -3,11 +3,12 @@ from __future__ import annotations
 
 from collections import Counter
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from ..auth import audit, client_ip, require_analyst
+from ..auth import RateLimiter, audit, client_ip, require_analyst
+from ..compliance import finding_report
 from ..db import get_db
 from ..engine import posture
 from ..engine.detection import DETECTION_RULES
@@ -18,14 +19,16 @@ from ..schemas import (
     AssetOut,
     AssetRef,
     AssetSummary,
+    FindingDetailOut,
     FindingOut,
     FindingUpdate,
     RelationshipOut,
     VulnerabilityOut,
 )
-from ..services import dashboards
+from ..services import dashboards, finding_detail
 
 router = APIRouter(prefix="/api", tags=["inventory"])
+pdf_limiter = RateLimiter()
 SEV_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
 
 
@@ -168,12 +171,30 @@ def list_findings(
     return [finding_out(f) for f in rows[:limit]]
 
 
-@router.get("/findings/{finding_id}", response_model=FindingOut)
+@router.get("/findings/{finding_id}", response_model=FindingDetailOut)
 def get_finding(finding_id: str, db: Session = Depends(get_db)):
     f = db.get(Finding, finding_id)
     if f is None:
         raise HTTPException(404, "finding not found")
-    return finding_out(f)
+    return {**finding_out(f).model_dump(), **finding_detail.detail(db, f)}
+
+
+@router.get("/findings/{finding_id}/report.pdf")
+def finding_report_pdf(finding_id: str, request: Request, user: User = Depends(require_analyst),
+                       db: Session = Depends(get_db)):
+    """One finding as a PDF (summary, description, impact, evidence, verification, the fix in three formats)."""
+    f = db.get(Finding, finding_id)
+    if f is None:
+        raise HTTPException(404, "finding not found")
+    if not pdf_limiter.hit(f"user:{user.id}", 20, 600.0):
+        raise HTTPException(429, "too many PDF exports; try again later", headers={"Retry-After": "60"})
+    data = finding_report.build_pdf(db, f)
+    audit(db, "finding_report_exported", actor=user, target=f.id, ip=client_ip(request), format="pdf",
+          rule_id=f.rule_id, size_bytes=len(data))
+    db.commit()
+    return Response(content=data, media_type="application/pdf", headers={
+        "Content-Disposition": f'attachment; filename="finding-{f.rule_id}-{f.id[:8]}.pdf"',
+        "Cache-Control": "no-store"})
 
 
 @router.patch("/findings/{finding_id}", response_model=FindingOut)

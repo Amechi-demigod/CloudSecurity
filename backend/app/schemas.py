@@ -78,6 +78,19 @@ class FindingOut(ORM):
     asset_type: str | None = None
 
 
+class FindingDetailOut(FindingOut):
+    """`GET /api/findings/{id}`: the finding plus guidance, SLA and context (see services/finding_detail.py)."""
+
+    guidance: dict[str, Any] | None = None
+    risk_score: float | None = None
+    sla_days: int | None = None
+    sla_due: UTCDateTime | None = None
+    days_open: int = 0
+    overdue_days: int | None = None
+    context: dict[str, Any] = {}
+    asset: dict[str, Any] | None = None
+
+
 class FindingUpdate(BaseModel):
     status: Literal["open", "resolved", "suppressed"]
 
