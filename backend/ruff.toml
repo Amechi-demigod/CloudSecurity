@@ -15,3 +15,5 @@ ignore = [
 # The simulator deliberately contains attacker-style strings (/tmp payloads) and
 # builds per-subscription closures that are only called inside the loop.
 "app/connectors/simulated.py" = ["S108", "B023"]
+# Guidance entries are data: long command / Terraform strings stay on one line.
+"app/engine/guidance/*.py" = ["E501"]

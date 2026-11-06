@@ -41,7 +41,7 @@ def test_findings_lifecycle(client):
     assert [sev_rank.index(f["severity"]) for f in fs] == sorted(sev_rank.index(f["severity"]) for f in fs)
     fid = fs[0]["id"]
     one = client.get(f"/api/findings/{fid}")
-    assert one.status_code == 200 and one.json() == fs[0]
+    assert one.status_code == 200 and {k: one.json()[k] for k in fs[0]} == fs[0]  # detail adds guidance / SLA / context
     assert client.get("/api/findings/does-not-exist").status_code == 404
     r = client.patch(f"/api/findings/{fid}", json={"status": "suppressed"})
     assert r.status_code == 200 and r.json()["status"] == "suppressed"
