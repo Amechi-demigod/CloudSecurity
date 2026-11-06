@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import { api } from "../api";
 import { Drawer, ErrorNote, RiskBar, SeverityBadge, Tag } from "./ui";
 import { SCOPE_LABEL, TYPE_LABEL, fmtAgo } from "../lib/format";
@@ -111,13 +112,15 @@ export default function AssetDrawer({ assetId, onClose, onNavigate }: { assetId:
             </ul>
           </Section>
 
-          <Section title={`Posture findings (${data.findings.filter((f) => f.status === "open").length} open)`}>
+          <Section title={`Findings (${data.findings.length})`}>
             <ul className="space-y-2">
               {data.findings.map((f) => (
                 <li key={f.id} className="rounded border border-line p-2">
                   <div className="flex items-center gap-2">
                     <SeverityBadge severity={f.severity} />
-                    <span className="text-sm">{f.title}</span>
+                    <Link to={`/findings/${f.id}`} className="text-sm hover:text-accent hover:underline">
+                      {f.title}
+                    </Link>
                     {f.status !== "open" && <Tag>{f.status}</Tag>}
                   </div>
                   <div className="mt-1 text-xs text-ink-2">{f.remediation}</div>

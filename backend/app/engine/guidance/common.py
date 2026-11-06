@@ -109,7 +109,7 @@ REF: dict[str, tuple[str, str]] = {
     "az-pg-bkp": ("Backup and restore in Azure Database for PostgreSQL flexible server", "https://learn.microsoft.com/azure/postgresql/flexible-server/concepts-backup-restore"),
     "az-pg-ver": ("Azure Database for PostgreSQL version policy", "https://learn.microsoft.com/azure/postgresql/flexible-server/concepts-version-policy"),
     "az-my-net": ("Public network access for Azure Database for MySQL flexible server", "https://learn.microsoft.com/azure/mysql/flexible-server/concepts-networking-public"),
-    "az-my-tls": ("Connect with TLS in Azure Database for MySQL flexible server", "https://learn.microsoft.com/azure/mysql/flexible-server/concepts-networking-ssl-tls"),
+    "az-my-tls": ("Connect with TLS in Azure Database for MySQL flexible server", "https://learn.microsoft.com/azure/mysql/flexible-server/how-to-connect-tls-ssl"),
     "az-my-entra": ("Microsoft Entra authentication in Azure Database for MySQL flexible server", "https://learn.microsoft.com/azure/mysql/flexible-server/concepts-azure-ad-authentication"),
     "az-my-bkp": ("Backup and restore in Azure Database for MySQL flexible server", "https://learn.microsoft.com/azure/mysql/flexible-server/concepts-backup-restore"),
     "az-my-ver": ("Azure Database for MySQL version support policy", "https://learn.microsoft.com/azure/mysql/concepts-version-policy"),

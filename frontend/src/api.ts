@@ -49,6 +49,46 @@ export interface Finding {
   asset_type: string | null;
 }
 
+export interface FindingGuidance {
+  impact: { title: string; text: string }[];
+  cwe: { id: string; name: string };
+  attack: { id: string; name: string }[];
+  risk_score: number;
+  verify_steps: string[];
+  verify_cli: string;
+  fix_console: string[];
+  fix_cli: string;
+  fix_terraform: string;
+  prevent: string;
+  references: { title: string; url: string }[];
+}
+
+/** `GET /api/findings/{id}`: the finding plus guidance, SLA and "why it matters here" context. */
+export interface FindingDetail extends Finding {
+  guidance: FindingGuidance | null;
+  risk_score: number | null;
+  sla_days: number | null;
+  sla_due: string | null;
+  days_open: number;
+  overdue_days: number | null;
+  context: {
+    internet_exposed: boolean;
+    sensitive_data: boolean;
+    attack_paths: { id: string; title: string; severity: string; score: number }[];
+  };
+  asset: {
+    name: string;
+    type: string;
+    provider: string;
+    subscription_id: string | null;
+    subscription_name: string | null;
+    resource_group: string | null;
+    region: string | null;
+    tags: Record<string, string>;
+    source: string;
+  } | null;
+}
+
 export interface Vulnerability {
   id: string;
   /** Cloud workload / sensor host. Null for endpoint-device vulnerabilities. */
@@ -987,6 +1027,24 @@ export async function request<T>(path: string, init?: RequestInit & { skipAuthHa
   return res.json() as Promise<T>;
 }
 
+/** GET that returns a file (e.g. a PDF report): the bytes plus the suggested filename. */
+export async function getFile(path: string): Promise<{ blob: Blob; filename: string }> {
+  const res = await fetch(`${BASE}${path}`, { credentials: "same-origin" });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const b = await res.json();
+      detail = typeof b.detail === "string" ? b.detail : JSON.stringify(b.detail);
+    } catch {
+      /* ignore */
+    }
+    if (res.status === 401) onUnauthorized?.();
+    throw new ApiError(res.status, detail || `HTTP ${res.status}`);
+  }
+  const m = /filename="([^"]+)"/.exec(res.headers.get("Content-Disposition") ?? "");
+  return { blob: await res.blob(), filename: m ? m[1] : "report.pdf" };
+}
+
 /** POST that returns a file (e.g. a generated installer): the bytes plus the suggested filename. */
 export async function requestFile(
   path: string,
@@ -1445,7 +1503,8 @@ export const api = {
       alerts: Alert[];
     }>(`/api/assets/detail${qs({ id })}`),
   findings: (f: Record<string, string | undefined> = {}) => request<Finding[]>(`/api/findings${qs(f)}`),
-  finding: (id: string) => request<Finding>(`/api/findings/${encodeURIComponent(id)}`),
+  finding: (id: string) => request<FindingDetail>(`/api/findings/${encodeURIComponent(id)}`),
+  findingReportPdf: (id: string) => getFile(`/api/findings/${encodeURIComponent(id)}/report.pdf`),
   updateFinding: (id: string, status: Finding["status"]) =>
     request<Finding>(`/api/findings/${id}`, { method: "PATCH", body: JSON.stringify({ status }) }),
   vulnerabilities: (f: Record<string, string | boolean | undefined> = {}) =>

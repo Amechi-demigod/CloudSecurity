@@ -77,7 +77,9 @@ function Detail({ item }: { item: ExposureItem }) {
         {item.egress && <p className="mt-1 text-ink-3">Egress: {item.egress} (outbound only)</p>}
       </div>
       <div>
-        <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-ink-3">Linked risk</h3>
+        <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-ink-3">
+          Linked risk{item.findings.count > 0 ? ` · findings (${item.findings.count})` : ""}
+        </h3>
         {item.findings.top.length === 0 && item.vulnerabilities.top.length === 0 && item.attack_paths.length === 0 && (
           <p className="text-ink-3">No open findings, vulnerabilities or attack paths.</p>
         )}
@@ -85,7 +87,7 @@ function Detail({ item }: { item: ExposureItem }) {
           {item.findings.top.map((f) => (
             <li key={f.id}>
               <SeverityBadge severity={f.severity} />{" "}
-              <Link className="hover:text-accent" to={`/findings?finding=${f.id}`}>
+              <Link className="hover:text-accent" to={`/findings/${f.id}`}>
                 {f.title}
               </Link>{" "}
               <span className="font-mono text-[11px] text-ink-3">{f.rule_id}</span>
