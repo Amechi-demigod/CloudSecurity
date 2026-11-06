@@ -5,6 +5,7 @@ verify, the fix as console / CLI / Terraform steps, prevention and references.
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime
 
 from sqlalchemy.orm import Session
@@ -42,12 +43,12 @@ def _para(lay: _Layout, text: str, size: float = 9, indent: float = 0, bold: boo
         lay.y += size + 3.5
 
 
-def _bullet(lay: _Layout, lead: str | None, text: str) -> None:
+def _bullet(lay: _Layout, lead: str | None, text: str, marker: str = "-") -> None:
     lines = wrap((f"{lead}: " if lead else "") + text, CONTENT_W - 14, 9)
     for i, ln in enumerate(lines):
         lay.need(13)
-        if i == 0:
-            lay.c.text(MARGIN + 3, lay.y + 9, "-", 9)
+        if i == 0 and marker:
+            lay.c.text(MARGIN + 3, lay.y + 9, marker, 9)
         lay.c.text(MARGIN + 14, lay.y + 9, ln, 9)
         lay.y += 12.5
     lay.y += 1.5
@@ -57,7 +58,11 @@ def _code(lay: _Layout, text: str) -> None:
     """A shaded block of preformatted text (long lines are wrapped, not cut)."""
     lines: list[str] = []
     for raw in (text or "").split("\n"):
-        lines.extend(wrap(raw, CONTENT_W - 16, 7.6) if raw.strip() else [""])
+        if not raw.strip():
+            lines.append("")
+            continue
+        pad = " " * (len(raw) - len(raw.lstrip(" ")))  # wrap() collapses whitespace: keep the indentation
+        lines.extend(pad + ln for ln in wrap(raw.strip(), CONTENT_W - 16 - text_width(pad, 7.6), 7.6))
     i = 0
     while i < len(lines):
         lay.need(24)
@@ -82,6 +87,19 @@ def _summary(lay: _Layout, rows: list[tuple[str, str]]) -> None:
             lay.c.text(x + 6, lay.y + 9.5, label.upper(), 6.5, bold=True, color=MUTED)
             lay.c.text(x + 6, lay.y + 21, wrap(value, colw - 20, 9, True, 1)[0], 9, bold=True)
         lay.y += 30
+
+
+def _evidence_lines(ev: dict, prefix: str = "") -> list[str]:
+    out: list[str] = []
+    for k, v in ev.items():
+        path = f"{prefix}.{k}" if prefix else str(k)
+        if isinstance(v, dict):
+            out.extend(_evidence_lines(v, path))
+        elif isinstance(v, list):
+            out.append(f"{path} = " + ", ".join(json.dumps(x) if isinstance(x, dict | list) else str(x) for x in v))
+        else:
+            out.append(f"{path} = {v}")
+    return out
 
 
 def build_pdf(db: Session, f: Finding, *, now: datetime | None = None) -> bytes:
@@ -146,20 +164,20 @@ def build_pdf(db: Session, f: Finding, *, now: datetime | None = None) -> bytes:
     ev = d["evidence"]
     _para(lay, f"Collected read-only from {f.source} at {_fmt(f.last_seen)}", 8.5, color=MUTED)
     if ev:
-        _code(lay, "\n".join(f"{k} = {v}" for k, v in ev.items()))
+        _code(lay, "\n".join(_evidence_lines(ev)))
     else:
         _para(lay, "The rule recorded no evidence values.")
 
     if g:
         _heading(lay, "How to verify (read-only)")
         for i, s in enumerate(g["verify_steps"], 1):
-            _bullet(lay, None, f"{i}. {s}")
+            _bullet(lay, None, s, f"{i}.")
         _code(lay, g["verify_cli"])
 
         _heading(lay, "How to fix")
         _para(lay, "Console", 9.5, bold=True)
         for i, s in enumerate(g["fix_console"], 1):
-            _bullet(lay, None, f"{i}. {s}")
+            _bullet(lay, None, s, f"{i}.")
         _para(lay, "CLI", 9.5, bold=True)
         _code(lay, g["fix_cli"])
         _para(lay, "Terraform", 9.5, bold=True)
