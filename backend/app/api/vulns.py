@@ -25,6 +25,7 @@ FEEDS = (
     ("osv", "OSV.dev (Linux packages reported by the runtime sensor)", "api.osv.dev"),
     ("kev", "CISA Known Exploited Vulnerabilities", "www.cisa.gov"),
     ("epss", "FIRST EPSS exploit prediction", "api.first.org"),
+    ("msrc", "Microsoft Security Update Guide (Windows update / KB for each CVE)", "api.msrc.microsoft.com"),
 )
 
 

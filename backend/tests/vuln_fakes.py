@@ -72,6 +72,15 @@ NVD_PRODUCTS: dict[str, list[dict]] = {
                 m("cpe:2.3:o:microsoft:windows_11_23h2:*:*:*:*:*:*:x64:*", versionEndExcluding="10.0.22631.4317"),
                 m("cpe:2.3:o:microsoft:windows_11_23h2:*:*:*:*:*:*:arm64:*", versionEndExcluding="10.0.22631.4317"),
             )]}]),
+        # May / June 2024 fixes (recorded-style: the MSRC fixture below carries the KB for each).
+        cve("CVE-2024-30040", "Windows MSHTML Platform Security Feature Bypass Vulnerability", cvss31(
+            8.8, "high", "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:H"),
+            [{"nodes": [node(m("cpe:2.3:o:microsoft:windows_11_23h2:*:*:*:*:*:*:x64:*",
+                               versionEndExcluding="10.0.22631.3593"))]}]),
+        cve("CVE-2024-30080", "Microsoft Message Queuing (MSMQ) Remote Code Execution Vulnerability", cvss31(
+            9.8, "critical", "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"),
+            [{"nodes": [node(m("cpe:2.3:o:microsoft:windows_11_23h2:*:*:*:*:*:*:x64:*",
+                               versionEndExcluding="10.0.22631.3737"))]}]),
     ],
     "cpe:2.3:a:7-zip:7-zip": [
         cve("CVE-2024-11477", "7-Zip Zstandard Decompression Integer Underflow Remote Code Execution Vulnerability",
@@ -85,8 +94,12 @@ NVD_PRODUCTS: dict[str, list[dict]] = {
     ],
 }
 
-KEV = {"title": "CISA Catalog of Known Exploited Vulnerabilities", "catalogVersion": "2024.11.01", "count": 2,
+KEV = {"title": "CISA Catalog of Known Exploited Vulnerabilities", "catalogVersion": "2024.11.01", "count": 3,
        "vulnerabilities": [
+           {"cveID": "CVE-2024-30040", "vendorProject": "Microsoft", "product": "Windows",
+            "vulnerabilityName": "Microsoft Windows MSHTML Platform Security Feature Bypass Vulnerability",
+            "dateAdded": "2024-05-14", "requiredAction": "Apply mitigations per vendor instructions.",
+            "dueDate": "2024-06-04", "knownRansomwareCampaignUse": "Unknown"},
            {"cveID": "CVE-2024-7971", "vendorProject": "Google", "product": "Chromium V8",
             "vulnerabilityName": "Google Chromium V8 Type Confusion Vulnerability", "dateAdded": "2024-08-26",
             "requiredAction": "Apply mitigations per vendor instructions.", "dueDate": "2024-09-16",
@@ -95,6 +108,83 @@ KEV = {"title": "CISA Catalog of Known Exploited Vulnerabilities", "catalogVersi
             "vulnerabilityName": "Apache Log4j2 Remote Code Execution Vulnerability", "dateAdded": "2021-12-10",
             "requiredAction": "Apply updates.", "dueDate": "2021-12-24", "knownRansomwareCampaignUse": "Known"},
        ]}
+
+
+
+def _msrc_vuln(cve_id: str, title: str, kb: str, build: str, products: list[tuple[str, str]], *,
+               mitigation: str = "", workaround: str = "", expl: str = "Publicly Disclosed:No;Exploited:No;"
+               "Latest Software Release:Exploitation Less Likely;Older Software Release:Exploitation Less Likely") -> dict:
+    """One CVRF Vulnerability: a Vendor Fix (Type 2) per product, optional mitigation (1) / workaround (0)."""
+    rems = [{"Type": 2, "Description": {"Value": kb}, "URL": "https://catalog.update.microsoft.com/v7/site/Search.aspx"
+             f"?q=KB{kb}", "Supercedence": "5036893", "ProductID": [pid], "FixedBuild": build,
+             "RestartRequired": {"Value": "Yes"}, "SubType": "Security Update"} for pid, _name in products]
+    if mitigation:
+        rems.append({"Type": 1, "Description": {"Value": mitigation}, "ProductID": [products[0][0]]})
+    if workaround:
+        rems.append({"Type": 0, "Description": {"Value": workaround}, "ProductID": [products[0][0]]})
+    return {"Title": {"Value": title}, "CVE": cve_id, "Notes": [{"Title": "Description", "Type": 1,
+                                                                 "Ordinal": "1", "Value": title}],
+            "Threats": [{"Type": 1, "Description": {"Value": expl}, "ProductID": [products[0][0]]}],
+            "Remediations": rems}
+
+
+MSRC_PRODUCTS = {"12086": "Windows 11 Version 23H2 for x64-based Systems",
+                 "12085": "Windows 11 Version 23H2 for ARM64-based Systems",
+                 "12087": "Windows 10 Version 22H2 for x64-based Systems",
+                 "11923": "Windows Server 2022",
+                 "11924": "Microsoft Edge (Chromium-based)"}
+
+
+def _msrc_doc(alias: str, released: str, vulns: list[dict]) -> dict:
+    return {"DocumentTitle": {"Value": f"{alias} Security Updates"},
+            "DocumentTracking": {"Identification": {"ID": {"Value": alias}, "Alias": {"Value": alias}},
+                                 "InitialReleaseDate": f"{released}T07:00:00Z",
+                                 "CurrentReleaseDate": f"{released}T07:00:00Z"},
+            "ProductTree": {"FullProductName": [{"ProductID": k, "Value": v} for k, v in MSRC_PRODUCTS.items()]},
+            "Vulnerability": vulns}
+
+
+def _fix_vuln(cve_id, title, kb11, b11, kb10=None, b10=None, **kw):
+    v = _msrc_vuln(cve_id, title, kb11, b11, [("12086", ""), ("12085", "")], **kw)
+    if kb10:
+        v["Remediations"] += [{"Type": 2, "Description": {"Value": kb10}, "ProductID": ["12087"],
+                               "FixedBuild": b10, "RestartRequired": {"Value": "Yes"}}]
+    return v
+
+
+MSRC_UPDATES = {"value": [
+    {"ID": "2024-Oct", "Alias": "2024-Oct", "DocumentTitle": "October 2024 Security Updates",
+     "InitialReleaseDate": "2024-10-08T07:00:00Z", "CurrentReleaseDate": "2024-10-08T07:00:00Z",
+     "CvrfUrl": "https://msrc.invalid/cvrf/v3.0/cvrf/2024-Oct"},
+    {"ID": "2024-Jun", "Alias": "2024-Jun", "DocumentTitle": "June 2024 Security Updates",
+     "InitialReleaseDate": "2024-06-11T07:00:00Z", "CurrentReleaseDate": "2024-06-11T07:00:00Z",
+     "CvrfUrl": "https://msrc.invalid/cvrf/v3.0/cvrf/2024-Jun"},
+    {"ID": "2024-May", "Alias": "2024-May", "DocumentTitle": "May 2024 Security Updates",
+     "InitialReleaseDate": "2024-05-14T07:00:00Z", "CurrentReleaseDate": "2024-05-16T07:00:00Z",
+     "CvrfUrl": "https://msrc.invalid/cvrf/v3.0/cvrf/2024-May"},
+]}
+MSRC_DOCS = {
+    "2024-Oct": _msrc_doc("2024-Oct", "2024-10-08", [
+        _fix_vuln("CVE-2024-43547", "Windows Kerberos Information Disclosure Vulnerability",
+                  "5044285", "10.0.22631.4317", "5044273", "10.0.19045.5011"),
+    ]),
+    "2024-May": _msrc_doc("2024-May", "2024-05-14", [
+        _fix_vuln("CVE-2024-30040", "Windows MSHTML Platform Security Feature Bypass Vulnerability",
+                  "5037771", "10.0.22631.3593", "5037768", "10.0.19045.4412",
+                  expl="Publicly Disclosed:No;Exploited:Yes;Latest Software Release:Exploitation Detected;"
+                       "Older Software Release:Exploitation Detected",
+                  mitigation="Microsoft has not identified any mitigating factors for this vulnerability.",
+                  workaround="Microsoft has not identified any workarounds for this vulnerability."),
+        # An Edge-only product: ignored (not a Windows operating system build).
+        _msrc_vuln("CVE-2024-4947", "Chromium: CVE-2024-4947 Type Confusion in V8", "", "", [("11924", "")]),
+    ]),
+    "2024-Jun": _msrc_doc("2024-Jun", "2024-06-11", [
+        _fix_vuln("CVE-2024-30080", "Microsoft Message Queuing (MSMQ) Remote Code Execution Vulnerability",
+                  "5039212", "10.0.22631.3737", "5039211", "10.0.19045.4529",
+                  mitigation="Check whether the Message Queuing service is running: look for a service named "
+                             "Message Queuing and TCP port 1801 listening on the machine."),
+    ]),
+}
 
 OSV_QUERIES: dict[tuple[str, str, str], list[dict]] = {
     ("Debian:12", "openssl", "3.0.11-1~deb12u2"): [
@@ -132,6 +222,8 @@ class FakeFeeds:
         self.kev = copy.deepcopy(KEV)
         self.osv_queries = copy.deepcopy(OSV_QUERIES)
         self.osv_vulns = copy.deepcopy(OSV_VULNS)
+        self.msrc_updates = copy.deepcopy(MSRC_UPDATES)
+        self.msrc_docs = copy.deepcopy(MSRC_DOCS)
         self.offline = False
         self.fail_hosts: set[str] = set()
         self.requests: list[httpx.Request] = []
@@ -155,6 +247,8 @@ class FakeFeeds:
             return self._nvd(request)
         if host == "osv.invalid":
             return self._osv(request)
+        if host == "msrc.invalid":
+            return self._msrc(request)
         if host == "kev.invalid":
             return httpx.Response(200, json=self.kev)
         if host == "epss.invalid":
@@ -162,6 +256,13 @@ class FakeFeeds:
             return httpx.Response(200, json={"status": "OK", "data": [
                 {"cve": c, "epss": "0.42", "percentile": "0.9", "date": "2024-11-01"} for c in cves if c]})
         return httpx.Response(404)
+
+    def _msrc(self, request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/updates"):
+            return httpx.Response(200, json=self.msrc_updates)
+        doc = self.msrc_docs.get(path.rsplit("/", 1)[-1])
+        return httpx.Response(200, json=doc) if doc is not None else httpx.Response(404)
 
     def _nvd(self, request: httpx.Request) -> httpx.Response:
         q = parse_qs(request.url.query.decode())

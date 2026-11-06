@@ -16,6 +16,7 @@ import { AssetRecordLink } from "../assets/AssetRecordLink";
 import { endpointActionLabel } from "../../endpointActionsApi";
 import { ActionsTab, EndpointActionDialog, ServicesTab, UninstallCell, type PendingAction } from "./EndpointActions";
 import { OsUpdatesTab } from "./OsUpdates";
+import { VulnerabilityFixes } from "./VulnerabilityFixes";
 import { IsolationCard, LostModeDialog, LostWipeCard, SuspendSignInDialog, WipeDialog } from "./LostWipe";
 import { RemoteSessionButton, RemoteSessionsCard } from "./RemoteSessions";
 import { RunScriptDialog } from "./RunScriptDialog";
@@ -474,9 +475,12 @@ function VulnerabilitiesTab({ id }: { id: string }) {
   const [status, setStatus] = useState("open");
   const { data, error } = useApi(() => api.deviceVulnerabilities(id, status), [id, status], 60000);
   const [showChecked, setShowChecked] = useState(false);
+  const [showAll, setShowAll] = useState(false);
   const kev = data?.vulnerabilities.filter((v) => v.kev).length ?? 0;
   return (
     <div className="space-y-4">
+      <VulnerabilityFixes id={id} showAll={showAll} onShowAll={() => setShowAll(!showAll)} />
+      {showAll && (
       <Card
         title={`Vulnerabilities${data ? ` (${data.vulnerabilities.length})` : ""}`}
         actions={
@@ -504,6 +508,7 @@ function VulnerabilitiesTab({ id }: { id: string }) {
           <VulnTable rows={data?.vulnerabilities ?? []} showTarget={false} />
         )}
       </Card>
+      )}
       {data && (
         <Card
           title={`Software coverage: ${data.checked.length} checked, ${data.not_checked.length} not checked`}

@@ -188,9 +188,9 @@ export default function Vulnerabilities() {
                     <SeverityBadge severity={g.severity} /> {g.kev && <Tag tone="critical">KEV</Tag>}
                   </td>
                   <td className="px-3 py-2">
-                    <button className="font-mono text-xs hover:text-accent" onClick={() => { setCve(g.cve_id); setView("Vulnerabilities"); }}>
+                    <Link className="font-mono text-xs hover:text-accent" to={`/vulnerabilities/${encodeURIComponent(g.cve_id)}`}>
                       {g.cve_id}
-                    </button>
+                    </Link>
                     <div className="max-w-[18rem] truncate text-[11px] text-ink-3" title={g.title}>{g.title}</div>
                   </td>
                   <td className="px-3 py-2 text-xs">{g.packages.join(", ")}</td>

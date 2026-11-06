@@ -58,6 +58,7 @@ import Login from "./pages/Login";
 import Security from "./pages/Security";
 import Threats from "./pages/Threats";
 import Vulnerabilities from "./pages/Vulnerabilities";
+import VulnerabilityDetail from "./pages/VulnerabilityDetail";
 import AuditLog from "./pages/admin/AuditLog";
 import OrganizationPage from "./pages/admin/Organization";
 import Users from "./pages/admin/Users";
@@ -321,6 +322,7 @@ function Shell() {
             <Route path="/findings" element={<Findings />} />
             <Route path="/findings/:id" element={<FindingDetail />} />
             <Route path="/vulnerabilities" element={<Vulnerabilities />} />
+            <Route path="/vulnerabilities/:cveId" element={<VulnerabilityDetail />} />
             <Route path="/threats" element={<Threats />} />
             <Route path="/exposure" element={<Exposure />} />
             <Route path="/attack-paths" element={<AttackPaths />} />

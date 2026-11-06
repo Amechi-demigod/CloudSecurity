@@ -31,6 +31,7 @@ from .api import os_updates as os_updates_api
 from .api import platform_admin as platform_admin_api
 from .api import remote_relay as remote_relay_api
 from .api import remote_sessions as remote_sessions_api
+from .api import vuln_fixes as vuln_fixes_api
 from .asset_lifecycle import api as it_assets_api
 from .compliance import api as compliance_api
 from .compliance.reports import ComplianceReportWorker
@@ -207,7 +208,7 @@ def create_app() -> FastAPI:
     # endpoints additionally require analyst/admin via their own dependencies.
     session_required = [Depends(auth.require_viewer)]
     for r in (platform.router, inventory.router, vulns.router, runtime.router, devices.router,
-              remote_sessions_api.router, os_updates_api.router):
+              remote_sessions_api.router, os_updates_api.router, vuln_fixes_api.router):
         app.include_router(r, dependencies=session_required)
     # Remote-session WebSockets (own authentication: device credential + single-use
     # token, or session cookie + Origin). Served only with REMOTE_RELAY_MODE=all|relay.

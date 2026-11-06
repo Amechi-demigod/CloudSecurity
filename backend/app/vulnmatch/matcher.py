@@ -163,6 +163,8 @@ def match_device(db: Session, device: Device, now: datetime | None = None, *, al
                                 "end_including": res.version_end_including,
                                 "end_excluding": res.version_end_excluding}.items() if v},
                             "url": f"https://nvd.nist.gov/vuln/detail/{cve_id}"}
+                if c.get("cwe"):
+                    evidence["cwe"] = c["cwe"]
                 if cvss <= 0:
                     evidence["score_missing"] = True
                 findings[fk] = Finding(match_key=key, cve_id=cve_id[:32], package=label[:128],
