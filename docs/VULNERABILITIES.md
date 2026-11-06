@@ -117,6 +117,34 @@ The sensor (`sensor/runtime_sensor/inventory.py`) reports the host's packages ev
 
 OSV evaluates the version ranges itself (distribution version semantics). Advisories are turned into one vulnerability per CVE they list (`upstream` / `aliases`), with the fixed version from the advisory. The vulnerability keeps the binary package names (`libssl3` for the `openssl` source package), so the sensor's existing `library_loaded` events mark it **in use at runtime**, the risk score uses the asset's exposure and data access, and **attack paths** treat an in-use CVSS ≥ 7 vulnerability on a workload as an exploitable hop - exactly like the simulated data.
 
+## Fixes and guidance
+
+Every CVE in the console links to a detail page (`/vulnerabilities/<CVE>`) and each device's **Vulnerabilities** tab groups its CVEs by the fix that closes them. This is **guidance only**: nothing installs, changes a device or queues an agent command. The console shows steps, read-only checks and links (for example to the device's *OS updates* tab).
+
+- **CVE page**: severity / score, KEV and patch chips, a summary grid (CVSS, exploit status, EPSS as the chance of exploitation in 30 days, CWE, fixed in, affected devices, first seen / days open, fix due), a business-impact list generated only from facts the console holds (KEV, EPSS, CVSS vector, affected count and device groups), how to fix, affected devices with what each needs and its status, fix progress, compliance chips (framework controls whose automated evidence includes the vulnerability checks) and a timeline. Export report (PDF) is for analysts and is audited.
+- **Fix due** (display SLA): known exploited = the CISA KEV due date, else 14 days; otherwise critical 7, high 14, medium 30, low 90 days after first seen. This is separate from the dashboard / compliance SLA (`DASHBOARD_SLA_*_DAYS`).
+- **Device tab**: "N updates fix all M vulnerabilities", then one expandable row per fix (a Windows cumulative update closes every OS CVE; each application upgrade closes its CVEs), sorted by KEV, then severity, then CVE count. "Show all CVEs" keeps the flat table. Export (PDF) for analysts.
+- **Status** per Windows device comes from its Windows Update report ([PATCHING.md](PATCHING.md)): *Update offered, not installed*, *Installed, restart pending*, *Updates paused/failing*, or *Not offered yet* with a hint from the update source (WSUS approval, update ring deferral).
+- **Application commands** are shown only where reliable: winget ids for known Windows products (`winget upgrade --id <id> -e`), Homebrew casks for known macOS products, apt / dnf / apk / pip for Linux hosts by OSV ecosystem; otherwise the vendor's updater and the NVD advisory.
+
+### Windows: Microsoft Security Update Guide (MSRC)
+
+KB numbers and fixed builds come from the [MSRC CVRF API v3.0](https://api.msrc.microsoft.com/cvrf/v3.0/) (free, no key): the `updates` index lists the monthly documents and `cvrf/<id>` (for example `2024-May`) has, per CVE and Windows product, the KB, `FixedBuild`, restart requirement and Microsoft's mitigations / workarounds. Only Windows operating-system products are kept. It uses the same machinery as the other feeds: one httpx client (proxy / CA settings honoured), the `vuln_feed_cache` table (key `msrc`), a feed status row (`msrc`, shown with the other feeds under Coverage and in `GET /api/vulnerabilities/status`), and the last good copy when the feed is unreachable. It is refreshed by the vulnerability worker (daily, `VULN_KEV_REFRESH_HOURS`, only when a Windows device exists) and only changed months are downloaded again; API requests never call it. Boilerplate such as "Microsoft has not identified any mitigating factors" is not shown as guidance.
+
+A device needs the highest fixed build among its CVEs for its feature release (matched by build number, so `22631.3447` is compared with `10.0.22631.<fixed>`); the KB is that build's cumulative update. **Without MSRC data** (feed offline, never fetched, CVE older than `MSRC_MONTHS`) the fix reads "Install the latest Windows cumulative update" without KB numbers, using the fixed build NVD gives when it has one.
+
+| Setting | Default | |
+|---|---|---|
+| `MSRC_ENABLED` | `true` | fetch the Security Update Guide |
+| `MSRC_API_URL` | public endpoint | point at an internal mirror |
+| `MSRC_MONTHS` | `12` | monthly documents kept (1-36) |
+
+Egress: add `api.msrc.microsoft.com` to the table above. Other additions: NVD weakness (CWE) ids are stored on new matches.
+
+### API
+
+`GET /api/vulnerabilities/{cve_id}`, `GET /api/vulnerabilities/{cve_id}/report.pdf`, `GET /api/devices/{id}/vulnerability-fixes`, `GET /api/devices/{id}/vulnerability-fixes/report.pdf`. Viewers read, analysts export PDFs (audited: `vulnerability_report_exported`, `device_vulnerability_report_exported`); everything is organisation-scoped (another organisation's CVE or device is a 404). No migration is involved.
+
 ## Risk score and the noise-reduction stat
 
 Asset vulnerabilities use the runtime-aware formula in the README ("Risk scoring"). Laptops have no runtime sensor, so their vulnerabilities are scored as in use (users launch installed desktop apps) without internet exposure, e.g. a KEV-listed CVSS 8.8 Chrome bug scores 52.8 (high priority). The **noise-reduction** stat and the dashboard's top risks only count workload (asset) vulnerabilities, so they keep meaning "share of workload CVEs in packages never loaded".
@@ -150,6 +178,7 @@ The backend needs outbound HTTPS to:
 | `api.osv.dev` | OSV `querybatch` and advisory records (Linux packages) |
 | `www.cisa.gov` | KEV catalog JSON |
 | `api.first.org` | EPSS scores |
+| `api.msrc.microsoft.com` | Microsoft Security Update Guide (Windows KB / fixed build per CVE) |
 
 `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` from `cnapp.env` are honoured (httpx `trust_env`), as are `SSL_CERT_FILE` / a corporate CA. **Offline or blocked**: check-ins and sensor ingest keep working; matching continues from the cached data, the page shows "updated <time>" and the last error per feed (Vulnerabilities → Coverage), and findings of products whose data could not be fetched are kept, not resolved. A server that has never reached NVD lists that software as "not checked (feed offline)".
 
