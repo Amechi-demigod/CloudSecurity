@@ -1,7 +1,7 @@
 import { Link } from "react-router-dom";
 import type { Vulnerability, VulnStatus } from "../api";
 import { fmtAgo, fmtTime, TYPE_LABEL } from "../lib/format";
-import { SOURCE_LABEL, cveUrl } from "../lib/vulns";
+import { SOURCE_LABEL } from "../lib/vulns";
 import { Card, RiskBar, SeverityBadge, Table, Tag } from "./ui";
 
 function RuntimeContext({ v }: { v: Vulnerability }) {
@@ -59,9 +59,9 @@ export function VulnTable({
             )}
           </td>
           <td className="px-3 py-2">
-            <a className="font-mono text-xs hover:text-accent" href={cveUrl(v)} target="_blank" rel="noreferrer">
+            <Link className="font-mono text-xs hover:text-accent" to={`/vulnerabilities/${encodeURIComponent(v.cve_id)}`} title={`Details and how to fix ${v.cve_id}`}>
               {v.cve_id}
-            </a>
+            </Link>
             <div className="max-w-[16rem] truncate text-[11px] text-ink-3" title={v.title}>
               {v.title}
             </div>
