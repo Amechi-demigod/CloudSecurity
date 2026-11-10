@@ -37,6 +37,7 @@ export const fmtHours = (h: number) =>
       : `${Math.round(h * 100) / 100} h`;
 
 export const TYPE_LABEL: Record<string, string> = {
+  network_device: "Network device",
   vm: "Virtual machine",
   vmss: "VM scale set",
   storage_account: "Storage account",

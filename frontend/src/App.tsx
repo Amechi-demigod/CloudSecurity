@@ -11,6 +11,7 @@ import {
   Menu,
   Moon,
   Network,
+  Network as NetworkIcon,
   Package,
   PlugZap,
   Route as RouteIcon,
@@ -38,6 +39,9 @@ import DeployAgent from "./pages/assets/DeployAgent";
 import DeploymentDetail from "./pages/assets/DeploymentDetail";
 import Deployments from "./pages/assets/Deployments";
 import Discovery from "./pages/assets/Discovery";
+import NetworkDeviceDetail from "./pages/network/NetworkDeviceDetail";
+import NetworkDevices from "./pages/network/NetworkDevices";
+import NetworkScans from "./pages/network/NetworkScans";
 import Offboarding from "./pages/assets/Offboarding";
 import AttackPaths from "./pages/AttackPaths";
 import Compliance from "./pages/Compliance";
@@ -92,6 +96,7 @@ const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
     items: [
       { to: "/devices", label: "Devices", icon: Laptop },
       { to: "/it-assets", label: "IT assets", icon: Package },
+      { to: "/network-devices", label: "Network devices", icon: NetworkIcon },
     ],
   },
   {
@@ -333,6 +338,9 @@ function Shell() {
             <Route path="/devices/scripts" element={<Scripts />} />
             <Route path="/devices/:id" element={<DeviceDetail />} />
             <Route path="/devices/:id/remote/:sid" element={<RequireRole role="analyst"><RemoteViewer /></RequireRole>} />
+            <Route path="/network-devices" element={<NetworkDevices />} />
+            <Route path="/network-devices/:id" element={<NetworkDeviceDetail />} />
+            <Route path="/network-scans" element={<NetworkScans />} />
             <Route path="/it-assets" element={<Assets />} />
             <Route path="/it-assets/offboarding" element={<Offboarding />} />
             <Route path="/it-assets/discovery" element={<Discovery />} />

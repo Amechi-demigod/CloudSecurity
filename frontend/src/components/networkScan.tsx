@@ -145,6 +145,7 @@ export default function NetworkScanWizard({ scan, onCancel, onDone }: { scan?: N
 
   const list = collectors.data ?? [];
   const active = list.filter((c) => c.status === "active");
+  const capable = active.filter((c) => c.features?.includes("network_discovery"));
   const collector = list.find((c) => c.id === collectorId);
   // Suggestions of the chosen collector (the newest network_subnets result), polled while a refresh is pending.
   const sugg = useApi(() => (collectorId ? networkApi.suggestions(collectorId) : Promise.resolve([])), [collectorId], refreshing ? 3000 : undefined);
@@ -312,13 +313,15 @@ export default function NetworkScanWizard({ scan, onCancel, onDone }: { scan?: N
       <Section n={1} title="Collector" hint="The scan runs from a dedicated collector inside your network, so it needs to be able to reach the subnets below.">
         {collectors.data && active.length === 0 ? (
           <Notice tone="warn">No collector is enrolled. Add one under Connectors &amp; scans, then come back.</Notice>
+        ) : collectors.data && capable.length === 0 ? (
+          <Notice tone="warn">None of your collectors supports network scans yet: update the collector to 1.6.0 or later.</Notice>
         ) : (
           <div className="space-y-3">
             <div className="max-w-xl">
               <Field id="ns-name" label="Scan name" value={name} onChange={(e) => setName(e.target.value)} placeholder="HQ and branch networks" />
             </div>
             <div className="max-w-xl">
-              <CollectorPick collectors={active} value={collectorId} onChange={setCollectorId} />
+              <CollectorPick collectors={capable} value={collectorId} onChange={setCollectorId} />
             </div>
             {better && (
               <Notice tone="warn">
@@ -421,7 +424,10 @@ export default function NetworkScanWizard({ scan, onCancel, onDone }: { scan?: N
             <Field id="v3-authpw" label="Authentication password" type="password" autoComplete="new-password" value={v3.auth_password} onChange={(e) => setV3({ ...v3, auth_password: e.target.value })} hint="At least 8 characters." />
             {v3.level === "authPriv" && (
               <>
-                <Select id="v3-priv" label="Privacy protocol" value={v3.priv_proto} onChange={(v) => setV3({ ...v3, priv_proto: v })} options={["AES128", "AES256"].map((x) => ({ value: x, label: x }))} />
+                <div>
+                  <Select id="v3-priv" label="Privacy protocol" value={v3.priv_proto} onChange={(v) => setV3({ ...v3, priv_proto: v })} options={["AES128", "AES256"].map((x) => ({ value: x, label: x }))} />
+                  <p className="mt-1 text-xs text-ink-3">For Cisco devices use AES-128 (Cisco's AES-256C variant is not supported).</p>
+                </div>
                 <Field id="v3-privpw" label="Privacy password" type="password" autoComplete="new-password" value={v3.priv_password} onChange={(e) => setV3({ ...v3, priv_password: e.target.value })} hint="At least 8 characters." />
               </>
             )}

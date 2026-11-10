@@ -65,7 +65,7 @@ export interface FindingGuidance {
 
 /** `GET /api/findings/{id}`: the finding plus guidance, SLA and "why it matters here" context. */
 export interface FindingDetail extends Finding {
-  guidance: FindingGuidance | null;
+  guidance: (FindingGuidance & { labels?: { console: string; template: string } }) | null;
   risk_score: number | null;
   sla_days: number | null;
   sla_due: string | null;

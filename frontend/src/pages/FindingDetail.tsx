@@ -1,6 +1,6 @@
 import { FileDown } from "lucide-react";
 import { useState, type ReactNode } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, type Finding } from "../api";
 import { useAuth } from "../auth/context";
 import AssetDrawer from "../components/AssetDrawer";
@@ -83,6 +83,7 @@ function Steps({ items }: { items: string[] }) {
 export default function FindingDetail() {
   const { id = "" } = useParams();
   const canTriage = useAuth().can("analyst");
+  const navigate = useNavigate();
   const [asset, setAsset] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
@@ -154,7 +155,9 @@ export default function FindingDetail() {
   }
 
   const evidence = evidenceLines(f.evidence ?? {});
-  const consoleLabel = CONSOLE_LABEL[a?.provider ?? ""] ?? "Console";
+  const consoleLabel = g?.labels?.console ?? CONSOLE_LABEL[a?.provider ?? ""] ?? "Console";
+  const isNetwork = a?.source === "network";
+  const openAsset = (assetId: string) => (isNetwork ? navigate(`/network-devices/${assetId.replace(/^netdev-/, "")}`) : setAsset(assetId));
 
   return (
     <div>
@@ -173,7 +176,7 @@ export default function FindingDetail() {
             <p className="mt-1 break-words text-sm text-ink-2">
               <span className="font-mono text-xs">{f.rule_id}</span>
               {" · "}
-              <button type="button" className="text-accent hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-accent" onClick={() => setAsset(f.asset_id)}>
+              <button type="button" className="text-accent hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-accent" onClick={() => openAsset(f.asset_id)}>
                 {f.asset_name ?? f.asset_id}
               </button>
               {" · "}
@@ -219,7 +222,7 @@ export default function FindingDetail() {
         <Cell label="Weakness">{g ? `${g.cwe.id} ${g.cwe.name}` : "-"}</Cell>
         <Cell label="MITRE ATT&CK">{g && g.attack.length ? g.attack.map((t) => `${t.id} ${t.name}`).join(", ") : "-"}</Cell>
         <Cell label="Affected resource">
-          <button type="button" className="text-left text-accent hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-accent" onClick={() => setAsset(f.asset_id)}>
+          <button type="button" className="text-left text-accent hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-accent" onClick={() => openAsset(f.asset_id)}>
             {f.asset_name ?? f.asset_id}
           </button>
         </Cell>
@@ -278,7 +281,7 @@ export default function FindingDetail() {
                   tabs={[
                     { id: "console", label: consoleLabel, content: <Steps items={g.fix_console} /> },
                     { id: "cli", label: "CLI", content: <CodeBlock code={g.fix_cli} label="CLI fix" /> },
-                    { id: "terraform", label: "Terraform", content: <CodeBlock code={g.fix_terraform} label="Terraform fix" /> },
+                    { id: "terraform", label: g.labels?.template ?? "Terraform", content: <CodeBlock code={g.fix_terraform} label="Terraform fix" /> },
                   ]}
                 />
                 <div className="mt-4 rounded-lg border border-accent/40 bg-accent/10 p-3 text-sm text-ink">
@@ -330,7 +333,7 @@ export default function FindingDetail() {
           <Card title="Resource facts">
             <dl>
               <Fact label="Name">
-                <button type="button" className="font-medium text-accent hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-accent" onClick={() => setAsset(f.asset_id)}>
+                <button type="button" className="font-medium text-accent hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-accent" onClick={() => openAsset(f.asset_id)}>
                   {f.asset_name ?? f.asset_id}
                 </button>
               </Fact>

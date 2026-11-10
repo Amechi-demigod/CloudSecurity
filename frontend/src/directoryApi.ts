@@ -105,6 +105,7 @@ export interface DedicatedCollector {
   revoked_at: string | null;
   /** the enrollment token it enrolled with (matches X-Enrollment-Token-Id of an installer download) */
   enrollment_token_id: string | null;
+  features: string[];
   update_status: string | null;
   update_status_detail: string | null;
   diagnostics: CollectorDiagnostics | Record<string, never>;

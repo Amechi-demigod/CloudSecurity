@@ -19,6 +19,8 @@ export const TYPE_LABEL: Record<string, string> = {
   unknown: "Unknown",
 };
 
+export const TRACK_TONE: Record<Tracked, "good" | "accent" | "default" | "warn"> = { agent: "good", ad: "accent", it_asset: "accent", none: "warn" };
+
 /** The fixed light port check (the server sends the same list to the collector). */
 export const PORT_CHIPS = ["22", "23", "80", "443", "445", "3389", "161/udp", "8080", "8443", "9100"];
 

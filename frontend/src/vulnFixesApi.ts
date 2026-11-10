@@ -141,7 +141,7 @@ export interface CveDetail {
   patch_available: boolean;
   fix_type: "windows_update" | "package_upgrade" | "os_update" | "mixed" | "none";
   fixed_in: string | null;
-  affected: { open_devices: number; fleet_devices: number; fleet_label: string; assets: number; asset_names: string[]; open_findings: number };
+  affected: { open_devices: number; fleet_devices: number; fleet_label: string; assets: number; asset_names: string[]; network_devices: number; open_findings: number };
   first_seen: string | null;
   days_open: number | null;
   fix_due: { due_at: string; basis: string; overdue_days: number | null; days_left: number | null } | null;
@@ -154,6 +154,7 @@ export interface CveDetail {
     workarounds: string[];
   };
   devices: CveAffectedDevice[];
+  network_devices: { network_device_id: string; name: string; ip: string; device_type: string; vendor: string; model: string; firmware: string; fixed_version: string | null; needs: string }[];
   devices_total: number;
   progress: { total: number; patched: number; open: number; restart_pending: number; offered: number; failing: number; not_offered: number };
   compliance: { framework: string; control: string; title: string }[];
