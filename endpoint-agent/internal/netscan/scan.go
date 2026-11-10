@@ -41,6 +41,11 @@ type Env struct {
 	// LookupAddr is the reverse DNS lookup (default net.DefaultResolver).
 	LookupAddr func(ctx context.Context, addr string) ([]string, error)
 
+	// SNMPHost maps a scanned address to the SNMP target (ok=false: skip
+	// SNMP for it). Production leaves it nil; tests use it so that nothing
+	// but loopback ever receives SNMP packets.
+	SNMPHost func(ip string) (target string, ok bool)
+
 	SNMPPort    uint16        // default 161 (tests: a loopback fake agent)
 	SNMPTimeout time.Duration // per request, default 1.5 s (one retry)
 	SNMPBudget  time.Duration // per device, default 20 s

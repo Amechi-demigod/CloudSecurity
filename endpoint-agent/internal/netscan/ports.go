@@ -58,6 +58,29 @@ func cleanBanner(b []byte, n int) string {
 // unprompted within a second, or (HTTP ports) the status line and Server
 // header of a plain GET /. Nothing else is ever sent and no credentials.
 func (e *Env) checkTCP(ctx context.Context, ip string, port int, timeout time.Duration) (PortInfo, bool) {
+	return e.checkTCPAs(ctx, ip, port, kindOf(port), timeout)
+}
+
+const (
+	kindBanner = iota // read what the service sends unprompted
+	kindSilent        // services that never speak first
+	kindHTTP
+	kindHTTPS
+)
+
+func kindOf(port int) int {
+	switch {
+	case port == 80 || port == 8080:
+		return kindHTTP
+	case port == 443 || port == 8443:
+		return kindHTTPS
+	case silentPorts[port]:
+		return kindSilent
+	}
+	return kindBanner
+}
+
+func (e *Env) checkTCPAs(ctx context.Context, ip string, port, kind int, timeout time.Duration) (PortInfo, bool) {
 	addr := net.JoinHostPort(ip, strconv.Itoa(port))
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -69,10 +92,10 @@ func (e *Env) checkTCP(ctx context.Context, ip string, port int, timeout time.Du
 	info := PortInfo{Port: port, Proto: "tcp", Service: serviceNames[port]}
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stop()
-	switch port {
-	case 80, 8080:
+	switch kind {
+	case kindHTTP:
 		info.Banner = httpBanner(conn, ip)
-	case 443, 8443:
+	case kindHTTPS:
 		_ = conn.SetDeadline(time.Now().Add(timeout + 2*time.Second))
 		tc := tls.Client(conn, &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS10}) //nolint:gosec // only headers are read, nothing is trusted or sent
 		hctx, hcancel := context.WithTimeout(ctx, timeout+2*time.Second)
@@ -80,13 +103,11 @@ func (e *Env) checkTCP(ctx context.Context, ip string, port int, timeout time.Du
 		if tc.HandshakeContext(hctx) == nil {
 			info.Banner = httpBanner(tc, ip)
 		}
-	default:
-		if !silentPorts[port] {
-			_ = conn.SetReadDeadline(time.Now().Add(bannerWait))
-			buf := make([]byte, maxBanner)
-			n, _ := conn.Read(buf)
-			info.Banner = cleanBanner(buf[:n], maxBanner)
-		}
+	case kindBanner:
+		_ = conn.SetReadDeadline(time.Now().Add(bannerWait))
+		buf := make([]byte, maxBanner)
+		n, _ := conn.Read(buf)
+		info.Banner = cleanBanner(buf[:n], maxBanner)
 	}
 	return info, true
 }

@@ -123,7 +123,7 @@ func subtract(in, ex []span) []span {
 // parseSpan parses "a.b.c.d", "a.b.c.d/n" or "a.b.c.d-e.f.g.h" (IPv4 only).
 // For a CIDR of /30 or shorter the network and broadcast addresses are left
 // out (they are not hosts).
-func parseSpan(s string) (span, error) {
+func parseSpan(s string, hostsOnly bool) (span, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return span{}, errors.New("empty address range")
@@ -140,7 +140,7 @@ func parseSpan(s string) (span, error) {
 		if p.Bits() < 32 {
 			hi = lo | (^uint32(0) >> uint(p.Bits()))
 		}
-		if p.Bits() <= 30 {
+		if hostsOnly && p.Bits() <= 30 {
 			lo++
 			hi--
 		}
@@ -173,7 +173,7 @@ func parseTargets(targets, exclude []string, allowReserved bool) (*AddrSet, erro
 	}
 	var inc, exc []span
 	for _, t := range targets {
-		sp, err := parseSpan(t)
+		sp, err := parseSpan(t, true)
 		if err != nil {
 			return nil, err
 		}
@@ -190,7 +190,7 @@ func parseTargets(targets, exclude []string, allowReserved bool) (*AddrSet, erro
 		inc = append(inc, sp)
 	}
 	for _, e := range exclude {
-		sp, err := parseSpan(e)
+		sp, err := parseSpan(e, false)
 		if err != nil {
 			return nil, fmt.Errorf("exclude: %w", err)
 		}

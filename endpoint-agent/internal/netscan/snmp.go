@@ -316,6 +316,13 @@ func (e *Env) defaultCommunity(ctx context.Context, ip string, known string) *st
 // retries only happen for those; a host that did not answer anything is only
 // tried with the supplied credentials, once each).
 func (e *Env) snmpProbe(ctx context.Context, ip string, creds []Credential, alive bool) *snmpResult {
+	if e.SNMPHost != nil {
+		h, ok := e.SNMPHost(ip)
+		if !ok {
+			return nil
+		}
+		ip = h
+	}
 	ctx, cancel := context.WithTimeout(ctx, e.snmpBudget())
 	defer cancel()
 	retries := 1
