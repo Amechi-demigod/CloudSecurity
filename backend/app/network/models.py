@@ -150,6 +150,7 @@ class NetworkDevice(TenantMixin, Base):
     firmware: Mapped[str] = mapped_column(String(64), default="")
     serial: Mapped[str] = mapped_column(String(128), default="")
     # What the vulnerability matcher uses: part:vendor:product, version, update.
+    family: Mapped[str] = mapped_column(String(32), default="")  # "IOS XE", "FortiOS", ... (normalize.py)
     cpe_product: Mapped[str] = mapped_column(String(64), default="")
     cpe_version: Mapped[str] = mapped_column(String(64), default="")
     cpe_update: Mapped[str] = mapped_column(String(32), default="")

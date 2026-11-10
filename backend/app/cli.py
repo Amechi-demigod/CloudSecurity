@@ -184,13 +184,14 @@ def migrate(args: argparse.Namespace) -> int:
 def rotate_notification_key(args: argparse.Namespace) -> int:
     from .connectors import org_config
     from .directory import service as directory_svc
+    from .network import service as network_svc
     from .notifications import crypto, dispatcher
 
     with db.get_session(unscoped=True) as s:  # every organisation's channels, connector and directory settings
         try:
             n = dispatcher.rotate_channel_secrets(s)
             c = org_config.rotate_secrets(s)
-            d = directory_svc.rotate_secrets(s)
+            d = directory_svc.rotate_secrets(s) + network_svc.rotate_secrets(s)  # AD service accounts, SNMP credentials
         except (crypto.DecryptionFailed, crypto.EncryptionUnavailable) as exc:
             raise SystemExit(f"error: {exc}") from None
         auth.audit(s, "notification_key_rotated", actor_email="cli", channels=n, connector_configs=c,

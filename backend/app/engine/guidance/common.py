@@ -34,6 +34,7 @@ CWE: dict[int, str] = {
     923: "Improper Restriction of Communication Channel to Intended Endpoints",
     1104: "Use of Unmaintained Third Party Components",
     1188: "Initialization of a Resource with an Insecure Default",
+    1392: "Use of Default Credentials",
     1327: "Binding to an Unrestricted IP Address",
 }
 

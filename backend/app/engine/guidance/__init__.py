@@ -28,8 +28,18 @@ SCORE_BANDS = {"critical": (9.0, 10.0), "high": (7.0, 8.9), "medium": (4.0, 6.9)
 _SAFE = re.compile(r"[A-Za-z0-9._-]{1,128}")
 
 
+def _lookup(rule_id: str) -> dict[str, Any] | None:
+    """Posture guidance, else the network discovery rules' (NET-*, kept apart: they are not posture rules)."""
+    entry = GUIDANCE.get(rule_id)
+    if entry is None and rule_id.startswith("NET-"):
+        from ...network import rules as net_rules
+
+        entry = net_rules.GUIDANCE.get(rule_id)
+    return entry
+
+
 def get(rule_id: str) -> dict[str, Any] | None:
-    return GUIDANCE.get(rule_id)
+    return _lookup(rule_id)
 
 
 def _sub(value: Any, subs: dict[str, str]) -> Any:
@@ -48,7 +58,7 @@ def render(rule_id: str, *, name: str | None, resource_group: str | None, region
            account: str | None) -> dict[str, Any] | None:
     """The guidance for `rule_id` with the asset's own name / group / region / account substituted for the
     placeholders (a value we do not know keeps its placeholder)."""
-    entry = GUIDANCE.get(rule_id)
+    entry = _lookup(rule_id)
     if entry is None:
         return None
     subs = {"<name>": name, "<rg>": resource_group, "<region>": region, "<subscription>": account,

@@ -41,8 +41,22 @@ def device_names(db: Session, ids) -> dict[str, str]:
     return {i: h for i, h in db.execute(select(Device.id, Device.hostname).where(Device.id.in_(ids)))}
 
 
+def network_names(db: Session, ids) -> dict[str, str]:
+    from ..network.models import NetworkDevice
+
+    ids = {i for i in ids if i}
+    if not ids:
+        return {}
+    return {i: (s or h or ip) for i, s, h, ip in db.execute(select(NetworkDevice.id, NetworkDevice.sys_name,
+                                                                    NetworkDevice.hostname, NetworkDevice.ip)
+                                                            .where(NetworkDevice.id.in_(ids)))}
+
+
 def vuln_out(v: Vulnerability, names: dict[str, str] | None = None) -> VulnerabilityOut:
     o = VulnerabilityOut.model_validate(v)
+    if v.network_device_id:
+        o.network_device_name = (names or {}).get(v.network_device_id)
+        o.asset_type = "network_device"
     if v.asset is not None:
         o.asset_name, o.asset_type = v.asset.name, v.asset.type
     if v.device_id:
@@ -52,13 +66,15 @@ def vuln_out(v: Vulnerability, names: dict[str, str] | None = None) -> Vulnerabi
 
 
 def _filtered(stmt, *, status: str, scope: str | None, in_use, internet_exposed, priority, severity, asset_id,
-              device_id, cve_id, kev, package, source):
+              device_id, cve_id, kev, package, source, network_device_id=None):
     if status != "all":
         stmt = stmt.where(Vulnerability.status == status)
     if scope == "device":
         stmt = stmt.where(Vulnerability.device_id.is_not(None))
     elif scope == "asset":
         stmt = stmt.where(Vulnerability.asset_id.is_not(None))
+    elif scope == "network":
+        stmt = stmt.where(Vulnerability.network_device_id.is_not(None))
     if in_use is not None:
         stmt = stmt.where(Vulnerability.in_use.is_(in_use))
     if internet_exposed is not None:
@@ -71,6 +87,8 @@ def _filtered(stmt, *, status: str, scope: str | None, in_use, internet_exposed,
         stmt = stmt.where(Vulnerability.asset_id == asset_id)
     if device_id:
         stmt = stmt.where(Vulnerability.device_id == device_id)
+    if network_device_id:
+        stmt = stmt.where(Vulnerability.network_device_id == network_device_id)
     if cve_id:
         stmt = stmt.where(Vulnerability.cve_id == cve_id)
     if kev is not None:
@@ -85,16 +103,16 @@ def _filtered(stmt, *, status: str, scope: str | None, in_use, internet_exposed,
 
 class Filters:
     def __init__(self, status: str = Query("open", pattern="^(open|resolved|all)$"),
-                 scope: str | None = Query(None, pattern="^(asset|device)$",
-                                           description="asset (cloud / sensor hosts) or device (laptops)"),
+                 scope: str | None = Query(None, pattern="^(asset|device|network)$",
+                                           description="asset (cloud / sensor hosts), device (laptops) or network device"),
                  in_use: bool | None = None, internet_exposed: bool | None = None, priority: str | None = None,
                  severity: str | None = None, asset_id: str | None = None, device_id: str | None = None,
-                 cve_id: str | None = None, kev: bool | None = None,
+                 cve_id: str | None = None, kev: bool | None = None, network_device_id: str | None = None,
                  package: str | None = Query(None, max_length=128, description="software / package name contains"),
                  source: str | None = Query(None, pattern="^(simulated|nvd|osv|eol)$")):
         self.kw = dict(status=status, scope=scope, in_use=in_use, internet_exposed=internet_exposed,
                        priority=priority, severity=severity, asset_id=asset_id, device_id=device_id, cve_id=cve_id,
-                       kev=kev, package=package, source=source)
+                       kev=kev, package=package, source=source, network_device_id=network_device_id)
 
 
 @router.get("", response_model=list[VulnerabilityOut])
@@ -104,7 +122,7 @@ def list_vulns(db: Session = Depends(get_db), f: Filters = Depends(),
     order = {"risk": Vulnerability.risk_score.desc(), "cvss": Vulnerability.cvss.desc(),
              "epss": func.coalesce(Vulnerability.epss, -1.0).desc(), "recent": Vulnerability.first_seen.desc()}[sort]
     vulns = list(db.scalars(stmt.order_by(order, Vulnerability.cvss.desc(), Vulnerability.id).limit(limit)))
-    names = device_names(db, (v.device_id for v in vulns))
+    names = {**device_names(db, (v.device_id for v in vulns)), **network_names(db, (v.network_device_id for v in vulns))}
     return [vuln_out(v, names) for v in vulns]
 
 
@@ -118,6 +136,7 @@ def vulns_by_cve(db: Session = Depends(get_db), f: Filters = Depends(), limit: i
     """Fleet view: one row per CVE with the devices / assets it affects."""
     vulns = list(db.scalars(_filtered(select(Vulnerability), **f.kw)))
     names = device_names(db, (v.device_id for v in vulns))
+    nnames = network_names(db, (v.network_device_id for v in vulns))
     groups: dict[str, list[Vulnerability]] = defaultdict(list)
     for v in vulns:
         groups[v.cve_id].append(v)
@@ -134,10 +153,12 @@ def vulns_by_cve(db: Session = Depends(get_db), f: Filters = Depends(), limit: i
             "assets": sorted({v.asset.name for v in vs if v.asset is not None}),
             "device_count": len({v.device_id for v in vs if v.device_id}),
             "asset_count": len({v.asset_id for v in vs if v.asset_id}),
+            "network_devices": sorted({nnames.get(v.network_device_id, v.network_device_id) for v in vs if v.network_device_id}),
+            "network_device_count": len({v.network_device_id for v in vs if v.network_device_id}),
             "sources": sorted({v.source for v in vs}),
         })
     out.sort(key=lambda g: (not g["kev"], SEV_ORDER.index(g["severity"]) if g["severity"] in SEV_ORDER else 9,
-                            -(g["device_count"] + g["asset_count"]), -g["cvss"]))
+                            -(g["device_count"] + g["asset_count"] + g["network_device_count"]), -g["cvss"]))
     return out[:limit]
 
 
@@ -159,6 +180,7 @@ def vulns_by_software(db: Session = Depends(get_db), f: Filters = Depends(), lim
             "fixed_versions": sorted({v.fixed_version for v in vs if v.fixed_version})[-5:],
             "device_count": len({v.device_id for v in vs if v.device_id}),
             "asset_count": len({v.asset_id for v in vs if v.asset_id}),
+            "network_device_count": len({v.network_device_id for v in vs if v.network_device_id}),
             "max_risk": max(v.risk_score for v in vs),
         })
     out.sort(key=lambda g: (-g["kev_count"], SEV_ORDER.index(g["severity"]) if g["severity"] in SEV_ORDER else 9,
@@ -185,6 +207,8 @@ def vuln_stats(db: Session = Depends(get_db)):
         "total": len(vulns),
         "assets": {"open": len(workload), "affected": len({v.asset_id for v in workload})},
         "devices": {"open": len(devices), "affected": len({v.device_id for v in devices})},
+        "network_devices": {"open": sum(1 for v in vulns if v.network_device_id),
+                            "affected": len({v.network_device_id for v in vulns if v.network_device_id})},
         "kev": {"open": sum(1 for v in vulns if v.kev), "cves": len({v.cve_id for v in vulns if v.kev})},
     }
 

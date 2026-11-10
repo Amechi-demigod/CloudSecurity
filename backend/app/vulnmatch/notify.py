@@ -37,7 +37,7 @@ class Item:
     package: str
     title: str
     fixed_version: str | None
-    target_type: str  # device | asset
+    target_type: str  # device | asset | network
     target_id: str
     target_name: str
 
@@ -62,7 +62,7 @@ def notify(db: Session, items: list[Item], now: datetime, *, reason: str = "foun
         sev = max((i.severity for i in group), key=lambda s: SEV_RANK.get(s, 0))
         if kev and SEV_RANK.get(sev, 0) < SEV_RANK["high"]:
             sev = "high"  # actively exploited: never below high
-        devices = sorted({i.target_name for i in group if i.target_type == "device"})
+        devices = sorted({i.target_name for i in group if i.target_type in ("device", "network")})
         assets = sorted({(i.target_id, i.target_name) for i in group if i.target_type == "asset"})
         packages = sorted({i.package for i in group})
         where = []

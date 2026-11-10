@@ -126,6 +126,7 @@ def upgrade() -> None:
     sa.Column('model', sa.String(length=128), nullable=False),
     sa.Column('firmware', sa.String(length=64), nullable=False),
     sa.Column('serial', sa.String(length=128), nullable=False),
+    sa.Column('family', sa.String(length=32), nullable=False),
     sa.Column('cpe_product', sa.String(length=64), nullable=False),
     sa.Column('cpe_version', sa.String(length=64), nullable=False),
     sa.Column('cpe_update', sa.String(length=32), nullable=False),

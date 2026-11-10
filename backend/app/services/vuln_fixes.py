@@ -571,12 +571,18 @@ def cve_detail(db: Session, cve_id: str, now: datetime | None = None) -> dict[st
                          "package": v.package, "needs": needs, "state": state, "first_seen": z(v.first_seen),
                          "risk_score": v.risk_score, "os_family": d.os_family})
     assets = sorted({(v.asset.name if v.asset else v.asset_id) or "" for v in open_rows if v.asset_id})
+    network = _network_affected(db, open_rows)
     # --- fix guidance
     guidance = _cve_guidance(db, cve_id, cur, msrc_rec, devices)
+    guidance["network"] = _network_guidance(cve_id, network)
+    if network and guidance["network"]["fixed_version"]:
+        guidance["patch_available"] = True
+        if guidance["fix_type"] == "none":
+            guidance["fix_type"] = "firmware_upgrade"
     # --- counts
-    ever = {v.device_id or v.asset_id for v in rows}
-    patched = {v.device_id or v.asset_id for v in rows if v.status == "resolved"} - {
-        v.device_id or v.asset_id for v in open_rows}
+    ever = {v.device_id or v.asset_id or v.network_device_id for v in rows}
+    patched = {v.device_id or v.asset_id or v.network_device_id for v in rows if v.status == "resolved"} - {
+        v.device_id or v.asset_id or v.network_device_id for v in open_rows}
     fams = {d.os_family for d in devices.values()} or {"windows"}
     total_fleet = db.scalar(select(func.count()).select_from(Device).where(
         Device.status == "active", Device.os_family.in_(fams))) or 0
@@ -598,11 +604,13 @@ def cve_detail(db: Session, cve_id: str, now: datetime | None = None) -> dict[st
         "fix_type": guidance["fix_type"], "fixed_in": fixed_in,
         "affected": {"open_devices": open_dev, "fleet_devices": total_fleet, "fleet_label":
                      "/".join(sorted(f.capitalize() if f != "macos" else "macOS" for f in fams)),
-                     "assets": len(assets), "asset_names": assets[:20], "open_findings": len(open_rows)},
+                     "assets": len(assets), "asset_names": assets[:20], "network_devices": len(network),
+                     "open_findings": len(open_rows)},
         "first_seen": z(first_seen), "days_open": _days(open_first, now) if open_first else None,
         "fix_due": None if sla is None else {"due_at": z(sla["due_at"]), "basis": sla["basis"],
                                              "overdue_days": sla["overdue_days"], "days_left": sla["days_left"]},
         "guidance": guidance, "devices": affected[:MAX_DEVICES], "devices_total": len(affected),
+        "network_devices": network[:MAX_DEVICES],
         "progress": {"total": len(ever), "patched": len(patched), "open": len(ever) - len(patched),
                      "restart_pending": states["restart_pending"], "offered": states["offered"],
                      "failing": states["failing"], "not_offered": states["not_offered"]},
@@ -629,7 +637,7 @@ def _cve_guidance(db: Session, cve_id: str, rows: list[Vulnerability], rec: dict
                   devices: dict[str, Device]) -> dict[str, Any]:
     os_rows = [v for v in rows if v.match_key == OS_KEY and v.device_id in devices and
                devices[v.device_id].os_family == "windows"]
-    app_rows = [v for v in rows if v.match_key != OS_KEY]
+    app_rows = [v for v in rows if v.match_key != OS_KEY and not v.network_device_id]
     out: dict[str, Any] = {"windows": None, "apps": [], "fix_type": "none", "patch_available": False,
                            "mitigations": (rec or {}).get("mit") or [], "workarounds": (rec or {}).get("wk") or []}
     if os_rows:
@@ -677,7 +685,7 @@ def _cve_guidance(db: Session, cve_id: str, rows: list[Vulnerability], rec: dict
             out["fix_type"] = "package_upgrade" if out["patch_available"] else "none"
     elif app_rows and os_rows:
         out["fix_type"] = "mixed"
-    elif rows and not os_rows and any(v.match_key == OS_KEY for v in rows):
+    elif rows and not os_rows and any(v.match_key == OS_KEY and not v.network_device_id for v in rows):
         # macOS (or other) operating system
         fx = _max_version([v.fixed_version for v in rows if v.match_key == OS_KEY])
         out["fix_type"] = "os_update" if fx else "none"
@@ -688,6 +696,43 @@ def _cve_guidance(db: Session, cve_id: str, rows: list[Vulnerability], rec: dict
                             "title": f"Update {rows[0].package} to {fx} or later" if fx else
                             f"Install the latest {rows[0].package} update"})
     return out
+
+
+def _network_affected(db: Session, open_rows: list[Vulnerability]) -> list[dict[str, Any]]:
+    """Open network-device rows of a CVE: the device, its firmware and the firmware that fixes it."""
+    from ..network.models import NetworkDevice
+    from ..network.service import display_name
+
+    ids = {v.network_device_id for v in open_rows if v.network_device_id}
+    devs = {d.id: d for d in db.scalars(select(NetworkDevice).where(NetworkDevice.id.in_(ids)))} if ids else {}
+    out = []
+    for v in open_rows:
+        d = devs.get(v.network_device_id or "")
+        if d is None:
+            continue
+        out.append({"network_device_id": d.id, "name": display_name(d), "ip": d.ip, "device_type": d.device_type,
+                    "vendor": d.vendor, "model": d.model, "firmware": v.version or d.firmware,
+                    "fixed_version": v.fixed_version,
+                    "needs": f"Upgrade firmware to {v.fixed_version} or later" if v.fixed_version else
+                    "Follow the vendor advisory (no fixed firmware named yet)",
+                    "first_seen": z(v.first_seen), "risk_score": v.risk_score})
+    out.sort(key=lambda r: r["name"].lower())
+    return out
+
+
+def _network_guidance(cve_id: str, network: list[dict[str, Any]]) -> dict[str, Any]:
+    from ..network.insight import ADVISORY, WORKAROUNDS
+
+    fixed = _max_version([n["fixed_version"] for n in network])
+    vendors = sorted({n["vendor"] for n in network if n["vendor"]})
+    return {"devices": len(network), "vendors": vendors, "fixed_version": fixed,
+            "title": ((f"Upgrade the firmware to {fixed} or later" if fixed else "Follow the vendor advisory")
+                      if network else None),
+            "advisories": [{"label": ADVISORY[v][0], "url": ADVISORY[v][1]} for v in vendors if v in ADVISORY],
+            "workaround": WORKAROUNDS.get(cve_id) if network else None,
+            "steps": (["Back up the device configuration.", "Download the fixed firmware from the vendor support site.",
+                       "Upgrade in a maintenance window, then re-scan the device to confirm the CVE closes."]
+                      if network else [])}
 
 
 def _impact(cve_id, kev, kev_info, epss, open_dev, fleet, groups, vector, severity, cvss, guidance, sla) -> list[str]:

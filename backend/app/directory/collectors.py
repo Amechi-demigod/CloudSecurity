@@ -40,7 +40,11 @@ DIRECTORY_SYNC = "directory_sync"
 DIAGNOSTICS = "collector_diagnostics"
 HEALTH = "collector_health"
 CHECK_FOR_UPDATE = "check_for_update"
-COMMAND_TYPES = (DIRECTORY_SYNC, DIAGNOSTICS, HEALTH, CHECK_FOR_UPDATE)
+# Network discovery (docs/NETWORK_DISCOVERY.md): suggest subnets from AD Sites / DHCP, and scan them. Collector only:
+# endpoint agents are never sent these (services/devices.py has its own, separate command list).
+NETWORK_SUBNETS = "network_subnets"
+NETWORK_SCAN = "network_scan"
+COMMAND_TYPES = (DIRECTORY_SYNC, DIAGNOSTICS, HEALTH, CHECK_FOR_UPDATE, NETWORK_SUBNETS, NETWORK_SCAN)
 
 TOKEN_PREFIX = "cnct_"  # noqa: S105 (public prefixes, not secrets)
 SECRET_PREFIX = "cnc_"  # noqa: S105

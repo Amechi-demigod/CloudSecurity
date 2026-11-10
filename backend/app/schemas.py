@@ -99,6 +99,7 @@ class VulnerabilityOut(ORM):
     id: str
     asset_id: str | None = None
     device_id: str | None = None
+    network_device_id: str | None = None
     cve_id: str
     package: str
     version: str
@@ -118,6 +119,7 @@ class VulnerabilityOut(ORM):
     asset_name: str | None = None
     asset_type: str | None = None
     device_name: str | None = None
+    network_device_name: str | None = None
     source: str = "simulated"
     first_seen: UTCDateTime | None = None
     kev: bool | None = None

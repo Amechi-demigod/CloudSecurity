@@ -97,6 +97,13 @@ class DirectoryScheduler:
         except Exception:
             db.rollback()
             log.exception("collector health check of organisation %s failed", org_id)
+        try:
+            from ..network import service as net_svc
+
+            net_svc.tick_org(db, now)  # queue due network scans on their (online) dedicated collectors
+        except Exception:
+            db.rollback()
+            log.exception("network scans of organisation %s failed", org_id)
         sources = list(db.scalars(select(DirectorySource)))
         if not sources:
             return

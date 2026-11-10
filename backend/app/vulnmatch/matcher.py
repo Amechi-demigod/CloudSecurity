@@ -22,7 +22,7 @@ from . import feeds
 from .cpe import Installed, cve_matches
 from .feeds import FeedError, cpe_key
 from .mapping import map_software
-from .state import ASSET, DEVICE, get_state
+from .state import ASSET, DEVICE, NETWORK, get_state
 from .versions import macos_version, windows_os
 
 log = logging.getLogger(__name__)
@@ -188,6 +188,82 @@ def match_device(db: Session, device: Device, now: datetime | None = None, *, al
         st.checked = out.checked[:2000]
         st.not_checked = out.not_checked[:2000]
         st.os_info = {"cpe": os_info[0], "version": os_info[1], "label": os_info[2]} if os_info else {}
+        st.error = "; ".join(out.errors)[:2000] or None
+    return out
+
+
+# ----------------------------------------------------------------------------- network devices
+def _relax_hardware(configs: list[dict]) -> list[dict]:
+    """NVD often lists a firmware CVE as "ios_xe AND (some Catalyst hardware)". A scan cannot name the hardware in
+    NVD's terms, so non-vulnerable hardware (`h:`) nodes of an AND configuration are dropped: the firmware range
+    decides (the match is flagged in the evidence)."""
+    out = []
+    for cfg in configs or []:
+        nodes = cfg.get("nodes") or []
+        if len(nodes) > 1:
+            keep = [n for n in nodes if not (n.get("cpeMatch") and all(
+                not e.get("vulnerable") and str(e.get("criteria", "")).startswith("cpe:2.3:h:")
+                for e in n["cpeMatch"]))]
+            if len(keep) != len(nodes):
+                cfg = {**cfg, "nodes": keep}
+        out.append(cfg)
+    return out
+
+
+def match_network_device(db: Session, nd, now: datetime | None = None, *, allow_fetch: bool = True) -> MatchOutcome:
+    """Match a scanned network device's firmware (CPE from app/network/normalize.py) against NVD, exactly as
+    endpoint software is matched, and reconcile its Vulnerability rows (network_device_id)."""
+    now = now or utcnow()
+    out = MatchOutcome(NETWORK, nd.id, nd.sys_name or nd.hostname or nd.ip)
+    findings: dict[tuple[str, str], Finding] = {}
+    checked_keys: set[str] = set()
+    installed_keys: set[str] = set()
+    if not nd.cpe_product or not nd.cpe_version:
+        out.not_checked.append({"name": nd.model or nd.vendor or nd.ip, "version": nd.firmware,
+                                "reason": "firmware not identified or no CPE mapping for this vendor"})
+    else:
+        key = nd.cpe_product
+        label = f"{nd.vendor} {nd.family or 'firmware'}".strip()[:128]
+        installed_keys.add(key)
+        data, err = feeds.nvd_product(db, nd.cpe_product, now, allow_fetch=allow_fetch)
+        db.commit()
+        if data is None:
+            out.errors.append(f"{nd.cpe_product}: {err}")
+            out.not_checked.append({"name": label, "version": nd.firmware,
+                                    "reason": "vulnerability data unavailable (feed offline)"})
+        else:
+            inst = Installed(cpe_key(nd.cpe_product), nd.cpe_version, nd.cpe_update)
+            for cve_id, c in data.items():
+                res = cve_matches(_relax_hardware(c.get("cfg") or []), inst, [inst])
+                if res is None:
+                    continue
+                cvss = float(c.get("cvss") or 0.0)
+                evidence = {"criteria": res.criteria, "cpe": nd.cpe_product, "software": label, "firmware": nd.firmware,
+                            "published": c.get("pub"), "vector": c.get("vec") or None, "hardware_not_checked": True,
+                            "range": {k: v for k, v in {"start_including": res.version_start_including,
+                                                         "start_excluding": res.version_start_excluding,
+                                                         "end_including": res.version_end_including,
+                                                         "end_excluding": res.version_end_excluding}.items() if v},
+                            "url": f"https://nvd.nist.gov/vuln/detail/{cve_id}"}
+                if c.get("cwe"):
+                    evidence["cwe"] = c["cwe"]
+                if cvss <= 0:
+                    evidence["score_missing"] = True
+                findings[(key, cve_id)] = Finding(
+                    match_key=key, cve_id=cve_id[:32], package=label, version=(nd.firmware or nd.cpe_version)[:64],
+                    fixed_version=(res.fixed_version or None) and res.fixed_version[:64], title=(c.get("desc") or "")[:255],
+                    cvss=cvss if cvss > 0 else DEFAULT_CVSS, severity=_severity(c.get("sev") or "", cvss), evidence=evidence)
+            checked_keys.add(key)
+            out.checked.append({"name": label, "version": nd.firmware, "product": label, "cpe": nd.cpe_product, "rule": key})
+    _reconcile(db, out, NVD, Vulnerability.network_device_id == nd.id, findings, checked_keys, installed_keys, now,
+               lambda: Vulnerability(id=new_id(), network_device_id=nd.id, source=NVD, first_seen=now), context=None)
+    st = get_state(db, NETWORK, nd.id)
+    if st is not None:
+        st.matched_at = now
+        st.requested_at = None
+        st.checked = out.checked[:50]
+        st.not_checked = out.not_checked[:50]
+        st.os_info = {"cpe": nd.cpe_product, "version": nd.cpe_version, "label": nd.family}
         st.error = "; ".join(out.errors)[:2000] or None
     return out
 
