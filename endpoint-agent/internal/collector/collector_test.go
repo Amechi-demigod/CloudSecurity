@@ -7,6 +7,7 @@ import (
 	"net"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,11 +18,16 @@ import (
 const cid = "0123456789abcdef0123456789abcdef"
 
 type fakeAPI struct {
-	results map[string]map[string]any
-	posts   []string
+	mu        sync.Mutex
+	results   map[string]map[string]any
+	posts     []string
+	netPaths  []string
+	netBodies []string
 }
 
 func (f *fakeAPI) PostJSON(_ context.Context, path string, in, _ any) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.posts = append(f.posts, path)
 	if strings.HasSuffix(path, "/result") {
 		b, _ := json.Marshal(in)
@@ -38,6 +44,13 @@ func (f *fakeAPI) GetJSON(context.Context, string, any) error { return nil }
 func (f *fakeAPI) UploadDirectoryBatch(context.Context, string, string, []byte) error {
 	return errors.New("not used")
 }
+func (f *fakeAPI) UploadNetworkBatch(_ context.Context, path string, body []byte) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.netPaths = append(f.netPaths, path)
+	f.netBodies = append(f.netBodies, string(body))
+	return nil
+}
 
 func cmd(t string, params map[string]any) model.Command {
 	if params == nil {
@@ -47,8 +60,9 @@ func cmd(t string, params map[string]any) model.Command {
 		Nonce: strings.Repeat("n", 32), ExpiresAt: time.Now().Add(time.Hour)}
 }
 
-func TestCommandSetIsExactlyDirectoryWork(t *testing.T) {
-	want := []string{"check_for_update", "collector_diagnostics", "collector_health", "directory_sync"}
+func TestCommandSetIsExactlyDirectoryAndNetworkDiscoveryWork(t *testing.T) {
+	want := []string{"check_for_update", "collector_diagnostics", "collector_health", "directory_sync", "network_scan",
+		"network_subnets"}
 	got := slices.Clone(AllowedCommands)
 	slices.Sort(got)
 	if !slices.Equal(got, want) {

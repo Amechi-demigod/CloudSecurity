@@ -31,6 +31,21 @@ func TestAllowlist(t *testing.T) {
 	}
 }
 
+func TestAgentRejectsNetworkDiscoveryCommands(t *testing.T) {
+	scan := map[string]any{"scan_id": "s1", "targets": []any{"192.0.2.0/28"}, "upload_url": "/api/collector/network/s1"}
+	for _, typ := range []string{"network_scan", "network_subnets"} {
+		for _, params := range []map[string]any{nil, scan} {
+			err := Validate(cmd(typ, params), "dev", now)
+			if !errors.Is(err, ErrRejected) || !strings.Contains(err.Error(), "dedicated network collector") {
+				t.Errorf("%s: %v", typ, err)
+			}
+		}
+		if Allowed(typ) {
+			t.Errorf("%s is in the agent allowlist", typ)
+		}
+	}
+}
+
 func TestValidateBindingExpiryParams(t *testing.T) {
 	if err := Validate(cmd(LockDevice, nil), "other", now); err == nil {
 		t.Error("device binding")
