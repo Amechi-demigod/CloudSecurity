@@ -127,7 +127,7 @@ class DeviceIn(Lenient):
     mac: str | None = None
     mac_vendor: str | None = None
     hostname: str | None = None
-    alive_via: list[Literal["icmp", "arp", "tcp", "snmp"]] = Field(default_factory=list, max_length=3)
+    alive_via: list[Literal["icmp", "arp", "tcp", "snmp"]] = Field(default_factory=list, max_length=4)
     snmp: SnmpIn | None = None
     default_community: Literal["public", "private"] | None = None
     vendor: str | None = None
@@ -142,7 +142,7 @@ class DeviceIn(Lenient):
     @field_validator("alive_via", mode="before")
     @classmethod
     def _alive(cls, v):
-        return [x for x in (v or []) if x in ("icmp", "arp", "tcp", "snmp")]
+        return list(dict.fromkeys(x for x in (v or []) if x in ("icmp", "arp", "tcp", "snmp")))
 
 
 class SummaryIn(Lenient):

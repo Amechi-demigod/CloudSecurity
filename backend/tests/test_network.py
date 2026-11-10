@@ -871,3 +871,19 @@ def test_old_collectors_are_refused_and_scans_get_a_long_expiry(admin):
     dev = {"ip": "10.10.1.5", "alive_via": ["snmp", "icmp"], "default_community": "public",
            "fdb": [{"mac": "aa:bb:cc:dd:ee:01", "port_name": "x", "vlan": 0}]}
     assert post_batch(c, cmd["params"]["scan_id"], 0, [dev]).status_code == 200
+
+
+def test_batch_schema_accepts_collector_output():
+    """A batch marshalled by the Go collector (internal/netscan Batch, every field set) validates.
+    Regression: a host alive via icmp, arp, tcp and snmp (4 entries) was refused, which stopped the scan."""
+    import json
+    from pathlib import Path
+
+    from app.network.schemas import NetBatchIn
+
+    raw = json.loads((Path(__file__).parent / "fixtures" / "network_batch_from_collector.json").read_text())
+    b = NetBatchIn.model_validate(raw)
+    assert b.devices[0].alive_via == ["icmp", "arp", "tcp", "snmp"]
+    assert b.devices[0].default_community == "public" and b.devices[0].snmp.version == "v3"
+    assert b.devices[1].snmp is None and b.devices[1].default_community is None
+    assert b.final and b.summary.alive == 2
