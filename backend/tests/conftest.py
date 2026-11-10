@@ -20,6 +20,8 @@ os.environ.update({
     "DATABASE_URL": TEST_DATABASE_URL,
     "SIMULATION_MODE": "true",
     "SIMULATOR_ENABLED": "false",
+    # The simulated network estate is seeded by its own test (counts elsewhere stay as they were).
+    "NETWORK_DEMO_DATA": "false",
     "INGEST_API_TOKEN": "test-ingest-token",
     "RUNTIME_INGEST_TOKEN": "",
     "INGEST_ALLOW_UNAUTHENTICATED": "false",

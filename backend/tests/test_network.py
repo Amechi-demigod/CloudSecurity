@@ -835,3 +835,25 @@ def test_other_organisation_gets_404(admin):
         fid = s.scalar(select(Finding.id).where(Finding.source == "network"))
         vid = s.scalar(select(Vulnerability.id).where(Vulnerability.network_device_id == did))
     assert acme.get(f"/api/findings/{fid}").status_code == 404 and vid is None
+
+
+# ----------------------------------------------------------------------------- simulated data
+def test_simulated_data_seeds_a_usable_estate(admin):
+    from app.network import demo
+
+    with db.get_session("default") as s:
+        c = demo.seed_collector(s)
+        assert demo.seed(s, c) is True
+        assert demo.seed(s, c) is False  # idempotent
+        s.commit()
+    stats = admin.get("/api/network/summary").json()
+    assert stats["devices"] == len(demo.ROWS) and stats["infrastructure"] >= 8 and stats["with_vulns"] == 5 and stats["kev"] >= 3
+    assert stats["last_scan"]["status"] == "succeeded" and stats["not_in_it_assets"] > 0
+    assert len(admin.get("/api/network/suggestions").json()[0]["items"]) == 5
+    types = {d["device_type"] for d in admin.get("/api/network/devices").json()}
+    assert {"switch", "firewall", "access_point", "printer", "ups", "camera"} <= types
+    findings = admin.get("/api/findings?source=network").json()
+    assert {f["rule_id"] for f in findings} >= {"NET-SNMP-001", "NET-TELNET-001", "NET-HTTP-001", "NET-FW-001", "NET-FDB-001", "NET-SMB-001"}
+    core = next(d for d in admin.get("/api/network/devices").json() if d["name"] == "hq-core-sw01")
+    detail = admin.get(f"/api/network/devices/{core['id']}").json()
+    assert detail["fixes"][0]["target"] == "17.3.8a" and detail["connected"]["rows"] == [] and detail["it_asset"]["asset_tag"]

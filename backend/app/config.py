@@ -83,6 +83,8 @@ class Settings:
     # environment on first start and runs a background runtime-event simulator.
     simulation_mode: bool = field(default_factory=lambda: _bool("SIMULATION_MODE", True))
     simulator_enabled: bool = field(default_factory=lambda: _bool("SIMULATOR_ENABLED", True))
+    # Simulated network discovery estate (app/network/demo.py), seeded with the simulated environment.
+    network_demo_data: bool = field(default_factory=lambda: _bool("NETWORK_DEMO_DATA", True))
     simulator_interval_seconds: float = field(
         default_factory=lambda: float(os.getenv("SIMULATOR_INTERVAL_SECONDS", "15"))
     )
