@@ -9,6 +9,7 @@ from datetime import timedelta
 
 from sqlalchemy import func, select
 
+from .. import config
 from .. import db as dbmod
 from ..connectors.simulated import SimulatedConnector, benign_events, generate_history, pick_scenario, workload_dicts
 from ..locks import LeaderLock
@@ -36,6 +37,10 @@ def seed_if_empty(seed: int = 42, history: bool = True) -> bool:
             for e in generate_history(rng, workloads, utcnow()):
                 ingest_event(db, e, source="simulated")
             db.commit()
+        if config.settings.network_demo_data:
+            from ..network import demo as network_demo
+
+            network_demo.seed(db)  # simulated network discovery (devices, findings, CVEs): its pages demo without a collector
         log.info("Seeded simulated environment: %d assets", len(result.assets))
         return True
 

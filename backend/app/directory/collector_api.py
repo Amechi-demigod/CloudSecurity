@@ -147,6 +147,14 @@ def fetch_commands(c: DirectoryCollector = Depends(current_collector), db: Sessi
                 cmd.status, cmd.completed_at, cmd.output = "cancelled", utcnow(), "directory sync no longer queued"
                 continue
             params = delivered
+        elif cmd.type == coll.NETWORK_SCAN:
+            from ..network import service as net_svc
+
+            delivered = net_svc.delivery_params(db, cmd)  # adds the SNMP secrets to this copy only
+            if delivered is None:
+                cmd.status, cmd.completed_at, cmd.output = "cancelled", utcnow(), "network scan no longer queued"
+                continue
+            params = delivered
         elif cmd.type == coll.DIAGNOSTICS and params.get("auth") == "simple" and params.get("source_id"):
             src = db.get(DirectorySource, params["source_id"])
             cred = svc._credential(src) if src is not None else None
@@ -168,12 +176,17 @@ def command_result(body: CollectorResultIn, command_id: str = Id32(), c: Directo
         cmd = coll.delivered_command(db, c, command_id, body.nonce)
     except coll.CollectorError as e:
         raise HTTPException(e.status, e.detail) from None
-    if body.result_data is not None and len(json.dumps(body.result_data)) > 32768:
+    limit = 262144 if cmd.type == coll.NETWORK_SUBNETS else 32768  # AD Sites / DHCP scopes can be many
+    if body.result_data is not None and len(json.dumps(body.result_data)) > limit:
         raise HTTPException(422, "result_data too large")
     cmd.status, cmd.output, cmd.completed_at = body.status, body.output, utcnow()
     cmd.result_data = body.result_data or None
     if cmd.type == coll.DIRECTORY_SYNC and body.status != "succeeded":
         svc.command_failed(db, cmd, body.output)
+    elif cmd.type == coll.NETWORK_SCAN and body.status != "succeeded":
+        from ..network import service as net_svc
+
+        net_svc.command_failed(db, cmd, body.output)
     elif cmd.type == coll.DIAGNOSTICS:
         coll.record_diagnostics(c, cmd, body.status, body.output, body.result_data)
     audit(db, "directory_collector_command_completed", actor_email=f"collector:{c.name}"[:320],

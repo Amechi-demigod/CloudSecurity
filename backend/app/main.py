@@ -40,6 +40,7 @@ from .directory import api as directory_api
 from .directory import collector_api
 from .directory import deploy_api as directory_deploy_api
 from .directory.scheduler import DirectoryScheduler
+from .network import api as network_api
 from .notifications import api as notifications_api
 from .notifications import settings as notification_settings
 from .notifications.worker import NotificationWorker, set_worker
@@ -200,6 +201,7 @@ def create_app() -> FastAPI:
     app.include_router(device_scripts_api.device_router)  # /api/agent/scripts/*: device credentials
     app.include_router(directory_agent_api.router)  # /api/agent/directory/*: device credential + sync token
     app.include_router(collector_api.router)  # /api/collector/*: dedicated directory collector credential
+    app.include_router(network_api.collector_router)  # /api/collector/network/batches: collector credential
     app.include_router(os_updates_api.agent_router)  # /api/agent/os-updates: device credential
     app.include_router(auth_api.router)  # /login is public; the others depend on the session
     app.include_router(mfa_sso_api.router)  # /login/mfa*, /providers and /sso/* are public
@@ -222,6 +224,7 @@ def create_app() -> FastAPI:
     app.include_router(it_assets_api.router)  # /api/it-assets/*: viewer reads, analyst/admin writes
     app.include_router(directory_api.router)  # /api/directory/*: viewer reads, admin writes
     app.include_router(collector_api.admin_router)  # /api/collectors/*: viewer reads, admin writes
+    app.include_router(network_api.router)  # /api/network/*: viewer reads, analyst exports, admin writes
     app.include_router(directory_deploy_api.router)  # /api/directory/deployments/*: viewer reads, admin writes
     app.include_router(compliance_api.router)  # /api/compliance/*: viewer reads / exports, admin schedules
     app.include_router(agent_updates_api.router)  # /api/updates/*: viewer reads, admin writes (all audited)

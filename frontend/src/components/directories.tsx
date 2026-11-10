@@ -1,5 +1,6 @@
 // Connectors & scans -> Directories: add / edit / monitor directory sources (on-prem Active Directory read by a
 // collector agent; Microsoft Entra ID + Intune and Google Workspace read by the server).
+import { Link } from "react-router-dom";
 import { RefreshCw } from "lucide-react";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import {
@@ -798,7 +799,14 @@ export function DirectoriesSection({ isAdmin }: { isAdmin: boolean }) {
             accounts, non-compliant devices and risky admin accounts.
           </p>
         </div>
-        {isAdmin && list.length > 0 && !adding && <Button onClick={() => setAdding("choose")}>Add directory</Button>}
+        {isAdmin && list.length > 0 && !adding && (
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={() => setAdding("choose")}>Add directory</Button>
+            <Link to="/it-assets/discovery?add=network-scan" className="rounded border border-line bg-surface-2 px-3 py-1.5 text-sm font-medium text-ink hover:bg-line">
+              Add network scan
+            </Link>
+          </div>
+        )}
       </div>
       <ErrorNote error={sources.error} />
       {sources.data && list.length === 0 && !adding && (

@@ -2,6 +2,7 @@ import { Network, Rocket, ShieldAlert } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../../auth/context";
+import NetworkScanWizard from "../../components/networkScan";
 import { Breadcrumbs, Button, Card, Empty, ErrorNote, PageHeader, Select, Stat, Table, Tag } from "../../components/ui";
 import { SourceBadges } from "../../components/directoryShared";
 import {
@@ -163,6 +164,7 @@ export default function Discovery() {
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [actionErr, setActionErr] = useState<string | null>(null);
+  const [addScan, setAddScan] = useUrlState("add");
 
   const summary = useApi(directoryApi.summary, [], 60000);
   const sources = useApi(directoryApi.sources, []);
@@ -257,8 +259,13 @@ export default function Discovery() {
         title="Discovery"
         subtitle="Computers, devices and users from your directories, matched against agent devices and IT assets. Each physical machine is one row, whichever directories know it. Directory computers become IT assets only when you add them."
         actions={
-          s && s.sources > 0 ? (
+          s ? (
             <div className="flex flex-wrap items-center gap-2">
+              {isAdmin && addScan !== "network-scan" && <Button onClick={() => setAddScan("network-scan")}>Add network scan</Button>}
+              <Link to="/network-devices" className="rounded border border-line bg-surface-2 px-3 py-1.5 text-sm font-medium text-ink hover:bg-line">
+                Network devices
+              </Link>
+              {s.sources > 0 && (<>
               <Link to="/connectors#directories" className="rounded border border-line bg-surface-2 px-3 py-1.5 text-sm font-medium text-ink hover:bg-line">
                 Directory sources
               </Link>
@@ -273,10 +280,16 @@ export default function Discovery() {
                   Export CSV
                 </a>
               )}
+              </>)}
             </div>
           ) : undefined
         }
       />
+      {addScan === "network-scan" && isAdmin && (
+        <Card title="Add network scan" className="mb-4">
+          <NetworkScanWizard onCancel={() => setAddScan("")} onDone={() => navigate("/network-scans")} />
+        </Card>
+      )}
     </>
   );
 

@@ -40,7 +40,11 @@ DIRECTORY_SYNC = "directory_sync"
 DIAGNOSTICS = "collector_diagnostics"
 HEALTH = "collector_health"
 CHECK_FOR_UPDATE = "check_for_update"
-COMMAND_TYPES = (DIRECTORY_SYNC, DIAGNOSTICS, HEALTH, CHECK_FOR_UPDATE)
+# Network discovery (docs/NETWORK_DISCOVERY.md): suggest subnets from AD Sites / DHCP, and scan them. Collector only:
+# endpoint agents are never sent these (services/devices.py has its own, separate command list).
+NETWORK_SUBNETS = "network_subnets"
+NETWORK_SCAN = "network_scan"
+COMMAND_TYPES = (DIRECTORY_SYNC, DIAGNOSTICS, HEALTH, CHECK_FOR_UPDATE, NETWORK_SUBNETS, NETWORK_SCAN)
 
 TOKEN_PREFIX = "cnct_"  # noqa: S105 (public prefixes, not secrets)
 SECRET_PREFIX = "cnc_"  # noqa: S105
@@ -158,7 +162,7 @@ def collector_out(c: DirectoryCollector, now: datetime | None = None,
             "run_as": c.run_as, "run_as_kind": c.run_as_kind, "is_domain_controller": c.is_domain_controller,
             "enrolled_at": _iso(c.enrolled_at), "last_seen_at": _iso(c.last_seen_at), "last_ip": c.last_ip,
             "revoked_at": _iso(c.revoked_at), "enrollment_token_id": c.enrollment_token_id,
-            "update_status": c.update_status,
+            "features": [f for f in (c.features or "").split(",") if f], "update_status": c.update_status,
             "update_status_detail": c.update_status_detail, "diagnostics": dict(c.diagnostics or {}),
             "sources": sources or []}
 

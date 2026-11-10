@@ -46,7 +46,7 @@ from ..models import (
 )
 from . import feeds, matcher, msrc
 from .notify import Item, notify
-from .state import ASSET, DEVICE
+from .state import ASSET, DEVICE, NETWORK
 
 log = logging.getLogger(__name__)
 
@@ -166,6 +166,12 @@ def _item(db, v: Vulnerability) -> Item:
         d = db.get(Device, v.device_id)
         return Item(v.cve_id, v.severity, bool(v.kev), v.cvss, v.package, v.title, v.fixed_version, DEVICE,
                     v.device_id, d.hostname if d is not None else v.device_id)
+    if v.network_device_id:
+        from ..network.models import NetworkDevice
+
+        n = db.get(NetworkDevice, v.network_device_id)
+        return Item(v.cve_id, v.severity, bool(v.kev), v.cvss, v.package, v.title, v.fixed_version, NETWORK,
+                    v.network_device_id, (n.sys_name or n.hostname or n.ip) if n is not None else v.network_device_id)
     return Item(v.cve_id, v.severity, bool(v.kev), v.cvss, v.package, v.title, v.fixed_version, ASSET,
                 v.asset_id or "", v.asset.name if v.asset else (v.asset_id or ""))
 
@@ -188,6 +194,13 @@ def queue_targets(db, now: datetime) -> int:
                                   not_checked=[], os_info={},
                                   requested_at=now - timedelta(seconds=s.vuln_debounce_seconds)))
             n += 1
+    from ..network.models import NetworkDevice
+
+    for nid in db.scalars(select(NetworkDevice.id).where(NetworkDevice.cpe_product != "")):
+        if (NETWORK, nid) not in states:
+            db.add(VulnMatchState(target_type=NETWORK, target_id=nid, inventory_hash="", checked=[], not_checked=[],
+                                  os_info={}, requested_at=now - timedelta(seconds=s.vuln_debounce_seconds)))
+            n += 1
     for (aid,) in db.execute(select(AssetPackage.asset_id).distinct()):
         if (ASSET, aid) not in states:
             db.add(VulnMatchState(target_type=ASSET, target_id=aid, inventory_hash="", checked=[], not_checked=[],
@@ -205,9 +218,13 @@ def cleanup(db, now: datetime) -> None:
                                                 VulnMatchState.target_id == d.id))
     device_ids = {i for (i,) in db.execute(select(Device.id))}
     asset_ids = {i for (i,) in db.execute(select(AssetPackage.asset_id).distinct())}
+    from ..network.models import NetworkDevice
+
+    network_ids = {i for (i,) in db.execute(select(NetworkDevice.id))}
     for st in list(db.scalars(select(VulnMatchState))):
         if (st.target_type == DEVICE and st.target_id not in device_ids) or (
-                st.target_type == ASSET and st.target_id not in asset_ids):
+                st.target_type == ASSET and st.target_id not in asset_ids) or (
+                st.target_type == NETWORK and st.target_id not in network_ids):
             db.delete(st)
     db.commit()
 
@@ -222,7 +239,15 @@ def match_due(db, now: datetime, limit: int = MAX_TARGETS_PER_TICK, *, force: bo
     items: list[Item] = []
     for st in due:
         try:
-            if st.target_type == DEVICE:
+            if st.target_type == NETWORK:
+                from ..network.models import NetworkDevice
+
+                nd = db.get(NetworkDevice, st.target_id)
+                if nd is None:
+                    st.requested_at = None
+                    continue
+                out = matcher.match_network_device(db, nd, now)
+            elif st.target_type == DEVICE:
                 d = db.get(Device, st.target_id)
                 if d is None or d.status != "active":
                     st.requested_at = None

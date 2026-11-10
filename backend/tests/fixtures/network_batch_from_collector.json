@@ -1,0 +1,80 @@
+{
+    "scan_id": "run123",
+    "seq": 0,
+    "final": true,
+    "devices": [
+        {
+            "ip": "10.10.1.2",
+            "mac": "70:0f:6a:00:00:41",
+            "mac_vendor": "Cisco",
+            "hostname": "sw1.corp",
+            "alive_via": [
+                "icmp",
+                "arp",
+                "tcp",
+                "snmp"
+            ],
+            "snmp": {
+                "version": "v3",
+                "credential_id": "c1",
+                "sys_name": "HQ-CORE-SW01",
+                "sys_descr": "Cisco IOS Software [Amsterdam], Catalyst L3 Switch Software (CAT9K_IOSXE), Version 17.3.4, RELEASE SOFTWARE (fc3)",
+                "sys_object_id": "1.3.6.1.4.1.9.1.2494",
+                "sys_location": "HQ",
+                "sys_contact": "net",
+                "uptime_s": 123456
+            },
+            "default_community": "public",
+            "vendor": "Cisco",
+            "model": "C9300-48P",
+            "firmware": "17.3.4",
+            "serial": "FOC1",
+            "device_type": "switch",
+            "interfaces": [
+                {
+                    "index": 1,
+                    "name": "Gi1/0/1",
+                    "descr": "x",
+                    "mac": "70:0f:6a:00:00:01",
+                    "oper_up": true,
+                    "speed_mbps": 1000
+                }
+            ],
+            "fdb": [
+                {
+                    "mac": "00:0e:58:00:00:01",
+                    "port_name": "Gi1/0/14",
+                    "vlan": 0
+                }
+            ],
+            "open_ports": [
+                {
+                    "port": 22,
+                    "proto": "tcp",
+                    "service": "ssh",
+                    "banner": "SSH-2.0-Cisco-1.25"
+                },
+                {
+                    "port": 161,
+                    "proto": "udp",
+                    "service": "snmp"
+                }
+            ]
+        },
+        {
+            "ip": "10.10.20.88",
+            "alive_via": [
+                "arp"
+            ],
+            "default_community": null,
+            "open_ports": []
+        }
+    ],
+    "summary": {
+        "addresses": 254,
+        "alive": 2,
+        "snmp": 1,
+        "duration_s": 40,
+        "errors": []
+    }
+}

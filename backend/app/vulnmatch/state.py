@@ -19,6 +19,7 @@ log = logging.getLogger(__name__)
 
 DEVICE = "device"
 ASSET = "asset"
+NETWORK = "network"
 
 
 def inventory_hash(items: Iterable) -> str:
