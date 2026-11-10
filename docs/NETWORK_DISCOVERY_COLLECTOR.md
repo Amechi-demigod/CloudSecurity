@@ -64,7 +64,9 @@ Per address, through a bounded worker pool and a global packet-rate cap
    anything else). Credentials are tried **in the order given; the first that answers
    wins**. It then reads `sysDescr`, `sysObjectID`, `sysName`, `sysLocation`,
    `sysContact`, `sysUpTime`; ENTITY-MIB serial / model / software revision of the first
-   chassis entry; IF-MIB `ifTable` / `ifXTable` (index, name, descr, MAC, oper status,
+   chassis entry; on Sophos Firewall only (`sysObjectID` 1.3.6.1.4.1.2604.5), one GET of
+   SFOS-FIREWALL-MIB `sfosDeviceType`, `sfosDeviceFWVersion` and `sfosDeviceAppKey`
+   (`.2604.5.1.1.2.0` / `.3.0` / `.4.0`) for model, firmware and serial; IF-MIB `ifTable` / `ifXTable` (index, name, descr, MAC, oper status,
    `ifHighSpeed`; at most **512** interfaces); and the bridge forwarding table
    (Q-BRIDGE `dot1qTpFdbPort`, else BRIDGE `dot1dTpFdbPort`, port to interface name via
    `dot1dBasePortIfIndex`; at most **4,096** entries). GETBULK with small

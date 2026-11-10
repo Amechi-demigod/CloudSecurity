@@ -36,6 +36,13 @@ const (
 	oidEntModel    = "1.3.6.1.2.1.47.1.1.1.1.13"
 	entClassChasis = 3
 
+	// SFOS-FIREWALL-MIB (Sophos Firewall): its sysDescr is a generic Linux
+	// string and it has no ENTITY-MIB, so model / firmware / serial come from here.
+	oidSophosFW       = "1.3.6.1.4.1.2604.5"
+	oidSfosDeviceType = "1.3.6.1.4.1.2604.5.1.1.2.0" // e.g. XGS2100_RL01_SFOS
+	oidSfosFWVersion  = "1.3.6.1.4.1.2604.5.1.1.3.0" // e.g. 20.0.3 MR-3-Build427
+	oidSfosAppKey     = "1.3.6.1.4.1.2604.5.1.1.4.0" // the appliance serial
+
 	oidIfDescr      = "1.3.6.1.2.1.2.2.1.2"
 	oidIfPhysAddr   = "1.3.6.1.2.1.2.2.1.6"
 	oidIfOperStatus = "1.3.6.1.2.1.2.2.1.8"
@@ -387,6 +394,10 @@ func (e *Env) snmpDeep(g *gosnmp.GoSNMP, res *snmpResult) {
 		}
 	}
 
+	if res.Info != nil && (res.Info.SysObjectID == oidSophosFW || strings.HasPrefix(res.Info.SysObjectID, oidSophosFW+".")) {
+		sophosInfo(g, res)
+	}
+
 	// IF-MIB: ifDescr defines the (capped) interface set; the other columns
 	// only fill those rows.
 	ifs := map[int]*Interface{}
@@ -479,6 +490,32 @@ func (e *Env) snmpDeep(g *gosnmp.GoSNMP, res *snmpResult) {
 	}
 }
 
+// sophosInfo reads the SFOS device type, firmware and serial (three scalars,
+// one GET). Values it gets replace what ENTITY-MIB said.
+func sophosInfo(g *gosnmp.GoSNMP, res *snmpResult) {
+	pkt, err := g.Get([]string{oidSfosDeviceType, oidSfosFWVersion, oidSfosAppKey})
+	if err != nil || pkt == nil || pkt.Error != gosnmp.NoError {
+		return
+	}
+	for _, v := range pkt.Variables {
+		if v.Type != gosnmp.OctetString {
+			continue
+		}
+		s := pduString(v, 128)
+		if s == "" {
+			continue
+		}
+		switch strings.TrimPrefix(v.Name, ".") {
+		case oidSfosDeviceType:
+			res.Model = s
+		case oidSfosFWVersion:
+			res.Firmware = s
+		case oidSfosAppKey:
+			res.Serial = s
+		}
+	}
+}
+
 func validIndex(s string) bool {
 	for _, r := range s {
 		if (r < '0' || r > '9') && r != '.' {
@@ -495,7 +532,7 @@ var enterprises = map[int]string{9: "Cisco", 11: "HP", 25: "Hewlett Packard Ente
 	1916: "Extreme Networks", 1991: "Brocade", 2011: "Huawei", 2620: "Check Point", 2636: "Juniper", 3224: "NetScreen",
 	3375: "F5", 3955: "Linksys", 4526: "Netgear", 5951: "Citrix", 6027: "Dell", 6486: "Alcatel-Lucent",
 	6876: "VMware", 8072: "Net-SNMP", 10002: "Ubiquiti", 11863: "TP-Link", 12356: "Fortinet", 14179: "Aruba",
-	14988: "MikroTik", 25461: "Palo Alto Networks", 25506: "H3C", 30065: "Arista", 41112: "Ubiquiti"}
+	2604: "Sophos", 14988: "MikroTik", 25461: "Palo Alto Networks", 25506: "H3C", 30065: "Arista", 41112: "Ubiquiti"}
 
 func enterpriseOf(oid string) int {
 	const pre = "1.3.6.1.4.1."
@@ -526,6 +563,8 @@ func fillHints(r *snmpResult) {
 		return false
 	}
 	switch {
+	case r.Vendor == "Sophos": // SFOS reports a plain Linux sysDescr
+		r.DeviceType = "firewall"
 	case has("printer", "laserjet", "officejet", "jetdirect", "imagerunner", "bizhub"):
 		r.DeviceType = "printer"
 	case has("firewall", "fortigate", "pan-os", "asa ", "checkpoint", "sonicwall"):
