@@ -239,10 +239,12 @@ class Finding(TenantMixin, Base):
 
 
 class Vulnerability(TenantMixin, Base):
-    """A CVE on a package inside a workload (asset) or on an endpoint device,
-    enriched with runtime context. Exactly one of asset_id / device_id is set:
-    cloud workloads and sensor-reported Linux hosts are assets, laptops running
-    the endpoint agent are devices (docs/VULNERABILITIES.md)."""
+    """A CVE on a package inside a workload (asset), on an endpoint device or on a
+    network device (switch, firewall, ...), enriched with runtime context. Exactly
+    one of asset_id / device_id / network_device_id is set: cloud workloads and
+    sensor-reported Linux hosts are assets, laptops running the endpoint agent are
+    devices, scanned switches / routers / firewalls are network devices
+    (docs/VULNERABILITIES.md, docs/NETWORK_DISCOVERY.md)."""
 
     __tablename__ = "vulnerabilities"
     __table_args__ = (
@@ -256,6 +258,9 @@ class Vulnerability(TenantMixin, Base):
                                                                          name="fk_vulnerabilities_device_id"),
                                                   index=True,
                                                   nullable=True)
+    network_device_id: Mapped[str | None] = mapped_column(
+        String(32), ForeignKey("network_devices.id", ondelete="CASCADE", name="fk_vulnerabilities_network_device_id"),
+        index=True, nullable=True)
     cve_id: Mapped[str] = mapped_column(String(32), index=True)
     package: Mapped[str] = mapped_column(String(128))
     version: Mapped[str] = mapped_column(String(64))
@@ -1169,4 +1174,5 @@ class OidcAuthRequest(Base):
 from .asset_lifecycle import models as _asset_lifecycle_models  # noqa: E402, F401
 from .compliance import models as _compliance_models  # noqa: E402, F401
 from .directory import models as _directory_models  # noqa: E402, F401
+from .network import models as _network_models  # noqa: E402, F401
 from .notifications import models as _notification_models  # noqa: E402, F401
