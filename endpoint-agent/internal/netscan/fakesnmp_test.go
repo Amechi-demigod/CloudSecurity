@@ -63,7 +63,6 @@ func newFakeAgent(t *testing.T, communities ...string) *fakeAgent {
 	for _, c := range communities {
 		a.accept[c] = true
 	}
-	go a.serve()
 	t.Cleanup(func() { _ = conn.Close() })
 	return a
 }
@@ -80,8 +79,10 @@ func (a *fakeAgent) set(oid string, typ gosnmp.Asn1BER, v any) {
 
 func (a *fakeAgent) str(oid, v string) { a.set(oid, gosnmp.OctetString, []byte(v)) }
 
+// finish sorts the MIB and starts answering (the MIB is immutable from here on).
 func (a *fakeAgent) finish() {
 	sort.Slice(a.oids, func(i, j int) bool { return oidLess(a.oids[i], a.oids[j]) })
+	go a.serve()
 }
 
 // populateSystem fills the system group and a chassis entity.

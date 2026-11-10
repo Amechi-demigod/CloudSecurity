@@ -24,6 +24,7 @@ import (
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/backoff"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/directory"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/model"
+	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/netscan"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/state"
 	"github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/update"
 )
@@ -34,13 +35,22 @@ const (
 	CmdDiagnostics    = "collector_diagnostics"
 	CmdHealth         = "collector_health"
 	CmdCheckForUpdate = "check_for_update"
+	// Network discovery (internal/netscan): read-only subnet suggestions and
+	// a bounded ping / port / SNMP scan. They run ONLY here, never in the
+	// endpoint agent.
+	CmdNetworkSubnets = netscan.CmdSubnets
+	CmdNetworkScan    = netscan.CmdScan
 )
 
 // AllowedCommands is the complete command set of the collector.
-var AllowedCommands = []string{CmdDirectorySync, CmdDiagnostics, CmdHealth, CmdCheckForUpdate}
+var AllowedCommands = []string{CmdDirectorySync, CmdDiagnostics, CmdHealth, CmdCheckForUpdate, CmdNetworkSubnets,
+	CmdNetworkScan}
 
 // Features advertised in the heartbeat.
-const Features = "directory_sync,collector_diagnostics,sealed_ldap"
+const Features = "directory_sync,collector_diagnostics,sealed_ldap,network_discovery"
+
+// maxScanDuration bounds a scan whose command carries no earlier deadline.
+const maxScanDuration = 6 * time.Hour
 
 const (
 	heartbeatInterval = 5 * time.Minute
@@ -69,6 +79,7 @@ type API interface {
 	PostJSON(ctx context.Context, path string, in, out any) error
 	GetJSON(ctx context.Context, path string, out any) error
 	UploadDirectoryBatch(ctx context.Context, path, token string, gz []byte) error
+	UploadNetworkBatch(ctx context.Context, path string, body []byte) error
 }
 
 // Outcome of one command.
@@ -86,8 +97,12 @@ type Collector struct {
 	Facts       func() Facts
 	Diagnostics func(identity string) *directory.Diagnostics
 	Connect     directory.Connector // nil: the real LDAP backends
-	Updater     *update.Updater
-	Restart     func()
+	// NetEnv builds the network-scan environment (nil: the real ICMP / ARP /
+	// TCP / SNMP); SubnetEnv builds the AD / DHCP reader (nil: the real one).
+	NetEnv    func() *netscan.Env
+	SubnetEnv func(domain string) (*netscan.SubnetEnv, error)
+	Updater   *update.Updater
+	Restart   func()
 
 	mu        sync.Mutex
 	st        *state.State
@@ -95,6 +110,8 @@ type Collector struct {
 	offer     *update.Offer
 	dirBusy   atomic.Bool
 	dirWG     sync.WaitGroup
+	scanWG    sync.WaitGroup
+	scanBusy  atomic.Bool
 	baseCtx   context.Context
 	nextHeart time.Time
 }
@@ -123,6 +140,9 @@ func Validate(c model.Command, collectorID string, now time.Time) error {
 		return err
 	case CmdDiagnostics:
 		_, err := directory.ParseDiagParams(c.Params)
+		return err
+	case CmdNetworkScan:
+		_, err := netscan.ParseParams(c.Params)
 		return err
 	default:
 		if len(c.Params) != 0 {
@@ -203,6 +223,12 @@ func (c *Collector) handle(ctx context.Context, cmd model.Command) {
 			return
 		}
 	}
+	if cmd.Type == CmdNetworkScan {
+		// A scan can take hours: it runs in the background (polling and
+		// heartbeats continue) and reports its result when it finishes.
+		c.startScan(ctx, cmd)
+		return
+	}
 	log.Info("executing command")
 	o := c.Execute(ctx, cmd)
 	log.Info("command finished", "status", o.Status)
@@ -217,6 +243,14 @@ func (c *Collector) Execute(ctx context.Context, cmd model.Command) Outcome {
 		return c.directorySync(cmd)
 	case CmdDiagnostics:
 		return c.diagnostics(ctx, cmd)
+	case CmdNetworkSubnets:
+		return c.networkSubnets(ctx)
+	case CmdNetworkScan:
+		p, path, o := c.prepareScan(cmd)
+		if p == nil {
+			return o
+		}
+		return c.runScan(ctx, cmd, p, path)
 	case CmdHealth:
 		b, _ := json.Marshal(c.Facts())
 		return Outcome{Status: "succeeded", Output: string(b)}
@@ -280,7 +314,12 @@ func (c *Collector) diagnostics(ctx context.Context, cmd model.Command) Outcome 
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
 	res := mk(c.Facts().RunAs).Run(ctx, p)
-	o := Outcome{Status: "succeeded", Output: "all checks passed", ResultData: res}
+	// The "network" section (API availability, last scan summary) rides along.
+	type withNetwork struct {
+		directory.DiagResult
+		Network netscan.Diag `json:"network"`
+	}
+	o := Outcome{Status: "succeeded", Output: "all checks passed", ResultData: withNetwork{res, netscan.Diagnostics()}}
 	if !res.OK() {
 		o.Status, o.Output = "failed", "one or more checks failed"
 	}
@@ -290,7 +329,7 @@ func (c *Collector) diagnostics(ctx context.Context, cmd model.Command) Outcome 
 // WaitDirectorySync waits up to d for a running sync.
 func (c *Collector) WaitDirectorySync(d time.Duration) {
 	done := make(chan struct{})
-	go func() { c.dirWG.Wait(); close(done) }()
+	go func() { c.dirWG.Wait(); c.scanWG.Wait(); close(done) }()
 	select {
 	case <-done:
 	case <-time.After(d):
@@ -355,8 +394,8 @@ func (c *Collector) maybeUpdate(ctx context.Context) bool {
 	o := c.offer
 	c.offer = nil
 	c.mu.Unlock()
-	if o == nil || c.Updater == nil || c.dirBusy.Load() {
-		if o != nil && c.dirBusy.Load() {
+	if o == nil || c.Updater == nil || c.dirBusy.Load() || c.scanBusy.Load() {
+		if o != nil && (c.dirBusy.Load() || c.scanBusy.Load()) {
 			c.mu.Lock()
 			c.offer = o // after the running sync
 			c.mu.Unlock()

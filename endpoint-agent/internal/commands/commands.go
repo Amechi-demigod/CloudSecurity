@@ -130,6 +130,13 @@ func IncidentIDParam(p map[string]any) (string, error) {
 	return s, nil
 }
 
+// collectorOnly are commands that exist only in the dedicated collector
+// (internal/collector, internal/netscan: network discovery scans from a
+// server-side-chosen range). The agent names them in its rejection so an
+// operator who aimed one at an endpoint agent gets a clear answer. The strings
+// are repeated here on purpose: the agent must not import internal/netscan.
+var collectorOnly = map[string]bool{"network_scan": true, "network_subnets": true}
+
 // Allowed reports whether a command type is in the allowlist.
 func Allowed(t string) bool {
 	_, ok := allowedParams[t]
@@ -142,6 +149,10 @@ var ErrRejected = errors.New("rejected")
 // Validate checks a delivered command against the allowlist, the device
 // binding and the expiry. `now` should be server-time adjusted.
 func Validate(c model.Command, deviceID string, now time.Time) error {
+	if collectorOnly[c.Type] {
+		return fmt.Errorf("%w: %s runs only on the dedicated network collector (cnapp-collector), never in the endpoint agent",
+			ErrRejected, c.Type)
+	}
 	if !Allowed(c.Type) {
 		return fmt.Errorf("%w: command type %q is not in the agent allowlist", ErrRejected, c.Type)
 	}

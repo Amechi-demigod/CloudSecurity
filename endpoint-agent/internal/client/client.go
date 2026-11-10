@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -332,6 +333,28 @@ func (c *Client) UploadDirectoryBatch(ctx context.Context, path, token string, g
 	}
 	return c.do(ctx, http.MethodPost, path, "application/json", gz,
 		map[string]string{"Content-Encoding": "gzip", "X-Directory-Sync-Token": token}, nil)
+}
+
+// UploadNetworkBatch posts one JSON batch of a network_scan run
+// (internal/netscan) with the collector's credential. Only paths under
+// <prefix>/ of the enrolled server are accepted (the scan's upload_url as
+// delivered by the server, reduced to a path); the body is sent as is so a
+// retry of the same batch is byte-identical.
+func (c *Client) UploadNetworkBatch(ctx context.Context, path string, body []byte) error {
+	if c.prefix != "/api/collector" || !strings.HasPrefix(path, c.prefix+"/") || strings.Contains(path, "..") ||
+		strings.ContainsAny(path, "?# \\") {
+		return fmt.Errorf("refusing to upload to %q", path)
+	}
+	return c.do(ctx, http.MethodPost, path, "application/json", body, nil, nil)
+}
+
+// Host is the enrolled server's host[:port] (used to validate absolute URLs
+// the server sends, e.g. a scan's upload_url).
+func (c *Client) Host() string {
+	if u, err := url.Parse(c.base); err == nil {
+		return u.Host
+	}
+	return ""
 }
 
 // Fetch downloads an /api/agent/updates/ or /api/agent/scripts/ resource into
