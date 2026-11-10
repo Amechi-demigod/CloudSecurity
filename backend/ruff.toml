@@ -19,3 +19,5 @@ ignore = [
 "app/engine/guidance/*.py" = ["E501"]
 # Network discovery: vendor tables, regexes and NET-* guidance are data.
 "app/network/*.py" = ["E501"]
+"tests/test_network.py" = ["E501", "F811"]  # long fixtures; the admin fixture is imported from test_directory_collectors
+"migrations/versions/0028_network_discovery.py" = ["E501"]

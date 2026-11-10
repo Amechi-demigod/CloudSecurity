@@ -164,7 +164,7 @@ def test_server_refuses_other_command_types(admin, bad):
         assert e.value.status == 422
         assert s.scalar(select(CollectorCommand.id)) is None
     assert set(coll.COMMAND_TYPES) == {"directory_sync", "collector_diagnostics", "collector_health",
-                                       "check_for_update"}
+                                       "check_for_update", "network_subnets", "network_scan"}
     # A collector id is not a device: the device command API does not know it.
     r = admin.post(f"/api/devices/{cid}/commands", json={"type": "lock_device", "reason": "nope"})
     assert r.status_code in (404, 422)

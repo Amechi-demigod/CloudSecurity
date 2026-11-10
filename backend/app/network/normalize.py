@@ -115,15 +115,15 @@ _ARUBAOS = re.compile(r"ArubaOS.*?MODEL:\s*([\w-]+).*?Version\s+([0-9][0-9.]*)",
 _ARUBA_SW = re.compile(r"(?:Aruba|HPE?|ProCurve)\s+(?:\w+\s+)?(?:J[A-Z]?\d+[A-Z]?\s+)?([\w+-]+)\s+Switch.*?revision\s+"
                        r"([A-Z]{1,2}\.\d+\.\d+\.\d+)", re.I | re.S)
 _ARUBA_CX = re.compile(r"Aruba(?:OS-CX)?\s+(\S+)\s+Switch.*?(?:Version|FL)\.?\s*([A-Z]{1,2}\.\d+\.\d+\.\d+)", re.I | re.S)
-_UBNT_VER = re.compile(r"\b(\d+\.\d+\.\d+(?:\.\d+)?)\b")
+_UBNT_VER = re.compile(r"\bv?(\d+\.\d+\.\d+(?:\.\d+)?)\b")
 _ROUTEROS = re.compile(r"RouterOS\s+([A-Za-z0-9+_-]+)(?:.*?\b(\d+\.\d+(?:\.\d+)?)\b)?", re.I | re.S)
 _BROTHER = re.compile(r"Brother\s+([\w-]+),?\s*Firmware Ver\.?\s*([0-9.]+)", re.I)
 _CANON = re.compile(r"Canon\s+([\w -]+?)\s*(?:/P|/ ?\d|$)", re.I)
 _RICOH = re.compile(r"RICOH\s+(.+?)\s+(\d+\.\d+(?:\.\d+)?)(?:\s|/|$)", re.I)
 _XEROX = re.compile(r"Xerox\s+([\w ]+?)(?:;|,|\s+SW|$)", re.I)
-_HP_PRINT = re.compile(r"HP\s+(?:ETHERNET MULTI-ENVIRONMENT.*?JETDIRECT,\s*(\w+).*?EEPROM\s+(\S+)|"
+_HP_PRINT = re.compile(r"HP\s+(?:ETHERNET MULTI-ENVIRONMENT.*?JETDIRECT,\s*(\w+).*?EEPROM\s+([\w.-]+)|"
                        r"((?:Color\s+)?LaserJet[\w \-]+|OfficeJet[\w \-]+|PageWide[\w \-]+))", re.I | re.S)
-_APC = re.compile(r"APC.*?MB:v?([\d.]+).*?PF:v?([\d.]+)(?:.*?MN:(\S+))?(?:.*?SN:\s*(\S+))?", re.I | re.S)
+_APC = re.compile(r"APC.*?MB:v?([\d.]+).*?PF:v?([\d.]+)(?:.*?MN:(\S+))?(?:.*?SN:\s*([\w-]+))?", re.I | re.S)
 
 
 def normalize(sys_descr: str = "", sys_object_id: str = "", mac: str = "", open_ports: list[int] | None = None,

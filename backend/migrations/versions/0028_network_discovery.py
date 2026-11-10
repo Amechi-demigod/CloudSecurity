@@ -13,7 +13,6 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-
 revision: str = '0028_network_discovery'
 down_revision: str | None = '0027_directory_collectors'
 branch_labels: str | Sequence[str] | None = None

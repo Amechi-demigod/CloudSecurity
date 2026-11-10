@@ -190,8 +190,8 @@ def collector_for(db: Session, collector_id: str | None) -> DirectoryCollector:
     return c
 
 
-def require_online(c: DirectoryCollector) -> None:
-    if not coll.is_healthy(c):
+def require_online(c: DirectoryCollector, now: datetime | None = None) -> None:
+    if not coll.is_healthy(c, now):
         raise NetworkError(409, f"collector {c.name} is not online (seen in the last 10 minutes)")
 
 
@@ -226,7 +226,7 @@ def queue_scan(db: Session, scan: NetworkScan, *, trigger: str, actor: str | Non
     """Queue a saved scan on its collector (caller commits)."""
     now = now or utcnow()
     c = collector_for(db, scan.collector_id)
-    require_online(c)
+    require_online(c, now)
     if active_run(db, scan.id) is not None:
         raise NetworkError(409, "this scan is already queued or running")
     creds = credentials_by_id(db, list(scan.credential_ids or []))
@@ -395,7 +395,7 @@ def tick_org(db: Session, now: datetime) -> dict[str, list[str]]:
             if done or active_run(db, scan.id) is not None:
                 continue
             c = db.get(DirectoryCollector, scan.collector_id) if scan.collector_id else None
-            if c is None or not coll.is_healthy(c):
+            if c is None or not coll.is_healthy(c, now):
                 if now - slot >= SCHEDULE_GRACE:  # give up on this slot (recorded, so the schedule moves on)
                     run = NetworkScanRun(scan_id=scan.id, name=scan.name, trigger="scheduled", status="queued",
                                          queued_at=now, requested_by=SYSTEM)
@@ -669,12 +669,12 @@ def fdb_view(db: Session, sw: NetworkDevice, known: set[str]) -> list[dict[str, 
     for r in rows:
         per_port[r.port_name] = per_port.get(r.port_name, 0) + 1
     out = []
+    baseline = min((r.first_seen for r in rows), default=sw.first_seen)  # the first table we saw is not "new"
     for r in rows:
         if r.mac in known or per_port.get(r.port_name, 0) > UPLINK_PORT_MACS:
             continue
         out.append({"mac": r.mac, "vendor": normalize.mac_vendor(r.mac), "port": r.port_name, "vlan": r.vlan,
-                    "first_seen": r.first_seen.isoformat() + "Z", "new": r.first_seen > sw.first_seen + timedelta(minutes=1)
-                    and utcnow() - r.first_seen <= NEW_WINDOW})
+                    "first_seen": r.first_seen.isoformat() + "Z", "new": r.first_seen > baseline and utcnow() - r.first_seen <= NEW_WINDOW})
     return out
 
 
