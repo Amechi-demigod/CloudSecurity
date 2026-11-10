@@ -6,6 +6,8 @@ UPSes, cameras, servers), identifies them, checks their firmware for CVEs and fl
 makes light TCP connections to a fixed list of ports, reads the SNMP system group and (when SNMP works) the interface
 and forwarding tables.
 
+The collector half is documented in [NETWORK_DISCOVERY_COLLECTOR.md](NETWORK_DISCOVERY_COLLECTOR.md).
+
 Scans run on the existing **dedicated collector** (Windows, `cnct_` enrollment, `cnc_` credential, see
 [DIRECTORY_DISCOVERY.md](DIRECTORY_DISCOVERY.md#dedicated-collectors)), never on endpoint agents. Endpoint agents can
 never be sent the two new command types.
@@ -62,7 +64,7 @@ The **delivered** copy (the `GET /api/collector/commands` response only; never s
 other API) adds the secrets per credential: v3 `auth_password`, `priv_password`; v2c `community`.
 
 Credentials are stored encrypted with the mechanism directory sources use for their service-account secret (Fernet,
-`NOTIFICATIONS_ENCRYPTION_KEY`) and are write-only in the API. They are re-encrypted by `cnapp-ctl rotate-notification-key`.
+`NOTIFICATIONS_ENCRYPTION_KEY`) and are write-only in the API. They are re-encrypted by `python -m app.cli rotate-notification-key`.
 
 ### Batches
 
@@ -102,6 +104,13 @@ not found / not yours; `409` not delivered yet or already finished; `413`/`422` 
 
 Command result (`POST /api/collector/commands/{id}/result`): for `network_scan` a `failed` / `rejected` status fails the
 run with the command output; success needs no result data (the final batch finishes the run).
+
+## Refinements agreed with the collector
+
+`alive_via` also allows `snmp`; `default_community` is always present; `snmp` only when a supplied credential worked;
+`vlan` 0 = unknown. A `network_scan` command expires 6 hours after queueing (the collector stops the scan then);
+`network_subnets` after 30 minutes. Collectors must list the `network_discovery` feature (collector 1.6.0+), else the API
+answers 409 "update the collector". At most 16 credentials per scan; the API returns 4xx on a batch only for invalid input.
 
 ## Validation (server side)
 

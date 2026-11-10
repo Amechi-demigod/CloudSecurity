@@ -43,7 +43,8 @@ NETWORK_SCAN = coll.NETWORK_SCAN
 NETWORK_SUBNETS = coll.NETWORK_SUBNETS
 PICKUP_TIMEOUT = timedelta(minutes=15)
 STALL_TIMEOUT = timedelta(minutes=30)
-COMMAND_TTL = timedelta(minutes=30)
+COMMAND_TTL = timedelta(minutes=30)  # network_subnets
+SCAN_TTL = timedelta(hours=6)  # the collector stops a scan at the command's expires_at: the latest acceptable end
 TIMEOUT_MS = 1500
 SCHEDULE_GRACE = timedelta(hours=4)
 UPLINK_PORT_MACS = 24  # a switch port that learned more MACs than this is treated as an uplink / trunk
@@ -191,6 +192,8 @@ def collector_for(db: Session, collector_id: str | None) -> DirectoryCollector:
 
 
 def require_online(c: DirectoryCollector, now: datetime | None = None) -> None:
+    if "network_discovery" not in (c.features or "").split(","):
+        raise NetworkError(409, f"collector {c.name} does not support network discovery: update it to 1.6.0 or later")
     if not coll.is_healthy(c, now):
         raise NetworkError(409, f"collector {c.name} is not online (seen in the last 10 minutes)")
 
@@ -207,7 +210,7 @@ def _queue(db: Session, c: DirectoryCollector, run: NetworkScanRun, creds: list[
     db.flush()
     run.params = stored_params(run.id, targets=targets, exclude=exclude, port_check=port_check,
                                concurrency=concurrency, creds=creds)
-    cmd = coll.new_command(db, c, NETWORK_SCAN, run.params, reason, actor=actor or SYSTEM, ttl=COMMAND_TTL)
+    cmd = coll.new_command(db, c, NETWORK_SCAN, run.params, reason, actor=actor or SYSTEM, ttl=SCAN_TTL)
     run.command_id = cmd.id
     return run
 

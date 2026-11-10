@@ -201,7 +201,7 @@ def test_every_rule_has_complete_guidance():
 
 # ----------------------------------------------------------------------------- API helpers
 def make_collector(admin, host="COLL01"):
-    c, cid = enroll_collector(admin, host, machine=host[-1] * 64)
+    c, cid = enroll_collector(admin, host, machine=host[-1] * 64, features="directory_sync,network_discovery")
     return c, cid
 
 
@@ -857,3 +857,17 @@ def test_simulated_data_seeds_a_usable_estate(admin):
     core = next(d for d in admin.get("/api/network/devices").json() if d["name"] == "hq-core-sw01")
     detail = admin.get(f"/api/network/devices/{core['id']}").json()
     assert detail["fixes"][0]["target"] == "17.3.8a" and detail["connected"]["rows"] == [] and detail["it_asset"]["asset_tag"]
+
+
+def test_old_collectors_are_refused_and_scans_get_a_long_expiry(admin):
+    old, old_id = enroll_collector(admin, "OLD01", machine="d" * 64)  # no network_discovery feature
+    assert admin.post("/api/network/test", json={"collector_id": old_id, "address": "10.0.0.5"}).status_code == 409
+    assert "1.6.0" in admin.post("/api/network/suggestions/refresh", json={"collector_id": old_id}).text
+    c, cid = make_collector(admin)
+    assert "network_discovery" in next(x for x in admin.get("/api/collectors").json() if x["id"] == cid)["features"]
+    scan, cmd = scan_run(admin, c, cid)
+    exp = datetime.fromisoformat(cmd["expires_at"].rstrip("Z"))
+    assert timedelta(hours=5, minutes=50) < exp - utcnow() <= timedelta(hours=6)
+    dev = {"ip": "10.10.1.5", "alive_via": ["snmp", "icmp"], "default_community": "public",
+           "fdb": [{"mac": "aa:bb:cc:dd:ee:01", "port_name": "x", "vlan": 0}]}
+    assert post_batch(c, cmd["params"]["scan_id"], 0, [dev]).status_code == 200

@@ -195,13 +195,13 @@ def seed_collector(db: Session) -> DirectoryCollector:
                            status="active", hostname="HQ-COLLECTOR01", dns_hostname="hq-collector01.corp.example.com", domain="corp.example.com",
                            os_name="Windows Server 2022 Standard", os_version="10.0.20348", architecture="amd64", version="1.5.0",
                            run_as="CORP\\HQ-COLLECTOR01$", run_as_kind="computer_account", enrolled_at=now - timedelta(days=30),
-                           last_seen_at=now, last_ip="10.10.1.30", features="directory_sync,network_scan")
+                           last_seen_at=now, last_ip="10.10.1.30", features="directory_sync,network_discovery")
     db.add(c)
     c2 = DirectoryCollector(name="BR-COLLECTOR02", secret_hash=coll.hash_secret(secrets.token_hex(16)), machine_id="sim" * 21 + "y",
                             status="active", hostname="BR-COLLECTOR02", dns_hostname="br-collector02.corp.example.com", domain="corp.example.com",
                             os_name="Windows Server 2019 Standard", os_version="10.0.17763", architecture="amd64", version="1.5.0",
                             run_as="CORP\\BR-COLLECTOR02$", run_as_kind="computer_account", enrolled_at=now - timedelta(days=20),
-                            last_seen_at=now, last_ip="10.30.0.30", features="directory_sync,network_scan")
+                            last_seen_at=now, last_ip="10.30.0.30", features="directory_sync,network_discovery")
     db.add(c2)
     db.flush()
     data = {"ad_sites": [{"site": "HQ", "subnet": "10.10.1.0/24", "description": "HQ users"},

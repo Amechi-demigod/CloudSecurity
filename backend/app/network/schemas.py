@@ -49,7 +49,7 @@ class ScanIn(BaseModel):
     target_notes: dict[str, Annotated[str, StringConstraints(max_length=128)]] = Field(default_factory=dict)
     port_check: bool = True
     concurrency: Literal[20, 64] = 20
-    credential_ids: list[Id32] = Field(default_factory=list, max_length=20)
+    credential_ids: list[Id32] = Field(default_factory=list, max_length=16)
     schedule: Literal["daily", "weekly", "manual"] = "daily"
     schedule_time: Hhmm = "02:00"
     schedule_weekday: int = Field(0, ge=0, le=6)
@@ -127,7 +127,7 @@ class DeviceIn(Lenient):
     mac: str | None = None
     mac_vendor: str | None = None
     hostname: str | None = None
-    alive_via: list[Literal["icmp", "arp", "tcp"]] = Field(default_factory=list, max_length=3)
+    alive_via: list[Literal["icmp", "arp", "tcp", "snmp"]] = Field(default_factory=list, max_length=3)
     snmp: SnmpIn | None = None
     default_community: Literal["public", "private"] | None = None
     vendor: str | None = None
@@ -142,7 +142,7 @@ class DeviceIn(Lenient):
     @field_validator("alive_via", mode="before")
     @classmethod
     def _alive(cls, v):
-        return [x for x in (v or []) if x in ("icmp", "arp", "tcp")]
+        return [x for x in (v or []) if x in ("icmp", "arp", "tcp", "snmp")]
 
 
 class SummaryIn(Lenient):
