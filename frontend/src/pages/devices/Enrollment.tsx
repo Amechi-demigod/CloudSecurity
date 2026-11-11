@@ -115,9 +115,40 @@ function InstallerDownload({ onCreated }: { onCreated: () => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<{ filename: string; sha256: string | null } | null>(null);
+  // Linux servers: the generic, signed package (the enrolment file is the per-tenant part).
+  const [linuxFormat, setLinuxFormat] = useState<"deb" | "rpm">("deb");
+  const [linuxArch, setLinuxArch] = useState<"amd64" | "arm64">("amd64");
+  const [pkgBusy, setPkgBusy] = useState(false);
+  const [pkgError, setPkgError] = useState<string | null>(null);
+  const linux = platform === "linux-enroll";
+  const linuxPkg = info?.linux_packages?.find((p) => p.format === linuxFormat && p.arch === linuxArch);
 
   const ca = includeCa ?? info?.include_ca_default ?? false;
   const plat = info?.platforms[platform];
+
+  function save(blob: Blob, filename: string) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  }
+
+  async function downloadPackage() {
+    setPkgBusy(true);
+    setPkgError(null);
+    try {
+      const { blob, filename } = await api.downloadLinuxPackage(linuxFormat, linuxArch);
+      save(blob, filename);
+    } catch (err) {
+      setPkgError(errMsg(err));
+    } finally {
+      setPkgBusy(false);
+    }
+  }
 
   async function download(e: FormEvent) {
     e.preventDefault();
@@ -134,14 +165,7 @@ function InstallerDownload({ onCreated }: { onCreated: () => void }) {
         include_ca: ca,
         ...(platform === "windows-msi" ? { allow_wipe: allowWipe } : {}),
       });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+      save(blob, filename);
       setDone({ filename, sha256 });
       onCreated();
     } catch (err) {
@@ -156,7 +180,8 @@ function InstallerDownload({ onCreated }: { onCreated: () => void }) {
       <p className="mb-3 text-sm text-ink-2">
         One pre-configured file for all your devices: it carries this server&apos;s address, a dedicated enrollment token
         {info?.ca_configured ? " and the server's CA certificate" : ""}. Install it silently with Group Policy, Intune, SCCM or
-        Jamf, or double-click it. Each device enrolls itself on first start; no per-device token.
+        Jamf, or double-click it. Each device enrolls itself on first start; no per-device token. Linux servers use the signed
+        .deb / .rpm package plus a small enrolment file, installed with Ansible, cloud-init, Puppet or a terminal.
       </p>
       <ErrorNote error={infoError} />
       {info?.server_error && (
@@ -165,14 +190,59 @@ function InstallerDownload({ onCreated }: { onCreated: () => void }) {
       <form className="grid grid-cols-1 gap-3 md:grid-cols-2" onSubmit={download}>
         <fieldset className="space-y-1 text-sm md:col-span-2">
           <legend className="mb-1 font-medium text-ink-2">Platform</legend>
-          {(["windows-msi", "macos-pkg"] as InstallerPlatform[]).map((p) => (
+          {(["windows-msi", "macos-pkg", "linux-enroll"] as InstallerPlatform[]).map((p) => (
             <label key={p} className="mr-6 inline-flex items-center gap-2">
               <input type="radio" name="inst-platform" checked={platform === p} onChange={() => setPlatform(p)} />
-              {info?.platforms[p]?.label ?? p}
+              {p === "linux-enroll" ? "Linux servers (.deb / .rpm)" : info?.platforms[p]?.label ?? p}
               {info && !info.platforms[p]?.available && <Tag tone="warn">not bundled</Tag>}
             </label>
           ))}
         </fieldset>
+        {linux && (
+          <div className="space-y-2 rounded border border-line p-3 text-sm md:col-span-2">
+            <div className="flex flex-wrap gap-x-8 gap-y-2">
+              <fieldset>
+                <legend className="mb-1 text-xs font-medium text-ink-2">Package</legend>
+                {(["deb", "rpm"] as const).map((f) => (
+                  <label key={f} className="mr-4 inline-flex items-center gap-2">
+                    <input type="radio" name="linux-format" checked={linuxFormat === f} onChange={() => setLinuxFormat(f)} />
+                    {f === "deb" ? "Debian, Ubuntu (.deb)" : "RHEL, Rocky, Alma, Amazon Linux (.rpm)"}
+                  </label>
+                ))}
+              </fieldset>
+              <fieldset>
+                <legend className="mb-1 text-xs font-medium text-ink-2">Architecture</legend>
+                {(["amd64", "arm64"] as const).map((a) => (
+                  <label key={a} className="mr-4 inline-flex items-center gap-2">
+                    <input type="radio" name="linux-arch" checked={linuxArch === a} onChange={() => setLinuxArch(a)} />
+                    {a === "amd64" ? "amd64 (x86_64)" : "arm64 (aarch64, Graviton)"}
+                  </label>
+                ))}
+              </fieldset>
+            </div>
+            <div className="flex flex-wrap items-center gap-3">
+              <Button onClick={downloadPackage} disabled={pkgBusy || !linuxPkg?.available}>
+                {pkgBusy ? "Downloading…" : `Download ${linuxPkg?.name ?? `the .${linuxFormat} package`}`}
+              </Button>
+              {linuxPkg?.available ? (
+                <span className="text-xs text-ink-3">
+                  Signed release {linuxPkg.version} · SHA-256 <code className="break-all">{linuxPkg.sha256}</code>
+                </span>
+              ) : (
+                <span className="text-xs text-ink-3">
+                  No imported agent release carries this package yet. Import a signed release built with Linux packages:{" "}
+                  <code>sudo cnapp-ctl agent-release fetch --tag agent-vX.Y.Z</code>
+                </span>
+              )}
+            </div>
+            <ErrorNote error={pkgError} />
+            <p className="text-xs text-ink-3">
+              The package is generic and carries no token. The enrolment file below (server address, token, CA) is what makes it
+              enrol: put it at <code>/etc/cnapp-agent/enroll.json</code> before installing the package, or hand it to
+              <code> cnapp-agent configure --from-file</code> afterwards. The package deletes the file once the agent has read it.
+            </p>
+          </div>
+        )}
         <Field label="Expires after (days)" id="inst-days" type="number" min={1} max={365} required value={days}
           onChange={(e) => setDays(e.target.value)} hint="The installer stops enrolling new devices after this." />
         <Field label="Maximum devices" id="inst-max" type="number" min={1} max={100000} required value={maxDevices}
@@ -193,7 +263,7 @@ function InstallerDownload({ onCreated }: { onCreated: () => void }) {
             </span>
           </span>
         </label>
-        <label className="flex items-start gap-2 text-sm md:col-span-2">
+        <label className={`flex items-start gap-2 text-sm md:col-span-2 ${linux ? "hidden" : ""}`}>
           <input type="checkbox" className="mt-1" checked={platform === "windows-msi" && allowWipe} disabled={platform !== "windows-msi"}
             onChange={(e) => setAllowWipe(e.target.checked)} />
           <span>
@@ -221,7 +291,34 @@ function InstallerDownload({ onCreated }: { onCreated: () => void }) {
             {done.sha256 && <> (SHA-256 <code className="break-all">{done.sha256}</code>)</>}. The token inside it is not shown
             again: keep the file like a password and revoke it below when the rollout is finished.
           </p>
-          {platform === "windows-msi" ? (
+          {platform === "linux-enroll" ? (
+            <div className="space-y-3">
+              <CopyBlock
+                label={linuxFormat === "deb" ? "Install (Debian, Ubuntu)" : "Install (RHEL, Rocky, Alma, Amazon Linux)"}
+                text={[
+                  "sudo install -d -m 0700 /etc/cnapp-agent",
+                  `sudo install -m 0600 -o root ${done.filename} /etc/cnapp-agent/enroll.json`,
+                  linuxFormat === "deb"
+                    ? `sudo apt install ./${linuxPkg?.name ?? `cnapp-agent_VERSION_${linuxArch}.deb`}`
+                    : `sudo dnf install ./${linuxPkg?.name ?? "cnapp-agent-VERSION-1.ARCH.rpm"}`,
+                ].join("\n")}
+              />
+              <CopyBlock
+                label="Ansible (copy both files to the servers first)"
+                text={[
+                  "- ansible.builtin.file: { path: /etc/cnapp-agent, state: directory, mode: '0700' }",
+                  `- ansible.builtin.copy: { src: ${done.filename}, dest: /etc/cnapp-agent/enroll.json, mode: '0600' }`,
+                  linuxFormat === "deb"
+                    ? `- ansible.builtin.apt: { deb: /tmp/${linuxPkg?.name ?? "cnapp-agent.deb"} }`
+                    : `- ansible.builtin.dnf: { name: /tmp/${linuxPkg?.name ?? "cnapp-agent.rpm"}, disable_gpg_check: true }`,
+                ].join("\n")}
+              />
+              <p className="text-xs text-ink-3">
+                The service starts under systemd as <code>cnapp-agent.service</code> and checks in within a minute. Remove it with{" "}
+                <code>{linuxFormat === "deb" ? "sudo apt remove cnapp-agent" : "sudo dnf remove cnapp-agent"}</code>.
+              </p>
+            </div>
+          ) : platform === "windows-msi" ? (
             <CopyBlock label="Silent install (GPO startup script, Intune, SCCM)" text={`msiexec /i ${done.filename} /qn /l*v %TEMP%\\cnapp-agent-install.log`} />
           ) : (
             <CopyBlock label="Silent install (Jamf / Kandji / Intune / Terminal)" text={`sudo installer -pkg ${done.filename} -target /`} />
@@ -232,7 +329,7 @@ function InstallerDownload({ onCreated }: { onCreated: () => void }) {
   );
 }
 
-const PLATFORM_LABEL: Record<InstallerPlatform, string> = { "windows-msi": "Windows MSI", "macos-pkg": "macOS pkg" };
+const PLATFORM_LABEL: Record<InstallerPlatform, string> = { "windows-msi": "Windows MSI", "macos-pkg": "macOS pkg", "linux-enroll": "Linux enrolment file" };
 
 const STATE_TONE: Record<EnrollmentToken["state"], "good" | "default" | "warn"> = {
   active: "good",

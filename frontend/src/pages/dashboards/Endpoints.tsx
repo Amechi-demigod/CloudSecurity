@@ -87,7 +87,7 @@ export default function EndpointsTab({ range }: TabProps) {
   if (d.managed === 0) {
     return (
       <DashCard title="Endpoints">
-        <Empty icon={Laptop} title="No endpoints enrolled yet" action={<Link className="text-sm font-medium text-accent hover:underline" to="/devices">Enroll Windows and macOS devices</Link>}>
+        <Empty icon={Laptop} title="No endpoints enrolled yet" action={<Link className="text-sm font-medium text-accent hover:underline" to="/devices">Enroll Windows, macOS and Linux devices</Link>}>
           Enrolled devices report their posture, software and vulnerabilities here.
         </Empty>
       </DashCard>

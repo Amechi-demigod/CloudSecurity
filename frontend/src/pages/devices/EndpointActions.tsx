@@ -357,12 +357,14 @@ export function ServicesTab({ device, commands, reload }: { device: Device; comm
   const { data, error, reload: reloadServices } = useApi(() => endpointActionsApi.services(device.id, q.trim() || undefined), [device.id, q], 30000);
   const blocked = actionsBlockedReason(device);
   const protectedSet = new Set((device.endpoint_actions?.protected_services ?? []).map((s) => s.toLowerCase()));
-  const admin = can("admin");
+  // Linux servers: the systemd services are listed read-only (the agent never changes a service there).
+  const readOnly = device.os_family === "linux";
+  const admin = can("admin") && !readOnly;
   return (
     <div>
-      <BlockedNote device={device} />
+      {!readOnly && <BlockedNote device={device} />}
       <Card
-        title={`Services${data ? ` (${data.length})` : ""}`}
+        title={`${readOnly ? "systemd services" : "Services"}${data ? ` (${data.length})` : ""}`}
         actions={
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filter by name" aria-label="Filter services"
             className="w-56 rounded border border-line bg-surface-2 px-2 py-1 text-sm text-ink" />
@@ -371,8 +373,8 @@ export function ServicesTab({ device, commands, reload }: { device: Device; comm
         <ErrorNote error={error} />
         {data && data.length === 0 ? (
           <Empty>
-            {device.os_family !== "windows"
-              ? "Services are reported by Windows devices only in this version."
+            {device.os_family !== "windows" && device.os_family !== "linux"
+              ? "Services are reported by Windows and Linux devices only in this version."
               : q
                 ? "No service matches this filter."
                 : `No services reported yet: agents ${device.endpoint_actions?.min_agent_version ?? "1.4.0"}+ send them with each check-in.`}

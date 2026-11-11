@@ -27,11 +27,11 @@ export const EXCLUDED_LABEL: Record<string, string> = {
 
 export const EXCLUDED_HINT: Record<string, string> = {
   has_agent: "These already report to the platform.",
-  mobile: "The agent runs on Windows and macOS computers only. Phones, tablets and Chromebooks stay with their MDM (Intune, Google).",
+  mobile: "The agent runs on Windows and macOS computers and Linux servers only. Phones, tablets and Chromebooks stay with their MDM (Intune, Google).",
   no_agent_expected: "Personal (BYOD) or registered-only devices: not counted in agent coverage, so no agent is expected.",
   disabled: "Re-enable the account first if the machine is still in use.",
-  linux: "There is no Linux agent package yet.",
-  unknown_os: "The directory does not say which OS the machine runs. Check it, then install by hand if it is Windows or macOS.",
+  linux: "Linux servers are not pushed from a directory: install the .deb / .rpm from Devices > Enrollment.",
+  unknown_os: "The directory does not say which OS the machine runs. Check it, then install by hand if it is Windows, macOS or a Linux server.",
   gone: "The machine is no longer in any directory.",
 };
 

@@ -5,7 +5,7 @@ import { useBrand } from "../lib/brand";
 const POINTS: { icon: LucideIcon; title: string; text: string }[] = [
   { icon: Globe, title: "Cloud posture and exposure", text: "Azure, AWS and GCP misconfigurations, internet exposure and attack paths in one view." },
   { icon: ShieldCheck, title: "Risk you can act on", text: "Vulnerabilities ranked by runtime use, exposure and known exploits, not by count." },
-  { icon: Laptop, title: "Endpoints included", text: "Windows and macOS posture, IT assets and audited remote actions for lost devices." },
+  { icon: Laptop, title: "Endpoints included", text: "Windows, macOS and Linux server posture, IT assets and audited remote actions for lost devices." },
 ];
 
 /**
