@@ -5,7 +5,7 @@ The Vulnerabilities page and each device's **Vulnerabilities** tab show real CVE
 | What | Inventory from | Matched against | Where it shows up |
 |---|---|---|---|
 | **Laptops** (Windows 10/11, macOS) | endpoint agent check-ins: OS build + installed applications | [NVD CVE API 2.0](https://nvd.nist.gov/developers/vulnerabilities) by CPE, through a curated mapping table | device detail → Vulnerabilities, Vulnerabilities page (Affected = Laptops) |
-| **Linux servers / VMs / Kubernetes nodes** | runtime sensor package inventory (dpkg, apk, rpm, pip) | [OSV.dev](https://osv.dev) (`querybatch`) | the host's asset (inventory drawer), Vulnerabilities page, attack paths |
+| **Linux servers / VMs / Kubernetes nodes** | runtime sensor package inventory (dpkg, apk, rpm, pip), or the **Linux endpoint agent's** (1.7.0+; dpkg, `rpm -qa`; it wins on a server that runs both) | [OSV.dev](https://osv.dev) (`querybatch`) | the host's asset (inventory drawer), Vulnerabilities page, attack paths |
 | **Azure App Service runtimes, PostgreSQL / MySQL / Redis engines** | Azure scan (site config, server version) | bundled end-of-life table ([endoflife.date](https://endoflife.date), `backend/app/engine/eol.py`; no network call) | Vulnerabilities page (`source = eol`, id `EOL-<STACK>-<version>`, CVSS 7.5, in use), the matching posture finding, attack paths; see [AZURE_COVERAGE.md](AZURE_COVERAGE.md#end-of-life-table) |
 | Simulated environment | seed data | - | unchanged (`source = simulated`) |
 
@@ -104,6 +104,8 @@ Versions are normalised per rule where the reported version is not the product v
 
 ### Linux hosts: OSV
 
+**Linux endpoint agent (1.7.0+).** The agent sends its packages with the OSV ecosystem, source package and source version in each check-in; they are stored with the device and matched through the same OSV code as the sensor's (`match_linux_device`), so the results agree whichever one is installed. Findings belong to the **device** (Devices > device > Vulnerabilities). **Amazon Linux has no OSV ecosystem**: its packages are listed but not matched, and the tab says *Not matched* instead of an empty list. When the same server also runs the runtime sensor, the agent's package list is used and the sensor's is ignored (matched by cloud resource id, then machine id, then host name; [DEVICE_MANAGEMENT.md](DEVICE_MANAGEMENT.md#one-record-per-server-agent-and-runtime-sensor)).
+
 The sensor (`sensor/runtime_sensor/inventory.py`) reports the host's packages every `SENSOR_INVENTORY_INTERVAL` (6 h) to `POST /api/runtime/packages` ([schema](../sensor/EVENT_SCHEMA.md#package-inventory)). The backend stores them on the host's asset - the cloud VM it already knows (by `cloud.resource_id`, then VM name = host), or a new sensor-backed asset (`type vm`, `source sensor`, id `sensor:<host>`) for on-prem servers - and queries OSV with one `querybatch` per run:
 
 | Distribution | OSV ecosystem | Package name / version sent |
@@ -190,7 +192,7 @@ The first NVD download of a fleet's products takes a few minutes without an API 
 - **NVD lag.** New CVEs are often "awaiting analysis" in NVD for days or weeks, without CPE configurations; they cannot be matched until NVD analyses them (KEV-listed ones are usually prioritised by NVD).
 - **Windows cumulative updates**: the OS is matched by build (`UBR`) as NVD publishes it; Windows components updated outside the cumulative update (Edge WebView, Store apps) are not covered.
 - **Per-user and portable software** that is not in the Uninstall registry / `/Applications` is not inventoried by the agent.
-- **No container image scanning** yet: the sensor inventories the host's packages, not the images running in containers. Distributions without an OSV ecosystem (Amazon Linux, SUSE, Container-Optimized OS, Arch) are not matched; RHEL 7/8 (BerkeleyDB rpmdb) is not read.
+- **No container image scanning** yet: the sensor inventories the host's packages, not the images running in containers. Distributions without an OSV ecosystem (Amazon Linux, SUSE, Container-Optimized OS, Arch) are not matched (the Linux agent says so as "Not matched"); the sensor does not read RHEL 7/8's BerkeleyDB rpmdb, the Linux agent does (`rpm -qa`).
 - **Cloud connectors** (Azure, AWS, GCP) are posture-only; VMs only get CVE data when the runtime sensor runs on them.
 - OSV advisories without a CVSS score (some distro advisories) use the distro's severity label, or a default of 5.0 (flagged as `score_missing` in the evidence).
 

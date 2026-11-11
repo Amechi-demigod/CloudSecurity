@@ -107,7 +107,7 @@ docs/AUTH.md             MFA (TOTP) and Microsoft Entra ID sign-in, break-glass 
 docs/VULNERABILITIES.md  CVE matching: sources, CPE mapping table, limits, egress, adding mappings
 docs/MULTI_TENANCY.md    organisations: data model, isolation guarantees, machine credentials, platform owners
 scripts/smoke_test.py    end-to-end smoke test (CI and the deploy workflow)
-scripts/agent_e2e.py     endpoint agent <-> backend end-to-end test (CI on Windows and macOS runners)
+scripts/agent_e2e.py     endpoint agent <-> backend end-to-end test (CI on Windows, macOS and Linux runners)
 docker-compose.yml       local stack (SQLite); docker-compose.postgres.yml adds PostgreSQL
 ```
 
@@ -615,4 +615,4 @@ A dormant vulnerability can never score above 20. An in-use, exposed vulnerabili
 - CIS control numbers are approximate mappings for illustration.
 - On PostgreSQL the backend can run several replicas/workers (the simulator and scans use advisory-lock leader election), but the login rate limiter is in-memory: it resets on restart and counts per worker process, so the effective limit is `LOGIN_RATE_LIMIT` x workers x replicas. Per-account lockout is stored in the database and is exact.
 - Single sign-on is Microsoft Entra ID (OIDC) only; no SAML or other identity providers yet.
-- Device management covers inventory, posture, CVE matching of the OS and mapped software, and a few remote actions on Windows and macOS; no compliance policies or Linux endpoints yet (see [limitations](docs/DEVICE_MANAGEMENT.md#limitations)).
+- Device management covers inventory, posture, CVE matching of the OS and mapped software, and a few remote actions on Windows and macOS, plus read-only inventory, packages and posture for Linux servers (agent 1.7.0); no compliance policies or Linux desktops (see [limitations](docs/DEVICE_MANAGEMENT.md#limitations)).

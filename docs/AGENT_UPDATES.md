@@ -238,11 +238,19 @@ in the *Endpoint agent release binaries* artifacts), which no real agent trusts.
 2. Tag: `git tag agent-v1.4.0 && git push origin agent-v1.4.0`
    (semantic versions; the version must be higher than what devices run).
 3. The **Agent release** workflow (`.github/workflows/agent-release.yml`) waits
-   for the environment approval, builds the four binaries with version
-   `1.4.0`, signs the manifest with `AGENT_UPDATE_SIGNING_KEY`, verifies the
+   for the environment approval, builds the six binaries (Windows, macOS and
+   **Linux**, amd64 and arm64) with the tag's version (the version is derived
+   from the tag: `agent-v1.7.0` builds `1.7.0`), builds the **Linux packages**
+   (`cnapp-agent_1.7.0_<arch>.deb`, `cnapp-agent-1.7.0-1.<x86_64|aarch64>.rpm`, nfpm),
+   signs the manifest with `AGENT_UPDATE_SIGNING_KEY`, verifies the
    bundle against the committed `trusted_keys.txt` (so it never publishes a
    bundle agents would reject) and publishes a GitHub Release with
-   `cnapp-agent-update.tar.gz`, the binaries and `SHA256SUMS`.
+   `cnapp-agent-update.tar.gz`, the binaries, the packages and `SHA256SUMS`.
+   The packages are signed **into the manifest** (`packages`: format, arch,
+   name, SHA-256, size) and shipped in the bundle; agents ignore that list
+   (they update from the binaries only). The server verifies and stores them
+   with the release, and the console's Linux installer download
+   (Devices > Enroll devices) serves the newest imported release's packages.
 4. Import it into the CNAPP server, one of:
    - on-prem, fetch from GitHub and import: `sudo cnapp-ctl agent-release fetch --tag agent-v1.4.0`
    - on-prem, from a file you copied: `sudo cnapp-ctl agent-release import cnapp-agent-update.tar.gz`
@@ -258,7 +266,10 @@ Signing manually instead of in GitHub Actions (offline key):
 ```bash
 python scripts/agent_release.py bundle --key-file /media/usb/agent-update-signing-key.pem \
   --version 1.4.0 --out cnapp-agent-update.tar.gz \
-  dist/cnapp-agent-windows-amd64.exe dist/cnapp-agent-windows-arm64.exe dist/cnapp-agent-darwin-amd64 dist/cnapp-agent-darwin-arm64
+  --package dist/cnapp-agent_1.4.0_amd64.deb --package dist/cnapp-agent_1.4.0_arm64.deb \
+  --package dist/cnapp-agent-1.4.0-1.x86_64.rpm --package dist/cnapp-agent-1.4.0-1.aarch64.rpm \
+  dist/cnapp-agent-windows-amd64.exe dist/cnapp-agent-windows-arm64.exe dist/cnapp-agent-darwin-amd64 dist/cnapp-agent-darwin-arm64 \
+  dist/cnapp-agent-linux-amd64 dist/cnapp-agent-linux-arm64
 python scripts/agent_release.py verify cnapp-agent-update.tar.gz --keys endpoint-agent/internal/update/trusted_keys.txt
 ```
 
@@ -390,6 +401,10 @@ size and SHA-256, expiry). In Automatic mode the release then goes to Pilot.
 Only the service updates itself; foreground runs (`cnapp-agent run`,
 `checkin`) never do. `cnapp-agent status` shows `update.json`;
 `cnapp-agent update-keys` lists the key IDs the binary trusts.
+
+## Linux servers
+
+Linux agents (1.7.0+, [DEVICE_MANAGEMENT.md](DEVICE_MANAGEMENT.md#linux-servers)) update exactly like the other platforms: the server offers a signed release's `linux/<arch>` artifact, the agent verifies manifest signature, SHA-256, size and version policy, replaces its binary (`/usr/bin/cnapp-agent` for the packages, `/usr/local/bin/cnapp-agent` for `cnapp-agent install`), restarts through systemd and rolls back automatically if the new binary does not check in healthy. The rollback watchdog runs as a transient systemd unit so the restart does not kill it. Build-time platform code signing (`RequirePlatformSignature`) does not apply to Linux (there is no Authenticode / Developer ID equivalent); the Ed25519 manifest signature is the trust anchor, as everywhere.
 
 ## Relation to MSI / PKG / GPO / Intune deployments
 
