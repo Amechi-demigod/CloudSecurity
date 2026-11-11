@@ -132,7 +132,10 @@ run-now / credential change is audited. *Test on one address* and *Re-scan devic
 
 `app/network/normalize.py` normalises vendor, model, firmware and device type from `sysObjectID` (IANA enterprise
 number) and `sysDescr` for Cisco IOS / IOS XE / NX-OS / ASA, Fortinet FortiOS, Palo Alto PAN-OS, Juniper Junos,
-Aruba / HPE, Ubiquiti, MikroTik RouterOS, HP / Brother / Canon / Ricoh / Xerox printers and APC UPS. Without SNMP the
+Aruba / HPE, Ubiquiti, MikroTik RouterOS, Sophos Firewall (SFOS), HP / Brother / Canon / Ricoh / Xerox printers and APC UPS.
+Sophos Firewall reports a plain Linux `sysDescr`; it is recognised by `sysObjectID` 1.3.6.1.4.1.2604.5 and its model,
+firmware and serial come from SFOS-FIREWALL-MIB, which the collector reads from **1.6.1** (a 1.6.0 collector still names
+it a Sophos firewall, but without firmware it is "not checked" for CVEs). Without SNMP the
 MAC OUI (small bundled table) names the vendor and the open ports hint at the type. A device it cannot identify stays
 `unknown` and is not matched for CVEs: the device page says so.
 
@@ -140,8 +143,8 @@ MAC OUI (small bundled table) names the vendor and the open ports hint at the ty
 
 The normalised firmware is mapped to a CPE (`o:cisco:ios_xe`, `o:cisco:ios`, `o:cisco:nx-os`,
 `o:cisco:adaptive_security_appliance_software`, `o:fortinet:fortios`, `o:paloaltonetworks:pan-os`, `o:juniper:junos`,
-`o:arubanetworks:arubaos`, `o:arubanetworks:arubaos-cx`, `o:ubnt:edgeos`, `o:mikrotik:routeros`) and matched by the **same
-engine** as endpoint software (`vulnmatch`: NVD by CPE, CISA KEV, FIRST EPSS, the same cache and worker). Rows are
+`o:arubanetworks:arubaos`, `o:arubanetworks:arubaos-cx`, `o:ubnt:edgeos`, `o:mikrotik:routeros`, `o:sophos:sfos`) and
+matched by the **same engine** as endpoint software (`vulnmatch`: NVD by CPE, CISA KEV, FIRST EPSS, the same cache and worker). Rows are
 `vulnerabilities` with the new `network_device_id` column (a CVE belongs to exactly one of asset / device / network
 device). They show on **Vulnerabilities** (scope `network`) and on the **CVE page**, whose "Affected network devices"
 lists each device, its firmware and the fixed firmware. Printers, UPSes and Aruba/HPE switch firmware have no usable CPE
@@ -205,6 +208,12 @@ simulated online collectors and subnet suggestions, into a development database.
 
 * End-of-support dates in `normalize.EOS` (FortiOS 6.0 / 6.2 / 6.4 / 7.0, PAN-OS 8.1) are from the vendors' public
   lifecycle pages as understood when written; check them before relying on NET-FW-001.
+* SFOS: Sophos's notice states 30 Apr 2025 for 18.5 and 19.5. Older releases (16.x, 17.x, 18.0, 19.0) are listed as
+  "no later than" that date because their own notices were not readable; 20.0 and later have no row yet. Sophos's
+  retirement calendar (community.sophos.com/kb/en-us/121502) is the source to update them from.
+* NVD files Sophos Firewall CVEs under five product names (`o:sophos:sfos`, `o:sophos:firewall_firmware`,
+  `o:sophos:xg_firewall_firmware`, `a:sophos:firewall`, `o:sophos:firewall`); `normalize.CPE_ALIASES` makes a SFOS device
+  match all of them. Some NVD records give only the major release (e.g. "up to 19.0") and so miss later MRs of it.
 * Vendor `sysDescr` regexes and CPE mappings were written from sample strings; a vendor that prints something else is
   "unknown" / "not checked", never guessed. Junos is matched with version `20.4` and update `r3-s3` (service release
   dropped).

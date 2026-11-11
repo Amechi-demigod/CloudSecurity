@@ -148,8 +148,38 @@ def test_normalise_details_and_fallbacks():
     assert normalize.mac_clean("garbage") == ""
 
 
+# Real values from Sophos firewalls (LibreNMS test captures): sysDescr is plain Linux, the rest comes from
+# SFOS-FIREWALL-MIB through the collector's hints.
+SFOS_DESCR = "Linux localhost 6.6.116 #1 SMP Wed Jun  3 08:00:50 CDT 2026 x86_64"
+
+
+@pytest.mark.parametrize("model,fw,want_model,want_ver", [
+    ("XGS2100_RL01_SFOS", "22.0.2 MR-2-Build546", "XGS2100", "22.0.2"),
+    ("SG230_WP01_SFOS", "20.0.3 MR-3-Build427", "SG230", "20.0.3"),
+    ("SFVH_SO01_SFOS", "18.0.1 MR-1-Build396", "SFVH", "18.0.1"),
+    ("XGS2100_RL01_SFOS", "SFOS 19.5.3 MR-3-Build652", "XGS2100", "19.5.3"),
+])
+def test_normalise_sophos_firewall(model, fw, want_model, want_ver):
+    n = normalize.normalize(SFOS_DESCR, "1.3.6.1.4.1.2604.5",
+                            hints={"model": model, "firmware": fw, "serial": "X21987654321012", "device_type": "server"})
+    assert (n.vendor, n.device_type, n.model, n.firmware, n.serial, n.family, n.cpe_product, n.cpe_version) == (
+        "Sophos", "firewall", want_model, fw, "X21987654321012", "SFOS", "o:sophos:sfos", want_ver), n
+
+
+def test_normalise_sophos_without_firmware_is_identified_but_not_matched():
+    # A 1.6.0 collector does not read SFOS-FIREWALL-MIB: still a Sophos firewall, but no CPE (never guessed).
+    n = normalize.normalize(SFOS_DESCR, ".1.3.6.1.4.1.2604.5", hints={"vendor": "", "device_type": "server"})
+    assert (n.vendor, n.device_type, n.family, n.cpe_product) == ("Sophos", "firewall", "SFOS", "")
+    # Other Sophos subtrees (not SFOS) are only named, not called firewalls.
+    assert normalize.normalize("", "1.3.6.1.4.1.2604.3").vendor == "Sophos"
+    assert normalize.normalize("", "1.3.6.1.4.1.2604.3").device_type == "unknown"
+
+
 def test_end_of_support():
     assert normalize.end_of_support("FortiOS", "6.2.9")["date"] == "2024-03-28"
+    assert normalize.end_of_support("SFOS", "19.5.3 MR-3-Build652")["date"] == "2025-04-30"
+    assert normalize.end_of_support("SFOS", "17.5.9 MR-9")["source"].startswith("No later than")
+    assert normalize.end_of_support("SFOS", "20.0.3 MR-3-Build427") is None
     assert normalize.end_of_support("FortiOS", "7.4.1") is None
     assert normalize.end_of_support("IOS XE", "17.3.4") is None
 
@@ -887,3 +917,31 @@ def test_batch_schema_accepts_collector_output():
     assert b.devices[0].default_community == "public" and b.devices[0].snmp.version == "v3"
     assert b.devices[1].snmp is None and b.devices[1].default_community is None
     assert b.final and b.summary.alive == 2
+
+
+def test_sophos_cves_are_matched_under_every_nvd_product_name(admin, fake_feeds):
+    # NVD files Sophos Firewall CVEs under several names; one SFOS 19.0.1 firewall is checked against all of them.
+    sfos = "cpe:2.3:o:sophos:sfos"
+    fake_feeds.nvd[sfos] = [
+        cve("CVE-2022-1040", "Sophos Firewall authentication bypass.", cvss31(9.8, "critical"),
+            [{"nodes": [node(m(f"{sfos}:*:*:*:*:*:*:*:*", versionEndIncluding="18.5.3"))]}])]
+    fake_feeds.nvd["cpe:2.3:a:sophos:firewall"] = [
+        cve("CVE-2022-3236", "Sophos Firewall code injection.", cvss31(9.8, "critical"),
+            [{"nodes": [node(m("cpe:2.3:a:sophos:firewall:*:*:*:*:*:*:*:*", versionEndIncluding="19.0.1"))]}])]
+    fake_feeds.nvd["cpe:2.3:o:sophos:firewall_firmware"] = [
+        cve("CVE-2024-12727", "Sophos Firewall SQL injection.", cvss31(9.8, "critical"),
+            [{"nodes": [node(m("cpe:2.3:o:sophos:firewall_firmware:*:*:*:*:*:*:*:*", versionEndExcluding="21.0.1"))]}])]
+    c, cid = make_collector(admin)
+    scan, cmd = scan_run(admin, c, cid)
+    fw = switch_device(ip="10.10.1.254", mac="00:1a:8c:00:00:01", fdb=[], interfaces=[],
+                       snmp={"version": "v3", "credential_id": "c1", "sys_name": "hq-fw", "sys_descr": SFOS_DESCR,
+                             "sys_object_id": "1.3.6.1.4.1.2604.5"},
+                       vendor="Sophos", model="XGS2100_RL01_SFOS", firmware="19.0.1 MR-1-Build365",
+                       serial="X21987654321012", device_type="firewall")
+    assert post_batch(c, cmd["params"]["scan_id"], 0, [fw], final=True).status_code == 200
+    worker.run_once(force=True)
+    d = admin.get("/api/network/devices").json()[0]
+    assert (d["vendor"], d["device_type"]) == ("Sophos", "firewall")
+    detail = admin.get(f"/api/network/devices/{d['id']}").json()
+    assert sorted(v["cve_id"] for v in detail["vulnerabilities"]) == ["CVE-2022-3236", "CVE-2024-12727"]
+    assert {v["package"] for v in detail["vulnerabilities"]} == {"Sophos SFOS"}
