@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -137,6 +138,26 @@ func IncidentIDParam(p map[string]any) (string, error) {
 // are repeated here on purpose: the agent must not import internal/netscan.
 var collectorOnly = map[string]bool{"network_scan": true, "network_subnets": true}
 
+// goos is the OS the agent runs on (replaced in tests).
+var goos = runtime.GOOS
+
+// linuxSupported are the only commands a Linux server agent runs (agent
+// 1.7.0): it reads and reports, it does not lock, wipe, run scripts, change
+// services, block USB storage, open remote sessions or install updates.
+var linuxSupported = map[string]bool{RecheckPosture: true, CollectLogs: true, RestartAgent: true,
+	UpdateCheckInInterval: true, CheckForUpdate: true}
+
+// UnsupportedOn returns why a command type is refused on the given OS ("" when
+// it is allowed there). Only Linux restricts the set today.
+func UnsupportedOn(goos, cmdType string) string {
+	if goos == "linux" && Allowed(cmdType) && !linuxSupported[cmdType] {
+		return fmt.Sprintf("%s is not supported on Linux servers: the Linux agent only supports recheck_posture, collect_logs, "+
+			"update_check_in_interval, restart_agent and check_for_update (no lock, wipe, lost mode, scripts, services, "+
+			"USB blocking, remote sessions or OS update install)", cmdType)
+	}
+	return ""
+}
+
 // Allowed reports whether a command type is in the allowlist.
 func Allowed(t string) bool {
 	_, ok := allowedParams[t]
@@ -155,6 +176,9 @@ func Validate(c model.Command, deviceID string, now time.Time) error {
 	}
 	if !Allowed(c.Type) {
 		return fmt.Errorf("%w: command type %q is not in the agent allowlist", ErrRejected, c.Type)
+	}
+	if msg := UnsupportedOn(goos, c.Type); msg != "" {
+		return fmt.Errorf("%w: %s", ErrRejected, msg)
 	}
 	if c.DeviceID != deviceID {
 		return fmt.Errorf("%w: command is bound to another device", ErrRejected)

@@ -1,4 +1,4 @@
-//go:build !darwin && !windows
+//go:build !darwin && !windows && !linux
 
 package service
 
@@ -7,7 +7,7 @@ import (
 	"errors"
 )
 
-var errUnsupported = errors.New("service install is only supported on Windows and macOS (see docs for running `cnapp-agent run` under systemd)")
+var errUnsupported = errors.New("service install is only supported on Windows, macOS and Linux (systemd)")
 
 // IsService is always false on this platform.
 func IsService() bool { return false }

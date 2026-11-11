@@ -30,6 +30,9 @@ func (a *Agent) addAgentPosture(ctx context.Context, r *model.Report) {
 	if r.Posture == nil {
 		r.Posture = map[string]model.PostureCheck{}
 	}
+	if a.GOOS == "linux" {
+		return // servers: no lost mode, remote wipe, sign-in suspension or endpoint actions
+	}
 	if a.LostMode != nil {
 		st := a.LostMode.Status()
 		detail := "lost mode off"

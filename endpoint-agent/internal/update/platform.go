@@ -57,6 +57,11 @@ func (OSPlatform) Preflight(ctx context.Context, path, wantVersion string) error
 
 // StartWatchdog implements Platform.
 func (OSPlatform) StartWatchdog(binary string, args []string) error {
+	// Linux: a transient systemd unit outside the agent's own cgroup, so the
+	// service restart that follows does not kill the rollback watchdog.
+	if used, err := startWatchdogUnit(binary, args); used {
+		return err
+	}
 	p, err := startDetached(binary, append([]string{"update-watchdog"}, args...))
 	if err != nil {
 		return err
