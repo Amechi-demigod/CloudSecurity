@@ -799,6 +799,12 @@ def test_scheduler_queues_scheduled_scans_on_online_collectors_only(admin):
         assert len(list(s.scalars(select(NetworkScanRun)))) == len(runs)
     assert tenancy  # imported for clarity of intent: runs are tenant scoped
     # An unreachable collector at the slot: the scan is skipped after the grace period and recorded as failed.
+    # The commands poll above was a heartbeat and a pickup on the real clock; put both back on the fake one.
+    with db.get_session("default") as s:
+        s.get(DirectoryCollector, cid).last_seen_at = now
+        for r in s.scalars(select(NetworkScanRun)):
+            r.started_at = r.last_batch_at = now if r.started_at else None
+        s.commit()
     _tick(datetime(2026, 11, 11, 6, 30))
     with db.get_session("default") as s:
         failed = [r for r in s.scalars(select(NetworkScanRun)) if r.status == "failed" and r.queued_at >= datetime(2026, 11, 11)]
