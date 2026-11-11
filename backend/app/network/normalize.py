@@ -26,6 +26,7 @@ ENTERPRISES: dict[int, tuple[str, str]] = {  # number -> (vendor, default device
     368: ("Axis", "camera"), 39165: ("Hikvision", "camera"), 25053: ("Ruckus", "access_point"),
     8072: ("Linux (net-snmp)", "server"), 311: ("Microsoft", "server"), 6574: ("Synology", "server"),
     207: ("Allied Telesis", "switch"), 3375: ("F5", "unknown"), 2021: ("Linux (UCD-SNMP)", "server"),
+    2604: ("Sophos", "unknown"),
 }
 
 # A small OUI table (first three bytes of the MAC) of the vendors most common in offices. When there is no SNMP the
@@ -123,6 +124,15 @@ _RICOH = re.compile(r"RICOH\s+(.+?)\s+(\d+\.\d+(?:\.\d+)?)(?:\s|/|$)", re.I)
 _XEROX = re.compile(r"Xerox\s+([\w ]+?)(?:;|,|\s+SW|$)", re.I)
 _HP_PRINT = re.compile(r"HP\s+(?:ETHERNET MULTI-ENVIRONMENT.*?JETDIRECT,\s*(\w+).*?EEPROM\s+([\w.-]+)|"
                        r"((?:Color\s+)?LaserJet[\w \-]+|OfficeJet[\w \-]+|PageWide[\w \-]+))", re.I | re.S)
+_SFOS_VER = re.compile(r"^(?:SFOS\s+)?(\d+\.\d+\.\d+)\b", re.I)
+
+# NVD files Sophos Firewall CVEs under several product names over the years; a SFOS device is matched against all
+# of them (the matcher dedupes by CVE). Checked against the NVD API, 2026-11.
+CPE_ALIASES: dict[str, tuple[str, ...]] = {
+    "o:sophos:sfos": ("o:sophos:firewall_firmware", "o:sophos:xg_firewall_firmware", "a:sophos:firewall",
+                      "o:sophos:firewall"),
+}
+
 _APC = re.compile(r"APC.*?MB:v?([\d.]+).*?PF:v?([\d.]+)(?:.*?MN:(\S+))?(?:.*?SN:\s*([\w-]+))?", re.I | re.S)
 
 
@@ -228,6 +238,15 @@ def normalize(sys_descr: str = "", sys_object_id: str = "", mac: str = "", open_
             model = (m[3] or m[1] or "").strip()
             fw = m[2] or ""
         done("HP", model=model, fw=fw, typ="printer", family="HP")
+    elif (sys_object_id or "").strip().lstrip(".").startswith("1.3.6.1.4.1.2604.5") or "sfos" in low:
+        # Sophos Firewall: sysDescr is plain Linux; the collector reads model / firmware / serial from
+        # SFOS-FIREWALL-MIB and sends them as hints ("XGS2100_RL01_SFOS", "20.0.3 MR-3-Build427").
+        h0 = hints or {}
+        fw = h0.get("firmware", "")
+        vm = _SFOS_VER.match(fw.strip())
+        model = (h0.get("model") or "").split("_")[0]
+        done("Sophos", model=model, fw=fw, typ="firewall", serial=h0.get("serial", ""),
+             cpe=("o:sophos:sfos", vm[1], "") if vm else ("", "", ""), family="SFOS")
     elif ent_vendor:
         low_t = ent_type
         if ent_vendor == "Linux (net-snmp)":
@@ -267,12 +286,22 @@ def normalize(sys_descr: str = "", sys_object_id: str = "", mac: str = "", open_
 # the cases the vendors publish clearly; every row names its source. REVIEW these dates before relying on them: a
 # vendor can extend a release, and the table is only as fresh as this file.
 EOS_REVIEWED = "2026-11"
+_SOPHOS_EOL = ("https://www.sophos.com/en-us/partner-news/"
+               "sophos-firewall-os-sfos-v18-5-and-19-5-eol-and-upcoming-license-compliance-changes")
 EOS: tuple[tuple[str, str, date, str, str], ...] = (
     # family, version prefix, end of support, source title, source url
     ("FortiOS", "6.0.", date(2022, 9, 29), "Fortinet product life cycle", "https://support.fortinet.com/Information/ProductLifeCycle.aspx"),
     ("FortiOS", "6.2.", date(2024, 3, 28), "Fortinet product life cycle", "https://support.fortinet.com/Information/ProductLifeCycle.aspx"),
     ("FortiOS", "6.4.", date(2024, 9, 30), "Fortinet product life cycle", "https://support.fortinet.com/Information/ProductLifeCycle.aspx"),
     ("FortiOS", "7.0.", date(2025, 9, 30), "Fortinet product life cycle", "https://support.fortinet.com/Information/ProductLifeCycle.aspx"),
+    # Sophos states 30 Apr 2025 for 18.5 and 19.5; the older releases had ended by then (their own notices were not
+    # readable when this was written), so they are reported as "ended no later than" that date.
+    ("SFOS", "18.5.", date(2025, 4, 30), "Sophos: SFOS v18.5 and v19.5 EOL", _SOPHOS_EOL),
+    ("SFOS", "19.5.", date(2025, 4, 30), "Sophos: SFOS v18.5 and v19.5 EOL", _SOPHOS_EOL),
+    ("SFOS", "19.0.", date(2025, 4, 30), "No later than: Sophos SFOS v18.5 and v19.5 EOL", _SOPHOS_EOL),
+    ("SFOS", "18.0.", date(2025, 4, 30), "No later than: Sophos SFOS v18.5 and v19.5 EOL", _SOPHOS_EOL),
+    ("SFOS", "17.", date(2025, 4, 30), "No later than: Sophos SFOS v18.5 and v19.5 EOL", _SOPHOS_EOL),
+    ("SFOS", "16.", date(2025, 4, 30), "No later than: Sophos SFOS v18.5 and v19.5 EOL", _SOPHOS_EOL),
     ("PAN-OS", "8.1.", date(2022, 3, 1), "Palo Alto Networks end-of-life summary", "https://www.paloaltonetworks.com/services/support/end-of-life-announcements/end-of-life-summary"),
 )
 
