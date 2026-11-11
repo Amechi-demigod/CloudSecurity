@@ -430,6 +430,6 @@ def test_linux_enrolment_file_carries_server_and_token_never_a_url(admin, monkey
 
 
 def test_device_software_has_the_linux_columns():
-    """0029_linux_agent adds them (tests/test_database.py compares the migrated schema with the ORM)."""
+    """0030_linux_agent adds them (tests/test_database.py compares the migrated schema with the ORM)."""
     cols = {c.name for c in DeviceSoftware.__table__.columns}
     assert {"ecosystem", "source_name", "source_version"} <= cols

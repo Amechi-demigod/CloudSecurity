@@ -25,7 +25,7 @@ from .models import (
     NetworkScanRun,
 )
 
-TRACKED_LABEL = {"agent": "Agent", "ad": "AD", "it_asset": "IT asset", "none": "Not registered"}
+TRACKED_LABEL = {"agent": "Agent", "ad": "AD", "it_asset": "IT asset", "sensor": "Runtime sensor", "none": "Not registered"}
 TYPE_LABEL = {"switch": "Switch", "router": "Router", "firewall": "Firewall", "access_point": "Access point",
               "printer": "Printer", "ups": "UPS", "phone": "Phone", "camera": "Camera", "server": "Server",
               "workstation": "Workstation", "unknown": "Unknown"}

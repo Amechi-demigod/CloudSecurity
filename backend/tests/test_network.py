@@ -598,6 +598,85 @@ def test_fdb_unmanaged_detection_and_new_device_finding(admin):
     assert ev["count"] == 1 and ev["new_devices"][0]["port"] == "Gi1/0/9" and ev["new_devices"][0]["mac"] == "de:ad:be:ef:00:01"
 
 
+SSH_UBUNTU = "SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.6"
+SSH_DEBIAN = "SSH-2.0-OpenSSH_9.2p1 Debian-2+deb12u3"
+
+
+@pytest.mark.parametrize("banner,vendor,family,typ", [
+    (SSH_UBUNTU, "Linux", "Ubuntu", "server"),
+    (SSH_DEBIAN, "Linux", "Debian", "server"),
+    ("SSH-2.0-OpenSSH_9.2p1 Raspbian-2+rpt1", "Linux", "Raspbian", "server"),
+    ("SSH-2.0-OpenSSH_9.5 FreeBSD-20240701", "FreeBSD", "FreeBSD", "server"),
+    ("SSH-2.0-OpenSSH_8.7", "", "", "unknown"),  # RHEL / Rocky / Alma / Amazon, but also Juniper, firewalls, NAS
+    ("SSH-2.0-OpenSSH_8.7 NotADistro", "", "", "unknown"),
+    ("SSH-2.0-dropbear_2022.83", "", "", "unknown"),
+    ("SSH-2.0-Cisco-1.25", "", "", "unknown"),
+    ("", "", "", "unknown"),
+])
+def test_ssh_banner_identifies_linux_servers(banner, vendor, family, typ):
+    n = normalize.normalize(ssh_banner=banner, open_ports=[22])
+    assert (n.vendor, n.family, n.device_type) == (vendor, family, typ)
+    assert not n.cpe_product  # no CVE matching from the banner
+
+
+def test_ssh_banner_never_overrides_a_stronger_identification():
+    # SNMP net-snmp keeps its own identity; a Cisco / Fortinet device with an Ubuntu-looking banner stays itself.
+    n = normalize.normalize("Linux web01 5.15.0-91-generic #101-Ubuntu SMP x86_64", "1.3.6.1.4.1.8072.3.2.10",
+                            ssh_banner=SSH_UBUNTU, open_ports=[22])
+    assert (n.vendor, n.device_type, n.family) == ("Linux (net-snmp)", "server", "")
+    n = normalize.normalize(XE_DESCR, "1.3.6.1.4.1.9.1.2504", ssh_banner=SSH_UBUNTU)
+    assert (n.vendor, n.device_type) == ("Cisco", "switch")
+    n = normalize.normalize("Brother NC-8300h, Firmware Ver.1.17", "", ssh_banner=SSH_DEBIAN)
+    assert (n.vendor, n.device_type) == ("Brother", "printer")
+    # A device whose MAC / ports say network gear or printer is not turned into a server.
+    assert normalize.normalize(mac="00:1e:13:aa:bb:01", ssh_banner=SSH_UBUNTU).device_type == "switch"
+    assert normalize.normalize(ssh_banner=SSH_UBUNTU, open_ports=[22, 9100]).device_type == "printer"
+    # It does beat the weak port guess (SMB on a Linux box is Samba).
+    assert normalize.normalize(ssh_banner=SSH_UBUNTU, open_ports=[22, 445]).device_type == "server"
+
+
+def test_ssh_banner_flows_through_the_scan(admin):
+    c, cid = make_collector(admin)
+    scan, cmd = scan_run(admin, c, cid)
+    ssh = lambda b: [{"port": 22, "proto": "tcp", "service": "ssh", "banner": b}]  # noqa: E731
+    devs = [{"ip": "10.10.1.50", "mac": "", "alive_via": ["icmp"], "open_ports": ssh(SSH_UBUNTU)},
+            {"ip": "10.10.1.51", "mac": "", "alive_via": ["icmp"], "open_ports": ssh("SSH-2.0-OpenSSH_8.7")}]
+    assert post_batch(c, cmd["params"]["scan_id"], 0, devs, final=True).status_code == 200
+    by_ip = {d["ip"]: d for d in admin.get("/api/network/devices").json()}
+    assert (by_ip["10.10.1.50"]["device_type"], by_ip["10.10.1.50"]["vendor"]) == ("server", "Linux")
+    assert by_ip["10.10.1.51"]["device_type"] == "unknown"
+    assert admin.get(f"/api/network/devices/{by_ip['10.10.1.50']['id']}").json()["family"] == "Ubuntu"
+
+
+def test_runtime_sensor_hosts_are_tracked(admin):
+    from app.models import Asset
+
+    def sensor_asset(s, name, ident=None):
+        s.add(Asset(id=ident or f"sensor:{name.lower()}", name=name, type="vm", provider="onprem", tags={},
+                    internet_exposed=False, sensitive_data=False, source="sensor", properties={}))
+
+    with db.get_session("default") as s:
+        sensor_asset(s, "web01")
+        sensor_asset(s, "App02.corp.example.com")
+        sensor_asset(s, "dup03", "sensor:dup03-a")
+        sensor_asset(s, "DUP03", "sensor:dup03-b")
+        s.add(Asset(id="cloud-web04", name="web04", type="vm", provider="azure", tags={}, internet_exposed=False,
+                    sensitive_data=False, source="azure", properties={}))
+        s.commit()
+    c, cid = make_collector(admin)
+    scan, cmd = scan_run(admin, c, cid)
+    mk = lambda ip, host: {"ip": ip, "mac": "", "hostname": host, "alive_via": ["icmp"]}  # noqa: E731
+    devs = [mk("10.10.1.60", "web01.corp.example.com"), mk("10.10.1.61", "app02"), mk("10.10.1.62", "dup03"),
+            mk("10.10.1.63", "web04"), mk("10.10.1.64", "other")]
+    assert post_batch(c, cmd["params"]["scan_id"], 0, devs, final=True).status_code == 200
+    by_ip = {d["ip"]: d for d in admin.get("/api/network/devices").json()}
+    assert by_ip["10.10.1.60"]["tracked"] == by_ip["10.10.1.61"]["tracked"] == "sensor"
+    assert by_ip["10.10.1.60"]["tracked_label"] == "Runtime sensor"
+    # Ambiguous names, non-sensor assets and unknown hosts are never guessed.
+    assert [by_ip[f"10.10.1.{i}"]["tracked"] for i in (62, 63, 64)] == ["none"] * 3
+    assert "Runtime sensor" in admin.get("/api/network/devices/export.csv").text
+
+
 # ----------------------------------------------------------------------------- linking and IT assets
 def test_links_to_endpoints_directory_and_it_assets(admin):
     from tests.test_directory import add_device

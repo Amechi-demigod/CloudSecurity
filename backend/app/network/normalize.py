@@ -136,10 +136,23 @@ CPE_ALIASES: dict[str, tuple[str, ...]] = {
 _APC = re.compile(r"APC.*?MB:v?([\d.]+).*?PF:v?([\d.]+)(?:.*?MN:(\S+))?(?:.*?SN:\s*([\w-]+))?", re.I | re.S)
 
 
+# SSH banner (RFC 4253 identification string). Only Debian-family and FreeBSD OpenSSH builds name the OS in the
+# comment; RHEL / Rocky / Alma / Amazon / SUSE banners are plain "OpenSSH_8.7" and, as plain OpenSSH also runs on
+# Juniper, firewalls and NAS boxes, a plain banner identifies nothing and is deliberately not used.
+_SSH_OS = re.compile(r"(?:^|\s)SSH-(?:2\.0|1\.99)-OpenSSH_\S+\s+(Ubuntu|Debian|Raspbian|FreeBSD)(?=[-\s_]|$)")
+
+
+def ssh_os(banner: str) -> str:
+    """"Ubuntu", "Debian", "Raspbian" or "FreeBSD" when the SSH banner names it, else ""."""
+    m = _SSH_OS.search((banner or "").strip())
+    return m[1] if m else ""
+
+
 def normalize(sys_descr: str = "", sys_object_id: str = "", mac: str = "", open_ports: list[int] | None = None,
-              hints: dict[str, str] | None = None) -> Normalised:
+              hints: dict[str, str] | None = None, ssh_banner: str = "") -> Normalised:
     """Identify a device. `hints` are values the collector sent (vendor, model, firmware, device_type): kept for
-    fields the tables below cannot fill, and used as the device type when ours is "unknown"."""
+    fields the tables below cannot fill, and used as the device type when ours is "unknown". `ssh_banner` is the
+    banner of the open SSH port: it names a Linux / FreeBSD server only when SNMP did not identify the device."""
     d = " ".join((sys_descr or "").split())
     raw = sys_descr or ""
     n = Normalised()
@@ -241,6 +254,7 @@ def normalize(sys_descr: str = "", sys_object_id: str = "", mac: str = "", open_
         done(ent_vendor, typ=low_t)
     elif d:
         done("")
+    identified = bool(n.vendor)  # SNMP / enterprise OID / vendor rules: never overridden by a banner
     h = hints or {}
     if not n.vendor and h.get("vendor"):
         n.vendor = h["vendor"]
@@ -251,6 +265,12 @@ def normalize(sys_descr: str = "", sys_object_id: str = "", mac: str = "", open_
             "switch", "router", "firewall", "access_point", "printer", "ups", "phone", "camera", "server", "workstation"}:
         n.device_type = h["device_type"]
     ports = set(open_ports or [])
+    os_name = ssh_os(ssh_banner)
+    oui_type = OUI_TYPE.get(mac_vendor(mac), "")
+    if (os_name and not identified and n.device_type in ("unknown", "server") and not ports & {9100, 631}
+            and oui_type in ("", "server")):
+        n.vendor = "FreeBSD" if os_name == "FreeBSD" else "Linux"
+        n.family, n.device_type = os_name, "server"
     if n.device_type == "unknown":
         if 9100 in ports or 631 in ports:
             n.device_type = "printer"
