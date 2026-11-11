@@ -297,7 +297,7 @@ def test_snapshot_all_is_idempotent(seeded):
 def test_snapshot_worker_writes_one_row_per_org_and_day(seeded):
     worker = DashboardSnapshotWorker()
     try:
-        now = utcnow()
+        now = utcnow().replace(hour=12, minute=0, second=0, microsecond=0)  # +1 h must stay on the same UTC day
         first = worker.tick(now)
         assert first.leader and first.written[seeded.acme_id] == 3 and first.written.get("default", 0) >= 1
         assert worker.tick(now + timedelta(hours=1)).written == {}  # same day: nothing new
