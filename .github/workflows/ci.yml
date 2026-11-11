@@ -341,7 +341,7 @@ jobs:
           done
           file dist/*
           # No test-only build (the remote_fake remote-session backend) in what ships.
-          ../scripts/agent_build_check.sh dist/cnapp-agent-* dist/cnapp-collector-*
+          ../scripts/agent_build_check.sh dist/cnapp-agent-linux-* dist/cnapp-agent-windows-* dist/cnapp-agent-darwin-* dist/cnapp-collector-*
           # A newer collector build for the collector MSI upgrade test only (never bundled or shipped).
           mkdir -p upgrade-test
           CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath \
@@ -507,7 +507,7 @@ jobs:
           for arch in amd64 arm64; do
             CGO_ENABLED=0 GOOS=windows GOARCH=$arch go build -trimpath -o "dist/cnapp-collector-windows-${arch}.exe" ./cmd/cnapp-collector
           done
-          ../scripts/agent_build_check.sh dist/cnapp-agent-* dist/cnapp-collector-*
+          ../scripts/agent_build_check.sh dist/cnapp-agent-linux-* dist/cnapp-agent-windows-* dist/cnapp-agent-darwin-* dist/cnapp-collector-*
           cp packaging/windows/*.ps1 packaging/macos/install.sh dist/
           (cd dist && sha256sum cnapp-agent-* > SHA256SUMS && cat SHA256SUMS)
           file dist/cnapp-agent-*
