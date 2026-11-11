@@ -210,6 +210,12 @@ jobs:
           for name, c in sorted(r["posture"].items()):
               print(f"  {name:16} {c['status']:8} {c['detail']}" + (f"  [error: {c['error']}]" if c.get('error') else ""))
           print(f"software: {len(r['software'] or [])} entries; collector errors: {r['errors']}")
+          if d["os_family"] == "linux":
+              for k in ("security_updates", "reboot_required", "auto_updates", "firewall", "disk_encryption", "ssh_root_login",
+                        "ssh_password_login", "admin_accounts", "endpoint_protection", "mandatory_access_control",
+                        "audit_logging", "time_sync", "listening_ports", "package_inventory"):
+                  assert k in r["posture"], f"missing Linux posture check {k}"
+              assert r["software"], "no packages found"
           if d["os_family"] in ("windows", "macos"):
               for k in ("disk_encryption", "firewall", "antivirus", "os_updates", "screen_lock", "local_admins"):
                   assert k in r["posture"], f"missing posture check {k}"
@@ -252,8 +258,7 @@ jobs:
           }
           if ($r.opt_in) { throw 'a fresh runner must not be opted in to remote wipe' }
           Write-Host "OK: MDM_RemoteWipe exposes $($r.methods -join ', '); WinRE enabled: $($r.winre_enabled); edition $($r.edition)"
-      - name: End-to-end - enroll against the real backend, check in, remote actions, signed scripts, lost mode, OS service install/restart, revoke
-        if: runner.os != 'Linux'
+      - name: End-to-end - enroll against the real backend, check in, remote actions, signed scripts, lost mode, OS service install/restart, revoke (Linux covers the systemd unit and refused desktop actions)
         working-directory: .
         run: |
           python -m pip install -r backend/requirements.txt
@@ -279,16 +284,19 @@ jobs:
           python scripts/agent_e2e.py --agent "endpoint-agent/$exe" --service --script-key-file "$k/key.pem" "${remote[@]}"
           rm -rf "$k"
       - name: Self-update e2e - signed update A->B as the OS service, broken C rolled back, untrusted key and tampered binary rejected
-        if: runner.os != 'Linux'
         working-directory: .
         run: python scripts/update_e2e.py
       - name: Self-update diagnostics
-        if: failure() && runner.os != 'Linux'
+        if: failure()
         working-directory: .
         run: |
           if [ "$RUNNER_OS" = Windows ]; then
             sc.exe query CNAPPAgent || true
             ls -la "/c/Program Files/CNAPP Agent" || true
+          elif [ "$RUNNER_OS" = Linux ]; then
+            sudo systemctl status cnapp-agent.service --no-pager || true
+            sudo journalctl -u cnapp-agent.service -n 80 --no-pager || true
+            ls -la /usr/local/bin | grep cnapp || true
           else
             sudo launchctl print system/com.cloudsecurity.cnapp-agent 2>/dev/null | head -n 40 || true
             ls -la /usr/local/cnapp-agent/bin || true
@@ -316,10 +324,13 @@ jobs:
         with:
           go-version-file: endpoint-agent/go.mod
           cache-dependency-path: endpoint-agent/go.sum
-      - name: Cross-compile the installer binaries (windows/amd64, darwin/amd64, darwin/arm64)
+      - name: Cross-compile the installer binaries (windows/amd64, darwin/amd64, darwin/arm64, linux/amd64, linux/arm64)
         run: |
           ldflags="-s -w -X github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/version.Version=0.1.${GITHUB_RUN_NUMBER}+${GITHUB_SHA::7}"
           mkdir -p dist
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -trimpath -ldflags "$ldflags" -o "dist/cnapp-agent-linux-$arch" ./cmd/cnapp-agent
+          done
           CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "$ldflags" -o dist/cnapp-agent-windows-amd64.exe ./cmd/cnapp-agent
           CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags "$ldflags" -o dist/cnapp-agent-darwin-amd64 ./cmd/cnapp-agent
           CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "$ldflags" -o dist/cnapp-agent-darwin-arm64 ./cmd/cnapp-agent
@@ -336,6 +347,11 @@ jobs:
           CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath \
             -ldflags "-s -w -X github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/version.Version=0.2.${GITHUB_RUN_NUMBER}+${GITHUB_SHA::7}" \
             -o upgrade-test/cnapp-collector-windows-amd64.exe ./cmd/cnapp-collector
+      - name: Linux packages (.deb and .rpm, amd64 and arm64) with nfpm
+        run: |
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.48.0
+          export PATH="$(go env GOPATH)/bin:$PATH"
+          packaging/linux/build-packages.sh "0.1.${GITHUB_RUN_NUMBER}" dist
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: agent-installer-binaries
@@ -346,6 +362,44 @@ jobs:
           name: collector-upgrade-test-binary
           path: endpoint-agent/upgrade-test/
           retention-days: 1
+
+  agent-linux-packages:
+    name: Linux packages (${{ matrix.image }})
+    # Installs the freshly built .deb / .rpm into a real distribution container and runs the real collectors there
+    # (no systemd, so the service itself is not started; the service, SSH and self-update need a real machine,
+    # see docs/DEVICE_MANAGEMENT.md "Manual test checklist for a Linux server").
+    needs: [agent-installer-binaries]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { image: "ubuntu:22.04", kind: deb, family: "Ubuntu 22.04" }
+          - { image: "ubuntu:24.04", kind: deb, family: "Ubuntu 24.04" }
+          - { image: "debian:12", kind: deb, family: "Debian 12" }
+          - { image: "rockylinux:9", kind: rpm, family: "Rocky Linux 9" }
+          - { image: "almalinux:8", kind: rpm, family: "AlmaLinux 8" }
+          - { image: "amazonlinux:2023", kind: rpm, family: "Amazon Linux 2023" }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: endpoint-agent/packaging
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: agent-installer-binaries
+          path: dist
+      - name: Install the package, enrolment file consumed, real inventory on ${{ matrix.family }}
+        env:
+          IMAGE: ${{ matrix.image }}
+          KIND: ${{ matrix.kind }}
+        run: |
+          set -euo pipefail
+          ls -l dist/cnapp-agent_*.deb dist/cnapp-agent-*.rpm
+          docker run --rm -e KIND \
+            -v "$PWD/dist:/dist:ro" -v "$PWD/endpoint-agent/packaging/linux:/pk:ro" \
+            "$IMAGE" bash /pk/test-in-container.sh
 
   agent-installers:
     name: Endpoint agent installer package (${{ matrix.os }})
@@ -438,13 +492,16 @@ jobs:
         run: |
           version="0.1.0+${GITHUB_SHA::7}"
           mkdir -p dist
-          for target in windows/amd64 windows/arm64 darwin/amd64 darwin/arm64; do
+          for target in windows/amd64 windows/arm64 darwin/amd64 darwin/arm64 linux/amd64 linux/arm64; do
             os="${target%/*}" arch="${target#*/}" ext=""
             [ "$os" = windows ] && ext=.exe
             CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath \
               -ldflags "-s -w -X github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/version.Version=${version}" \
               -o "dist/cnapp-agent-${os}-${arch}${ext}" ./cmd/cnapp-agent
           done
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.48.0
+          export PATH="$(go env GOPATH)/bin:$PATH"
+          packaging/linux/build-packages.sh "0.1.${GITHUB_RUN_NUMBER}" dist
           for arch in amd64 arm64; do
             CGO_ENABLED=0 GOOS=windows GOARCH=$arch go build -trimpath -o "dist/cnapp-collector-windows-${arch}.exe" ./cmd/cnapp-collector
           done
@@ -466,8 +523,11 @@ jobs:
             --notes "CI test bundle (ephemeral key, not trusted by any real agent)" \
             --collector endpoint-agent/dist/cnapp-collector-windows-amd64.exe \
             --collector endpoint-agent/dist/cnapp-collector-windows-arm64.exe \
+            --package endpoint-agent/dist/cnapp-agent_0.1.${GITHUB_RUN_NUMBER}_amd64.deb --package endpoint-agent/dist/cnapp-agent_0.1.${GITHUB_RUN_NUMBER}_arm64.deb \
+            --package endpoint-agent/dist/cnapp-agent-0.1.${GITHUB_RUN_NUMBER}-1.x86_64.rpm --package endpoint-agent/dist/cnapp-agent-0.1.${GITHUB_RUN_NUMBER}-1.aarch64.rpm \
             endpoint-agent/dist/cnapp-agent-windows-amd64.exe endpoint-agent/dist/cnapp-agent-windows-arm64.exe \
-            endpoint-agent/dist/cnapp-agent-darwin-amd64 endpoint-agent/dist/cnapp-agent-darwin-arm64
+            endpoint-agent/dist/cnapp-agent-darwin-amd64 endpoint-agent/dist/cnapp-agent-darwin-arm64 \
+            endpoint-agent/dist/cnapp-agent-linux-amd64 endpoint-agent/dist/cnapp-agent-linux-arm64
           python scripts/agent_release.py verify endpoint-agent/dist/cnapp-agent-update-CI-TEST-KEY.tar.gz --keys "$RUNNER_TEMP/ci-key.pub"
           rm -f "$key"
       - name: Signed device-script bundle (EPHEMERAL CI key; real bundles use device-scripts-release.yml)
@@ -519,7 +579,7 @@ jobs:
           CNAPP_MFA_ENCRYPTION_KEY: ci-placeholder-mfa-encryption-key-0000000
         run: bicep build-params infra/main.bicepparam --outfile "$RUNNER_TEMP/main.parameters.json"
       - name: shellcheck
-        run: shellcheck infra/setup.sh infra/deploy.sh infra/tests/*.sh endpoint-agent/packaging/macos/*.sh endpoint-agent/packaging/macos/scripts/* scripts/agent-release-keygen scripts/device-scripts-keygen scripts/agent_build_check.sh
+        run: shellcheck infra/setup.sh infra/deploy.sh infra/tests/*.sh endpoint-agent/packaging/macos/*.sh endpoint-agent/packaging/macos/scripts/* endpoint-agent/packaging/linux/*.sh scripts/agent-release-keygen scripts/device-scripts-keygen scripts/agent_build_check.sh
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"

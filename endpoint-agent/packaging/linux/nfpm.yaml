@@ -1,0 +1,66 @@
+# nfpm configuration for the Linux agent packages (.deb and .rpm, amd64 and arm64).
+# Built by packaging/linux/build-packages.sh; the values below come from the environment:
+#   VERSION  package version (1.7.0 for a release, 0.1.<run> for CI builds)
+#   ARCH     amd64 | arm64 (nfpm maps it to x86_64 / aarch64 for the rpm)
+#   BINARY   path of the matching cnapp-agent-linux-<arch> binary
+#   UNIT     path of the generated systemd unit (cnapp-agent systemd-unit)
+name: cnapp-agent
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+section: admin
+priority: optional
+maintainer: CNAPP agent maintainers <noreply@users.noreply.github.com>
+vendor: CloudSecurity CNAPP
+homepage: https://github.com/Amechi-demigod/CloudSecurity
+license: Proprietary
+description: |
+  CNAPP endpoint agent for Linux servers.
+  Reads inventory, installed packages and security posture (updates, firewall,
+  disk encryption, SSH, admin accounts) and reports them to the CNAPP server.
+  Read-only: it never installs packages, never refreshes package caches and
+  never changes a setting. Runs as root under systemd (cnapp-agent.service) and
+  updates itself only with releases signed by the CNAPP release key.
+
+contents:
+  - src: ${BINARY}
+    dst: /usr/bin/cnapp-agent
+    file_info:
+      mode: 0755
+      owner: root
+      group: root
+  - src: ${UNIT}
+    dst: /usr/lib/systemd/system/cnapp-agent.service
+    file_info:
+      mode: 0644
+      owner: root
+      group: root
+  - dst: /etc/cnapp-agent
+    type: dir
+    file_info:
+      mode: 0700
+      owner: root
+      group: root
+  - dst: /var/lib/cnapp-agent
+    type: dir
+    file_info:
+      mode: 0700
+      owner: root
+      group: root
+  - dst: /var/log/cnapp-agent
+    type: dir
+    file_info:
+      mode: 0700
+      owner: root
+      group: root
+
+scripts:
+  postinstall: ./packaging/linux/postinst.sh
+  preremove: ./packaging/linux/prerm.sh
+  postremove: ./packaging/linux/postrm.sh
+
+deb:
+  # gzip: readable by every dpkg (Ubuntu 20.04 / Debian 11 predate zstd support).
+  compression: gzip
+rpm:
+  compression: gzip

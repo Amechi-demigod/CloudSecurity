@@ -12,7 +12,9 @@
     # check a bundle against public keys (what the server and the agents do)
     python scripts/agent_release.py verify cnapp-agent-update-1.4.0.tar.gz --keys endpoint-agent/internal/update/trusted_keys.txt
 
-Binary file names must be cnapp-agent-<goos>-<goarch>[.exe] (as built by CI).
+Binary file names must be cnapp-agent-<goos>-<goarch>[.exe] (as built by CI; goos windows, darwin or linux).
+Linux installers (--package cnapp-agent_1.7.0_amd64.deb, cnapp-agent-1.7.0-1.x86_64.rpm, ...) are signed into the
+manifest's `packages` list and shipped in the bundle; agents ignore it (it is not an update artifact).
 The dedicated directory collector (cnapp-collector-windows-<goarch>.exe) is
 added with --collector: it gets its own signed manifest (collector-manifest.json,
 product cnapp-collector, same keys and version) so agents never see it.
@@ -38,7 +40,11 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
 SIG_CONTEXT = b"cnapp-agent-update-manifest-v1\x00"
-NAME_RE = re.compile(r"^cnapp-agent-(windows|darwin)-(amd64|arm64)(\.exe)?$")
+NAME_RE = re.compile(r"^cnapp-agent-(windows|darwin|linux)-(amd64|arm64)(\.exe)?$")
+# Linux installer packages (nfpm names): signed into the manifest as `packages` (not used for self-update).
+DEB_RE = re.compile(r"^cnapp-agent_[0-9A-Za-z.+~-]+_(amd64|arm64)\.deb$")
+RPM_RE = re.compile(r"^cnapp-agent-[0-9A-Za-z.+~_-]+\.(x86_64|aarch64)\.rpm$")
+RPM_ARCH = {"x86_64": "amd64", "aarch64": "arm64"}
 COLLECTOR_NAME_RE = re.compile(r"^cnapp-collector-(windows)-(amd64|arm64)(\.exe)$")
 SEMVER_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$")
 
@@ -95,7 +101,8 @@ def _key_pems(a: argparse.Namespace) -> list[bytes]:
 
 
 def build_manifest(version: str, binaries: list[Path], *, days: int, min_supported: str, notes: str,
-                   rollback_from: list[str], now: datetime | None = None, product: str = "cnapp-agent") -> dict:
+                   rollback_from: list[str], now: datetime | None = None, product: str = "cnapp-agent",
+                   packages: list[Path] | None = None) -> dict:
     if not SEMVER_RE.match(version):
         raise SystemExit(f"error: {version!r} is not a semantic version")
     now = (now or datetime.now(UTC)).replace(microsecond=0)
@@ -111,11 +118,32 @@ def build_manifest(version: str, binaries: list[Path], *, days: int, min_support
          "released_at": now.isoformat().replace("+00:00", "Z"),
          "expires_at": (now + timedelta(days=days)).isoformat().replace("+00:00", "Z"),
          "min_supported_version": min_supported, "artifacts": arts}
+    if packages:
+        m["packages"] = package_entries(packages)
     if rollback_from:
         m["rollback_allowed_from"] = rollback_from
     if notes:
         m["notes"] = notes
     return m
+
+
+def package_entries(packages: list[Path]) -> list[dict]:
+    """Signed `packages` list of the manifest: .deb / .rpm installers for amd64 and arm64."""
+    out = []
+    for p in packages:
+        if m := DEB_RE.match(p.name):
+            fmt, arch = "deb", m[1]
+        elif m := RPM_RE.match(p.name):
+            fmt, arch = "rpm", RPM_ARCH[m[1]]
+        else:
+            raise SystemExit(f"error: {p.name}: packages must be named cnapp-agent_<version>_<arch>.deb or "
+                             "cnapp-agent-<version>-<release>.<x86_64|aarch64>.rpm")
+        if any(e["format"] == fmt and e["arch"] == arch for e in out):
+            raise SystemExit(f"error: two {fmt} packages for {arch}")
+        data = p.read_bytes()
+        out.append({"format": fmt, "arch": arch, "name": p.name, "sha256": hashlib.sha256(data).hexdigest(),
+                    "size": len(data)})
+    return out
 
 
 def sign_manifest(manifest: dict, keys: list[Ed25519PrivateKey]) -> bytes:
@@ -126,7 +154,7 @@ def sign_manifest(manifest: dict, keys: list[Ed25519PrivateKey]) -> bytes:
 
 
 def write_bundle(out: Path, envelope: bytes, binaries: list[Path], collector_envelope: bytes | None = None,
-                 collector_binaries: list[Path] | None = None) -> None:
+                 collector_binaries: list[Path] | None = None, packages: list[Path] | None = None) -> None:
     with tarfile.open(out, "w:gz") as tf:
         def add(name: str, data: bytes, mode: int) -> None:
             ti = tarfile.TarInfo(name)
@@ -135,6 +163,8 @@ def write_bundle(out: Path, envelope: bytes, binaries: list[Path], collector_env
         add("manifest.json", envelope, 0o644)
         for b in binaries:
             add(b.name, b.read_bytes(), 0o755)
+        for b in packages or []:
+            add(b.name, b.read_bytes(), 0o644)
         if collector_envelope is not None:
             add("collector-manifest.json", collector_envelope, 0o644)
             for b in collector_binaries or []:
@@ -144,16 +174,17 @@ def write_bundle(out: Path, envelope: bytes, binaries: list[Path], collector_env
 def cmd_bundle(a: argparse.Namespace) -> int:
     keys = [load_private(p) for p in _key_pems(a)]
     bins = [Path(p) for p in a.binaries]
+    pkgs = [Path(p) for p in a.package or []]
     m = build_manifest(a.version, bins, days=a.valid_days, min_supported=a.min_supported_version, notes=a.notes,
-                       rollback_from=a.rollback_allowed_from or [])
+                       rollback_from=a.rollback_allowed_from or [], packages=pkgs)
     cbins = [Path(p) for p in a.collector or []]
     cenv = None
     if cbins:
         cm = build_manifest(a.version, cbins, days=a.valid_days, min_supported=a.min_supported_version,
                             notes=a.notes, rollback_from=[], product="cnapp-collector")
         cenv = sign_manifest(cm, keys)
-    write_bundle(Path(a.out), sign_manifest(m, keys), bins, cenv, cbins)
-    print(f"{a.out}: version {a.version}, {len(bins)} agent + {len(cbins)} collector artifact(s), signed by "
+    write_bundle(Path(a.out), sign_manifest(m, keys), bins, cenv, cbins, pkgs)
+    print(f"{a.out}: version {a.version}, {len(bins)} agent + {len(cbins)} collector artifact(s), {len(pkgs)} package(s), signed by "
           f"{', '.join(key_id(public_bytes(k)) for k in keys)}, expires {m['expires_at']}")
     return 0
 
@@ -181,8 +212,12 @@ def cmd_verify(a: argparse.Namespace) -> int:
             data = files.get(art["name"], b"")
             if len(data) != art["size"] or hashlib.sha256(data).hexdigest() != art["sha256"]:
                 raise SystemExit(f"INVALID: {art['name']} does not match {manifest}")
+        for pkg in m.get("packages") or []:
+            data = files.get(pkg["name"], b"")
+            if len(data) != pkg["size"] or hashlib.sha256(data).hexdigest() != pkg["sha256"]:
+                raise SystemExit(f"INVALID: package {pkg['name']} does not match {manifest}")
         print(f"OK: {manifest} ({m['product']}) version {m['version']} signed by {', '.join(ok)}; "
-              f"{len(m['artifacts'])} artifact(s) match")
+              f"{len(m['artifacts'])} artifact(s) and {len(m.get('packages') or [])} package(s) match")
     return 0
 
 
@@ -218,6 +253,8 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--notes", default="")
     b.add_argument("--collector", action="append",
                    help="a cnapp-collector-windows-<arch>.exe binary (repeat); signed as collector-manifest.json")
+    b.add_argument("--package", action="append",
+                   help="a .deb / .rpm installer (repeat); signed into the manifest as `packages`, shipped in the bundle")
     b.add_argument("binaries", nargs="+")
     b.set_defaults(func=cmd_bundle)
     v = sub.add_parser("verify", help="verify a bundle against a trusted-keys file")

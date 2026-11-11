@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ruff: noqa: S105, S310, S603, S607  (test harness: fixed local URLs, binaries and throwaway keys)
-"""End-to-end test of signed agent self-update on a real Windows service / macOS LaunchDaemon.
+"""End-to-end test of signed agent self-update on a real Windows service / macOS LaunchDaemon / Linux systemd unit.
 
 CI only (installs a real OS service, uses sudo on macOS). It:
 
@@ -51,10 +51,11 @@ ROOT = Path(__file__).resolve().parents[1]
 AGENT_DIR = ROOT / "endpoint-agent"
 PKG = "github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal"
 WINDOWS = platform.system() == "Windows"
+LINUX = platform.system() == "Linux"
 SUDO = [] if WINDOWS else ["sudo", "-n"]
 EXE = ".exe" if WINDOWS else ""
 INSTALLED = (Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "CNAPP Agent" / "cnapp-agent.exe"
-             if WINDOWS else Path("/usr/local/cnapp-agent/bin/cnapp-agent"))
+             if WINDOWS else Path("/usr/local/bin/cnapp-agent") if LINUX else Path("/usr/local/cnapp-agent/bin/cnapp-agent"))
 
 
 def sh(cmd: list[str], check: bool = True, **kw) -> subprocess.CompletedProcess:
@@ -124,6 +125,8 @@ def read_state(home: str) -> dict:
 def service_running() -> bool:
     if WINDOWS:
         return "RUNNING" in subprocess.run(["sc.exe", "query", "CNAPPAgent"], capture_output=True, text=True).stdout
+    if LINUX:
+        return subprocess.run([*SUDO, "systemctl", "is-active", "--quiet", "cnapp-agent.service"]).returncode == 0
     out = subprocess.run([*SUDO, "launchctl", "print", "system/com.cloudsecurity.cnapp-agent"],
                          capture_output=True, text=True).stdout
     return "state = running" in out
@@ -138,6 +141,10 @@ def show_logs(home: str) -> None:
     if WINDOWS:
         if f.exists():
             print("".join(f.read_text(errors="replace").splitlines(keepends=True)[-120:]))
+    elif LINUX:
+        sh([*SUDO, "tail", "-n", "120", f], check=False)
+        sh([*SUDO, "journalctl", "-u", "cnapp-agent.service", "-n", "60", "--no-pager"], check=False)
+        sh([*SUDO, "systemctl", "status", "cnapp-agent.service", "--no-pager"], check=False)
     else:
         sh([*SUDO, "tail", "-n", "120", f], check=False)
         sh([*SUDO, "tail", "-n", "40", "/Library/Logs/CNAPP Agent/launchd.log"], check=False)
@@ -172,6 +179,8 @@ def main() -> int:
     backend = subprocess.Popen([args.python, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port",
                                 str(port)], cwd=ROOT / "backend", env=env, stdout=log, stderr=subprocess.STDOUT)
     home = str(work / "agent-home")
+    if LINUX:
+        home = "/var/lib/cnapp-upd-e2e"  # the unit has PrivateTmp=yes: /tmp is invisible to the service
     installed = False
     ok = False
     try:
@@ -361,6 +370,8 @@ def main() -> int:
             backend.kill()
         log.close()
         if not args.keep:
+            if LINUX:
+                subprocess.run([*SUDO, "rm", "-rf", home], check=False)
             if SUDO:
                 subprocess.run([*SUDO, "rm", "-rf", str(work)], check=False)
             else:

@@ -1,6 +1,7 @@
 name: Agent release (signed auto-update bundle)
 
-# Push a tag like `agent-v1.4.0` to build the agent for every platform, sign the
+# Push a tag like `agent-v1.7.0` to build the agent for every platform (Windows, macOS, Linux servers incl. the
+# .deb / .rpm packages), sign the
 # update manifest with the release key (secret AGENT_UPDATE_SIGNING_KEY, never on
 # the CNAPP server) and publish a GitHub Release with the bundle. Import it with
 #   sudo cnapp-ctl agent-release fetch --tag agent-v1.4.0
@@ -61,7 +62,7 @@ jobs:
           VERSION: ${{ steps.v.outputs.version }}
         run: |
           mkdir -p dist
-          for target in windows/amd64 windows/arm64 darwin/amd64 darwin/arm64; do
+          for target in windows/amd64 windows/arm64 darwin/amd64 darwin/arm64 linux/amd64 linux/arm64; do
             os="${target%/*}" arch="${target#*/}" ext=""
             [ "$os" = windows ] && ext=.exe
             CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath \
@@ -74,9 +75,13 @@ jobs:
               -ldflags "-s -w -X github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/version.Version=${VERSION}" \
               -o "dist/cnapp-collector-windows-${arch}.exe" ./cmd/cnapp-collector
           done
+          # Linux installer packages (.deb / .rpm, amd64 and arm64): signed into the manifest below (`packages`).
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.48.0
+          export PATH="$(go env GOPATH)/bin:$PATH"
+          packaging/linux/build-packages.sh "${VERSION}" dist
           # Never publish a test-only build (the remote_fake remote-session backend).
-          ../scripts/agent_build_check.sh dist/cnapp-agent-* dist/cnapp-collector-*
-          (cd dist && sha256sum cnapp-agent-* cnapp-collector-* > SHA256SUMS && cat SHA256SUMS)
+          ../scripts/agent_build_check.sh dist/cnapp-agent-linux-* dist/cnapp-agent-windows-* dist/cnapp-agent-darwin-* dist/cnapp-collector-*
+          (cd dist && sha256sum cnapp-agent-* cnapp-agent_* cnapp-collector-* > SHA256SUMS && cat SHA256SUMS)
       - name: Sign the update manifest
         env:
           AGENT_UPDATE_SIGNING_KEY: ${{ secrets.AGENT_UPDATE_SIGNING_KEY }}
@@ -90,7 +95,10 @@ jobs:
           python scripts/agent_release.py bundle --version "$VERSION" --out "$d/cnapp-agent-update.tar.gz" \
             --notes "CNAPP agent $VERSION (${GITHUB_SHA::7})" \
             --collector "$d/cnapp-collector-windows-amd64.exe" --collector "$d/cnapp-collector-windows-arm64.exe" \
-            "$d/cnapp-agent-windows-amd64.exe" "$d/cnapp-agent-windows-arm64.exe" "$d/cnapp-agent-darwin-amd64" "$d/cnapp-agent-darwin-arm64"
+            --package "$d/cnapp-agent_${VERSION}_amd64.deb" --package "$d/cnapp-agent_${VERSION}_arm64.deb" \
+            --package "$d/cnapp-agent-${VERSION}-1.x86_64.rpm" --package "$d/cnapp-agent-${VERSION}-1.aarch64.rpm" \
+            "$d/cnapp-agent-windows-amd64.exe" "$d/cnapp-agent-windows-arm64.exe" "$d/cnapp-agent-darwin-amd64" "$d/cnapp-agent-darwin-arm64" \
+            "$d/cnapp-agent-linux-amd64" "$d/cnapp-agent-linux-arm64"
           # Agents only accept keys compiled into them: refuse to publish a bundle they would reject.
           python scripts/agent_release.py verify "$d/cnapp-agent-update.tar.gz" --keys endpoint-agent/internal/update/trusted_keys.txt
       - name: Publish the GitHub Release
@@ -101,4 +109,4 @@ jobs:
           d=endpoint-agent/dist
           gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "CNAPP agent ${TAG#agent-v}" --verify-tag \
             --notes "Signed agent auto-update bundle: cnapp-agent-update.tar.gz. Import on-prem with \`sudo cnapp-ctl agent-release fetch --tag $TAG\`." \
-            "$d/cnapp-agent-update.tar.gz" "$d"/cnapp-agent-windows-* "$d"/cnapp-agent-darwin-* "$d"/cnapp-collector-windows-* "$d/SHA256SUMS"
+            "$d/cnapp-agent-update.tar.gz" "$d"/cnapp-agent-windows-* "$d"/cnapp-agent-darwin-* "$d"/cnapp-agent-linux-* "$d"/cnapp-agent_*.deb "$d"/cnapp-agent-*.rpm "$d"/cnapp-collector-windows-* "$d/SHA256SUMS"
