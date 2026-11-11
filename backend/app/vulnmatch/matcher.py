@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from ..engine.risk import cvss_severity, priority_for, vuln_risk_score
 from ..models import Asset, AssetPackage, Device, DeviceSoftware, Vulnerability, new_id, utcnow
+from ..network.normalize import CPE_ALIASES
 from . import feeds
 from .cpe import Installed, cve_matches
 from .feeds import FeedError, cpe_key
@@ -227,20 +228,30 @@ def match_network_device(db: Session, nd, now: datetime | None = None, *, allow_
         key = nd.cpe_product
         label = f"{nd.vendor} {nd.family or 'firmware'}".strip()[:128]
         installed_keys.add(key)
-        data, err = feeds.nvd_product(db, nd.cpe_product, now, allow_fetch=allow_fetch)
-        db.commit()
+        products = (nd.cpe_product, *CPE_ALIASES.get(nd.cpe_product, ()))  # NVD may file a vendor under several names
+        data: dict | None = {}
+        err = None
+        for product in products:
+            part, err = feeds.nvd_product(db, product, now, allow_fetch=allow_fetch)
+            db.commit()
+            if part is None:
+                data = None
+                break
+            data.update(part)
         if data is None:
             out.errors.append(f"{nd.cpe_product}: {err}")
             out.not_checked.append({"name": label, "version": nd.firmware,
                                     "reason": "vulnerability data unavailable (feed offline)"})
         else:
-            inst = Installed(cpe_key(nd.cpe_product), nd.cpe_version, nd.cpe_update)
+            insts = [(p, Installed(cpe_key(p), nd.cpe_version, nd.cpe_update)) for p in products]
             for cve_id, c in data.items():
-                res = cve_matches(_relax_hardware(c.get("cfg") or []), inst, [inst])
+                cfg = _relax_hardware(c.get("cfg") or [])
+                product, res = next(((p, r) for p, i in insts if (r := cve_matches(cfg, i, [i])) is not None),
+                                    (nd.cpe_product, None))
                 if res is None:
                     continue
                 cvss = float(c.get("cvss") or 0.0)
-                evidence = {"criteria": res.criteria, "cpe": nd.cpe_product, "software": label, "firmware": nd.firmware,
+                evidence = {"criteria": res.criteria, "cpe": product, "software": label, "firmware": nd.firmware,
                             "published": c.get("pub"), "vector": c.get("vec") or None, "hardware_not_checked": True,
                             "range": {k: v for k, v in {"start_including": res.version_start_including,
                                                          "start_excluding": res.version_start_excluding,

@@ -226,3 +226,40 @@ func TestCredentialNeverFormatsSecrets(t *testing.T) {
 		t.Error("Redact")
 	}
 }
+
+func TestSophosFirewallReadsSFOSMIB(t *testing.T) {
+	// Values from a real XGS2100 (LibreNMS test capture): sysDescr is plain Linux, no ENTITY-MIB.
+	a := newFakeAgent(t, "good")
+	a.str("1.3.6.1.2.1.1.1.0", "Linux localhost 6.6.116 #1 SMP Wed Jun  3 08:00:50 CDT 2026 x86_64")
+	a.set("1.3.6.1.2.1.1.2.0", gosnmp.ObjectIdentifier, ".1.3.6.1.4.1.2604.5")
+	a.str("1.3.6.1.2.1.1.5.0", "hq-fw")
+	a.str("1.3.6.1.4.1.2604.5.1.1.1.0", "hq-fw")
+	a.str("1.3.6.1.4.1.2604.5.1.1.2.0", "XGS2100_RL01_SFOS")
+	a.str("1.3.6.1.4.1.2604.5.1.1.3.0", "22.0.2 MR-2-Build546")
+	a.str("1.3.6.1.4.1.2604.5.1.1.4.0", "X21987654321012")
+	a.finish()
+	res := testEnv(a).snmpProbe(context.Background(), "127.0.0.1", []Credential{v2("c1", "good")}, true)
+	if res == nil || res.Info == nil {
+		t.Fatal("no SNMP result")
+	}
+	if res.Vendor != "Sophos" || res.DeviceType != "firewall" || res.Model != "XGS2100_RL01_SFOS" ||
+		res.Firmware != "22.0.2 MR-2-Build546" || res.Serial != "X21987654321012" {
+		t.Errorf("hints %+v", res)
+	}
+}
+
+func TestSFOSMIBNotQueriedForOtherVendors(t *testing.T) {
+	a := newFakeAgent(t, "good")
+	a.populateSystem("Cisco IOS Software, C3750E Switch", "1.3.6.1.4.1.9.1.516")
+	a.finish()
+	if res := testEnv(a).snmpProbe(context.Background(), "127.0.0.1", []Credential{v2("c1", "good")}, true); res == nil {
+		t.Fatal("no SNMP result")
+	}
+	for _, r := range a.requests() {
+		for _, o := range r.OIDs {
+			if strings.Contains(o, "2604.5") {
+				t.Fatalf("Sophos OID %s requested from a Cisco device", o)
+			}
+		}
+	}
+}
