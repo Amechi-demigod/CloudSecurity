@@ -67,7 +67,7 @@ MIGRATION_CHAIN = ["0001_baseline", "0002_device_management", "0003_notification
                    "0018_remote_sessions", "0019_offboarding_username", "0020_directory_discovery",
                    "0021_directory_cloud_sources", "0022_windows_updates", "0023_endpoint_actions",
                    "0024_agent_deployments", "0025_compliance_reports", "0026_device_classification",
-                   "0027_directory_collectors", "0028_network_discovery"]
+                   "0027_directory_collectors", "0028_network_discovery", "0029_network_sensor_link"]
 
 
 def test_migration_history_is_linear():

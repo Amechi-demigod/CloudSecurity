@@ -488,7 +488,9 @@ def apply_device(db: Session, run: NetworkScanRun, d: DeviceIn, now: datetime, *
         nd.snmp_version = ""
         nd.snmp_credential_id = ""
     nd.default_community = d.default_community or ""
-    n = normalize.normalize(nd.sys_descr, nd.sys_object_id, nd.mac, [p["port"] for p in ports], hints)
+    ssh = next((p["banner"] for p in sorted(ports, key=lambda p: p["port"] != 22)
+                if p["proto"] == "tcp" and p["banner"].startswith("SSH-")), "")
+    n = normalize.normalize(nd.sys_descr, nd.sys_object_id, nd.mac, [p["port"] for p in ports], hints, ssh)
     if n.vendor:
         nd.vendor = n.vendor
     elif not nd.vendor:
@@ -608,6 +610,28 @@ def link_directory(db: Session, nd: NetworkDevice) -> None:
         nd.it_asset_id = c.it_asset_id
 
 
+def link_sensor(db: Session, nd: NetworkDevice, by_name: dict[str, list[str]] | None = None) -> bool:
+    """Match a host that runs the Linux runtime sensor. The sensor reports no MAC or IP, only its host name, and
+    creates an `assets` row (source "sensor", type vm) named after it, so the link is by short host name and, like
+    the AD link, only when exactly one sensor asset has that name (never guessed)."""
+    if by_name is None:
+        by_name = sensor_names(db)
+    ids = {i for s in {short_name(nd.hostname), short_name(nd.sys_name)} if s for i in by_name.get(s, [])}
+    if len(ids) == 1:
+        nd.sensor_asset_id = ids.pop()
+        return True
+    if nd.sensor_asset_id and nd.sensor_asset_id not in {i for v in by_name.values() for i in v}:
+        nd.sensor_asset_id = None  # the sensor asset was deleted
+    return False
+
+
+def sensor_names(db: Session) -> dict[str, list[str]]:
+    out: dict[str, list[str]] = {}
+    for aid, name in db.execute(select(Asset.id, Asset.name).where(Asset.source == "sensor", Asset.type == "vm")):
+        out.setdefault(short_name(name), []).append(aid)
+    return out
+
+
 def endpoint_maps(db: Session) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
     """(mac -> device id, ip -> device id, short hostname -> device id) of the enrolled endpoints. Reads each
     device's inventory once (chunked): only used at the end of a scan, never per batch."""
@@ -714,6 +738,9 @@ def finish_run(db: Session, run: NetworkScanRun, batch: NetBatchIn, now: datetim
     devices = list(db.scalars(select(NetworkDevice).where(NetworkDevice.last_run_id == run.id)))
     maps = endpoint_maps(db)
     link_endpoints(db, devices, maps)
+    names = sensor_names(db)
+    for nd in devices:
+        link_sensor(db, nd, names)
     known = known_macs(db, maps[0])
     for nd in devices:
         evaluate_device(db, nd, now, known)
@@ -764,6 +791,8 @@ def tracked_of(nd: NetworkDevice) -> str:
         return "ad"
     if nd.it_asset_id:
         return "it_asset"
+    if nd.sensor_asset_id:
+        return "sensor"
     return "none"
 
 
