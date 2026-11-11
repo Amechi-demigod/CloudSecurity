@@ -161,6 +161,9 @@ func setup(t *testing.T) (*Agent, *fakeServer) {
 	a.Collect = fakeCollect
 	a.Lock = func(context.Context) (string, error) { return "locked (test)", nil }
 	a.WipeProbe = readyProbe // never run the real PowerShell probe in unit tests
+	if a.GOOS == "linux" {
+		a.GOOS = "test" // the Linux server agent drops desktop posture; these tests exercise it against fakes (see TestMain)
+	}
 	return a, f
 }
 

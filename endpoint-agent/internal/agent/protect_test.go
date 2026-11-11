@@ -459,3 +459,17 @@ func TestMaybeReenforceSignin(t *testing.T) {
 		t.Fatal("expected nextSigninReenforce to be rescheduled")
 	}
 }
+
+func TestLinuxServerReportsNoDesktopPosture(t *testing.T) {
+	a, f := setup(t)
+	a.GOOS = "linux"
+	a.LostMode.Backend = &memNotice{}
+	if err := a.CheckIn(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"lost_mode", "remote_wipe", "isolation"} {
+		if _, ok := f.checkin.Posture[k]; ok {
+			t.Errorf("%s reported on a Linux server", k)
+		}
+	}
+}
