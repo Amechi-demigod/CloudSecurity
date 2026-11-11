@@ -349,7 +349,7 @@ jobs:
             -o upgrade-test/cnapp-collector-windows-amd64.exe ./cmd/cnapp-collector
       - name: Linux packages (.deb and .rpm, amd64 and arm64) with nfpm
         run: |
-          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.48.0
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.46.3
           gopath="$(go env GOPATH)"
           export PATH="$gopath/bin:$PATH"
           packaging/linux/build-packages.sh "0.1.${GITHUB_RUN_NUMBER}" dist
@@ -500,7 +500,7 @@ jobs:
               -ldflags "-s -w -X github.com/Amechi-demigod/CloudSecurity/endpoint-agent/internal/version.Version=${version}" \
               -o "dist/cnapp-agent-${os}-${arch}${ext}" ./cmd/cnapp-agent
           done
-          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.48.0
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.46.3
           gopath="$(go env GOPATH)"
           export PATH="$gopath/bin:$PATH"
           packaging/linux/build-packages.sh "0.1.${GITHUB_RUN_NUMBER}" dist

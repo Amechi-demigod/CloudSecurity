@@ -141,6 +141,15 @@ var collectorOnly = map[string]bool{"network_scan": true, "network_subnets": tru
 // goos is the OS the agent runs on (replaced in tests).
 var goos = runtime.GOOS
 
+// SetGOOSForTest makes Validate behave as on another OS and returns a function
+// that restores it. Only for tests in other packages (the agent's end-to-end
+// tests drive desktop commands against fakes on every CI OS, Linux included).
+func SetGOOSForTest(os string) (restore func()) {
+	prev := goos
+	goos = os
+	return func() { goos = prev }
+}
+
 // linuxSupported are the only commands a Linux server agent runs (agent
 // 1.7.0): it reads and reports, it does not lock, wipe, run scripts, change
 // services, block USB storage, open remote sessions or install updates.

@@ -76,7 +76,7 @@ jobs:
               -o "dist/cnapp-collector-windows-${arch}.exe" ./cmd/cnapp-collector
           done
           # Linux installer packages (.deb / .rpm, amd64 and arm64): signed into the manifest below (`packages`).
-          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.48.0
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.46.3
           gopath="$(go env GOPATH)"
           export PATH="$gopath/bin:$PATH"
           packaging/linux/build-packages.sh "${VERSION}" dist

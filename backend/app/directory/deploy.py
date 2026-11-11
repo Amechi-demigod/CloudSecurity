@@ -42,7 +42,7 @@ EXCLUDED_LABEL = {
     "mobile": "Phones, tablets and ChromeOS cannot run the agent (they are managed by their MDM)",
     "no_agent_expected": "Personal or registered-only device: no agent is expected on it",
     "disabled": "Disabled in every directory it is in",
-    "linux": "Linux servers are not pushed from a directory: install the .deb / .rpm from Devices > Enrollment (docs/DEVICE_MANAGEMENT.md)",
+    "linux": "Linux servers are not pushed from a directory: install the .deb or .rpm from Devices > Enrollment",
     "unknown_os": "Operating system unknown or not supported by the agent",
     "gone": "No longer in any directory",
 }
