@@ -28,6 +28,7 @@
                         "resource_id": {"type": ["string", "null"]}}}
       ]
     },
+    "machine_id": {"type": "string", "pattern": "^[0-9a-f]{64}$", "description": "SHA-256 of /etc/machine-id with the endpoint agent's 'cnapp-agent:' prefix (never the raw id): lets the platform recognise a server that also runs the Linux endpoint agent, whose package list is then used instead of this one."},
     "packages": {
       "type": "array",
       "maxItems": 50000,

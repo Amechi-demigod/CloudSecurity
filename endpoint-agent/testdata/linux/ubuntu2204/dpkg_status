@@ -1,0 +1,46 @@
+Package: openssl
+Status: install ok installed
+Priority: optional
+Section: utils
+Installed-Size: 2182
+Maintainer: Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>
+Architecture: amd64
+Version: 3.0.2-0ubuntu1.15
+Depends: libc6 (>= 2.34), libssl3 (>= 3.0.2)
+Description: Secure Sockets Layer toolkit - cryptographic utility
+ This package is part of the OpenSSL project's implementation of the SSL
+ and TLS cryptographic protocols.
+Original-Maintainer: Debian OpenSSL Team <pkg-openssl-devel@lists.alioth.debian.org>
+
+Package: libssl3
+Status: install ok installed
+Architecture: amd64
+Source: openssl
+Version: 3.0.2-0ubuntu1.15
+Description: Secure Sockets Layer toolkit - shared libraries
+
+Package: linux-image-5.15.0-119-generic
+Status: install ok installed
+Architecture: amd64
+Source: linux-signed
+Version: 5.15.0-119.129
+Description: Signed kernel image generic
+
+Package: bash
+Status: install ok installed
+Architecture: amd64
+Source: bash (5.1-6ubuntu1.1)
+Version: 5.1-6ubuntu1.1+b1
+Description: GNU Bourne Again SHell
+
+Package: oldpkg
+Status: deinstall ok config-files
+Architecture: amd64
+Version: 1.0-1
+Description: removed but config remains
+
+Package: unattended-upgrades
+Status: install ok installed
+Architecture: all
+Version: 2.8ubuntu1
+Description: automatic installation of security upgrades

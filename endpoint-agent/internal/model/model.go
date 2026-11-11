@@ -124,9 +124,16 @@ type Software struct {
 	Identifier  string `json:"identifier"`
 	InstallDate string `json:"install_date"`
 	Source      string `json:"source"`
+	// Linux packages (agents 1.7.0+; omitted elsewhere): the OSV ecosystem of
+	// the OS ("" = OSV has no feed, e.g. Amazon Linux: reported, not matched),
+	// the source package and (dpkg) source version vulnerability feeds key on.
+	Ecosystem     string `json:"ecosystem,omitempty"`
+	SourceName    string `json:"source_name,omitempty"`
+	SourceVersion string `json:"source_version,omitempty"`
 }
 
-// Service is one Windows service (agents 1.4.0+, internal/actions): the
+// Service is one Windows service or Linux systemd service (internal/actions on
+// Windows, internal/collect on Linux 1.7.0+): the
 // inventory the console's Services tab and endpoint actions work from.
 type Service struct {
 	Name        string `json:"name"`
@@ -144,7 +151,7 @@ type Report struct {
 	Device        DeviceInfo              `json:"device"`
 	Posture       map[string]PostureCheck `json:"posture"`
 	Software      []Software              `json:"software"`
-	// Services is Windows only (nil elsewhere, then omitted).
+	// Services: Windows services and Linux systemd services (nil on macOS, then omitted).
 	Services []Service         `json:"services,omitempty"`
 	Errors   map[string]string `json:"errors"`
 	// MachineID is the SHA-256 of the OS machine identifier; sent at enrollment only.

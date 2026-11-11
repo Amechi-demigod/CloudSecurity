@@ -16,6 +16,7 @@ Linux is not supported yet. The code is split so it can be added later: see [Add
 - [Architecture](#architecture)
 - [Roll out to all devices](#roll-out-to-all-devices) (one pre-configured MSI / pkg: GPO, Intune, SCCM, Jamf, Kandji)
 - [Enrolling devices](#enrolling-devices) one by one: [Windows](#windows-1011) and [macOS](#macos)
+- [Linux servers](#linux-servers) (agent 1.7.0: .deb / .rpm, inventory, packages, posture, one record with the runtime sensor)
 - [What data is collected](#what-data-is-collected) (privacy)
 - [Device class](#device-class) (workstation / server / domain controller, virtual machines, cloud VMs)
 - [Device health and issues](#device-health-and-issues)
@@ -274,6 +275,109 @@ cd endpoint-agent && go build -o cnapp-agent ./cmd/cnapp-agent
 ./cnapp-agent enroll --server http://localhost:8000 --token cne_... --insecure-dev --home /tmp/agent
 ./cnapp-agent checkin --home /tmp/agent    # one check-in + command poll
 ```
+
+## Linux servers
+
+Agent **1.7.0** adds **Linux servers** (no Linux desktops, no screen-lock check) to Devices: inventory, installed packages matched to vulnerabilities, pending security updates, host hardening and a short list of read-only posture checks. It is the same Go agent as on Windows and macOS (build tag `linux`), packaged as a **.deb** and an **.rpm** for **amd64** and **arm64** (including AWS Graviton) and run by **systemd** as `cnapp-agent.service`. Servers are classified `role = server`.
+
+### Supported servers
+
+| Distribution | Versions | Package vulnerabilities |
+|---|---|---|
+| Ubuntu | 20.04, 22.04, 24.04 LTS | Matched (OSV, Ubuntu advisories) |
+| Debian | 11, 12 | Matched (OSV, Debian tracker) |
+| RHEL, Rocky Linux, AlmaLinux | 8, 9 | Matched (OSV). RHEL 8's older BerkeleyDB package database is read through `rpm -qa`, which the runtime sensor cannot do |
+| Amazon Linux | 2023 | Inventory and posture only. **Packages are listed but not matched**: OSV.dev has no Amazon Linux ecosystem, so the Vulnerabilities tab says "Not matched" with the reason instead of showing an empty (clean-looking) list. Amazon's own advisory feed (ALAS) would be a separate follow-up |
+
+Other distributions with dpkg or rpm usually work for inventory and most checks, but are untested. Distributions OSV does not cover (SUSE, Alpine via the agent, ...) are reported as "Not matched" the same way. The agent runs as **root** because `sshd -T`, the sudoers files, `/etc/shadow`'s empty-password field and the firewall rule sets are root-only.
+
+### What it reads
+
+Every check reports `pass`, `fail`, `info` or `unknown` like Windows and macOS. A check that cannot run reports `unknown` **with the reason**; it never fails the check-in. Each check carries *evidence*: the exact values it decided on, shown on the device's Posture tab. All commands use absolute paths, no shell, a timeout, and are read-only.
+
+| Check (name) | How it is read | Fails when |
+|---|---|---|
+| Security updates pending (`security_updates`) | apt: `apt-get -s dist-upgrade` (a simulation, `Debug::NoLocking`), counting packages offered by a `-security` pocket (also Debian-Security, ESM). dnf: `dnf -C updateinfo list --security` (**`-C`: cache only**). The agent **never refreshes or changes the package cache**; it reports the cache's age (newest `InRelease` / `update-success-stamp`, or `repomd.xml`) | Any security update is pending. **Unknown** when the cache is older than 7 days |
+| Reboot required (`reboot_required`) | Debian / Ubuntu: `/var/run/reboot-required` (+ `.pkgs`). RHEL family and Amazon Linux: the running kernel (`/proc/sys/kernel/osrelease`) against the newest installed `kernel-core` / `kernel` (`rpm -q`, compared like `rpmvercmp`) | An installed kernel or core library is not running yet |
+| Automatic security updates (`auto_updates`) | apt: `unattended-upgrades` installed, `apt-daily-upgrade.timer` enabled and `APT::Periodic::Unattended-Upgrade` not 0. dnf: `dnf-automatic-install.timer` (or `dnf-automatic.timer` with `apply_updates = yes`) enabled | Neither is enabled, or dnf-automatic only downloads / notifies |
+| Host firewall (`firewall`) | `ufw status verbose`, `firewall-cmd` (state, default zone target), else `nft list ruleset` (input hook policy / catch-all drop), else `iptables -S` (INPUT policy / catch-all DROP or REJECT) | No active firewall, or the inbound default is accept. **On an AWS / Azure / GCP VM this is Info** with a pointer to cloud posture (security groups); on-premises or unknown hosts fail |
+| Disk encryption (`disk_encryption`) | `lsblk --json` device tree: a mounted data volume (not `/boot`, swap) is encrypted when a dm-crypt (`crypt`) device or `crypto_LUKS` signature is below it (LVM on LUKS works) | A data volume is not encrypted. **Info on AWS / Azure / GCP** (provider disk encryption is invisible from inside the server and is checked by cloud posture); on-premises or unknown fail |
+| SSH root login (`ssh_root_login`) | `sshd -T`, the **effective** configuration (included files count; `Match` blocks are not evaluated) | `yes` fails; `no` passes; `prohibit-password` / `without-password` and `forced-commands-only` are **Info** (a strict tenant can treat them as failing later) |
+| SSH password login (`ssh_password_login`) | `sshd -T`: `passwordauthentication` and `kbdinteractiveauthentication` (`challengeresponseauthentication` on older OpenSSH) | Either is `yes` |
+| Admin accounts (`admin_accounts`) | members of `sudo` / `wheel` / `admin`, users and groups granted full rights in `/etc/sudoers` and `sudoers.d` (includes resolved, `User_Alias` expanded), `NOPASSWD` rules, accounts with UID 0, accounts with an **empty password field** | An account other than `root` with UID 0, or an account with a login shell and an empty password. The list itself is Info. **Only whether the password field is empty is read, never the hash**: hashes are not kept, logged or sent |
+| Endpoint protection (`endpoint_protection`) | Defender for Endpoint (`mdatp`), CrowdStrike (`falcon-sensor`), SentinelOne, Sophos, ClamAV: package installed and systemd service running | None found, or installed but not running |
+| SELinux / AppArmor (`mandatory_access_control`) | `/sys/fs/selinux/enforce`; `/sys/module/apparmor/parameters/enabled` and the enforcing profile count | Disabled or permissive; AppArmor with no enforcing profile |
+| Audit logging (`audit_logging`) | `auditd.service` active | Not installed / not running |
+| Time sync (`time_sync`) | `timedatectl show` (`NTPSynchronized`, which chrony and systemd-timesyncd both set) and the running time service | The clock is not synchronised |
+| Listening ports (`listening_ports`, Info) | `/proc/net/tcp{,6}` / `udp{,6}` with the owning process name from `/proc/<pid>/fd` | never (data only) |
+| Package inventory (`package_inventory`, Info) | package manager, OSV ecosystem, package count, and whether vulnerability matching applies (the "Not matched" reason for Amazon Linux) | never (data only) |
+
+Inventory: `/etc/os-release` (distribution, version), kernel, CPU, memory, mounted filesystems, network interfaces, uptime, logged-in users, the hashed `/etc/machine-id`, DMI vendor / model / serial where readable (`/sys/class/dmi/id`), the services list (`systemctl list-units` / `list-unit-files`), and installed packages: `/var/lib/dpkg/status` (with source package and source version) or `rpm -qa --queryformat` (read-only, so RHEL 8's BerkeleyDB database works). Each package carries the **OSV ecosystem** derived from os-release exactly like the backend's `ecosystem_for` (`Debian:12`, `Ubuntu:22.04:LTS`, `Rocky Linux:9`, `AlmaLinux:8`, `Red Hat`); none for Amazon Linux. The cloud provider comes from DMI only: **no cloud metadata service is called**.
+
+### What it never does
+
+- Installs, removes or upgrades packages, or refreshes the package cache (`apt-get update`, `dnf makecache`). dnf may append its usual line to its own log.
+- Changes SSH, firewall, sudo or any other setting. It reads and reports.
+- Reads password hashes, private keys or file contents beyond the configuration files listed above.
+- Opens a listening port. It only connects out to the console, like the Windows and macOS agent.
+- Runs commands from the server. Lock, wipe, lost mode, USB blocking, remote sessions, **Run script**, service control, uninstall and OS update install are **not available on Linux**: the agent refuses them with a clear error and the console hides or disables them (the server refuses them too). Linux servers support `recheck_posture`, `collect_logs`, `restart_agent`, `update_check_in_interval` and `check_for_update`.
+- Runs updates that are not signed with the release key (see below).
+
+### Install
+
+Devices > **Enroll devices** > Download installer > **Linux servers (.deb / .rpm)** (admin). It gives you two things:
+
+1. the generic, signed **package** (`cnapp-agent_<version>_<arch>.deb` or `cnapp-agent-<version>-1.<x86_64|aarch64>.rpm`), taken from the newest imported agent release (`sudo cnapp-ctl agent-release fetch --tag agent-vX.Y.Z` brings it in, see [AGENT_UPDATES.md](AGENT_UPDATES.md#release-process)), and
+2. the **enrolment file** `cnapp-agent-enroll.json` with this server's address, a dedicated package-bound enrollment token (same limits, expiry, device group and revocation as the Windows / macOS installers) and the private CA only when the server needs one.
+
+```bash
+sudo install -d -m 0700 /etc/cnapp-agent
+sudo install -m 0600 -o root cnapp-agent-enroll.json /etc/cnapp-agent/enroll.json
+sudo apt install ./cnapp-agent_1.7.0_amd64.deb        # Debian, Ubuntu
+sudo dnf install ./cnapp-agent-1.7.0-1.x86_64.rpm     # RHEL, Rocky, Alma, Amazon Linux
+```
+
+The package's post-install hands `/etc/cnapp-agent/enroll.json` to `cnapp-agent configure --from-file` (a protected pending enrollment in `/var/lib/cnapp-agent`) and **deletes the file**, then enables and starts the service. The agent enrols itself and checks in within a minute. If the file cannot be read the package still installs, keeps the file and tells you the command to retry. Works with Ansible, cloud-init, Puppet or a terminal (the console shows a snippet). Remove with `sudo apt remove cnapp-agent` (keeps the device credential), `sudo apt purge cnapp-agent` or `sudo dnf remove cnapp-agent` (also delete the credential, logs and any leftover enrolment file); then delete the device in the console. Without a package, `sudo cnapp-agent install` copies the binary to `/usr/local/bin`, writes the unit and starts it.
+
+**Why a generic package plus an enrolment file** (instead of a per-tenant package like the MSI and pkg): a .deb is an `ar` archive that could be re-written in pure Python, but an .rpm carries header and payload digests that need rpm tooling to rewrite, which the backend image does not (and should not) carry. A signed, checksummed, **identical** package for every tenant is also easier to mirror and verify, and the token never has to be baked into a package a third party might re-host. The token only travels in the downloaded file's bytes: never in a URL, a log or the audit log (which stores a hash and the file's SHA-256).
+
+### The service
+
+`/usr/lib/systemd/system/cnapp-agent.service` (generated from `internal/service/unit.go`, so the unit the packages ship and the one `cnapp-agent install` writes cannot drift): runs as root, `Restart=always`, state in `/var/lib/cnapp-agent` and logs in `/var/log/cnapp-agent` (both 0700, created by systemd), `LC_ALL=C`, `UMask=0077`, plus `NoNewPrivileges`, `PrivateTmp`, `ProtectSystem=full`, `ProtectHome`, `ProtectKernelModules`, `ProtectControlGroups`, `ProtectClock`, `ProtectHostname`, `LockPersonality`, `RestrictRealtime`, `RestrictSUIDSGID`. It deliberately does **not** set `ProtectProc`, `PrivateUsers`, a capability bounding set or `ProtectSystem=strict`: the listening-port owners need `/proc/<pid>/fd`, the firewall commands need `CAP_NET_ADMIN`, and a signed self-update replaces the binary in `/usr/bin`.
+
+**Self-update** works as on the other platforms (signed manifest, same release keys, SHA-256 and size, anti-rollback, health check, automatic rollback), with the artifact `cnapp-agent-linux-<arch>`; the new binary replaces `/usr/bin/cnapp-agent` (so `dpkg -V` / `rpm -V` will report it as modified after an update; a later package upgrade replaces it again) and `systemctl restart --no-block cnapp-agent` runs it. The rollback watchdog (the previous binary) is started as a transient systemd unit (`systemd-run`) so the service restart does not kill it.
+
+### One record per server: agent and runtime sensor
+
+The agent answers "is this server configured and patched?", the runtime sensor "is something bad happening on it right now?". Both may run on the same server. The server is then **one record**, and the **agent's package list is used while the agent is checking in; the sensor's is ignored** so vulnerabilities are not counted twice:
+
+1. the sensor's cloud resource id is matched with the agent's DMI instance id (AWS: the `instance/i-...` suffix of the resource id; Azure: the VM id of the scanned VM asset), then
+2. the sensor's optional `machine_id` (SHA-256 of `/etc/machine-id` with the agent's `cnapp-agent:` prefix, never the raw id; sensors from this release on send it) with the device's `machine_id`, then
+3. the host name (case-insensitive, short or fully qualified), **only when exactly one agent device has it** (two agents claiming a name are never guessed).
+
+An agent that has not checked in for 7 days no longer wins: the sensor's list is used again until it returns. On a match the sensor's asset gets `package_source = agent` and `agent_device_id`, its stored packages are deleted and their vulnerabilities resolved; the sensor's later package reports answer `superseded_by_agent: true`. The vulnerabilities then live on the **device** (Devices > device > Vulnerabilities); the sensor's asset keeps runtime events and "in use" evidence. The sensor keeps its own installer and settings.
+
+### Vulnerabilities
+
+The agent's packages go through the same OSV matching as the sensor's (`backend/app/vulnmatch/matcher.py`, `match_linux_device`): one `querybatch` per unique (ecosystem, source package, version), Debian / Ubuntu by **source package and source version**, rpm distributions by binary name and `[epoch:]version-release`. Matching is queued after a check-in changes the list, never done inline. Packages without an OSV ecosystem are not queried: they are listed under "not checked" with the reason and the Vulnerabilities tab shows a **Not matched** banner.
+
+### Console
+
+Devices lists Linux with the distribution as the OS (filter *OS = Linux*), the updates column shows *N security pending* and *reboot*, and the Posture tab shows a card per check with its evidence. The Overview shows uptime, packages, listening ports and the package cache age ("Refreshed 6 h ago"). The action toolbar offers only the commands above; remote wipe, lost mode, scripts, remote sessions, service control and bulk actions are hidden or disabled. Issue codes added for Linux: `auto_updates_off`, `ssh_root_login_allowed`, `ssh_password_login_allowed`, `admin_accounts_risky`, `endpoint_protection_off`, `mac_not_enforcing`, `audit_logging_off`, `time_not_synced`; failing security updates / reboot / firewall / disk encryption reuse `os_security_updates_missing`, `os_reboot_pending`, `firewall_off`, `disk_encryption_off`. They feed notifications and the compliance reports ([COMPLIANCE.md](COMPLIANCE.md#checks)).
+
+### Manual test checklist (real non-production server)
+
+CI installs the packages into Ubuntu 22.04 / 24.04, Debian 12, Rocky 9, AlmaLinux 8 and Amazon Linux 2023 containers and runs the real collectors there, but **containers have no systemd and no running sshd**. Before the first release, on one non-production Ubuntu / Debian and one RHEL-family server (never on the console server):
+
+1. Install the package with the enrolment file in place; confirm `systemctl status cnapp-agent` is active, `/etc/cnapp-agent/enroll.json` is gone, the device appears in Devices within a minute, role *Server*, OS and kernel correct.
+2. Posture tab: compare each card with the machine: `sshd -T | grep -Ei 'permitrootlogin|passwordauth|kbdinteractive'`, `ufw status` / `firewall-cmd --state`, `lsblk -f`, `aa-status` / `getenforce`, `systemctl is-active auditd chronyd systemd-timesyncd`, `timedatectl`, `ss -tulpn`, `sudo -l -U <user>`, `getent group sudo wheel`.
+3. Flip things and Re-check posture: set `PermitRootLogin yes`, enable password login (reload sshd), disable the firewall, add a UID 0 test account, stop auditd: each card changes, an issue appears; undo.
+4. Security updates: on a server with a stale cache (> 7 days) the card says *Unknown* with the cache age and the agent does **not** run `apt update`; refresh the cache yourself and Re-check: pending security updates are listed. Check `/var/lib/apt/lists` / `/var/cache/dnf` timestamps did not change because of the agent. Install a kernel update: *Reboot required* fails until you reboot.
+5. Software and Vulnerabilities: package count matches `dpkg -l | wc -l` / `rpm -qa | wc -l`; an old OpenSSL on a supported distribution shows OSV findings; on Amazon Linux the tab says *Not matched*.
+6. Commands: Re-check posture, Collect logs (open the bundle: no hashes, tokens), change the interval, Restart agent all work; Lock, Run script, Remote session, Wipe, Lost mode are not offered; calling the API for them returns 409.
+7. With the runtime sensor on the same server: the sensor's packages are ignored (`POST /api/runtime/packages` answers `superseded_by_agent`), vulnerabilities are counted once.
+8. Self-update: import a newer signed release, assign it, *Update now*; the binary is replaced, the service restarts and checks in, version changes. Then a release whose binary is broken is rolled back by the watchdog (`journalctl -u cnapp-agent`, `systemctl list-units 'cnapp-agent-update-watchdog*'`).
+9. Reboot the server (the agent starts again), `apt remove` / `dnf remove` stops and disables it; `purge` deletes `/var/lib/cnapp-agent`.
 
 ## What data is collected
 
@@ -918,6 +1022,7 @@ Installers: `PUBLIC_BASE_URL` (required, https; embedded in installers), `AGENT_
 ## Testing
 
 - **Backend** (`backend/tests/test_devices.py`, on SQLite and PostgreSQL in CI): enrollment (single/multi-use, expiry, revocation, rate limit, re-enrollment and credential rotation), authentication isolation in both directions, revoked-device rejection, strict check-in validation and size limits, issue and health derivation, command RBAC, server-side allowlist and parameter validation, expiry, at-most-once delivery, device binding, nonces, log-bundle upload, size cap and download RBAC, audit entries, and delete cascade.
+- **Linux agent**: `internal/collect/linux_test.go` tests every parser and check against fixture files in `endpoint-agent/testdata/linux/` for Ubuntu 22.04 / 24.04, Debian 12, Rocky 9, RHEL 8 and Amazon Linux 2023 (the fixtures are written to match the documented output formats of dpkg, apt-get, rpm, dnf, sshd, ufw, firewalld, nft, iptables, lsblk, systemd and `/proc`; they are not captures of live hosts); the `agent-linux-packages` CI job installs the real .deb / .rpm into Ubuntu 22.04 / 24.04, Debian 12, Rocky 9, AlmaLinux 8 and Amazon Linux 2023 containers and runs the real collectors (`packaging/linux/test-in-container.sh`); the ubuntu runner also runs the agent end to end against the real backend, installs the systemd unit and self-updates (`scripts/agent_e2e.py`, `scripts/update_e2e.py`). `backend/tests/test_linux_agent.py` covers the backend side.
 - **Agent** (`go test ./...`): fixture-based parser tests for every Windows and macOS collector (they run on any OS, see `endpoint-agent/testdata/`), including PowerShell 5.1 JSON quirks; the command allowlist; validation and expiry; backoff and jitter; state file permissions; the HTTP client (https enforcement, no redirects); and an agent loop test against a fake server covering replay protection, the log bundle and revoked-device back-off.
 - **CI on real `windows-latest` and `macos-latest` runners**:
   - `go vet` and `go test`;
@@ -937,7 +1042,7 @@ Installers: `PUBLIC_BASE_URL` (required, https; embedded in installers), `AGENT_
 
 ## Limitations
 
-- Windows 10/11 and macOS only. Windows Server works for inventory, but Security Center and BitLocker checks may report `unknown` there. Linux reports only basic inventory.
+- Windows 10/11, macOS and (agent 1.7.0+) **Linux servers**. Windows Server works for inventory, but Security Center and BitLocker checks may report `unknown` there. Linux is servers only and read-only ([Linux servers](#linux-servers)): no desktops, no screen-lock check, no lock / wipe / scripts / remote sessions / service control / OS update install, and Amazon Linux packages are not matched to vulnerabilities.
 - No compliance policies, no software deployment, no MDM features (configuration profiles, Apple Business Manager / Autopilot). Remote wipe is Windows only (no macOS erase without MDM); lost mode on macOS cannot force a lock.
 - `lock_device` on macOS depends on the user's "require password after sleep" setting (see above). On Windows it needs a signed-in session.
 - Commands run within about a minute only while the device is online and polling. Offline devices pick them up within the 24 h expiry.
@@ -956,6 +1061,6 @@ Installers: `PUBLIC_BASE_URL` (required, https; embedded in installers), `AGENT_
   touch or pen, or the session is not started. **End session** works with any input.
 - Remote-session rate limits are per relay process (there is one), like the other in-memory limiters.
 
-### Adding Linux
+### Linux
 
-Add `internal/collect/collect_linux.go` (build tag `linux`, replacing the generic `collect_other.go`), `internal/commands/lock_linux.go` (for example `loginctl lock-sessions`) and a systemd unit in `internal/service/`. Parsers belong in an OS-independent file with fixtures, like `windows.go` and `macos.go`. The server already accepts `os_family: "linux"`.
+Linux servers are supported since agent 1.7.0 ([Linux servers](#linux-servers)): `internal/collect/collect_linux.go` (build tag `linux`) gathers, `internal/collect/linux.go` and `linux_checks.go` hold the OS-independent parsers and decisions with fixtures in `endpoint-agent/testdata/linux/`, `internal/service/unit.go` the systemd unit. Linux desktops, remote commands and Run script are deliberately not built.

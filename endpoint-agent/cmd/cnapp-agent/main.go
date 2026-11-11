@@ -1,8 +1,8 @@
-// Command cnapp-agent is the CNAPP endpoint agent for Windows and macOS.
+// Command cnapp-agent is the CNAPP endpoint agent for Windows, macOS and Linux servers.
 //
 //	cnapp-agent enroll --server https://cnapp.example.com --token cne_...
 //	cnapp-agent configure --server URL --token-stdin   # pending enrollment for the service (installers, MDM)
-//	cnapp-agent install            # Windows service / macOS LaunchDaemon (elevated)
+//	cnapp-agent install            # Windows service / macOS LaunchDaemon / Linux systemd unit (elevated)
 //	cnapp-agent status
 //	cnapp-agent inventory --print  # collect and print JSON, no network
 //	cnapp-agent checkin            # one check-in + command poll now
@@ -54,7 +54,8 @@ Usage:
                                       enrolls with it on start, then deletes the token (used by the
                                       MSI / pkg installers and MDM scripts; no-op if already enrolled)
   cnapp-agent install [--wait-for-enrollment]
-                                      register and start the OS service (run elevated); without
+                                      register and start the OS service (run elevated; on Linux: the systemd
+                                      unit, see the .deb / .rpm packages); without
                                       enrollment or a pending config it needs --wait-for-enrollment
   cnapp-agent uninstall [--purge]     stop and remove the service (--purge also deletes credentials and logs)
   cnapp-agent purge                   delete credentials, pending enrollment and logs (service untouched)
@@ -63,6 +64,7 @@ Usage:
   cnapp-agent checkin                 run one check-in and command poll now
   cnapp-agent run                     run in the foreground (used by the service)
   cnapp-agent version
+  cnapp-agent systemd-unit            print the systemd unit file of the Linux packages (used to build the .deb / .rpm)
   cnapp-agent update-keys             list the release-signing keys this build trusts for self-update
   cnapp-agent script-keys             list the script-signing keys this build trusts for approved scripts
   cnapp-agent wipe-readiness          print the remote-wipe readiness JSON (run as SYSTEM: WinRE, MDM_RemoteWipe)
@@ -118,6 +120,8 @@ func main() {
 		err = cmdRun(args)
 	case "version", "--version", "-v":
 		fmt.Println(version.Version)
+	case "systemd-unit": // build tooling: the unit the .deb / .rpm ship (internal/service/unit.go)
+		fmt.Print(service.SystemdUnit(service.PackageBinaryPath, []string{"run"}))
 	case "update-keys":
 		err = cmdUpdateKeys()
 	case "script-keys":

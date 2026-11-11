@@ -59,6 +59,8 @@ def request(db: Session, user: User, device: Device, action: str, params: dict[s
     assert action in APPROVAL_ACTIONS
     if device.status != "active":
         raise ApprovalError(409, "device is revoked")
+    if device.os_family == "linux":
+        raise ApprovalError(409, f"{action.replace('_', ' ')} is not available on Linux servers (the Linux agent is read-only)")
     now = utcnow()
     open_same = db.scalar(select(DeviceApproval).where(
         DeviceApproval.device_id == device.id, DeviceApproval.action == action,

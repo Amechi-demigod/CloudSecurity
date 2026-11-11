@@ -1,0 +1,3 @@
+/usr/bin/man (enforce)
+/usr/sbin/tcpdump (enforce)
+snap.lxd.lxc (complain)

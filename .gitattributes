@@ -1,3 +1,6 @@
 # Signed device scripts: the SHA-256 in the signed manifest covers the exact bytes,
 # so never convert line endings on checkout (Windows autocrlf).
 device-scripts/** -text
+
+# Linux command / file fixtures must keep LF endings on Windows checkouts (parsers split on \n).
+endpoint-agent/**/testdata/linux/** text eol=lf

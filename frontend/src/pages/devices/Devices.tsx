@@ -7,7 +7,7 @@ import { DeviceClassTag } from "../../components/deviceClass";
 import { CLASS_FILTER_OPTIONS, CLASS_LABEL } from "../../lib/deviceClass";
 import { ConnectivityTag, HealthBadge, IssueList } from "../../components/devices";
 import { Card, Empty, ErrorNote, PageHeader, Select, Stat, Table, Tag } from "../../components/ui";
-import { OS_LABEL } from "../../lib/devices";
+import { OS_LABEL, osLine } from "../../lib/devices";
 import { fmtAgo } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
 import { useSort } from "../../lib/useSort";
@@ -17,7 +17,29 @@ import { BulkActionsBar } from "./BulkActions";
 /** Missing OS updates on a Devices row (Windows Update report, docs/PATCHING.md). */
 function OsUpdatesCell({ d }: { d: DeviceSummary }) {
   const u = d.os_updates;
-  if (!u) return <span className="text-xs text-ink-3">{d.os_family === "windows" ? "not reported" : "—"}</span>;
+  if (!u) return <span className="text-xs text-ink-3">{d.os_family === "windows" || d.os_family === "linux" ? "not reported" : "—"}</span>;
+  if (d.os_family === "linux") {
+    // Linux servers: security updates pending (apt / dnf, read from the server's own package cache) and reboot required.
+    if (!u.listed) {
+      return (
+        <span className="text-xs text-ink-3" title="The package cache is older than 7 days: the agent never refreshes it, so pending updates are not judged">
+          cache too old
+        </span>
+      );
+    }
+    const reboot = u.reboot_pending ? " · reboot" : "";
+    return u.security > 0 ? (
+      <div title={u.cache_age_hours !== undefined ? `Package cache ${u.cache_age_hours} h old` : undefined}>
+        <Tag tone={u.critical > 0 ? "critical" : "warn"}>{u.security} security pending</Tag>
+        <div className="text-[11px] text-ink-3">{`${u.missing} updates${reboot}`}</div>
+      </div>
+    ) : (
+      <div>
+        <Tag tone="good">Up to date</Tag>
+        {reboot && <div className="text-[11px] text-ink-3">reboot required</div>}
+      </div>
+    );
+  }
   if (!u.listed) return <span className="text-xs text-sev-high">search failed</span>;
   if (u.missing === 0) return <Tag tone="good">Up to date</Tag>;
   return (
@@ -62,7 +84,7 @@ export default function Devices() {
     data,
     {
       name: (d) => d.hostname,
-      os: (d) => `${OS_LABEL[d.os_family] ?? d.os_family} ${d.os_version ?? ""}`,
+      os: (d) => { const o = osLine(d); return `${o.main} ${o.sub}`; },
       class: (d) => (CLASS_RANK[d.device_class ?? ""] ?? 0) * 2 + (d.is_virtual ? 1 : 0),
       user: (d) => d.logged_in_users.join(", "),
       health: (d) => (d.status === "revoked" ? -1 : HEALTH_RANK[d.health] ?? 0),
@@ -177,7 +199,7 @@ export default function Devices() {
             ]}
           />
           <Select
-            label="Missing updates"
+            label="Missing updates (security updates pending on Linux)"
             value={updates}
             onChange={setUpdates}
             options={[
@@ -208,7 +230,7 @@ export default function Devices() {
                     label: (
                       <input type="checkbox" aria-label="Select all devices shown" className="accent-accent"
                         checked={!!data?.length && picked.length === data.length}
-                        onChange={(e) => setSelected(e.target.checked ? (data ?? []).filter((d) => d.status === "active").map((d) => d.id) : [])} />
+                        onChange={(e) => setSelected(e.target.checked ? (data ?? []).filter((d) => d.status === "active" && d.os_family !== "linux").map((d) => d.id) : [])} />
                     ),
                   }]
                 : []),
@@ -241,7 +263,7 @@ export default function Devices() {
               >
                 {filtered
                   ? "Clear a filter to see more devices."
-                  : "Install the agent on Windows and macOS laptops to track their inventory and security posture."}
+                  : "Install the agent on Windows and macOS laptops and on Linux servers to track their inventory and security posture."}
               </Empty>
             }
           >
@@ -253,7 +275,8 @@ export default function Devices() {
               >
                 {bulk && (
                   <td className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
-                    <input type="checkbox" aria-label={`Select ${d.hostname}`} className="accent-accent" disabled={d.status !== "active"}
+                    <input type="checkbox" aria-label={`Select ${d.hostname}`} className="accent-accent" disabled={d.status !== "active" || d.os_family === "linux"}
+                      title={d.os_family === "linux" ? "Bulk actions are not available for Linux servers" : undefined}
                       checked={selected.includes(d.id)} onChange={() => toggle(d.id)} />
                   </td>
                 )}
@@ -275,8 +298,8 @@ export default function Devices() {
                   <DeviceClassTag device={d} />
                 </td>
                 <td className="px-3 py-2 text-ink-2">
-                  {OS_LABEL[d.os_family] ?? d.os_family}
-                  <div className="text-[11px] text-ink-3">{d.os_version}</div>
+                  {osLine(d).main}
+                  <div className="text-[11px] text-ink-3">{osLine(d).sub}</div>
                 </td>
                 <td className="px-3 py-2 text-xs text-ink-2">{d.logged_in_users.join(", ") || "—"}</td>
                 <td className="px-3 py-2">

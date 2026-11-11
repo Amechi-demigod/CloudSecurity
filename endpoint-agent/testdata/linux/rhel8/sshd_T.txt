@@ -1,0 +1,4 @@
+port 22
+permitrootlogin forced-commands-only
+passwordauthentication no
+challengeresponseauthentication no

@@ -8,7 +8,7 @@ import { CLOUD_LABEL, HYPERVISOR_LABEL } from "../../lib/deviceClass";
 import { ApprovalList } from "../../components/approvals";
 import { VulnTable } from "../../components/vulns";
 import { Breadcrumbs, Button, Card, Empty, ErrorNote, Field, Modal, PageHeader, Table, Tag } from "../../components/ui";
-import { CHECK_LABEL, OS_LABEL, fmtBytes, fmtDuration } from "../../lib/devices";
+import { CHECK_LABEL, LINUX_COMMANDS, OS_LABEL, fmtBytes, fmtDuration } from "../../lib/devices";
 import { fmtAgo, fmtTime } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
 import { useUrlState } from "../../lib/useUrlState";
@@ -217,7 +217,11 @@ function PostureCards({ device }: { device: Device }) {
   return (
     <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
       {entries.map(([name, c]) => {
-        const data = Object.entries(c.data ?? {}).filter(([k]) => k !== "accounts" && k !== "pending_titles" && k !== "products" && k !== "profiles");
+        // Linux server checks (agent 1.7.0+) carry "evidence": the values the check decided on, shown as is.
+        const evidence = Array.isArray(c.data?.evidence) ? (c.data.evidence as unknown[]).map(String) : null;
+        const data = evidence
+          ? []
+          : Object.entries(c.data ?? {}).filter(([k]) => k !== "accounts" && k !== "pending_titles" && k !== "products" && k !== "profiles");
         const accounts = (c.data?.accounts as string[] | undefined) ?? null;
         const titles = (c.data?.pending_titles as string[] | undefined) ?? null;
         return (
@@ -228,6 +232,11 @@ function PostureCards({ device }: { device: Device }) {
             </header>
             <p className="mt-1 text-sm text-ink-2">{c.detail || "—"}</p>
             {c.error && <p className="mt-1 break-words text-xs text-sev-high">Error: {c.error}</p>}
+            {evidence && evidence.length > 0 && (
+              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words rounded border border-line bg-surface-0 p-2 font-mono text-[11px] leading-5 text-ink-2">
+                {evidence.join("\n")}
+              </pre>
+            )}
             {accounts && (
               <ul className="mt-2 flex flex-wrap gap-1">
                 {accounts.map((a) => (
@@ -441,7 +450,7 @@ function SoftwareTab({ device, commands, reload }: { device: Device; commands: D
   // Uninstall: Windows devices, admins (the button explains when the agent is too old).
   const uninstall = can("admin") && device.os_family === "windows" && device.status === "active";
   return (
-    <Card title={`Installed software${data ? ` (${data.length})` : ""}`} actions={
+    <Card title={`${device.os_family === "linux" ? "Installed packages" : "Installed software"}${data ? ` (${data.length})` : ""}`} actions={
       <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filter by name or publisher" aria-label="Filter software"
         className="w-56 rounded border border-line bg-surface-2 px-2 py-1 text-sm text-ink" />
     }>
@@ -449,8 +458,16 @@ function SoftwareTab({ device, commands, reload }: { device: Device; commands: D
       {data && data.length === 0 ? (
         <Empty>No software reported.</Empty>
       ) : (
-        <Table head={["Name", "Version", "Publisher", "Installed", "Source", ...(uninstall ? [""] : [])]}>
-          {(data ?? []).map((s, i) => (
+        <Table head={device.os_family === "linux" ? ["Package", "Version", "Source package", "Vulnerability feed", "Manager"] : ["Name", "Version", "Publisher", "Installed", "Source", ...(uninstall ? [""] : [])]}>
+          {(data ?? []).map((s, i) => device.os_family === "linux" ? (
+            <tr key={`${s.name}-${s.version}-${i}`} className="align-top">
+              <td className="px-3 py-1.5">{s.name}</td>
+              <td className="px-3 py-1.5 font-mono text-xs text-ink-2">{s.version || "—"}</td>
+              <td className="px-3 py-1.5 font-mono text-xs text-ink-3">{s.source_name || s.name}{s.source_version ? ` ${s.source_version}` : ""}</td>
+              <td className="px-3 py-1.5 text-xs text-ink-3">{s.ecosystem ? s.ecosystem : <Tag tone="warn">Not matched</Tag>}</td>
+              <td className="px-3 py-1.5 text-xs text-ink-3">{s.source}</td>
+            </tr>
+          ) : (
             <tr key={`${s.name}-${s.version}-${i}`} className="align-top">
               <td className="px-3 py-1.5">{s.name}</td>
               <td className="px-3 py-1.5 font-mono text-xs text-ink-2">{s.version || "—"}</td>
@@ -471,7 +488,7 @@ function SoftwareTab({ device, commands, reload }: { device: Device; commands: D
   );
 }
 
-function VulnerabilitiesTab({ id }: { id: string }) {
+function VulnerabilitiesTab({ id, os }: { id: string; os: string }) {
   const [status, setStatus] = useState("open");
   const { data, error } = useApi(() => api.deviceVulnerabilities(id, status), [id, status], 60000);
   const [showChecked, setShowChecked] = useState(false);
@@ -502,8 +519,14 @@ function VulnerabilitiesTab({ id }: { id: string }) {
             {data.error ? <span className="ml-1 text-sev-high" title={data.error}>· some data could not be refreshed</span> : null}
           </p>
         )}
+        {data?.os?.matching === "not_matched" && (
+          <div role="status" className="mb-2 rounded border border-sev-medium/60 bg-sev-medium/10 px-3 py-2 text-sm">
+            <strong>Not matched.</strong> OSV.dev has no vulnerability feed for this distribution (Amazon Linux). The packages are listed
+            under Software, but their vulnerabilities are not checked: an empty list here does not mean the server is clean.
+          </div>
+        )}
         {data && data.vulnerabilities.length === 0 ? (
-          <Empty>{data.matched_at ? "No known vulnerabilities in the checked software." : "Matching runs shortly after the next check-in."}</Empty>
+          <Empty>{data.os?.matching === "not_matched" ? "Not matched: no vulnerability feed for this distribution." : data.matched_at ? "No known vulnerabilities in the checked software." : "Matching runs shortly after the next check-in."}</Empty>
         ) : (
           <VulnTable rows={data?.vulnerabilities ?? []} showTarget={false} />
         )}
@@ -515,17 +538,17 @@ function VulnerabilitiesTab({ id }: { id: string }) {
           actions={<Button onClick={() => setShowChecked(!showChecked)}>{showChecked ? "Show not checked" : "Show checked"}</Button>}
         >
           {showChecked ? (
-            <Table head={["Software", "Version", "Matched as"]}>
+            <Table head={[os === "linux" ? "Package" : "Software", "Version", os === "linux" ? "Ecosystem" : "Matched as"]}>
               {data.checked.map((c, i) => (
                 <tr key={`${c.name}-${i}`}>
                   <td className="px-3 py-1.5">{c.name}</td>
                   <td className="px-3 py-1.5 font-mono text-xs text-ink-2">{c.version || "—"}</td>
-                  <td className="px-3 py-1.5 font-mono text-[11px] text-ink-3">{c.cpe}</td>
+                  <td className="px-3 py-1.5 font-mono text-[11px] text-ink-3">{c.cpe ?? (c as { ecosystem?: string }).ecosystem}</td>
                 </tr>
               ))}
             </Table>
           ) : data.not_checked.length === 0 ? (
-            <Empty>All reported software is covered by the CPE mapping.</Empty>
+            <Empty>{os === "linux" ? "All reported packages are covered by the vulnerability feed." : "All reported software is covered by the CPE mapping."}</Empty>
           ) : (
             <Table head={["Software", "Version", "Why not checked"]}>
               {data.not_checked.map((c, i) => (
@@ -783,6 +806,20 @@ function UpdatesTab({ id, admin, analyst }: { id: string; admin: boolean; analys
   );
 }
 
+/** Listening ports the Linux agent reported (posture check listening_ports). */
+function listeningPorts(d: Device): string {
+  const nums = d.posture.listening_ports?.data?.port_numbers;
+  if (!Array.isArray(nums) || nums.length === 0) return "—";
+  return nums.slice(0, 6).join(", ") + (nums.length > 6 ? ` +${nums.length - 6}` : "");
+}
+
+/** Age of the package cache the Linux security-updates check read ("Refreshed 6 h ago"). */
+function packageCache(d: Device): string {
+  const h = d.posture.security_updates?.data?.cache_age_hours;
+  if (typeof h !== "number") return "unknown";
+  return h < 48 ? `Refreshed ${h} h ago` : `Refreshed ${Math.floor(h / 24)} days ago`;
+}
+
 export default function DeviceDetail() {
   const { id = "" } = useParams();
   const navigate = useNavigate();
@@ -807,7 +844,9 @@ export default function DeviceDetail() {
     setTab("Commands");
   }
   const active = device.status === "active";
-  const tabs = TABS.filter((t) => t !== "OS updates" || device.os_family === "windows");
+  const linux = device.os_family === "linux";
+  // Linux servers: no Windows Update tab, no endpoint actions (the agent is read-only there).
+  const tabs = TABS.filter((t) => (t !== "OS updates" || device.os_family === "windows") && !(linux && t === "Actions"));
   const tabId = (t: TabName) => `device-tab-${t.replace(" ", "-")}`;
   const suspendSignInBlockedReason = !device.isolation.supported
     ? "Not supported by this agent version"
@@ -820,7 +859,10 @@ export default function DeviceDetail() {
       <Breadcrumbs items={[{ label: "Devices", to: "/devices" }, { label: device.hostname }]} />
       <PageHeader
         title={device.hostname}
-        subtitle={`${OS_LABEL[device.os_family] ?? device.os_family} · ${[device.manufacturer, device.model].filter(Boolean).join(" ")}${device.serial_number ? ` · S/N ${device.serial_number}` : ""}`}
+        subtitle={linux
+          ? [device.os_name || "Linux", device.os_build && `kernel ${device.os_build}`, device.agent_version && `agent ${device.agent_version}`,
+              device.cloud_provider && `${CLOUD_LABEL[device.cloud_provider] ?? device.cloud_provider} VM`].filter(Boolean).join(" · ")
+          : `${OS_LABEL[device.os_family] ?? device.os_family} · ${[device.manufacturer, device.model].filter(Boolean).join(" ")}${device.serial_number ? ` · S/N ${device.serial_number}` : ""}`}
         actions={
           <div className="flex flex-wrap items-center gap-2">
             {active ? <HealthBadge health={device.health} /> : <Tag tone="warn">Revoked</Tag>}
@@ -837,7 +879,7 @@ export default function DeviceDetail() {
       <ErrorNote error={error} />
       <dl className="mb-4 grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-line bg-line sm:grid-cols-3 xl:grid-cols-6">
         <Fact label="Last check-in">{device.last_checkin_at ? fmtAgo(device.last_checkin_at) : "never"}</Fact>
-        <Fact label="Signed-in user">{(device.inventory.logged_in_users ?? []).join(", ") || "—"}</Fact>
+        {linux ? <Fact label="Uptime">{fmtDuration(device.inventory.uptime_seconds)}</Fact> : <Fact label="Signed-in user">{(device.inventory.logged_in_users ?? []).join(", ") || "—"}</Fact>}
         <Fact label="Issues">
           {device.issues.length === 0 ? (
             "None"
@@ -847,15 +889,42 @@ export default function DeviceDetail() {
             </button>
           )}
         </Fact>
-        <Fact label="Software">
+        <Fact label={linux ? "Packages" : "Software"}>
           <button className="text-accent hover:underline" onClick={() => setTab("Software")}>
-            {device.software_count} apps
+            {device.software_count} {linux ? "packages" : "apps"}
           </button>
         </Fact>
-        <Fact label="Agent">{device.agent_version || "—"}</Fact>
-        <Fact label="Last public IP">{device.last_ip || "—"}</Fact>
+        {linux ? (
+          <>
+            <Fact label="Listening ports">{listeningPorts(device)}</Fact>
+            <Fact label="Package cache">{packageCache(device)}</Fact>
+          </>
+        ) : (
+          <>
+            <Fact label="Agent">{device.agent_version || "—"}</Fact>
+            <Fact label="Last public IP">{device.last_ip || "—"}</Fact>
+          </>
+        )}
       </dl>
-      {active && can("analyst") && (
+      {active && can("analyst") && linux && (
+        <div className="mb-4 flex flex-wrap items-center gap-2" role="toolbar" aria-label="Remote actions">
+          {ACTIONS.filter((a) => can(a.role) && LINUX_COMMANDS.includes(a.type)).map((a) => (
+            <Button key={a.type} onClick={() => setAction(a)} title={a.help}>
+              {a.label}
+            </Button>
+          ))}
+          {can("admin") && (
+            <Button variant="danger" onClick={() => setRevokeOpen(true)} title="Invalidate the device credential">
+              Revoke
+            </Button>
+          )}
+          <p className="basis-full text-xs text-ink-3">
+            Linux servers are read-only: the agent reads and reports. Lock, remote wipe, lost mode, scripts, service control, USB blocking,
+            remote sessions and OS update install are not available.
+          </p>
+        </div>
+      )}
+      {active && can("analyst") && !linux && (
         <div className="mb-4 flex flex-wrap items-center gap-2" role="toolbar" aria-label="Remote actions">
           {ACTIONS.filter((a) => can(a.role) && !a.danger).map((a) => (
             <Button key={a.type} onClick={() => setAction(a)} title={a.help}>
@@ -924,7 +993,7 @@ export default function DeviceDetail() {
           )}
         </div>
       )}
-      {active && can("admin") && device.os_family !== "windows" && (
+      {active && can("admin") && device.os_family === "macos" && (
         <p className="-mt-2 mb-4 text-xs text-ink-3">
           Remote wipe is not offered for this device{device.wipe.unsupported_reason ? `: ${device.wipe.unsupported_reason}` : " (Windows only)"}.
         </p>
@@ -986,7 +1055,7 @@ export default function DeviceDetail() {
       {tab === "Posture" && <PostureCards device={device} />}
       {tab === "Software" && <SoftwareTab device={device} commands={cmds.data} reload={cmds.reload} />}
       {tab === "Services" && <ServicesTab device={device} commands={cmds.data} reload={cmds.reload} />}
-      {tab === "Vulnerabilities" && <VulnerabilitiesTab id={device.id} />}
+      {tab === "Vulnerabilities" && <VulnerabilitiesTab id={device.id} os={device.os_family} />}
       {tab === "OS updates" && <OsUpdatesTab device={device} onChanged={() => { cmds.reload(); reload(); }} />}
       {tab === "History" && (
         <>

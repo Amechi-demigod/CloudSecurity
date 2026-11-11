@@ -10,7 +10,29 @@ export const CHECK_LABEL: Record<string, string> = {
   secure_boot: "Secure Boot",
   tpm: "TPM",
   local_admins: "Local administrators",
+  // Linux servers (agent 1.7.0+)
+  security_updates: "Security updates pending",
+  reboot_required: "Reboot required",
+  auto_updates: "Automatic security updates",
+  ssh_root_login: "SSH root login",
+  ssh_password_login: "SSH password login",
+  admin_accounts: "Admin accounts",
+  endpoint_protection: "Endpoint protection",
+  mandatory_access_control: "SELinux / AppArmor",
+  audit_logging: "Audit logging",
+  time_sync: "Time sync",
+  listening_ports: "Listening ports",
+  package_inventory: "Package inventory",
 };
+
+/** Command types a Linux server agent runs; everything else is hidden (the agent refuses it too). */
+export const LINUX_COMMANDS = ["recheck_posture", "collect_logs", "restart_agent", "update_check_in_interval", "check_for_update"];
+
+/** The OS line of a device: Linux shows the distribution (Ubuntu 22.04.5 LTS), others the OS family and version. */
+export function osLine(d: { os_family: string; os_name: string; os_version: string }): { main: string; sub: string } {
+  if (d.os_family === "linux") return { main: d.os_name || "Linux", sub: "Linux server" };
+  return { main: OS_LABEL[d.os_family] ?? d.os_family, sub: d.os_version };
+}
 
 export const OS_LABEL: Record<string, string> = { windows: "Windows", macos: "macOS", linux: "Linux" };
 

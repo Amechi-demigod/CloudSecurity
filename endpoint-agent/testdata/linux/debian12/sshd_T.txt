@@ -1,0 +1,4 @@
+port 22
+permitrootlogin yes
+passwordauthentication no
+kbdinteractiveauthentication yes

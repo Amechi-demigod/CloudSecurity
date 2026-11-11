@@ -738,7 +738,12 @@ class DeviceSoftware(TenantMixin, Base):
     publisher: Mapped[str] = mapped_column(String(255), default="")
     identifier: Mapped[str] = mapped_column(String(255), default="")  # bundle id / registry key
     install_date: Mapped[str] = mapped_column(String(32), default="")
-    source: Mapped[str] = mapped_column(String(32), default="")  # registry_hklm64 | applications | ...
+    source: Mapped[str] = mapped_column(String(32), default="")  # registry_hklm64 | applications | dpkg | rpm | ...
+    # Linux packages (agents 1.7.0+): OSV ecosystem ("" = OSV has no feed, e.g. Amazon Linux: listed, not
+    # matched), source package and (dpkg) source version, which the distribution advisories are keyed on.
+    ecosystem: Mapped[str] = mapped_column(String(64), default="")
+    source_name: Mapped[str] = mapped_column(String(255), default="")
+    source_version: Mapped[str] = mapped_column(String(128), default="")
 
 
 class DeviceService(TenantMixin, Base):
@@ -991,6 +996,9 @@ class AgentRelease(Base):
 
     artifacts: Mapped[list[AgentReleaseArtifact]] = relationship(
         back_populates="release", cascade="all, delete-orphan", passive_deletes=True, order_by="AgentReleaseArtifact.os")
+    packages: Mapped[list[AgentReleasePackage]] = relationship(
+        back_populates="release", cascade="all, delete-orphan", passive_deletes=True,
+        order_by="(AgentReleasePackage.format, AgentReleasePackage.arch)")
 
 
 class AgentReleaseArtifact(Base):
@@ -1001,7 +1009,7 @@ class AgentReleaseArtifact(Base):
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
     release_id: Mapped[str] = mapped_column(String(32), ForeignKey("agent_releases.id", ondelete="CASCADE"), index=True)
-    os: Mapped[str] = mapped_column(String(16))  # GOOS: windows | darwin
+    os: Mapped[str] = mapped_column(String(16))  # GOOS: windows | darwin | linux
     arch: Mapped[str] = mapped_column(String(16))  # GOARCH: amd64 | arm64
     name: Mapped[str] = mapped_column(String(128))
     sha256: Mapped[str] = mapped_column(String(64))
@@ -1009,6 +1017,25 @@ class AgentReleaseArtifact(Base):
     data: Mapped[bytes] = mapped_column(LargeBinary, deferred=True)
 
     release: Mapped[AgentRelease] = relationship(back_populates="artifacts")
+
+
+class AgentReleasePackage(Base):
+    """An installer package (.deb / .rpm, amd64 / arm64) of a signed release. Its name, SHA-256 and size are in
+    the signed manifest (`packages`); the bytes are only loaded when an admin downloads the package."""
+
+    __tablename__ = "agent_release_packages"
+    __table_args__ = (UniqueConstraint("release_id", "format", "arch", name="uq_agent_release_package"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    release_id: Mapped[str] = mapped_column(String(32), ForeignKey("agent_releases.id", ondelete="CASCADE"), index=True)
+    format: Mapped[str] = mapped_column(String(8))  # deb | rpm
+    arch: Mapped[str] = mapped_column(String(16))  # amd64 | arm64
+    name: Mapped[str] = mapped_column(String(128))
+    sha256: Mapped[str] = mapped_column(String(64))
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    data: Mapped[bytes] = mapped_column(LargeBinary, deferred=True)
+
+    release: Mapped[AgentRelease] = relationship(back_populates="packages")
 
 
 class AgentUpdateRing(TenantMixin, Base):

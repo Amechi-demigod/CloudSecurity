@@ -63,6 +63,8 @@ class ActionError(Exception):
 
 def support(device: Device) -> tuple[bool, str | None, bool]:
     """(supported, reason when not, agent update required)."""
+    if device.os_family == "linux":
+        return False, "Endpoint actions (service control, uninstall, USB blocking) are not available on Linux servers.", False
     if device.os_family != "windows":
         return False, "Endpoint actions are Windows only in this version.", False
     if FEATURE not in (device.agent_features or "").split(","):

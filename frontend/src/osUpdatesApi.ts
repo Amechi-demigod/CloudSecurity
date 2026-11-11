@@ -78,9 +78,13 @@ export interface OsUpdatesSummary {
   critical: number;
   oldest_security_days: number | null;
   reboot_pending: boolean;
-  scan_status: "ok" | "failed";
+  /** Linux servers: "stale_cache" = the package cache is older than 7 days, nothing is judged */
+  scan_status: "ok" | "failed" | "stale_cache";
   scanned_at: string | null;
-  source: UpdateSource;
+  /** wsus / wufb / ... on Windows; apt or dnf on Linux servers */
+  source: UpdateSource | "apt" | "dnf" | "linux";
+  /** Linux servers: age of the package cache the check read */
+  cache_age_hours?: number;
 }
 
 /** Endpoints dashboard tile. */

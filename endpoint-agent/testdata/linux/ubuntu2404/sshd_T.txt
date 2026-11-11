@@ -1,0 +1,5 @@
+port 22
+permitrootlogin without-password
+passwordauthentication no
+kbdinteractiveauthentication no
+usepam yes

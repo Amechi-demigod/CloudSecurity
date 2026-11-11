@@ -1,0 +1,46 @@
+{
+  "blockdevices": [
+    {
+      "name": "sda",
+      "type": "disk",
+      "fstype": null,
+      "mountpoint": null,
+      "children": [
+        {
+          "name": "sda1",
+          "type": "part",
+          "fstype": "xfs",
+          "mountpoint": "/boot"
+        },
+        {
+          "name": "sda2",
+          "type": "part",
+          "fstype": "LVM2_member",
+          "mountpoint": null,
+          "children": [
+            {
+              "name": "rl-root",
+              "type": "lvm",
+              "fstype": "xfs",
+              "mountpoint": "/"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "sdb",
+      "type": "disk",
+      "fstype": "crypto_LUKS",
+      "mountpoint": null,
+      "children": [
+        {
+          "name": "data",
+          "type": "crypt",
+          "fstype": "xfs",
+          "mountpoint": "/data"
+        }
+      ]
+    }
+  ]
+}

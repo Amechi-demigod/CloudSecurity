@@ -339,6 +339,9 @@ class SensorPackageInventoryV1(BaseModel):
     collected_at: datetime | None = None
     os: SensorOs | None = None
     cloud: SensorCloud | None = None
+    # SHA-256 of /etc/machine-id with the endpoint agent's "cnapp-agent:" prefix (never the raw id): lets the
+    # server recognise a server that also runs the endpoint agent (app/services/linux_agent.py).
+    machine_id: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")] | None = None
     packages: Annotated[list[SensorPackage], Field(max_length=50000)]
 
 
@@ -347,6 +350,9 @@ class PackageIngestResult(BaseModel):
     asset_created: bool
     packages: int
     match_requested: bool
+    # True: this server also runs the endpoint agent, whose package list is used; the sensor's was ignored.
+    superseded_by_agent: bool = False
+    agent_device_id: str | None = None
 
 
 class IngestResult(BaseModel):

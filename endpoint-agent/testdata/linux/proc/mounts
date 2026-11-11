@@ -1,0 +1,7 @@
+sysfs /sys sysfs rw,nosuid,nodev,noexec,relatime 0 0
+proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0
+/dev/nvme0n1p1 / ext4 rw,relatime,discard 0 0
+tmpfs /run tmpfs rw,nosuid,nodev,noexec,relatime,size=803068k,mode=755 0 0
+/dev/nvme0n1p15 /boot/efi vfat rw,relatime 0 0
+/dev/nvme1n1 /mnt/my\040data xfs rw,relatime 0 0
+overlay /var/lib/docker/overlay2/x/merged overlay rw,relatime 0 0

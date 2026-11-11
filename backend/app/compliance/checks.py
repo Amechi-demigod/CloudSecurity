@@ -45,7 +45,7 @@ DIRECTORY_SYNC_MAX_AGE = timedelta(days=3)
 
 # endpoint check -> (posture check reported by the agent or None, device issue code, title)
 ENDPOINT: dict[str, tuple[str | None, str, str]] = {
-    "disk_encryption": ("disk_encryption", "disk_encryption_off", "Disk encryption on (BitLocker / FileVault)"),
+    "disk_encryption": ("disk_encryption", "disk_encryption_off", "Disk encryption on (BitLocker / FileVault / LUKS)"),
     "firewall": ("firewall", "firewall_off", "Host firewall on"),
     "antivirus": ("antivirus", "antivirus_off", "Antivirus with real-time protection on"),
     "av_signatures": (None, "av_signatures_outdated", "Antivirus signatures up to date"),
@@ -55,6 +55,16 @@ ENDPOINT: dict[str, tuple[str | None, str, str]] = {
     "gatekeeper": ("gatekeeper", "gatekeeper_off", "Gatekeeper on (macOS)"),
     "secure_boot": ("secure_boot", "secure_boot_off", "Secure Boot on"),
     "checkin": (None, "inactive", "Devices checking in (none silent for over a week)"),
+    # Linux servers (agent 1.7.0+, docs/DEVICE_MANAGEMENT.md#linux-servers): only devices reporting the check count.
+    "linux_security_updates": ("security_updates", "os_security_updates_missing", "No pending security updates (Linux servers)"),
+    "linux_auto_updates": ("auto_updates", "auto_updates_off", "Automatic security updates on (Linux servers)"),
+    "ssh_root_login": ("ssh_root_login", "ssh_root_login_allowed", "SSH root login with a password not allowed (Linux servers)"),
+    "ssh_password_login": ("ssh_password_login", "ssh_password_login_allowed", "SSH password login disabled (Linux servers)"),
+    "admin_accounts": ("admin_accounts", "admin_accounts_risky", "No extra UID 0 or empty-password accounts (Linux servers)"),
+    "endpoint_protection": ("endpoint_protection", "endpoint_protection_off", "Endpoint protection running (Linux servers)"),
+    "mandatory_access_control": ("mandatory_access_control", "mac_not_enforcing", "SELinux / AppArmor enforcing (Linux servers)"),
+    "audit_logging": ("audit_logging", "audit_logging_off", "Audit logging (auditd) running (Linux servers)"),
+    "time_sync": ("time_sync", "time_not_synced", "System clock synchronised (Linux servers)"),
 }
 VULN = {"kev": "No open known-exploited (CISA KEV) vulnerabilities",
         "critical_sla": "Critical vulnerabilities fixed within the SLA",

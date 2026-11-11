@@ -72,6 +72,9 @@ A `library_loaded` event means the library is **mapped into a live process right
 ### `k8s`
 `namespace`, `pod`, `container` come from the Kubernetes API (pods on this node, matched by container ID). `node` comes from the downward API (`NODE_NAME`). `pod_uid` comes from the cgroup path. Any of them can be `null`.
 
+### `machine_id` (package inventory)
+Optional. SHA-256 of `/etc/machine-id` with the endpoint agent's `cnapp-agent:` prefix (never the raw id). When the same server runs the Linux endpoint agent (1.7.0+) the platform uses the agent's package list and ignores this inventory; it matches the two by cloud resource id, then this `machine_id`, then host name.
+
 ### `cloud`
 `provider` is `aws`, `gcp`, `azure` or `null`, detected offline from DMI (`/sys/class/dmi/id`). `resource_id` is the EC2 instance ID (Nitro), the Azure VM UUID, or the `SENSOR_CLOUD_RESOURCE_ID` override (e.g. a full ARM ID).
 

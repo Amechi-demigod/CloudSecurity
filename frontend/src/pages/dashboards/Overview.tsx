@@ -327,7 +327,7 @@ export default function OverviewTab({ range, account }: TabProps) {
       <DashCard title="Endpoints" sub={account ? "Devices are not tied to a cloud account: all devices" : undefined} right={<ViewLink to="/devices" label="Open Devices" />} className="lg:col-span-12">
         {d.endpoints.managed === 0 ? (
           <p className="text-sm text-ink-3">
-            No endpoints enrolled yet. <Link className="text-accent hover:underline" to="/devices">Enroll Windows and macOS devices</Link> to track their posture.
+            No endpoints enrolled yet. <Link className="text-accent hover:underline" to="/devices">Enroll Windows, macOS and Linux devices</Link> to track their posture.
           </p>
         ) : (
           <EndpointStrip e={d.endpoints} />

@@ -26,7 +26,7 @@ LaunchDaemon, using sudo on macOS) it also installs the agent as a service,
 waits for the service's own check-in, sends restart_agent and checks that the
 service manager brings the agent back, then uninstalls it.
 
-CI runs it on Windows and macOS runners. Locally:
+CI runs it on Windows, macOS and Linux (systemd) runners. Locally:
 
     python scripts/agent_e2e.py --agent ./endpoint-agent/cnapp-agent
 """
@@ -164,6 +164,21 @@ def reg_notice() -> str:
     except FileNotFoundError:
         return "<no key>"
     return "; ".join(vals)
+
+
+def linux_test(api: Api, dev: dict) -> None:
+    """Linux servers are read-only: the console refuses the desktop actions (the agent refuses them too, see
+    internal/commands), and re-check / logs / interval / restart work."""
+    did = dev["id"]
+    for t, params in (("lock_device", {}), ("enable_lost_mode", {"message": "x", "phone": "+1 555 0100"}),
+                      ("isolate_host", {}), ("block_usb_storage", {}), ("manage_service", {})):
+        err = api.call("POST", f"/api/devices/{did}/commands",
+                       {"type": t, "reason": "e2e linux refusal", "params": params, "confirm_hostname": dev["hostname"]},
+                       expect_error=409)
+        assert "Linux" in err["detail"], (t, err)
+    assert api.call("POST", f"/api/devices/{did}/remote-sessions", {"mode": "view", "reason": "e2e linux refusal"},
+                    expect_error=409)
+    print("ok: Linux server refuses lock / lost mode / isolation / USB / service / remote session")
 
 
 def protect_test(api: Api, agent: str, home: str, dev: dict, key_file: str | None) -> None:
@@ -319,8 +334,8 @@ def main() -> int:
                     "also run an approved script, lost mode and the wipe guard rails")
     ap.add_argument("--remote-agent", help="a `-tags remote_fake` agent build: also test remote sessions (Windows)")
     args = ap.parse_args()
-    if args.service and platform.system() == "Darwin":
-        SUDO[:] = ["sudo", "-n"]  # the LaunchDaemon runs as root; keep all agent state root-owned
+    if args.service and platform.system() in ("Darwin", "Linux"):
+        SUDO[:] = ["sudo", "-n"]  # the LaunchDaemon / systemd unit runs as root; keep all agent state root-owned
     agent = str(Path(args.agent).resolve())
     expected_os = {"Windows": "windows", "Darwin": "macos", "Linux": "linux"}[platform.system()]
 
@@ -340,6 +355,9 @@ def main() -> int:
         backend = subprocess.Popen([args.python, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port",
                                     str(port)], cwd=ROOT / "backend", env=env, stdout=log, stderr=subprocess.STDOUT)
         home = str(Path(tmp, "agent-home"))
+        if args.service and expected_os == "linux":
+            # The systemd unit has PrivateTmp=yes: a state directory under /tmp would be invisible to the service.
+            home = "/var/lib/cnapp-e2e-home"
         try:
             wait_health(base, backend)
             api = Api(base)
@@ -359,7 +377,13 @@ def main() -> int:
             assert len(devices) == 1, devices
             dev = api.call("GET", f"/api/devices/{devices[0]['id']}")
             assert dev["os_family"] == expected_os, dev["os_family"]
-            for check in ("disk_encryption", "firewall", "antivirus", "os_updates", "local_admins"):
+            expected_checks = ("disk_encryption", "firewall", "antivirus", "os_updates", "local_admins")
+            if expected_os == "linux":
+                expected_checks = ("security_updates", "reboot_required", "auto_updates", "firewall", "disk_encryption",
+                                   "ssh_root_login", "ssh_password_login", "admin_accounts", "endpoint_protection",
+                                   "mandatory_access_control", "audit_logging", "time_sync", "listening_ports",
+                                   "package_inventory")
+            for check in expected_checks:
                 assert check in dev["posture"], f"posture check {check} missing: {sorted(dev['posture'])}"
             software = api.call("GET", f"/api/devices/{dev['id']}/software")
             print(f"device {dev['hostname']} ({dev['os_name']} {dev['os_version']}), health={dev['health']}, "
@@ -367,8 +391,12 @@ def main() -> int:
             print("posture:", json.dumps({k: v["status"] for k, v in dev["posture"].items()}))
             if dev["collection_errors"]:
                 print("collector errors:", json.dumps(dev["collection_errors"], indent=1))
-            if expected_os in ("windows", "macos"):
+            if expected_os in ("windows", "macos", "linux"):
                 assert len(software) > 0, "no installed software collected"
+            if expected_os == "linux":
+                assert dev["device_class"] == "server", dev["device_class"]
+                assert any(s["ecosystem"] for s in software) or dev["os_name"].startswith("Amazon"), "no OSV ecosystem"
+                linux_test(api, dev)
 
             # 3. remote commands
             ids = {}
@@ -390,7 +418,8 @@ def main() -> int:
             assert api.call("GET", f"/api/devices/{dev['id']}")["check_in_interval_seconds"] == 600
             assert len(api.call("GET", f"/api/devices/{dev['id']}/history")) >= 2
 
-            protect_test(api, agent, home, dev, args.script_key_file)
+            if expected_os != "linux":
+                protect_test(api, agent, home, dev, args.script_key_file)
 
             if args.service:
                 service_test(api, agent, home, dev["id"])

@@ -54,5 +54,10 @@ def inventory_changed(db: Session, target_type: str, target_id: str, digest: str
 
 def device_inventory_digest(device, software) -> str:
     items = [("os", device.os_family, device.os_name, device.os_version, device.os_build, device.architecture)]
-    items += [("sw", s.name, s.version, s.publisher, s.identifier) for s in software]
+    for s in software:
+        row = ("sw", s.name, s.version, s.publisher, s.identifier)
+        extra = (getattr(s, "ecosystem", "") or "", getattr(s, "source_name", "") or "",
+                 getattr(s, "source_version", "") or "")
+        # Linux packages only: Windows / macOS digests stay as they were (no re-match after an upgrade).
+        items.append(row + extra if any(extra) else row)
     return inventory_hash(items)

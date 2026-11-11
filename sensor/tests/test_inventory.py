@@ -11,6 +11,7 @@ from runtime_sensor.inventory import (
     build_payload,
     collect_inventory,
     ecosystem_for,
+    hashed_machine_id,
     inventory_url,
     parse_apk_packages,
     parse_dpkg_packages,
@@ -237,3 +238,18 @@ def test_agent_wires_inventory(tmp_path, monkeypatch):
     agent._send_inventory(agent.inventory.url, b"{}")
     url, body, headers, _timeout = calls[0]
     assert url.endswith("/runtime/packages") and headers["Authorization"] == "Bearer tok"
+
+
+def test_machine_id_is_hashed_like_the_endpoint_agent(tmp_path):
+    """The Linux endpoint agent enrolls with sha256("cnapp-agent:" + lower(machine-id)); the sensor sends the same
+    value so the platform can tell a server that runs both (the raw id never leaves the host)."""
+    import hashlib
+
+    root = make_rootfs(tmp_path, "ID=debian\nVERSION_ID=12\n", dpkg=DPKG)
+    (Path(root) / "etc" / "machine-id").write_text("0123456789ABCDEF0123456789abcdef\n")
+    want = hashlib.sha256(b"cnapp-agent:0123456789abcdef0123456789abcdef").hexdigest()
+    assert hashed_machine_id(root) == want
+    payload = build_payload("s", "h", CloudInfo(), {}, [], hashed_machine_id(root))
+    assert payload["machine_id"] == want and "0123456789" not in json.dumps(payload)
+    assert "machine_id" not in build_payload("s", "h", CloudInfo(), {}, [])
+    assert hashed_machine_id(str(tmp_path / "nowhere")) is None

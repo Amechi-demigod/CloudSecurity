@@ -1,0 +1,2 @@
+Updating Subscription Management repositories.
+RHSA-2024:5101 Important/Sec. glibc-2.28-251.el8_10.2.x86_64

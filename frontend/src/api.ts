@@ -201,7 +201,7 @@ export interface DeviceVulnerabilities {
   matched_at: string | null;
   pending: boolean;
   error: string | null;
-  os: { cpe?: string; version?: string; label?: string };
+  os: { cpe?: string; version?: string; label?: string; ecosystem?: string; matching?: "osv" | "not_matched" };
   checked: CheckedSoftware[];
   not_checked: CheckedSoftware[];
 }
@@ -626,7 +626,12 @@ export interface DeviceSoftware {
   publisher: string;
   identifier: string;
   install_date: string;
+  /** dpkg / rpm on Linux servers */
   source: string;
+  /** Linux servers: OSV ecosystem ("" = not covered, e.g. Amazon Linux), source package and source version */
+  ecosystem?: string;
+  source_name?: string;
+  source_version?: string;
 }
 
 export interface PostureSnapshot {
@@ -746,7 +751,19 @@ export interface EnrollmentToken {
   state: "active" | "expired" | "exhausted" | "revoked";
 }
 
-export type InstallerPlatform = "windows-msi" | "macos-pkg";
+export type InstallerPlatform = "windows-msi" | "macos-pkg" | "linux-enroll";
+
+/** A generic, signed Linux installer package of the newest imported release. */
+export interface LinuxPackage {
+  format: "deb" | "rpm";
+  arch: "amd64" | "arm64";
+  label: string;
+  available: boolean;
+  name: string | null;
+  version: string | null;
+  size_bytes: number | null;
+  sha256: string | null;
+}
 
 export interface InstallerInfo {
   server_url: string | null;
@@ -755,6 +772,7 @@ export interface InstallerInfo {
   ca_error: string | null;
   include_ca_default: boolean;
   platforms: Record<InstallerPlatform, { available: boolean; label: string; filename: string; version?: string; size_bytes?: number; reason?: string }>;
+  linux_packages: LinuxPackage[];
   defaults: { expires_in_days: number; max_devices: number };
 }
 
@@ -1072,6 +1090,24 @@ export async function requestFile(
     sha256: res.headers.get("X-Content-SHA256"),
     tokenId: res.headers.get("X-Enrollment-Token-Id"),
   };
+}
+
+/** GET that returns a file (the generic Linux installer packages): the bytes plus the suggested filename. */
+export async function requestGetFile(path: string): Promise<{ blob: Blob; filename: string; sha256: string | null }> {
+  const res = await fetch(`${BASE}${path}`, { credentials: "same-origin" });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const b = await res.json();
+      detail = typeof b.detail === "string" ? b.detail : JSON.stringify(b.detail);
+    } catch {
+      /* ignore */
+    }
+    if (res.status === 401) onUnauthorized?.();
+    throw new ApiError(res.status, detail || `HTTP ${res.status}`);
+  }
+  const m = /filename="([^"]+)"/.exec(res.headers.get("Content-Disposition") ?? "");
+  return { blob: await res.blob(), filename: m ? m[1] : "cnapp-agent", sha256: res.headers.get("X-Content-SHA256") };
 }
 
 /** Upload a signed agent release bundle (raw .tar.gz body). */
@@ -1437,6 +1473,7 @@ export const api = {
     }),
   installerInfo: () => request<InstallerInfo>("/api/devices/installers"),
   downloadInstaller: (body: InstallerRequest) => requestFile("/api/devices/installers", body),
+  downloadLinuxPackage: (format: string, arch: string) => requestGetFile(`/api/devices/installers/linux/${format}/${arch}`),
   revokeEnrollmentToken: (id: string) =>
     request<EnrollmentToken>(`/api/devices/enrollment-tokens/${id}/revoke`, { method: "POST" }),
   // --- agent auto-update ---

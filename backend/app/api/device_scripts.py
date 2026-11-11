@@ -98,6 +98,8 @@ def run_script(body: RunIn, request: Request, admin: User = Depends(require_admi
         raise HTTPException(404, "device not found")
     if device.status != "active":
         raise HTTPException(409, "device is revoked")
+    if (why := dsvc.linux_refusal(device, "run_script")) is not None:
+        raise HTTPException(409, why)
     script = svc.find_script(db, body.script)
     if script is None:
         raise HTTPException(404, f"script {body.script!r} is not in the current signed script library")
