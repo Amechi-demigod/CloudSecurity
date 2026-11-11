@@ -74,7 +74,7 @@ def release_manifest(release_id: str = Id32(), device: Device = Depends(current_
 
 
 @device_router.get("/releases/{release_id}/artifacts/{goos}/{goarch}")
-def release_artifact(release_id: str = Id32(), goos: str = Path(pattern="^(windows|darwin)$"),
+def release_artifact(release_id: str = Id32(), goos: str = Path(pattern="^(windows|darwin|linux)$"),
                      goarch: str = Path(pattern="^(amd64|arm64)$"), device: Device = Depends(current_device),
                      db: Session = Depends(get_db)):
     db.commit()

@@ -407,3 +407,12 @@ def test_cli_notify_server_update(admin, capsys):
         assert ev[0].attributes["automatic"] is True and ev[0].attributes["to_tag"] == "b" * 40
         assert "(automatic)" in ev[0].title
     assert any(s["name"] == "server_update" for s in admin.get("/api/notifications/meta").json()["sources"])
+
+
+def test_linux_agent_downloads_its_artifact(admin, key, tmp_path):
+    rel = upload(admin, make_bundle(tmp_path, "1.7.0", [key], platforms=(("linux", "amd64"), ("linux", "arm64")))).json()
+    agent, _ = enrolled_device(admin)
+    r = agent.get(f"/api/agent/updates/releases/{rel['id']}/artifacts/linux/amd64")
+    assert r.status_code == 200, r.text
+    assert r.content == b"binary 1.7.0 linux/amd64" * 100
+    assert agent.get(f"/api/agent/updates/releases/{rel['id']}/artifacts/freebsd/amd64").status_code == 422
