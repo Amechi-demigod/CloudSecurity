@@ -77,7 +77,8 @@ jobs:
           done
           # Linux installer packages (.deb / .rpm, amd64 and arm64): signed into the manifest below (`packages`).
           go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.48.0
-          export PATH="$(go env GOPATH)/bin:$PATH"
+          gopath="$(go env GOPATH)"
+          export PATH="$gopath/bin:$PATH"
           packaging/linux/build-packages.sh "${VERSION}" dist
           # Never publish a test-only build (the remote_fake remote-session backend).
           ../scripts/agent_build_check.sh dist/cnapp-agent-linux-* dist/cnapp-agent-windows-* dist/cnapp-agent-darwin-* dist/cnapp-collector-*

@@ -296,7 +296,7 @@ jobs:
           elif [ "$RUNNER_OS" = Linux ]; then
             sudo systemctl status cnapp-agent.service --no-pager || true
             sudo journalctl -u cnapp-agent.service -n 80 --no-pager || true
-            ls -la /usr/local/bin | grep cnapp || true
+            ls -la /usr/local/bin/cnapp-agent* || true
           else
             sudo launchctl print system/com.cloudsecurity.cnapp-agent 2>/dev/null | head -n 40 || true
             ls -la /usr/local/cnapp-agent/bin || true
@@ -350,7 +350,8 @@ jobs:
       - name: Linux packages (.deb and .rpm, amd64 and arm64) with nfpm
         run: |
           go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.48.0
-          export PATH="$(go env GOPATH)/bin:$PATH"
+          gopath="$(go env GOPATH)"
+          export PATH="$gopath/bin:$PATH"
           packaging/linux/build-packages.sh "0.1.${GITHUB_RUN_NUMBER}" dist
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -500,7 +501,8 @@ jobs:
               -o "dist/cnapp-agent-${os}-${arch}${ext}" ./cmd/cnapp-agent
           done
           go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.48.0
-          export PATH="$(go env GOPATH)/bin:$PATH"
+          gopath="$(go env GOPATH)"
+          export PATH="$gopath/bin:$PATH"
           packaging/linux/build-packages.sh "0.1.${GITHUB_RUN_NUMBER}" dist
           for arch in amd64 arm64; do
             CGO_ENABLED=0 GOOS=windows GOARCH=$arch go build -trimpath -o "dist/cnapp-collector-windows-${arch}.exe" ./cmd/cnapp-collector
@@ -523,8 +525,8 @@ jobs:
             --notes "CI test bundle (ephemeral key, not trusted by any real agent)" \
             --collector endpoint-agent/dist/cnapp-collector-windows-amd64.exe \
             --collector endpoint-agent/dist/cnapp-collector-windows-arm64.exe \
-            --package endpoint-agent/dist/cnapp-agent_0.1.${GITHUB_RUN_NUMBER}_amd64.deb --package endpoint-agent/dist/cnapp-agent_0.1.${GITHUB_RUN_NUMBER}_arm64.deb \
-            --package endpoint-agent/dist/cnapp-agent-0.1.${GITHUB_RUN_NUMBER}-1.x86_64.rpm --package endpoint-agent/dist/cnapp-agent-0.1.${GITHUB_RUN_NUMBER}-1.aarch64.rpm \
+            --package "endpoint-agent/dist/cnapp-agent_0.1.${GITHUB_RUN_NUMBER}_amd64.deb" --package "endpoint-agent/dist/cnapp-agent_0.1.${GITHUB_RUN_NUMBER}_arm64.deb" \
+            --package "endpoint-agent/dist/cnapp-agent-0.1.${GITHUB_RUN_NUMBER}-1.x86_64.rpm" --package "endpoint-agent/dist/cnapp-agent-0.1.${GITHUB_RUN_NUMBER}-1.aarch64.rpm" \
             endpoint-agent/dist/cnapp-agent-windows-amd64.exe endpoint-agent/dist/cnapp-agent-windows-arm64.exe \
             endpoint-agent/dist/cnapp-agent-darwin-amd64 endpoint-agent/dist/cnapp-agent-darwin-arm64 \
             endpoint-agent/dist/cnapp-agent-linux-amd64 endpoint-agent/dist/cnapp-agent-linux-arm64
