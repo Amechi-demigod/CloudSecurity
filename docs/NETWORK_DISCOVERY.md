@@ -136,6 +136,17 @@ Aruba / HPE, Ubiquiti, MikroTik RouterOS, HP / Brother / Canon / Ricoh / Xerox p
 MAC OUI (small bundled table) names the vendor and the open ports hint at the type. A device it cannot identify stays
 `unknown` and is not matched for CVEs: the device page says so.
 
+**Linux / Unix servers by SSH banner.** The banner the collector already reads from an open SSH port is used when SNMP
+did not identify the device. Debian-family and FreeBSD OpenSSH builds name the OS in the banner
+(`SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.6`, `...Debian-2+deb12u3`, `...Raspbian-...`, `...FreeBSD-20240701`); those
+become device type `server`, vendor `Linux` (`FreeBSD` for FreeBSD) and family `Ubuntu` / `Debian` / `Raspbian` /
+`FreeBSD`. A plain `SSH-2.0-OpenSSH_8.7` (RHEL, Rocky, Alma, Amazon Linux, but also Juniper, some firewalls and NAS
+boxes) does not name the OS and is **not** used: such a device stays `unknown` unless SNMP, the vendor or a rule
+identifies it. The banner never overrides SNMP, an enterprise number, the vendor rules, printer ports or a MAC that
+says network gear (a net-snmp host keeps `Linux (net-snmp)`). It beats only the weak port guess (SMB / RDP). No CVE or
+CPE matching is done from the banner. Caveat: FreeBSD-based firewalls (pfSense, OPNsense) print a FreeBSD banner and are
+shown as servers until SNMP or a rule identifies them.
+
 ## Vulnerabilities
 
 The normalised firmware is mapped to a CPE (`o:cisco:ios_xe`, `o:cisco:ios`, `o:cisco:nx-os`,
@@ -175,8 +186,10 @@ uplinks). Findings resolve when the cause is gone at the next scan; suppressed f
 ## Linking and IT assets
 
 Each device is linked, after the final batch of a scan, to the enrolled endpoint (by MAC or IP in the agent's network
-inventory, else by unique host name) and to an AD computer (by short name). "Tracked" in the list is Agent, AD, IT asset or
-Not registered. **Add to IT assets** (analyst) creates an IT asset (`source = network`, tag `NET-<name>`) for the selected
+inventory, else by unique host name) and to an AD computer (by short name). A host that runs the Linux runtime sensor is linked to
+the sensor's asset (`assets.source = sensor`, created by the package inventory) by short host name, only when exactly
+one sensor asset has that name (the sensor reports no MAC or IP; cloud VMs the sensor resolved to a cloud asset are not
+matched). "Tracked" in the list is Agent, AD, IT asset, Runtime sensor or Not registered, in that order of precedence. **Add to IT assets** (analyst) creates an IT asset (`source = network`, tag `NET-<name>`) for the selected
 devices.
 
 ## API

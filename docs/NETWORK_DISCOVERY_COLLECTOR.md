@@ -55,7 +55,8 @@ Per address, through a bounded worker pool and a global packet-rate cap
 3. **Port check** (when `port_check` is true; the console's default): a TCP connect to
    each listed port. Open means alive. For an open port the collector reads up to 200
    bytes the service sends unprompted within one second (SSH / Telnet / FTP banners),
-   control characters stripped. For 80 / 8080 and 443 / 8443 it sends a minimal
+   control characters stripped. The server uses the SSH banner to name Debian / Ubuntu /
+   Raspbian / FreeBSD hosts (see NETWORK_DISCOVERY.md); the collector sends it as is. For 80 / 8080 and 443 / 8443 it sends a minimal
    `GET / HTTP/1.0` with a `Host` header and keeps **only the status line and the
    `Server` header** (TLS is accepted without certificate verification because only
    headers are read and nothing is trusted or sent). No credentials are ever sent. UDP

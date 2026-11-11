@@ -164,6 +164,9 @@ class NetworkDevice(TenantMixin, Base):
         String(32), ForeignKey("directory_computers.id", ondelete="SET NULL"), nullable=True)
     it_asset_id: Mapped[str | None] = mapped_column(String(32), ForeignKey("it_assets.id", ondelete="SET NULL"),
                                                     nullable=True, index=True)
+    # The `assets` row (source "sensor") of the Linux runtime sensor running on this host, linked by host name. No
+    # foreign key: assets have a composite (organization_id, id) key.
+    sensor_asset_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
     # Shadow row in the cloud-inventory `assets` table that findings hang on.
     asset_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
