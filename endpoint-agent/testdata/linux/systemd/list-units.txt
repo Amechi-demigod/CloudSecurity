@@ -1,0 +1,13 @@
+  accounts-daemon.service    loaded active   running Accounts Service
+  auditd.service             loaded active   running Security Auditing Service
+  chronyd.service            loaded active   running NTP client/server
+  clamav-daemon.service      loaded inactive dead    Clam AntiVirus userspace daemon
+  cron.service               loaded active   running Regular background program processing daemon
+● foo.service                not-found inactive dead  foo.service
+  mdatp.service              loaded active   running Microsoft Defender
+  nginx.service              loaded active   running A high performance web server
+  ssh.service                loaded active   running OpenBSD Secure Shell server
+  systemd-timesyncd.service  loaded inactive dead    Network Time Synchronization
+  getty@.service             loaded inactive dead    Getty
+  apt-daily.service          loaded inactive dead    Daily apt download activities
+  broken.service             loaded failed   failed  A broken thing

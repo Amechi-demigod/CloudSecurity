@@ -1,0 +1,3 @@
+Timezone=Etc/UTC
+NTP=no
+NTPSynchronized=no

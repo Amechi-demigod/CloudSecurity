@@ -107,6 +107,9 @@ func (r *Report) Normalize() {
 			s.Identifier = Trunc(s.Identifier, 255)
 			s.InstallDate = Trunc(s.InstallDate, 32)
 			s.Source = Trunc(s.Source, 32)
+			s.Ecosystem = Trunc(s.Ecosystem, 64)
+			s.SourceName = Trunc(s.SourceName, 255)
+			s.SourceVersion = Trunc(s.SourceVersion, 128)
 			out = append(out, s)
 		}
 		r.Software = out

@@ -1,0 +1,3 @@
+User_Alias ADMINS = deploy, j.okafor
+ADMINS ALL=(ALL) NOPASSWD: ALL
+ALL ALL=(ALL) NOPASSWD: /usr/bin/id

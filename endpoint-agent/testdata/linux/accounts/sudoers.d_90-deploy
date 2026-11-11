@@ -1,0 +1,2 @@
+deploy ALL=(ALL) NOPASSWD: ALL
+%ops ALL=(root) /usr/bin/systemctl restart nginx

@@ -1,0 +1,10 @@
+auditd.service                      enabled         enabled
+chronyd.service                     enabled         enabled
+cron.service                        enabled         enabled
+nginx.service                       enabled         enabled
+ssh.service                         enabled         enabled
+apt-daily.service                   static          -
+apt-daily-upgrade.timer             enabled         enabled
+dnf-automatic-install.timer         disabled        disabled
+dnf-automatic.timer                 enabled         disabled
+broken.service                      masked          enabled

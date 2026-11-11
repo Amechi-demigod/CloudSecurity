@@ -1,0 +1,6 @@
+root:x:0:
+sudo:x:27:ops-admin,j.okafor
+wheel:x:10:
+admin:x:115:
+deploy:x:1000:
+ops:x:2000:j.okafor

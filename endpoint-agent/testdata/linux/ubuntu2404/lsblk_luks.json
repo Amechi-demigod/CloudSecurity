@@ -1,0 +1,52 @@
+{
+  "blockdevices": [
+    {
+      "name": "sda",
+      "type": "disk",
+      "fstype": null,
+      "mountpoint": null,
+      "children": [
+        {
+          "name": "sda1",
+          "type": "part",
+          "fstype": "vfat",
+          "mountpoint": "/boot/efi"
+        },
+        {
+          "name": "sda2",
+          "type": "part",
+          "fstype": "ext4",
+          "mountpoint": "/boot"
+        },
+        {
+          "name": "sda3",
+          "type": "part",
+          "fstype": "crypto_LUKS",
+          "mountpoint": null,
+          "children": [
+            {
+              "name": "cryptroot",
+              "type": "crypt",
+              "fstype": "LVM2_member",
+              "mountpoint": null,
+              "children": [
+                {
+                  "name": "vg-root",
+                  "type": "lvm",
+                  "fstype": "ext4",
+                  "mountpoint": "/"
+                },
+                {
+                  "name": "vg-swap",
+                  "type": "lvm",
+                  "fstype": "swap",
+                  "mountpoint": "[SWAP]"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
