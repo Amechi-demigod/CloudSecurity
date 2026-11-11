@@ -193,6 +193,10 @@ class SoftwareItem(Strict):
     identifier: Str255 = ""
     install_date: Annotated[str, StringConstraints(max_length=32)] = ""
     source: Annotated[str, StringConstraints(max_length=32)] = ""
+    # Linux packages (agents 1.7.0+): OSV ecosystem ("" = not covered by OSV), source package and source version.
+    ecosystem: Annotated[str, StringConstraints(max_length=64)] = ""
+    source_name: Str255 = ""
+    source_version: Str128 = ""
 
 
 class ServiceItem(Strict):
@@ -210,7 +214,7 @@ class CheckinRequest(Strict):
     posture: dict[CheckName, PostureCheck] = Field(default_factory=dict, max_length=40)
     # None = not collected this time (keep the previous list).
     software: list[SoftwareItem] | None = Field(None, max_length=10000)
-    # Windows services (agents 1.4.0+); None = not collected (keep the previous list).
+    # Windows services (agents 1.4.0+) or Linux systemd services (1.7.0+); None = not collected (keep the previous list).
     services: list[ServiceItem] | None = Field(None, max_length=2000)
     errors: dict[CheckName, Str1k] = Field(default_factory=dict, max_length=40)
 
@@ -412,6 +416,9 @@ class SoftwareOut(ORM):
     identifier: str
     install_date: str
     source: str
+    ecosystem: str = ""
+    source_name: str = ""
+    source_version: str = ""
 
 
 class ServiceOut(ORM):
@@ -481,7 +488,7 @@ class InstallerCreate(BaseModel):
     """A downloadable installer with a dedicated multi-use enrollment token."""
     model_config = ConfigDict(extra="forbid")
 
-    platform: Literal["windows-msi", "macos-pkg"]
+    platform: Literal["windows-msi", "macos-pkg", "linux-enroll"]
     name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=128)] | None = None
     expires_in_days: int = Field(30, ge=1, le=365)
     max_devices: int = Field(500, ge=1, le=100000)

@@ -101,6 +101,8 @@ def availability(device: Device) -> str | None:
         return "remote sessions are not supported on this deployment (they need the single-process relay)"
     if device.status != "active":
         return "the device is revoked"
+    if device.os_family == "linux":
+        return "remote sessions are not available on Linux servers"
     if device.os_family != "windows":
         return "remote sessions are available on Windows devices only for now"
     if FEATURE not in (device.agent_features or "").split(","):

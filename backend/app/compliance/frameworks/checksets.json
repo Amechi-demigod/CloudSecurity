@@ -85,16 +85,17 @@
   },
   "vulnerability-management": {
    "title": "Known vulnerabilities remediated",
-   "checks": ["vuln:kev", "vuln:critical_sla", "vuln:high_sla", "endpoint:os_updates"]
+   "checks": ["vuln:kev", "vuln:critical_sla", "vuln:high_sla", "endpoint:os_updates", "endpoint:linux_security_updates"]
   },
   "endpoint-malware": {
    "title": "Anti-malware on devices",
-   "checks": ["endpoint:antivirus", "endpoint:av_signatures"]
+   "checks": ["endpoint:antivirus", "endpoint:av_signatures", "endpoint:endpoint_protection"]
   },
   "endpoint-hardening": {
    "title": "Device hardening",
    "checks": ["endpoint:firewall", "endpoint:screen_lock", "endpoint:sip", "endpoint:gatekeeper",
-              "endpoint:secure_boot"]
+              "endpoint:secure_boot", "endpoint:ssh_root_login", "endpoint:ssh_password_login",
+              "endpoint:mandatory_access_control", "endpoint:admin_accounts", "endpoint:linux_auto_updates"]
   },
   "device-compliance": {
    "title": "Devices managed and compliant in the directory",

@@ -43,6 +43,7 @@ from .. import config
 from ..models import (
     AgentRelease,
     AgentReleaseArtifact,
+    AgentReleasePackage,
     AgentUpdateEvent,
     AgentUpdateRing,
     Device,
@@ -56,9 +57,14 @@ PRODUCT = "cnapp-agent"
 KEYS_FILE = Path(__file__).resolve().parents[1] / "agent_update_keys.txt"
 MAX_MANIFEST_BYTES = 64 * 1024
 MAX_ARTIFACT_BYTES = 200 * 1024 * 1024
-MAX_BUNDLE_MEMBERS = 32
-PLATFORMS = {("windows", "amd64"), ("windows", "arm64"), ("darwin", "amd64"), ("darwin", "arm64")}
-OS_FAMILY_TO_GOOS = {"windows": "windows", "macos": "darwin"}
+MAX_BUNDLE_MEMBERS = 48
+PLATFORMS = {("windows", "amd64"), ("windows", "arm64"), ("darwin", "amd64"), ("darwin", "arm64"),
+             ("linux", "amd64"), ("linux", "arm64")}
+OS_FAMILY_TO_GOOS = {"windows": "windows", "macos": "darwin", "linux": "linux"}
+# Installer packages of a release (signed into the manifest as `packages`, served by the console's
+# Linux installer download; agents never self-update from them).
+PACKAGE_FORMATS = ("deb", "rpm")
+PACKAGE_ARCHES = ("amd64", "arm64")
 STATUSES = ("downloading", "verified", "installing", "installed", "rolled_back", "failed", "rejected")
 FAILURE_STATUSES = ("rolled_back", "failed", "rejected")
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -252,7 +258,30 @@ def verify_envelope(envelope: bytes, keys: list[TrustedKey], now: datetime | Non
             raise ReleaseError(f"artifact {a['name']} sha256 is not 64 lowercase hex characters")
         if not isinstance(a.get("size"), int) or not 0 < a["size"] <= MAX_ARTIFACT_BYTES:
             raise ReleaseError(f"artifact {a['name']} size is out of range")
+    _check_packages(m)
     return m, signed_by
+
+
+def _check_packages(m: dict) -> None:
+    pkgs = m.get("packages")
+    if pkgs is None:
+        return
+    if not isinstance(pkgs, list):
+        raise ReleaseError("manifest packages must be a list")
+    seen = set()
+    for p in pkgs:
+        if not isinstance(p, dict) or p.get("format") not in PACKAGE_FORMATS or p.get("arch") not in PACKAGE_ARCHES:
+            raise ReleaseError("malformed package entry (format deb|rpm, arch amd64|arm64)")
+        key = (p["format"], p["arch"])
+        if key in seen:
+            raise ReleaseError(f"package {key[0]}/{key[1]} is duplicated")
+        seen.add(key)
+        if not _NAME_RE.match(str(p.get("name", ""))) or not str(p["name"]).endswith("." + p["format"]):
+            raise ReleaseError(f"package name {p.get('name')!r} is not a plain {p['format']} file name")
+        if not re.fullmatch(r"[0-9a-f]{64}", str(p.get("sha256", ""))):
+            raise ReleaseError(f"package {p['name']} sha256 is not 64 lowercase hex characters")
+        if not isinstance(p.get("size"), int) or not 0 < p["size"] <= MAX_ARTIFACT_BYTES:
+            raise ReleaseError(f"package {p['name']} size is out of range")
 
 
 def read_bundle(data: bytes) -> tuple[bytes, dict[str, bytes]]:
@@ -296,6 +325,12 @@ def import_bundle(db: Session, data: bytes, actor: str) -> AgentRelease:
             raise ReleaseError(f"{a['name']}: size {len(blob)} does not match the signed manifest ({a['size']})")
         if hashlib.sha256(blob).hexdigest() != a["sha256"]:
             raise ReleaseError(f"{a['name']}: SHA-256 does not match the signed manifest (tampered bundle)")
+    for p in m.get("packages") or []:
+        blob = files.get(p["name"])
+        if blob is None:
+            raise ReleaseError(f"bundle is missing {p['name']}")
+        if len(blob) != p["size"] or hashlib.sha256(blob).hexdigest() != p["sha256"]:
+            raise ReleaseError(f"{p['name']}: size or SHA-256 does not match the signed manifest (tampered bundle)")
     existing = db.scalar(select(AgentRelease).where(AgentRelease.version == m["version"]))
     if existing is not None:
         same = existing.manifest_envelope.encode() == envelope
@@ -308,6 +343,9 @@ def import_bundle(db: Session, data: bytes, actor: str) -> AgentRelease:
     for a in m["artifacts"]:
         rel.artifacts.append(AgentReleaseArtifact(os=a["os"], arch=a["arch"], name=a["name"], sha256=a["sha256"],
                                                   size_bytes=a["size"], data=files[a["name"]]))
+    for p in m.get("packages") or []:
+        rel.packages.append(AgentReleasePackage(format=p["format"], arch=p["arch"], name=p["name"], sha256=p["sha256"],
+                                                size_bytes=p["size"], data=files[p["name"]]))
     db.add(rel)
     db.flush()
     collector_envelope = files.pop(COLLECTOR_MANIFEST, None)
@@ -415,6 +453,22 @@ def target_for(db: Session, device: Device, all_rings: list[AgentUpdateRing] | N
     if not in_rollout(device.id, rel.id, ring.rollout_percent):
         return Target(None, "none", ring, f"outside the {ring.rollout_percent}% rollout of ring {ring.name}")
     return Target(rel, "ring", ring, f"ring {ring.name}")
+
+
+def latest_package(db: Session, fmt: str, arch: str, *, with_data: bool = False) -> AgentReleasePackage | None:
+    """The `fmt` / `arch` installer package of the newest imported, not withdrawn release that carries one."""
+    stmt = (select(AgentReleasePackage).join(AgentRelease, AgentRelease.id == AgentReleasePackage.release_id)
+            .where(AgentReleasePackage.format == fmt, AgentReleasePackage.arch == arch,
+                   AgentRelease.withdrawn_at.is_(None)))
+    if not with_data:
+        stmt = stmt.options(load_only(AgentReleasePackage.id, AgentReleasePackage.release_id, AgentReleasePackage.name,
+                                      AgentReleasePackage.sha256, AgentReleasePackage.size_bytes,
+                                      AgentReleasePackage.format, AgentReleasePackage.arch))
+    rows = list(db.scalars(stmt))
+    if not rows:
+        return None
+    rows.sort(key=lambda p: version_sort_key(p.release.version))
+    return rows[-1]
 
 
 def has_artifact(db: Session, release_id: str, goos: str, goarch: str) -> bool:

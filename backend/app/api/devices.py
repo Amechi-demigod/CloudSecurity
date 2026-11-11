@@ -54,7 +54,7 @@ from ..schemas_devices import (
     SnapshotOut,
     SoftwareOut,
 )
-from ..services import approvals, endpoint_actions, installers, os_updates, remote_sessions
+from ..services import agent_updates, approvals, endpoint_actions, installers, os_updates, remote_sessions
 from ..services import devices as svc
 
 log = logging.getLogger(__name__)
@@ -177,7 +177,7 @@ def create_token(body: EnrollmentTokenCreate, request: Request, admin: User = De
 
 
 @router.get("/installers", dependencies=[Depends(require_admin)])
-def installer_info():
+def installer_info(db: Session = Depends(get_db)):
     """What a pre-configured installer would contain (never the token) and which platforms are available."""
     try:
         server, server_error = installers.server_url(), None
@@ -189,7 +189,38 @@ def installer_info():
         ca, ca_error = None, str(e)
     return {"server_url": server, "server_error": server_error, "ca_configured": ca is not None,
             "ca_error": ca_error, "include_ca_default": ca is not None, "platforms": installers.availability(),
+            "linux_packages": _linux_packages(db),
             "defaults": {"expires_in_days": 30, "max_devices": 500}}
+
+
+def _linux_packages(db: Session) -> list[dict]:
+    """The .deb / .rpm installers (amd64, arm64) of the newest imported signed release that carries them."""
+    out = []
+    for fmt, label in installers.LINUX_PACKAGE_FORMATS.items():
+        for arch in installers.LINUX_PACKAGE_ARCHES:
+            p = agent_updates.latest_package(db, fmt, arch)
+            out.append({"format": fmt, "arch": arch, "label": label, "available": p is not None,
+                        "name": p.name if p else None, "version": p.release.version if p else None,
+                        "size_bytes": p.size_bytes if p else None, "sha256": p.sha256 if p else None})
+    return out
+
+
+@router.get("/installers/linux/{fmt}/{arch}", dependencies=[Depends(require_admin)])
+def download_linux_package(request: Request, fmt: str = Path(pattern="^(deb|rpm)$"),
+                           arch: str = Path(pattern="^(amd64|arm64)$"), admin: User = Depends(require_admin),
+                           db: Session = Depends(get_db)):
+    """The generic, signed Linux installer package of the newest imported release (it carries no token: pair it
+    with the enrolment file, `POST /installers` with platform linux-enroll)."""
+    p = agent_updates.latest_package(db, fmt, arch, with_data=True)
+    if p is None:
+        raise HTTPException(404, f"no imported agent release carries a {fmt} package for {arch}: import a signed "
+                                 "release built with Linux packages (cnapp-ctl agent-release fetch --tag agent-vX.Y.Z)")
+    audit(db, "agent_package_downloaded", actor=admin, target=f"agent-release:{p.release_id}", ip=client_ip(request),
+          name=p.name, sha256=p.sha256, size_bytes=p.size_bytes)
+    db.commit()
+    return Response(content=p.data, media_type="application/octet-stream", headers={
+        "Content-Disposition": f'attachment; filename="{p.name}"', "Cache-Control": "no-store",
+        "X-Content-SHA256": p.sha256, "X-Agent-Version": p.release.version})
 
 
 @router.post("/installers")
@@ -227,7 +258,8 @@ def installer_download(db: Session, admin: User, request: Request, *, platform: 
         if include_ca is None:
             include_ca = installers.server_ca_pem() is not None
         installers.server_url()
-        installers.artifact(platform, verify=False)
+        if platform != installers.LINUX_ENROLL:
+            installers.artifact(platform, verify=False)
     except installers.InstallerConfigError as e:
         raise HTTPException(409, str(e)) from None
     except installers.InstallerUnavailable as e:
@@ -377,6 +409,8 @@ def create_command(body: CommandCreate, request: Request, device_id: str = Devic
     device = _get_device(db, device_id)
     if device.status != "active":
         raise HTTPException(409, "device is revoked")
+    if (why := svc.linux_refusal(device, body.type)) is not None:
+        raise HTTPException(409, why)
     try:
         if body.type in endpoint_actions.TYPES:
             params = endpoint_actions.prepare(db, device, body.type, body.params)

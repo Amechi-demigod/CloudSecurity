@@ -159,7 +159,9 @@ def apply_checkin(db: Session, device: Device, body: CheckinRequest, ip: str | N
             seen.add(key)
             rows.append(DeviceSoftware(device_id=device.id, name=item.name, version=item.version,
                                        publisher=item.publisher, identifier=item.identifier,
-                                       install_date=item.install_date, source=item.source))
+                                       install_date=item.install_date, source=item.source,
+                                       ecosystem=item.ecosystem, source_name=item.source_name,
+                                       source_version=item.source_version))
         db.add_all(rows)
         device.software_count = len(rows)
         # Re-match against CVE data after the debounce period (background worker;
@@ -170,6 +172,10 @@ def apply_checkin(db: Session, device: Device, body: CheckinRequest, ip: str | N
     from . import endpoint_actions  # (imports this module)
 
     endpoint_actions.apply_services(db, device, body.services)
+    if device.os_family == "linux":
+        from . import linux_agent  # (imports this module)
+
+        linux_agent.reconcile_sensor(db, device, now)
 
     # Issue codes at the previous check-in (None: first check-in), to notify about new ones only.
     prev = db.scalar(select(DevicePostureSnapshot.issues).where(DevicePostureSnapshot.device_id == device.id)
@@ -311,7 +317,25 @@ ISSUE_DEFS: dict[str, tuple[str, str]] = {
     "os_reboot_pending": ("medium", "Restart pending to finish installing updates"),
     "windows_update_disabled": ("high", "Windows Update service is disabled"),
     "os_update_scan_stale": ("medium", "No successful update search for over a week"),
+    # Linux servers (agent 1.7.0+, app/services/linux_agent.py, docs/DEVICE_MANAGEMENT.md#linux-servers).
+    # security updates pending / reboot required reuse os_security_updates_missing / os_reboot_pending above.
+    "auto_updates_off": ("medium", "Automatic security updates are not enabled"),
+    "ssh_root_login_allowed": ("high", "SSH root login with a password is allowed"),
+    "ssh_password_login_allowed": ("medium", "SSH password login is allowed"),
+    "admin_accounts_risky": ("high", "Extra UID 0 account or account with an empty password"),
+    "endpoint_protection_off": ("medium", "No endpoint protection running"),
+    "mac_not_enforcing": ("medium", "SELinux / AppArmor is not enforcing"),
+    "audit_logging_off": ("low", "Audit logging (auditd) is not running"),
+    "time_not_synced": ("low", "System clock is not synchronised"),
 }
+
+# Linux server posture checks (agent 1.7.0+) -> issue codes: a failing check raises its issue.
+linux_agent_simple = [("security_updates", "os_security_updates_missing"), ("reboot_required", "os_reboot_pending"),
+                      ("auto_updates", "auto_updates_off"), ("ssh_root_login", "ssh_root_login_allowed"),
+                      ("ssh_password_login", "ssh_password_login_allowed"), ("admin_accounts", "admin_accounts_risky"),
+                      ("endpoint_protection", "endpoint_protection_off"),
+                      ("mandatory_access_control", "mac_not_enforcing"), ("audit_logging", "audit_logging_off"),
+                      ("time_sync", "time_not_synced")]
 
 LOST_STATES = ("enabling", "active", "disabling")
 ISOLATION_STATES = ("isolating", "isolated", "restoring")
@@ -340,6 +364,8 @@ def device_issues(device: Device, now: datetime | None = None) -> list[dict[str,
     simple = [("disk_encryption", "disk_encryption_off"), ("firewall", "firewall_off"),
               ("antivirus", "antivirus_off"), ("screen_lock", "screen_lock_off"), ("sip", "sip_disabled"),
               ("gatekeeper", "gatekeeper_off"), ("secure_boot", "secure_boot_off")]
+    if device.os_family == "linux":
+        simple += linux_agent_simple
     for check, code in simple:
         status, _, detail = _check(p, check)
         if status == "fail":
@@ -390,9 +416,29 @@ def summarize(device: Device, now: datetime | None = None) -> dict[str, Any]:
         "device_group": device.device_group,
         "health": health_from_issues(device, issues), "connectivity": connectivity(device, now), "issues": issues,
         "device_state": device_state(device), "usb_storage": usb_storage_state(device),
-        "os_updates": os_updates.summary(device, now),
+        "os_updates": os_updates.summary(device, now) or _linux_patching(device),
         **device_class.summary(device),
     }
+
+
+def _linux_patching(device: Device) -> dict[str, Any] | None:
+    """Linux servers: the Devices list's updates column from the agent's posture checks (security updates
+    pending, reboot required, package cache age), in the shape of the Windows Update summary."""
+    if device.os_family != "linux":
+        return None
+    p = device.posture or {}
+    st, data, _ = _check(p, "security_updates")
+    reboot, _, _ = _check(p, "reboot_required")
+    if st is None:
+        return None
+    n = data.get("security_updates") if isinstance(data.get("security_updates"), int) else 0
+    pending = data.get("pending_updates") if isinstance(data.get("pending_updates"), int) else n
+    crit = (data.get("severities") or {}).get("critical")
+    return {"listed": st in ("pass", "fail"), "missing": max(pending, n),
+            "security": n, "critical": crit if isinstance(crit, int) else 0, "oldest_security_days": None,
+            "reboot_pending": reboot == "fail", "scan_status": "ok" if st != "unknown" else "stale_cache",
+            "scanned_at": None, "source": data.get("package_manager") or "linux",
+            "cache_age_hours": data.get("cache_age_hours")}
 
 
 def usb_storage_state(device: Device) -> str | None:
@@ -543,6 +589,20 @@ def validate_params(cmd_type: str, params: dict[str, Any]) -> dict[str, Any]:
     if params:
         raise ValueError(f"{cmd_type} takes no parameters")
     return {}
+
+
+# The only commands a Linux server agent runs (agent 1.7.0): it reads and reports; no lock, wipe, lost mode,
+# scripts, services, USB blocking, remote sessions or OS update install (the agent refuses them too).
+LINUX_COMMANDS = frozenset({"recheck_posture", "collect_logs", "restart_agent", "update_check_in_interval",
+                            "check_for_update"})
+
+
+def linux_refusal(device: Device, what: str) -> str | None:
+    """Why `what` (a command type or feature name) is not available on this device, None when it is."""
+    if device.os_family == "linux" and what not in LINUX_COMMANDS:
+        return (f"{what.replace('_', ' ')} is not available on Linux servers: the Linux agent only re-checks posture, "
+                "collects its logs, restarts, changes its check-in interval and updates itself")
+    return None
 
 
 # Command types whose outcome changes device state (lost mode, wipe, isolation).

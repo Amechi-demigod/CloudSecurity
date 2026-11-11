@@ -19,6 +19,7 @@ Container images are not inventoried (only the host).
 from __future__ import annotations
 
 import glob
+import hashlib
 import json
 import logging
 import os
@@ -202,8 +203,18 @@ def collect_inventory(host_root: str = "/") -> Tuple[Dict[str, Optional[str]], L
     return os_info, pkgs[:MAX_PACKAGES]
 
 
-def build_payload(sensor_id: str, host: str, cloud, os_info, packages) -> Dict:
-    return {
+def hashed_machine_id(host_root: str = "/") -> Optional[str]:
+    """SHA-256 of /etc/machine-id with the endpoint agent's ``cnapp-agent:`` prefix (the same value the Linux
+    agent enrolls with), so the platform can tell a server that runs both. The raw id never leaves the host."""
+    root = host_root.rstrip("/")
+    raw = (_read(f"{root}/etc/machine-id") or _read(f"{root}/var/lib/dbus/machine-id") or "").strip().lower()
+    if not raw:
+        return None
+    return hashlib.sha256(("cnapp-agent:" + raw).encode()).hexdigest()
+
+
+def build_payload(sensor_id: str, host: str, cloud, os_info, packages, machine_id: Optional[str] = None) -> Dict:
+    payload = {
         "schema_version": INVENTORY_SCHEMA_VERSION,
         "sensor_id": sensor_id,
         "host": host,
@@ -213,6 +224,9 @@ def build_payload(sensor_id: str, host: str, cloud, os_info, packages) -> Dict:
                   if cloud is not None and (cloud.provider or cloud.resource_id) else None),
         "packages": packages,
     }
+    if machine_id:
+        payload["machine_id"] = machine_id
+    return payload
 
 
 def inventory_url(api_url: str) -> str:
@@ -249,7 +263,8 @@ class InventoryReporter:
 
     def report_once(self) -> bool:
         os_info, packages = self.collect(self.host_root)
-        payload = build_payload(self.sensor_id, self.host, self.cloud, os_info, packages)
+        payload = build_payload(self.sensor_id, self.host, self.cloud, os_info, packages,
+                                hashed_machine_id(self.host_root))
         body = json.dumps(payload, separators=(",", ":"))
         self.stats["last_packages"] = len(packages)
         if self.dry_run:

@@ -67,11 +67,11 @@
   ]},
   {"id": "10", "title": "Log and monitor access", "controls": [
    {"id": "10.1", "title": "Processes for logging and monitoring defined"},
-   {"id": "10.2", "title": "Audit logs implemented", "checks": ["@cloud-logging"], "coverage": "partial"},
+   {"id": "10.2", "title": "Audit logs implemented", "checks": ["@cloud-logging", "endpoint:audit_logging"], "coverage": "partial"},
    {"id": "10.3", "title": "Audit logs protected", "checks": ["cloud:AWS-CT-002"], "coverage": "partial"},
    {"id": "10.4", "title": "Audit logs reviewed"},
    {"id": "10.5", "title": "Audit log history retained"},
-   {"id": "10.6", "title": "Time synchronisation"},
+   {"id": "10.6", "title": "Time synchronisation", "checks": ["endpoint:time_sync"], "coverage": "partial", "note": "Linux servers (agent 1.7.0+); other systems are not assessed."},
    {"id": "10.7", "title": "Failures of critical security controls detected and addressed"}
   ]},
   {"id": "11", "title": "Test security regularly", "controls": [

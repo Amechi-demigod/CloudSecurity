@@ -63,9 +63,34 @@ def _resolve_asset(db: Session, inv: SensorPackageInventoryV1) -> tuple[Asset, b
     return a, True
 
 
+def _agent_managed(db: Session, inv: SensorPackageInventoryV1, now) -> PackageIngestResult | None:
+    """The server also runs the Linux endpoint agent: its package list wins, the sensor's is ignored (one
+    record per server, no double-counted vulnerabilities; app/services/linux_agent.py)."""
+    from ..services import linux_agent
+    from ..services.sensor import AssetResolver
+
+    rid = inv.cloud.resource_id if inv.cloud else None
+    agent = linux_agent.agent_for_sensor(db, now, resource_id=rid, machine_id=inv.machine_id, host=inv.host)
+    if agent is None:
+        return None
+    aid = AssetResolver(db)._resolve(rid, None, None, inv.host)
+    asset = get_asset(db, aid) if aid else None
+    if asset is not None:
+        if inv.machine_id:
+            asset.properties = {**(asset.properties or {}), "machine_id": inv.machine_id}
+        linux_agent.supersede_sensor_packages(db, asset, agent, now)
+    return PackageIngestResult(asset_id=asset.id if asset is not None else "", asset_created=False, packages=0,
+                               match_requested=False, superseded_by_agent=True, agent_device_id=agent.id)
+
+
 def ingest_packages(db: Session, inv: SensorPackageInventoryV1) -> PackageIngestResult:
-    asset, created = _resolve_asset(db, inv)
     now = utcnow()
+    superseded = _agent_managed(db, inv, now)
+    if superseded is not None:
+        return superseded
+    asset, created = _resolve_asset(db, inv)
+    if inv.machine_id:
+        asset.properties = {**(asset.properties or {}), "machine_id": inv.machine_id}
     asset.last_seen = now
     default_eco = ecosystem_for(inv.os.id if inv.os else None, inv.os.version_id if inv.os else None)
     seen: set[tuple[str, str, str]] = set()

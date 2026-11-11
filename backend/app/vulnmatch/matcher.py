@@ -109,6 +109,8 @@ def _platform(device: Device, os_cpe: str | None, os_version: str, apps: list[In
 def match_device(db: Session, device: Device, now: datetime | None = None, *, allow_fetch: bool = True
                  ) -> MatchOutcome:
     now = now or utcnow()
+    if device.os_family == "linux":
+        return match_linux_device(db, device, now, allow_fetch=allow_fetch)
     out = MatchOutcome(DEVICE, device.id, device.hostname)
     fam, arch = device.os_family, _arch(device.architecture)
     # (match_key, label, cpes, Installed-version, update, display name, raw version, sw_edition)
@@ -342,11 +344,10 @@ def osv_queries(db: Session, packages: list[AssetPackage], now: datetime, allow_
     return results, errors
 
 
-def match_asset(db: Session, asset: Asset, now: datetime | None = None, *, allow_fetch: bool = True
-                ) -> MatchOutcome:
-    now = now or utcnow()
-    out = MatchOutcome(ASSET, asset.id, asset.name)
-    packages = list(db.scalars(select(AssetPackage).where(AssetPackage.asset_id == asset.id)))
+def _osv_findings(db: Session, packages: list[AssetPackage], now: datetime, allow_fetch: bool, out: MatchOutcome
+                  ) -> tuple[dict[tuple[str, str], Finding], set[str], set[str]]:
+    """Query OSV for `packages` and build the findings: (findings, checked match keys, installed match keys).
+    Shared by assets (runtime sensor inventory) and Linux devices (endpoint agent inventory)."""
     results, errors = osv_queries(db, packages, now, allow_fetch)
     out.errors.extend(errors)
     binaries: dict[tuple[str, str, str], list[str]] = {}
@@ -407,6 +408,15 @@ def match_asset(db: Session, asset: Asset, now: datetime | None = None, *, allow
             checked_keys.add(key)
         out.checked.append({"name": name, "version": version, "ecosystem": eco, "binaries": sorted(set(bins))[:20],
                             "complete": complete})
+    return findings, checked_keys, installed_keys
+
+
+def match_asset(db: Session, asset: Asset, now: datetime | None = None, *, allow_fetch: bool = True
+                ) -> MatchOutcome:
+    now = now or utcnow()
+    out = MatchOutcome(ASSET, asset.id, asset.name)
+    packages = list(db.scalars(select(AssetPackage).where(AssetPackage.asset_id == asset.id)))
+    findings, checked_keys, installed_keys = _osv_findings(db, packages, now, allow_fetch, out)
     _reconcile(db, out, OSV, Vulnerability.asset_id == asset.id, findings, checked_keys, installed_keys, now,
                lambda: Vulnerability(id=new_id(), asset_id=asset.id, source=OSV, first_seen=now, in_use=False),
                context=asset)
@@ -416,6 +426,42 @@ def match_asset(db: Session, asset: Asset, now: datetime | None = None, *, allow
         st.requested_at = None
         st.checked = out.checked[:5000]
         st.not_checked = out.not_checked[:2000]
+        st.error = "; ".join(out.errors)[:2000] or None
+    return out
+
+
+def match_linux_device(db: Session, device: Device, now: datetime, *, allow_fetch: bool = True) -> MatchOutcome:
+    """Match the OS packages a Linux endpoint agent reported through OSV (the same feeds and matching as the
+    runtime sensor's inventory). Packages whose distribution OSV does not cover (Amazon Linux) are listed under
+    `not_checked` with that reason: they are reported, never faked as clean."""
+    out = MatchOutcome(DEVICE, device.id, device.hostname)
+    rows = list(db.scalars(select(DeviceSoftware).where(DeviceSoftware.device_id == device.id)))
+    packages = []
+    for sw in rows:
+        eco = sw.ecosystem or ""
+        # Debian / Ubuntu advisories name the source version; rpm keeps [epoch:]version-release.
+        version = (sw.source_version or sw.version) if eco.split(":", 1)[0] in DEB_LIKE else sw.version
+        packages.append(AssetPackage(asset_id=device.id, name=sw.name, version=version, ecosystem=eco,
+                                     source_name=sw.source_name or "", kind=sw.source))
+    unmatched = [p for p in packages if not p.ecosystem]
+    covered = [p for p in packages if p.ecosystem]
+    findings, checked_keys, installed_keys = _osv_findings(db, covered, now, allow_fetch, out)
+    if unmatched:
+        distro = device.os_name or "this distribution"
+        out.not_checked.insert(0, {
+            "name": f"{len(unmatched)} OS packages", "version": "", "unmatched_packages": len(unmatched),
+            "reason": f"Not matched: OSV.dev has no vulnerability feed for {distro}. The packages are listed, "
+                      "their vulnerabilities are not checked."})
+    _reconcile(db, out, OSV, Vulnerability.device_id == device.id, findings, checked_keys, installed_keys, now,
+               lambda: Vulnerability(id=new_id(), device_id=device.id, source=OSV, first_seen=now), context=None)
+    st = get_state(db, DEVICE, device.id)
+    if st is not None:
+        st.matched_at = now
+        st.requested_at = None
+        st.checked = out.checked[:5000]
+        st.not_checked = out.not_checked[:2000]
+        st.os_info = {"ecosystem": covered[0].ecosystem if covered else "", "label": device.os_name,
+                      "matching": "osv" if covered else "not_matched"}
         st.error = "; ".join(out.errors)[:2000] or None
     return out
 

@@ -36,6 +36,9 @@ CHECKIN_ISSUES = (
     # Windows Update report (app/services/os_updates.py): raised with the next check-in.
     "os_critical_updates_missing", "os_security_updates_missing", "os_reboot_pending", "windows_update_disabled",
     "os_update_scan_stale",
+    # Linux servers (agent 1.7.0+): raised with the check-in that reports the failing check.
+    "auto_updates_off", "ssh_root_login_allowed", "ssh_password_login_allowed", "admin_accounts_risky",
+    "endpoint_protection_off", "mac_not_enforcing", "audit_logging_off", "time_not_synced",
 )
 CONNECTIVITY_ISSUES = ("stale", "inactive")
 COMMAND_RESULTS = {"succeeded": "command_succeeded", "failed": "command_failed", "rejected": "command_rejected"}

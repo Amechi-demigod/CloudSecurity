@@ -16,6 +16,13 @@ only when the server's certificate is not publicly trusted):
   archive (pure Python, see pkgtools); the postinstall script hands it to
   ``cnapp-agent configure``.
 
+* Linux (agent 1.7.0+): a **generic, signed .deb / .rpm** (imported with the signed agent release, served from
+  the database; never rewritten per tenant: a package is a signed, checksummed unit and rewriting an rpm needs
+  rpm tooling the image does not carry) plus a per-tenant ``enroll.json`` (``linux-enroll``): the same document
+  the Windows and macOS installers embed (server URL, a package-bound enrollment token, the private CA only when
+  needed). The package's post-install hands ``/etc/cnapp-agent/enroll.json`` to ``cnapp-agent configure`` and
+  deletes it. The token travels only in the downloaded file's bytes, never in a URL or a log.
+
 The plaintext token only exists in the returned bytes: nothing is written to
 the database except its hash, and the copies are only built in memory.
 """
@@ -39,6 +46,12 @@ PLATFORMS: dict[str, dict[str, str]] = {
     "macos-pkg": {"artifact": "cnapp-agent-macos-universal.pkg", "download": "cnapp-agent-setup.pkg",
                   "media_type": "application/octet-stream", "label": "macOS (pkg, Intel + Apple silicon)"},
 }
+# Linux: the per-tenant enrolment file; the .deb / .rpm are generic and come from the imported signed release.
+LINUX_ENROLL = "linux-enroll"
+PLATFORMS[LINUX_ENROLL] = {"artifact": "", "download": "cnapp-agent-enroll.json", "media_type": "application/json",
+                           "label": "Linux enrolment file (enroll.json)"}
+LINUX_PACKAGE_FORMATS = {"deb": "Debian / Ubuntu (.deb)", "rpm": "RHEL / Rocky / Alma / Amazon Linux (.rpm)"}
+LINUX_PACKAGE_ARCHES = ("amd64", "arm64")
 MANIFEST = "manifest.json"
 MAX_ARTIFACT_BYTES = 128 << 20
 MAX_CA_BYTES = 64 << 10
@@ -91,6 +104,8 @@ def _sha256_file(path: Path) -> str:
 
 def artifact(platform: str, *, verify: bool = True) -> Artifact:
     """The bundled generic installer for `platform`, checked against manifest.json."""
+    if platform == LINUX_ENROLL:
+        return Artifact(platform, Path(""), "", "n/a", 0)
     spec = PLATFORMS[platform]
     man = _manifest()
     files = man.get("files") or {}
@@ -115,6 +130,9 @@ def artifact(platform: str, *, verify: bool = True) -> Artifact:
 def availability() -> dict[str, dict]:
     out = {}
     for platform, spec in PLATFORMS.items():
+        if platform == LINUX_ENROLL:
+            out[platform] = {"available": True, "label": spec["label"], "filename": spec["download"]}
+            continue
         try:
             a = artifact(platform, verify=False)
             out[platform] = {"available": True, "label": spec["label"], "version": a.version, "size_bytes": a.size,
@@ -209,7 +227,13 @@ def build(platform: str, token: str, include_ca: bool, allow_wipe: bool = False)
     if not _build_slots.acquire(timeout=60):
         raise InstallerUnavailable("too many installer builds in progress; try again shortly")
     try:
-        if platform == "windows-msi":
+        if platform == LINUX_ENROLL:
+            if not _TOKEN_RE.fullmatch(token):
+                raise ValueError("malformed enrollment token")
+            if allow_wipe:
+                raise InstallerConfigError("remote wipe is only available for Windows devices")
+            data = enroll_document(server, token, ca)
+        elif platform == "windows-msi":
             data = build_msi(art.path, server, token, ca, allow_wipe)
         else:
             if allow_wipe:
