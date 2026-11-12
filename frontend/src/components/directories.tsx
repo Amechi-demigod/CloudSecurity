@@ -1,6 +1,5 @@
 // Connectors & scans -> Directories: add / edit / monitor directory sources (on-prem Active Directory read by a
 // collector agent; Microsoft Entra ID + Intune and Google Workspace read by the server).
-import { Link } from "react-router-dom";
 import { RefreshCw } from "lucide-react";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import {
@@ -753,10 +752,14 @@ const CHOICES: DirectoryChoice[] = [
   },
 ];
 
-function DirectoryChooser({ onPick }: { onPick: (t: DirectoryType) => void }) {
+/** Cloud directories are read by the server over their APIs; Active Directory is read by a collector inside the network. */
+export type DirectoryGroup = "cloud" | "onprem";
+const GROUP_TYPES: Record<DirectoryGroup, DirectoryType[]> = { cloud: ["entra", "google"], onprem: ["ad"] };
+
+function DirectoryChooser({ choices, onPick }: { choices: DirectoryChoice[]; onPick: (t: DirectoryType) => void }) {
   return (
     <div role="list" aria-label="Directory types" className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-      {CHOICES.map((c) => (
+      {choices.map((c) => (
         <button
           key={c.type}
           type="button"
@@ -777,34 +780,38 @@ function DirectoryChooser({ onPick }: { onPick: (t: DirectoryType) => void }) {
 }
 
 // ----------------------------------------------------------------------------- section
-export function DirectoriesSection({ isAdmin }: { isAdmin: boolean }) {
+export function DirectoriesSection({ isAdmin, group }: { isAdmin: boolean; group: DirectoryGroup }) {
   const sources = useApi(directoryApi.sources, [], 10000);
   const [adding, setAdding] = useState<DirectoryType | "choose" | null>(null);
-  const list = sources.data ?? [];
+  const onprem = group === "onprem";
+  const choices = CHOICES.filter((c) => GROUP_TYPES[group].includes(c.type));
+  const list = (sources.data ?? []).filter((s) => GROUP_TYPES[group].includes(s.type));
   const loaded = sources.data !== null;
+  // "#directories" (linked from Discovery) lands on the on-premises Active Directory section.
+  const anchor = onprem ? "directories" : "directories-cloud";
   useEffect(() => {
-    if (loaded && window.location.hash === "#directories") document.getElementById("directories")?.scrollIntoView({ block: "start" });
-  }, [loaded]);
-  const choice = CHOICES.find((c) => c.type === adding);
+    if (loaded && window.location.hash === `#${anchor}`) document.getElementById(anchor)?.scrollIntoView({ block: "start" });
+  }, [loaded, anchor]);
+  const choice = choices.find((c) => c.type === adding);
+  // A group with a single directory type skips the chooser.
+  const startAdding = () => setAdding(choices.length === 1 ? choices[0].type : "choose");
 
   return (
-    <section id="directories" aria-labelledby="directories-title" className="mt-6 scroll-mt-4">
+    <section id={anchor} aria-labelledby={`${anchor}-title`} className="mt-6 scroll-mt-4">
       <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h2 id="directories-title" className="text-lg font-semibold tracking-tight text-ink">
-            Directories
-          </h2>
+          <h3 id={`${anchor}-title`} className="text-base font-semibold tracking-tight text-ink">
+            {onprem ? "Active Directory" : "Cloud directories"}
+          </h3>
           <p className="mt-0.5 text-sm text-ink-2">
-            Read-only discovery of the computers, devices and users in your directories. Find machines without an agent, stale and disabled
-            accounts, non-compliant devices and risky admin accounts.
+            {onprem
+              ? "Read-only discovery of the computers and users in your on-prem domain, read by a collector inside your network."
+              : "Read-only discovery of the users and devices in Microsoft Entra ID and Google Workspace. Find stale and disabled accounts, non-compliant devices and risky admin accounts."}
           </p>
         </div>
         {isAdmin && list.length > 0 && !adding && (
           <div className="flex flex-wrap gap-2">
-            <Button onClick={() => setAdding("choose")}>Add directory</Button>
-            <Link to="/it-assets/discovery?add=network-scan" className="rounded border border-line bg-surface-2 px-3 py-1.5 text-sm font-medium text-ink hover:bg-line">
-              Add network scan
-            </Link>
+            <Button onClick={startAdding}>{onprem ? "Add Active Directory" : "Add directory"}</Button>
           </div>
         )}
       </div>
@@ -815,17 +822,17 @@ export function DirectoriesSection({ isAdmin }: { isAdmin: boolean }) {
             <div className="flex min-w-0 items-start gap-3">
               <DirectoryMark size={32} />
               <div className="min-w-0">
-                <h3 className="text-base font-semibold text-ink">No directory connected</h3>
+                <h3 className="text-base font-semibold text-ink">{onprem ? "No Active Directory connected" : "No cloud directory connected"}</h3>
                 <p className="mt-1 max-w-2xl text-sm text-ink-3">
-                  Connect on-prem Active Directory (read by a collector inside your network), Microsoft Entra ID + Intune or Google Workspace
-                  (read by the server over their APIs). Everything is read-only. Discovery then shows machines without an agent, stale and disabled
-                  accounts, and admins at risk.
+                  {onprem
+                    ? "Connect on-prem Active Directory (read by a collector inside your network). Everything is read-only. Discovery then shows machines without an agent, stale and disabled accounts, and admins at risk."
+                    : "Connect Microsoft Entra ID + Intune or Google Workspace (read by the server over their APIs). Everything is read-only. Discovery then shows non-compliant devices, stale and disabled accounts, and admins at risk."}
                 </p>
               </div>
             </div>
             {isAdmin ? (
-              <Button variant="primary" onClick={() => setAdding("choose")}>
-                Add directory
+              <Button variant="primary" onClick={startAdding}>
+                {onprem ? "Add Active Directory" : "Add directory"}
               </Button>
             ) : (
               <span className="text-xs text-ink-3">An organisation administrator can connect a directory.</span>
@@ -839,14 +846,14 @@ export function DirectoriesSection({ isAdmin }: { isAdmin: boolean }) {
             <div className="flex flex-wrap items-center justify-between gap-2">
               <h3 className="text-base font-semibold text-ink">{choice ? `Add ${choice.title}` : "Add a directory"}</h3>
               {choice ? (
-                <Button onClick={() => setAdding("choose")}>Other directory type</Button>
+                choices.length > 1 && <Button onClick={() => setAdding("choose")}>Other directory type</Button>
               ) : (
                 <Button onClick={() => setAdding(null)}>Cancel</Button>
               )}
             </div>
             {!choice ? (
               <div className="mt-3">
-                <DirectoryChooser onPick={setAdding} />
+                <DirectoryChooser choices={choices} onPick={setAdding} />
               </div>
             ) : choice.type === "ad" ? (
               <div className="mt-3">
