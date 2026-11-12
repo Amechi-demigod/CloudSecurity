@@ -29,7 +29,7 @@ SOFTWARE = [
     {"name": "7-Zip 24.09 (x64)", "version": "24.09", "publisher": "Igor Pavlov", "identifier": MSI,
      "source": "registry_hklm64"},
     {"name": "Zoom Workplace", "version": "6.2", "publisher": "Zoom", "identifier": "ZoomUMX", "source": "registry_user"},
-    {"name": "CNAPP Endpoint Agent", "version": "1.4.0", "publisher": "CloudSecurity CNAPP",
+    {"name": "CNAPP Endpoint Agent", "version": "1.4.0", "publisher": "Sentrigis",
      "identifier": "{11111111-1111-1111-1111-111111111111}", "source": "registry_hklm64"},
 ]
 USB_ALLOWED = {"usb_storage": {"status": "info", "detail": "USB storage allowed",

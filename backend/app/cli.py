@@ -327,7 +327,7 @@ def notify_server_update(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(prog="python -m app.cli", description="CloudSecurity CNAPP admin CLI")
+    p = argparse.ArgumentParser(prog="python -m app.cli", description="Sentrigis admin CLI")
     sub = p.add_subparsers(dest="command", required=True)
     c = sub.add_parser("create-user", help="create a user (prompts for the password)")
     c.add_argument("--email", required=True)

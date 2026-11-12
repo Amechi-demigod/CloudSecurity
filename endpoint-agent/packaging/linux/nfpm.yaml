@@ -11,7 +11,7 @@ version: ${VERSION}
 section: admin
 priority: optional
 maintainer: CNAPP agent maintainers <noreply@users.noreply.github.com>
-vendor: CloudSecurity CNAPP
+vendor: Sentrigis
 homepage: https://github.com/Amechi-demigod/CloudSecurity
 license: Proprietary
 description: |

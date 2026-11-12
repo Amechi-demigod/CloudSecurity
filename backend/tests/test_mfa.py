@@ -86,7 +86,7 @@ def test_enrolment_is_verified_before_enable(client, clock):
     body = r.json()
     secret = body["secret"]
     assert body["qr_svg"].startswith("data:image/svg+xml") and body["digits"] == 6 and body["period"] == 30
-    assert body["otpauth_uri"].startswith("otpauth://totp/") and "issuer=CloudSecurity" in body["otpauth_uri"]
+    assert body["otpauth_uri"].startswith("otpauth://totp/") and "issuer=Sentrigis" in body["otpauth_uri"]
     assert not client.get("/api/auth/mfa").json()["enabled"]  # pending only
 
     wrong = client.post("/api/auth/mfa/totp/enable", json={"code": "000000" if code_at(secret, clock) != "000000"

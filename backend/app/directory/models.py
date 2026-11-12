@@ -19,7 +19,7 @@
 * `directory_findings`: materialised "discovery issues" (not managed, stale,
   disabled but active, ...), recomputed after each sync and periodically.
 * `directory_collectors` / `collector_commands`: dedicated directory
-  collectors (the "Travound Collector" program, cmd/cnapp-collector), a
+  collectors (the "Sentrigis Collector" program, cmd/cnapp-collector), a
   separate identity class from endpoint agents: own enrollment, own
   credential, own command queue restricted to directory work
   (directory/collectors.py). They are never devices, IT assets or endpoints.

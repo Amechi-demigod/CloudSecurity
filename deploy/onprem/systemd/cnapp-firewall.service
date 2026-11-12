@@ -2,7 +2,7 @@
 # to CNAPP_ALLOWED_CIDRS. Docker's published ports bypass UFW's INPUT rules, so
 # the restriction lives in the DOCKER-USER chain, created before dockerd starts.
 [Unit]
-Description=CloudSecurity CNAPP firewall rules for Docker-published ports
+Description=Sentrigis firewall rules for Docker-published ports
 Before=docker.service cnapp.service
 After=ufw.service
 Wants=network-pre.target

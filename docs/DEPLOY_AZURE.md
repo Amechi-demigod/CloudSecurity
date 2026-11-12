@@ -1,4 +1,4 @@
-# Deploying CloudSecurity CNAPP to Azure
+# Deploying Sentrigis to Azure
 
 This guide takes the app from this repository to a production-style deployment on **Azure Container Apps**, with **Azure Database for PostgreSQL Flexible Server**, **Key Vault** and **managed identities**, deployed by GitHub Actions over **OIDC** (no Azure passwords or client secrets stored anywhere).
 

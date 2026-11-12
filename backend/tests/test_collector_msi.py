@@ -40,7 +40,7 @@ def make_collector_msi(path: Path) -> None:
                     f"INSERT INTO `Property` (`Property`, `Value`) VALUES ('UpgradeCode', '{UPGRADE_CODE}')",
                     f"INSERT INTO `Property` (`Property`, `Value`) VALUES ('CNAPP_PRESET', '{msipatch.placeholder()}')"],
                    check=True)
-    subprocess.run(["msibuild", str(path), "-s", "CNAPP Collector", "CloudSecurity CNAPP", "x64;1033",
+    subprocess.run(["msibuild", str(path), "-s", "CNAPP Collector", "Sentrigis", "x64;1033",
                     "{99999999-2222-3333-4444-555555555555}"], check=True)
 
 
@@ -77,7 +77,7 @@ def msi_bundle(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_INSTALLERS_DIR", str(d))
     monkeypatch.setenv("PUBLIC_BASE_URL", "https://cnapp.example.com")
     monkeypatch.setenv("AGENT_CA_CERT_B64", base64.b64encode(ca.encode()).decode())
-    monkeypatch.setenv("BRAND_NAME", "Travound")
+    monkeypatch.setenv("BRAND_NAME", "Sentrigis")
     from app import config
 
     config.reload_settings()
@@ -88,13 +88,13 @@ def msi_bundle(tmp_path, monkeypatch):
 
 def test_installer_msi(admin, msi_bundle, tmp_path):  # noqa: F811
     info = admin.get("/api/collectors/installer/info").json()
-    assert info["msi"] == {"available": True, "version": "1.5.0", "filename": "Travound-Collector.msi",
+    assert info["msi"] == {"available": True, "version": "1.5.0", "filename": "Sentrigis-Collector.msi",
                            "arch": "amd64"}
-    assert info["ca_configured"] is True and info["service_display_name"] == "Travound Collector"
+    assert info["ca_configured"] is True and info["service_display_name"] == "Sentrigis Collector"
     r = admin.post("/api/collectors/installer", json={"name": "Lagos", "gmsa": "CORP\\svc-collector$"})
     assert r.status_code == 200, r.text
     assert r.headers["content-type"] == "application/x-msi"
-    assert r.headers["content-disposition"] == 'attachment; filename="Travound-Collector.msi"'
+    assert r.headers["content-disposition"] == 'attachment; filename="Sentrigis-Collector.msi"'
     assert r.headers["x-content-sha256"] == hashlib.sha256(r.content).hexdigest()
     assert r.headers["x-collector-version"] == "1.5.0" and r.headers["cache-control"] == "no-store"
     first = tmp_path / "first.msi"
@@ -102,7 +102,7 @@ def test_installer_msi(admin, msi_bundle, tmp_path):  # noqa: F811
     preset = msi_preset(first)
     assert preset["kind"] == "collector" and preset["token"].startswith("cnct_")
     assert preset["server_url"] == "https://cnapp.example.com" and preset["ca_pem"].startswith("-----BEGIN")
-    assert preset["run_as"] == "CORP\\svc-collector$" and preset["service_display_name"] == "Travound Collector"
+    assert preset["run_as"] == "CORP\\svc-collector$" and preset["service_display_name"] == "Sentrigis Collector"
     # Read back with an independent implementation (msitools): the preset and a new ProductCode
     # (so a second download installs over the first as an upgrade); the rest is as built.
     props = msi_props(first)

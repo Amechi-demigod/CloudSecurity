@@ -268,7 +268,7 @@ def site(a: argparse.Namespace) -> None:
         return
     # 1. The site, with strict headers and the console URL of this install.
     status, hdrs, _, content = web.req("GET", "/")
-    check(status == 200 and b"Travound Security" in content and b"Request a demo" in content,
+    check(status == 200 and b"Sentrigis" in content and b"Request a demo" in content,
           f"website served on https://{a.site}/ (HTTP {status})")
     for name, parts in SITE_HEADERS.items():
         value = hdrs.get(name, "")

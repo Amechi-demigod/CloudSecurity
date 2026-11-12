@@ -1,6 +1,6 @@
 # Nightly backup (enabled by `cnapp-ctl install`).
 [Unit]
-Description=Nightly CloudSecurity CNAPP database backup
+Description=Nightly Sentrigis database backup
 
 [Timer]
 OnCalendar=*-*-* 02:30:00

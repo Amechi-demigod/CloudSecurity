@@ -51,7 +51,7 @@ def binary_name(arch: str) -> str:
 
 def download_name(arch: str, fmt: str = "zip") -> str:
     if fmt == "msi":
-        # e.g. Travound-Collector.msi (what the console's install instructions show)
+        # e.g. Sentrigis-Collector.msi (what the console's install instructions show)
         brand = re.sub(r"[^A-Za-z0-9]+", "-", config.settings.brand_name).strip("-") or "CNAPP"
         return f"{brand}-Collector.msi"
     return f"collector-setup-windows-{arch}.zip"

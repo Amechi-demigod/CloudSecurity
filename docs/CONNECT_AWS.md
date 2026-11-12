@@ -99,7 +99,7 @@ organization with a service-managed **StackSet**):
 
 ```yaml
 AWSTemplateFormatVersion: "2010-09-09"
-Description: Read-only role for the CloudSecurity CNAPP scanner
+Description: Read-only role for the Sentrigis scanner
 Parameters:
   ScannerPrincipalArn:
     Type: String

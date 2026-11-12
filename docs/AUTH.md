@@ -8,7 +8,7 @@ from Phase 2:
 * **Sign in with Microsoft**: single sign-on with Microsoft Entra ID (OpenID
   Connect, authorization code flow with PKCE).
 
-Both end in the same thing: a normal CloudSecurity session (the same httpOnly
+Both end in the same thing: a normal Sentrigis session (the same httpOnly
 cookie, CSRF token, idle timeout and RBAC as a password login).
 
 - [How sign-in works](#how-sign-in-works)
@@ -285,7 +285,7 @@ sign in with Microsoft):
 |---|---|---|
 | `MFA_ENCRYPTION_KEY` | dev key (warning) | 32+ chars; comma-separated for rotation. **Required in production** |
 | `MFA_REQUIRED_ROLES` | | e.g. `admin,analyst` |
-| `MFA_ISSUER` | `<BRAND_NAME> CNAPP` (`CloudSecurity CNAPP`) | Name shown in authenticator apps. Changing it only affects new enrolments |
+| `MFA_ISSUER` | `<BRAND_NAME>` (`Sentrigis`) | Name shown in authenticator apps. Changing it only affects new enrolments |
 | `MFA_CHALLENGE_TTL_SECONDS` | `300` | Lifetime of the password → code step |
 | `MFA_CHALLENGE_MAX_ATTEMPTS` | `5` | Wrong codes per challenge |
 | `ENTRA_TENANT_ID` | | Directory (tenant) id. Multi-tenant aliases (`common`, `organizations`) are rejected |
@@ -351,7 +351,7 @@ Invalid values (unknown roles in `MFA_REQUIRED_ROLES` / `ENTRA_ROLE_MAP` /
 * TOTP only (no WebAuthn / passkeys yet); one authenticator per user.
 * Single tenant: guest users from other tenants can sign in only through your
   tenant (their `tid` is your tenant), and are matched by object id / UPN.
-* No front-channel or back-channel logout: signing out of CloudSecurity does not
+* No front-channel or back-channel logout: signing out of Sentrigis does not
   sign you out of Microsoft, and disabling a user in Entra ends their access at
   the next sign-in (existing sessions last up to `SESSION_IDLE_MINUTES` /
   `SESSION_MAX_AGE_HOURS`; deactivate the user here to end them immediately).

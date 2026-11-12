@@ -1,4 +1,4 @@
-# CloudSecurity CNAPP - on-prem production stack (single Ubuntu 24.04 server).
+# Sentrigis - on-prem production stack (single Ubuntu 24.04 server).
 #
 # Managed by `cnapp-ctl` (deploy/onprem/cnapp-ctl); do not run `docker compose`
 # against it by hand unless you pass the same env files:

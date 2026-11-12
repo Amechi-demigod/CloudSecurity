@@ -270,7 +270,7 @@ platform-level settings:
 | `PLATFORM_SMTP_HOST` / `PLATFORM_SMTP_PORT` | / `587` | Mail server for transactional email |
 | `PLATFORM_SMTP_SECURITY` | `starttls` | `starttls` or `tls` (implicit, port 465) |
 | `PLATFORM_SMTP_USERNAME` / `PLATFORM_SMTP_PASSWORD` | | Optional authentication |
-| `PLATFORM_SMTP_FROM` | | Sender, e.g. `CloudSecurity <no-reply@example.com>` (required with a host) |
+| `PLATFORM_SMTP_FROM` | | Sender, e.g. `Sentrigis <no-reply@example.com>` (required with a host) |
 | `PLATFORM_ACS_CONNECTION_STRING` / `PLATFORM_ACS_SENDER` | | Alternative: Azure Communication Services Email |
 | `PUBLIC_BASE_URL` | | Base of the invitation links (falls back to the address the console was opened with) |
 | `INVITE_TTL_HOURS` | `72` | Invitation lifetime (1 to 720) |

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-time setup for deploying CloudSecurity CNAPP to Azure from GitHub Actions.
+# One-time setup for deploying Sentrigis to Azure from GitHub Actions.
 #
 # Run it yourself, once, signed in with your own accounts:
 #   az login                    # an account that can create Entra apps and assign roles (e.g. Owner)

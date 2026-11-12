@@ -229,7 +229,7 @@ def post(url: str, body: bytes, headers: dict[str, str], *, kind: str) -> HttpRe
         try:
             conn.connect()
             conn.sock.settimeout(s.read_timeout)
-            hdrs = {"User-Agent": "CloudSecurity-CNAPP-Notifier/1.0", "Content-Length": str(len(body)), **headers}
+            hdrs = {"User-Agent": "Sentrigis-Notifier/1.0", "Content-Length": str(len(body)), **headers}
             conn.request("POST", t.path, body=body, headers=hdrs)
             resp = conn.getresponse()
             data = resp.read(s.max_response_bytes + 1)

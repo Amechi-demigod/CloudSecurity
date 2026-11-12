@@ -2,7 +2,7 @@
 #   cnapp-ctl auto-update enable [--time HH:MM] | disable | status
 # --time writes cnapp-update.timer.d/schedule.conf (this file stays as shipped).
 [Unit]
-Description=CloudSecurity CNAPP automatic update (nightly)
+Description=Sentrigis automatic update (nightly)
 
 [Timer]
 OnCalendar=*-*-* 03:00:00

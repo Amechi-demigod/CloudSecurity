@@ -1,5 +1,5 @@
 [Unit]
-Description=CloudSecurity CNAPP database backup
+Description=Sentrigis database backup
 Requires=docker.service
 After=docker.service cnapp.service
 

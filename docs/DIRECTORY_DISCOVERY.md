@@ -178,10 +178,10 @@ plaintext token only exists in the file.
 * **Silent** (elevated):
 
 ```powershell
-msiexec /i Travound-Collector.msi /qn
-msiexec /i Travound-Collector.msi /qn GMSA=CORP\svc-collector$          # run as a gMSA
-msiexec /i Travound-Collector.msi /qn ALLOW_DOMAIN_CONTROLLER=1         # on a DC (not recommended)
-msiexec /i Travound-Collector.msi /qn /l*v collector-install.log        # with a Windows Installer log
+msiexec /i Sentrigis-Collector.msi /qn
+msiexec /i Sentrigis-Collector.msi /qn GMSA=CORP\svc-collector$          # run as a gMSA
+msiexec /i Sentrigis-Collector.msi /qn ALLOW_DOMAIN_CONTROLLER=1         # on a DC (not recommended)
+msiexec /i Sentrigis-Collector.msi /qn /l*v collector-install.log        # with a Windows Installer log
 ```
 
 | Property | Values | |
@@ -231,14 +231,14 @@ collector computers can read (`\\corp.example.com\SYSVOL\…` or a DFS share),
 then *Computer Configuration → Policies → Software Settings → Software
 installation → New → Package → Assigned*. It installs at the next boot as
 SYSTEM, silently, with the preset; for a gMSA, create a transform or pass
-`GMSA` via a startup script instead (`msiexec /i \\share\Travound-Collector.msi
+`GMSA` via a startup script instead (`msiexec /i \\share\Sentrigis-Collector.msi
 /qn GMSA=CORP\svc-collector$`). The token is single-use: one download per
 collector, or create a multi-use collector token and deploy the **generic MSI**
 with `CNAPP_SERVER` / `CNAPP_TOKEN` (`msiexec` startup script).
 
 **Intune (Win32 app).** Wrap the MSI with the Microsoft Win32 Content Prep Tool
-(`IntuneWinAppUtil.exe -c . -s Travound-Collector.msi -o out`), add it as a
-*Windows app (Win32)*: install command `msiexec /i Travound-Collector.msi /qn`
+(`IntuneWinAppUtil.exe -c . -s Sentrigis-Collector.msi -o out`), add it as a
+*Windows app (Win32)*: install command `msiexec /i Sentrigis-Collector.msi /qn`
 (append `GMSA=…` if needed), uninstall command `msiexec /x {ProductCode} /qn`
 (shown by Intune from the MSI), install behaviour **System**, detection rule
 **MSI** (product code, filled in automatically), assign to the collector
@@ -287,7 +287,7 @@ domain, gMSA name and collector computers filled in:
    svc-collector` (must print `True`; a computer just added to the principals
    reboots or purges its tickets first).
 5. Install (or re-install over an installed collector) with
-   `msiexec /i Travound-Collector.msi /qn GMSA=CORP\svc-collector$`, or download
+   `msiexec /i Sentrigis-Collector.msi /qn GMSA=CORP\svc-collector$`, or download
    the MSI with the gMSA filled in; zip: `-Gmsa 'CORP\svc-collector$'`. The
    installer grants the gMSA **Log on as a service**, full control of its state
    folder (`%ProgramData%\CNAPP Collector`), modify on its program folder (signed

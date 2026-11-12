@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# cnapp-ctl - install and operate the CloudSecurity CNAPP on one Ubuntu 24.04 server
+# cnapp-ctl - install and operate Sentrigis on one Ubuntu 24.04 server
 # (Docker Compose, internal TLS, pull-based updates from ghcr.io, backups).
 #
 #   sudo ./cnapp-ctl install --hostname cnapp.corp.local --ip 10.0.0.20 --admin-email you@corp.com
@@ -307,7 +307,7 @@ EOF
   # An IP address in the CN would be checked against the CA's DNS name constraints
   # (and is ignored by clients anyway): the SAN carries it.
   local cn=$host; is_ip "$host" && cn="CNAPP server"
-  openssl req -new -key "$tmp/server.key" -subj "/CN=${cn}/O=CloudSecurity CNAPP" -out "$tmp/server.csr"
+  openssl req -new -key "$tmp/server.key" -subj "/CN=${cn}/O=Sentrigis" -out "$tmp/server.csr"
   openssl x509 -req -in "$tmp/server.csr" -CA "$CA_DIR/ca.crt" -CAkey "$CA_DIR/ca.key" \
     -CAserial "$CA_DIR/ca.srl" -CAcreateserial -days "$days" -sha256 -extfile "$tmp/ext.cnf" \
     -out "$tmp/server.crt" 2>/dev/null
@@ -375,8 +375,8 @@ distinguished_name = dn
 x509_extensions = v3_ca
 prompt = no
 [dn]
-CN = CloudSecurity CNAPP Internal Root CA (${host})
-O = CloudSecurity CNAPP
+CN = Sentrigis Internal Root CA (${host})
+O = Sentrigis
 [v3_ca]
 basicConstraints = critical, CA:TRUE, pathlen:0
 keyUsage = critical, keyCertSign, cRLSign
@@ -1405,7 +1405,7 @@ write_default_config() { # write_default_config host admin_email tag registry al
   [[ $mfa == "-" ]] && mfa="admin"
   if (( DRY_RUN )); then echo "[dry-run] write $CONF"; return 0; fi
   cat >"$CONF" <<EOF
-# CloudSecurity CNAPP on-prem settings (mode 0600, root only).
+# Sentrigis on-prem settings (mode 0600, root only).
 # Edit, then apply with: sudo cnapp-ctl restart
 # Values containing '\$' must be wrapped in single quotes.
 # Reference for every application setting: .env.example in the repository.
@@ -1755,7 +1755,7 @@ cmd_install() {
   (( no_admin )) || bootstrap_admin "$(conf_get ADMIN_EMAIL)" "$pw_file"
 
   cat <<EOF
-${C_G}CloudSecurity CNAPP is running at $(public_url)${C_0}
+${C_G}Sentrigis is running at $(public_url)${C_0}
   Image tag:  $(conf_get IMAGE_TAG)    Config: $CONF    Backups: $BACKUP_DIR
   Next steps: docs/DEPLOY_ONPREM.md (or $APP_DIR/QUICKSTART.md)
     1. DNS: $(conf_get CNAPP_HOSTNAME) -> $(conf_get CNAPP_TLS_IPS)
@@ -2310,7 +2310,7 @@ cmd_auto_update() {
 # ============================================================================ day-2 commands
 cmd_status() {
   require_installed
-  echo "${C_B}CloudSecurity CNAPP${C_0}  $(public_url)   cnapp-ctl $VERSION"
+  echo "${C_B}Sentrigis${C_0}  $(public_url)   cnapp-ctl $VERSION"
   echo "Image tag: $(conf_get IMAGE_TAG)   commit: $(image_label "$(image_ref backend)" org.opencontainers.image.revision)"
   echo "Schema:    $(alembic_revision)"
   echo
@@ -2726,7 +2726,7 @@ cmd_uninstall() {
 
 usage() {
   cat <<EOF
-cnapp-ctl $VERSION - CloudSecurity CNAPP on-prem administration (Ubuntu 24.04, Docker Compose)
+cnapp-ctl $VERSION - Sentrigis on-prem administration (Ubuntu 24.04, Docker Compose)
 
 Setup
   install --hostname NAME --admin-email EMAIL [options]

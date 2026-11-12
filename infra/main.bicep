@@ -1,4 +1,4 @@
-// CloudSecurity CNAPP on Azure - resource-group scoped deployment.
+// Sentrigis on Azure - resource-group scoped deployment.
 //
 //   Internet --HTTPS--> Container App "web" (nginx + UI) --/api--> Container App "api" (internal)
 //                                                                      |-- PostgreSQL Flexible Server (private, TLS)

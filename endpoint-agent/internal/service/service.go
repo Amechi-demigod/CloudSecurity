@@ -23,7 +23,7 @@ var (
 )
 
 // UseCollector switches the names to the directory collector's service
-// ("CNAPPCollector", displayed as displayName, e.g. "Travound Collector").
+// ("CNAPPCollector", displayed as displayName, e.g. "Sentrigis Collector").
 func UseCollector(displayName string) {
 	WindowsServiceName = "CNAPPCollector"
 	if displayName == "" {
