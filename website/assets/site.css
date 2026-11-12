@@ -228,6 +228,7 @@ footer{border-top:1px solid var(--line);padding:56px 0 32px;color:var(--ink3);fo
   .navcta .btn{justify-content:center}
   .layer{grid-template-columns:1fr!important}
 }
+/* Phones: a readable crop of the dashboard's top-left (risk score, first tiles) instead of the whole thing shrunk. */
 @media (max-width:520px){ .wrap{padding:0 16px} .shot{height:300px;overflow:hidden} .shot img{width:200%;max-width:none} }
 @media (prefers-reduced-motion:reduce){ html{scroll-behavior:auto} .btn,.card{transition:none} .btn:hover,.card:hover{transform:none} }
 
