@@ -1,15 +1,18 @@
 import { Play } from "lucide-react";
 import { useState, type ReactNode } from "react";
+import { Link } from "react-router-dom";
 import { api } from "../api";
 import type { Connector, ConnectorSchedule, ScanRun, ScanSchedule } from "../api";
 import { useAuth } from "../auth/context";
 import { ConnectCloud, ConnectionForm, ProviderMark } from "../components/cloudConnect";
 import { CollectorsSection } from "../components/collectors";
 import { DirectoriesSection } from "../components/directories";
+import { directoryApi, collectorApi } from "../directoryApi";
 import { Button, Card, ErrorNote, PageHeader, SeverityBadge, Table, Tag } from "../components/ui";
 import { CLOUD_NAME, CLOUD_PROVIDERS, CLOUD_ROLE, CLOUD_SCOPE } from "../lib/cloudSetup";
 import { fmtAgo, fmtHours, fmtTime, fmtUntil } from "../lib/format";
 import { useApi } from "../lib/useApi";
+import { networkApi } from "../networkApi";
 import { orgApi, type ConnectorConfig, type Provider } from "../orgApi";
 
 const isCloud = (name: string): name is Provider => (CLOUD_PROVIDERS as string[]).includes(name);
@@ -303,6 +306,64 @@ function ScheduleSettings({ schedule, onSaved }: { schedule: ScanSchedule; onSav
   );
 }
 
+/** A group heading (Cloud / On-premises) with a one-line status. */
+function GroupHeading({ id, title, status }: { id: string; title: string; status?: string }) {
+  return (
+    <div id={id} className="mb-3 mt-8 scroll-mt-4 border-b border-line pb-2">
+      <h2 className="text-xl font-semibold tracking-tight text-ink">{title}</h2>
+      {status && <p className="mt-0.5 text-sm text-ink-3">{status}</p>}
+    </div>
+  );
+}
+
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+/** Compact summary of the configured network scans, linking to the full Network scans page. */
+function NetworkScansCard({ isAdmin }: { isAdmin: boolean }) {
+  const scans = useApi(networkApi.scans, [], 30000);
+  const list = scans.data ?? [];
+  const enabled = list.filter((s) => s.enabled);
+  const addresses = enabled.reduce((n, s) => n + s.address_count, 0);
+  const lastRun = list.filter((s) => s.last_run_at).sort((a, b) => (b.last_run_at ?? "").localeCompare(a.last_run_at ?? ""))[0];
+  return (
+    <Card
+      title={<span id="network-scans" className="scroll-mt-20">Network scans</span>}
+      actions={
+        <Link to="/network-scans" className="text-sm font-medium text-accent hover:underline">
+          Open network scans →
+        </Link>
+      }
+    >
+      <ErrorNote error={scans.error} />
+      {scans.data && list.length === 0 ? (
+        <p className="text-sm text-ink-3">
+          No network scans yet. A collector inside your network can sweep address ranges and read switches, routers and printers over SNMP.
+          {isAdmin && (
+            <>
+              {" "}
+              <Link to="/it-assets/discovery?add=network-scan" className="font-medium text-accent hover:underline">
+                Add network scan
+              </Link>
+            </>
+          )}
+        </p>
+      ) : (
+        scans.data && (
+          <div className="grid grid-cols-2 gap-y-3 sm:grid-cols-3">
+            <StatCell label="Scans" value={list.length} sub={`${enabled.length} enabled`} />
+            <StatCell label="Address ranges" value={addresses.toLocaleString()} sub="addresses in enabled scans" />
+            <StatCell
+              label="Last run"
+              value={lastRun ? fmtAgo(lastRun.last_run_at as string) : "Not yet"}
+              sub={lastRun ? `${lastRun.name}${lastRun.last_status ? ` · ${lastRun.last_status}` : ""}` : undefined}
+              valueClass={lastRun ? "text-ink" : "text-ink-3"}
+            />
+          </div>
+        )
+      )}
+    </Card>
+  );
+}
 
 export default function Connectors() {
   const auth = useAuth();
@@ -316,6 +377,8 @@ export default function Connectors() {
   const detection = useApi(api.detectionRules, []);
   const [scanError, setScanError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const sources = useApi(directoryApi.sources, [], 30000);
+  const collectors = useApi(collectorApi.list, [], 30000);
   const [connecting, setConnecting] = useState<Provider | null>(null);
 
   const clouds = (connectors.data ?? []).filter((c) => isCloud(c.name));
@@ -352,6 +415,11 @@ export default function Connectors() {
     reloadAll();
   }
 
+  const cloudDirs = (sources.data ?? []).filter((s) => s.type !== "ad").length;
+  const adSources = (sources.data ?? []).filter((s) => s.type === "ad").length;
+  const cloudStatus = [plural(connected.length, "cloud account"), plural(cloudDirs, "cloud directory", "cloud directories")].join(" · ");
+  const onpremStatus = [plural(adSources, "Active Directory source"), plural(collectors.data?.length ?? 0, "collector")].join(" · ");
+
   const loaded = connectors.data !== null;
   const before = loaded && connected.length === 0;
 
@@ -367,6 +435,8 @@ export default function Connectors() {
           </button>
         </div>
       )}
+
+      <GroupHeading id="cloud" title="Cloud" status={loaded ? cloudStatus : undefined} />
 
       {before &&
         (isAdmin ? (
@@ -453,9 +523,15 @@ export default function Connectors() {
         </div>
       )}
 
-      <DirectoriesSection isAdmin={isAdmin} />
+      <DirectoriesSection isAdmin={isAdmin} group="cloud" />
+
+      <GroupHeading id="on-premises" title="On-premises" status={sources.data && collectors.data ? onpremStatus : undefined} />
+      <DirectoriesSection isAdmin={isAdmin} group="onprem" />
       <div className="mt-4">
         <CollectorsSection isAdmin={isAdmin} />
+      </div>
+      <div className="mt-4">
+        <NetworkScansCard isAdmin={isAdmin} />
       </div>
 
       <Card title="Scan history" className="mt-4">
