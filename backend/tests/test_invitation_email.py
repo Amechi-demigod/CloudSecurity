@@ -20,7 +20,7 @@ ORG_ADMIN = Inviter("jane@example.com", "Jane Doe")
 
 @pytest.fixture(autouse=True)
 def _brand(monkeypatch):
-    monkeypatch.setenv("BRAND_NAME", "Travound Security")
+    monkeypatch.setenv("BRAND_NAME", "Sentrigis")
     config.reload_settings()
     yield
     monkeypatch.undo()
@@ -29,8 +29,8 @@ def _brand(monkeypatch):
 
 def test_platform_variant_names_only_the_brand():
     subject, text, body_html = render(org_name="Acme Ltd", role="admin", link=LINK, ttl_hours=72)
-    assert subject == "You've been invited to join Acme Ltd on Travound Security"
-    assert "Travound Security invited you as admin to join Acme Ltd." in text
+    assert subject == "You've been invited to join Acme Ltd on Sentrigis"
+    assert "Sentrigis invited you as admin to join Acme Ltd." in text
     for part in (subject, text, body_html):
         assert "[CNAPP]" not in part and "jane" not in part.lower() and "@" not in part.replace(LINK, "")
     assert LINK in text and f'href="{LINK}"' in body_html and ">Accept invitation</a>" in body_html
@@ -44,8 +44,8 @@ def test_platform_variant_names_only_the_brand():
 def test_organisation_variant_names_the_inviter():
     subject, text, body_html = render(org_name="Acme Ltd", role="analyst", link=LINK, ttl_hours=1,
                                       inviter=ORG_ADMIN)
-    assert subject == "You have been invited to join Acme Ltd on Travound Security"
-    assert "Jane Doe (jane@example.com) invited you as analyst to join Acme Ltd on Travound Security." in text
+    assert subject == "You have been invited to join Acme Ltd on Sentrigis"
+    assert "Jane Doe (jane@example.com) invited you as analyst to join Acme Ltd on Sentrigis." in text
     assert "Jane Doe (jane@example.com) invited you as <strong>analyst</strong>" in body_html
     assert "expires in 1 hour." in text
     # No display name on the account: the address alone.
@@ -77,7 +77,7 @@ def _mail_env(monkeypatch, **env):
 
 def test_smtp_delivery_is_multipart_alternative(monkeypatch):
     _mail_env(monkeypatch, PLATFORM_SMTP_HOST="smtp.example.com",
-              PLATFORM_SMTP_FROM="Travound Security <no-reply@example.com>")
+              PLATFORM_SMTP_FROM="Sentrigis <no-reply@example.com>")
     monkeypatch.setattr(ssrf.socket, "getaddrinfo", lambda host, port, *a, **kw: [
         (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))])
     sent = []

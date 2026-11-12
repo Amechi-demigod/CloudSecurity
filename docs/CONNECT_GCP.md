@@ -51,7 +51,7 @@ Pick a project to own the service account (e.g. your security / tooling project)
 ```bash
 SEC_PROJECT=acme-security
 gcloud iam service-accounts create cnapp-scanner --project "$SEC_PROJECT" \
-  --display-name "CloudSecurity CNAPP read-only scanner"
+  --display-name "Sentrigis read-only scanner"
 SA="cnapp-scanner@${SEC_PROJECT}.iam.gserviceaccount.com"
 
 # APIs the scanner calls on behalf of its own project (quota / billing project)

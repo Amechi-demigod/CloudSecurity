@@ -50,7 +50,7 @@ def make_test_msi(path: Path) -> None:
                     "INSERT INTO `Property` (`Property`, `Value`) VALUES ('ProductName', 'CNAPP Endpoint Agent')",
                     f"INSERT INTO `Property` (`Property`, `Value`) VALUES ('CNAPP_PRESET', '{msipatch.placeholder()}')"],
                    check=True)
-    subprocess.run(["msibuild", str(path), "-s", "CNAPP Endpoint Agent", "CloudSecurity CNAPP", "x64;1033",
+    subprocess.run(["msibuild", str(path), "-s", "CNAPP Endpoint Agent", "Sentrigis", "x64;1033",
                     "{11111111-2222-3333-4444-555555555555}"], check=True)
 
 

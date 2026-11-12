@@ -14,7 +14,7 @@
 #   CNAPP_PUBLIC_SENSOR_INGEST  true: POST /api/runtime/events is reachable from anywhere too
 #   RELAY_URL              the remote-session relay, agent listener (WebSockets; http://relay:8001)
 #   RELAY_VIEWER_URL       its viewer listener (used by onprem.conf.template; http://relay:8002)
-#   SITE_HOSTNAMES         optional public website names, e.g. "travound.com www.travound.com"
+#   SITE_HOSTNAMES         optional public website names, e.g. "sentrigis.com www.sentrigis.com"
 #                          (cnapp-ctl site enable): the static site baked into the image
 #                          (/usr/share/nginx/site) plus POST /api/contact, for any client; the
 #                          first name is canonical (the others redirect to it);
@@ -304,10 +304,10 @@ if [ -n "$site_names" ]; then
   if [ -d "$log_dir" ] && [ -w "$log_dir" ]; then
     edge_log="access_log $log_dir/edge-access.log cnapp_edge_site if=\$cnapp_log_external;"
   fi
-  # The page links to https://console.travound.com; point it at this install's console.
+  # The page links to https://console.sentrigis.com; point it at this install's console.
   sub=""
-  if [ "$console_url" != "https://console.travound.com" ]; then
-    sub="sub_filter 'https://console.travound.com' '$console_url';
+  if [ "$console_url" != "https://console.sentrigis.com" ]; then
+    sub="sub_filter 'https://console.sentrigis.com' '$console_url';
   sub_filter_once off;"
   fi
   tls_block="ssl_certificate     /etc/nginx/tls/$cert.crt;

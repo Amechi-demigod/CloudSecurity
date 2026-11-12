@@ -28,14 +28,14 @@
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Package Name="CNAPP Endpoint Agent"
-           Manufacturer="CloudSecurity CNAPP"
+           Manufacturer="Sentrigis"
            Version="$(var.Version)"
            UpgradeCode="1BF4A817-9E25-4EDB-98AF-1ACC342DFF75"
            Language="1033"
            Scope="perMachine"
            Compressed="yes"
            InstallerVersion="500">
-    <SummaryInformation Description="CNAPP Endpoint Agent" Manufacturer="CloudSecurity CNAPP" />
+    <SummaryInformation Description="CNAPP Endpoint Agent" Manufacturer="Sentrigis" />
 
     <MajorUpgrade AllowSameVersionUpgrades="yes"
                   DowngradeErrorMessage="A newer version of [ProductName] is already installed." />

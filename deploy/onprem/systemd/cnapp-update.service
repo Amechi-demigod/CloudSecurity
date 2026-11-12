@@ -3,7 +3,7 @@
 # backup, health check, automatic rollback; failures raise a notification.
 # Logs: journalctl -u cnapp-update and /var/log/cnapp/auto-update.log
 [Unit]
-Description=CloudSecurity CNAPP automatic update (pull, health check, roll back on failure)
+Description=Sentrigis automatic update (pull, health check, roll back on failure)
 Requires=docker.service
 After=docker.service cnapp.service network-online.target
 Wants=network-online.target

@@ -102,7 +102,7 @@ def boto_config() -> Any:
     from botocore.config import Config
 
     return Config(retries={"mode": "adaptive", "max_attempts": 10}, connect_timeout=10, read_timeout=60,
-                  user_agent_extra="cloudsecurity-cnapp-readonly")
+                  user_agent_extra="sentrigis-readonly")
 
 
 AUTH_MODES = ("auto", "access_key", "default")
@@ -332,7 +332,7 @@ class AwsConnector(Connector):
         from botocore.config import Config
 
         cfg = Config(retries={"mode": "standard", "max_attempts": 2}, connect_timeout=5, read_timeout=10,
-                     user_agent_extra="cloudsecurity-cnapp-readonly")
+                     user_agent_extra="sentrigis-readonly")
         home = self.settings.aws_home_region
         try:
             base = self._session_factory() if self._session_factory else build_base_session(self.settings)

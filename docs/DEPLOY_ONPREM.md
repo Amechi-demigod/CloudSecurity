@@ -1,6 +1,6 @@
 # Deploy on-prem (Ubuntu Server 24.04, Docker Compose)
 
-This guide installs CloudSecurity CNAPP on **one Ubuntu Server 24.04 LTS machine** on your internal network or VPN. It is
+This guide installs Sentrigis on **one Ubuntu Server 24.04 LTS machine** on your internal network or VPN. It is
 an additional deployment target: the Azure deployment (`infra/`, `docs/DEPLOY_AZURE.md`) is unchanged.
 
 Everything is driven by one script, **`cnapp-ctl`** (`deploy/onprem/cnapp-ctl`, installed to `/usr/local/bin`). Short
@@ -510,8 +510,8 @@ generated at container start by `deploy/onprem/nginx/cnapp-access.sh`; the edge 
 ### Public website (optional)
 
 The frontend image also ships the public marketing website (repo `website/`: one static page, self-hosted font, no
-third-party requests). `cnapp-ctl site enable` serves it on its own hostnames (e.g. `travound.com` and
-`www.travound.com`) from the same nginx, on the same ports 80/443, **to any client**:
+third-party requests). `cnapp-ctl site enable` serves it on its own hostnames (e.g. `sentrigis.com` and
+`www.sentrigis.com`) from the same nginx, on the same ports 80/443, **to any client**:
 
 * The first name is canonical: other names answer `301` to `https://<first name><path>`; `http://` on every website
   name answers `301` to `https://<first name><path>` as well.
@@ -540,19 +540,19 @@ third-party requests). `cnapp-ctl site enable` serves it on its own hostnames (e
   `DOCKER-USER`); `site disable` restores the previous rules. A cloud security group / perimeter firewall must allow
   80 and 443 from anywhere as well.
 
-#### Step by step (example: travound.com + www.travound.com)
+#### Step by step (example: sentrigis.com + www.sentrigis.com)
 
-1. **DNS**: `A` records for `travound.com` and `www.travound.com` -> the server's public IP (same IP as the console).
-   Check: `dig +short travound.com www.travound.com`.
+1. **DNS**: `A` records for `sentrigis.com` and `www.sentrigis.com` -> the server's public IP (same IP as the console).
+   Check: `dig +short sentrigis.com www.sentrigis.com`.
 2. **Certificate** (Let's Encrypt, certbot standalone; certbot needs port 80, so the frontend is stopped for a few
    seconds by the hooks, exactly like the renewal of the console certificate):
 
    ```bash
-   sudo certbot certonly --standalone -d travound.com -d www.travound.com \
+   sudo certbot certonly --standalone -d sentrigis.com -d www.sentrigis.com \
      --pre-hook  "docker stop cnapp-frontend-1" \
      --post-hook "docker start cnapp-frontend-1"
    sudo cnapp-ctl tls import --for site \
-     --cert /etc/letsencrypt/live/travound.com/fullchain.pem --key /etc/letsencrypt/live/travound.com/privkey.pem
+     --cert /etc/letsencrypt/live/sentrigis.com/fullchain.pem --key /etc/letsencrypt/live/sentrigis.com/privkey.pem
    ```
 
    The site certificate is stored as `/opt/cnapp/tls/site.crt|key` and served by SNI for the website names only; the
@@ -563,31 +563,31 @@ third-party requests). `cnapp-ctl site enable` serves it on its own hostnames (e
 
    ```bash
    #!/bin/sh
-   # certbot sets RENEWED_LINEAGE (e.g. /etc/letsencrypt/live/travound.com) for each renewed certificate.
+   # certbot sets RENEWED_LINEAGE (e.g. /etc/letsencrypt/live/sentrigis.com) for each renewed certificate.
    set -e
    case "$RENEWED_LINEAGE" in
-     */live/travound.com) cnapp-ctl tls import --for site --cert "$RENEWED_LINEAGE/fullchain.pem" --key "$RENEWED_LINEAGE/privkey.pem" ;;
-     */live/console.travound.com) cnapp-ctl tls import --cert "$RENEWED_LINEAGE/fullchain.pem" --key "$RENEWED_LINEAGE/privkey.pem" ;;
+     */live/sentrigis.com) cnapp-ctl tls import --for site --cert "$RENEWED_LINEAGE/fullchain.pem" --key "$RENEWED_LINEAGE/privkey.pem" ;;
+     */live/console.sentrigis.com) cnapp-ctl tls import --cert "$RENEWED_LINEAGE/fullchain.pem" --key "$RENEWED_LINEAGE/privkey.pem" ;;
    esac
    ```
 
-   (If a deploy hook for the console already exists, add only the `travound.com` case to it.) Test with
+   (If a deploy hook for the console already exists, add only the `sentrigis.com` case to it.) Test with
    `sudo certbot renew --dry-run`.
 3. **Mail**: the platform mail server must be configured (`PLATFORM_SMTP_HOST`, `PLATFORM_SMTP_FROM`, ...; also used
    for invitations). Choose the private address that receives demo requests (`CONTACT_TO`).
 4. **Enable**:
 
    ```bash
-   sudo cnapp-ctl site enable --hostname travound.com --hostname www.travound.com --contact-to sales@your-domain
+   sudo cnapp-ctl site enable --hostname sentrigis.com --hostname www.sentrigis.com --contact-to sales@your-domain
    sudo cnapp-ctl site status
    ```
 
    It refuses names the installed certificate does not cover (`--force` overrides), the console's or agent's own name,
    and IP addresses; then writes `SITE_HOSTNAMES` (and `CONTACT_TO`) to `cnapp.env`, opens 80/443, recreates the
    frontend and backend, and checks the site through the local nginx. `cnapp-ctl status` shows a `Website:` line.
-5. **Verify from outside**: `curl -sI https://travound.com/` (200 and the headers above),
-   `curl -sI https://www.travound.com/` and `curl -sI http://travound.com/` (301 to `https://travound.com/`),
-   `curl -s -o /dev/null -w '%{http_code}\n' https://travound.com/api/health` (404), then send one test request from
+5. **Verify from outside**: `curl -sI https://sentrigis.com/` (200 and the headers above),
+   `curl -sI https://www.sentrigis.com/` and `curl -sI http://sentrigis.com/` (301 to `https://sentrigis.com/`),
+   `curl -s -o /dev/null -w '%{http_code}\n' https://sentrigis.com/api/health` (404), then send one test request from
    the page and check the `CONTACT_TO` inbox (`cnapp-ctl logs backend | grep 'contact request'`).
 
 Disable: `sudo cnapp-ctl site disable` (keeps `tls/site.crt`). **Settings** (`cnapp.env`): `SITE_HOSTNAMES`

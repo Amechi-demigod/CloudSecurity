@@ -7,7 +7,7 @@ export interface Brand {
   tagline: string;
 }
 
-export const DEFAULT_BRAND: Brand = { name: "CloudSecurity", tagline: "Runtime-first CNAPP" };
+export const DEFAULT_BRAND: Brand = { name: "Sentrigis", tagline: "Runtime-first CNAPP" };
 
 let cached: Brand | null = null;
 let pending: Promise<Brand> | null = null;

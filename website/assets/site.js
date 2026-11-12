@@ -1,4 +1,4 @@
-// Travound Security website: "Request a demo" form. Sends the form as JSON to
+// Sentrigis website: "Request a demo" form. Sends the form as JSON to
 // POST /api/contact and shows the result in place (no page reload). Without
 // JavaScript the form posts normally and the server redirects to
 // /#contact-sent or /#contact-error (shown by CSS :target).

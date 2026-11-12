@@ -9,7 +9,7 @@
   Install (a pre-configured download from the console carries the server URL and
   a single-use collector enrollment token in CNAPP_PRESET):
     double-click                     simple UI; on a domain controller it warns and asks
-    msiexec /i Travound-Collector.msi /qn [GMSA=CORP\svc-collector$] [ALLOW_DOMAIN_CONTROLLER=1]
+    msiexec /i Sentrigis-Collector.msi /qn [GMSA=CORP\svc-collector$] [ALLOW_DOMAIN_CONTROLLER=1]
   Generic MSI (e.g. a re-signed copy deployed by GPO / Intune):
     msiexec /i cnapp-collector-windows-x64.msi /qn CNAPP_SERVER=https://cnapp.example.com CNAPP_TOKEN=cnct_... [CNAPP_CA_B64=<base64 PEM>]
 
@@ -36,14 +36,14 @@
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Package Name="CNAPP Collector"
-           Manufacturer="CloudSecurity CNAPP"
+           Manufacturer="Sentrigis"
            Version="$(var.Version)"
            UpgradeCode="5123CDB5-EAF1-4702-BDAF-0BDAD46BE183"
            Language="1033"
            Scope="perMachine"
            Compressed="yes"
            InstallerVersion="500">
-    <SummaryInformation Description="CNAPP Collector (Active Directory, read-only)" Manufacturer="CloudSecurity CNAPP" />
+    <SummaryInformation Description="CNAPP Collector (Active Directory, read-only)" Manufacturer="Sentrigis" />
 
     <MajorUpgrade AllowSameVersionUpgrades="yes"
                   DowngradeErrorMessage="A newer version of [ProductName] is already installed." />

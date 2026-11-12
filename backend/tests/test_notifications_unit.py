@@ -87,7 +87,7 @@ def test_teams_adaptive_card():
     assert payload["type"] == "message" and att["contentType"] == "application/vnd.microsoft.card.adaptive"
     card = att["content"]
     assert card["type"] == "AdaptiveCard" and card["version"] == "1.4"
-    assert card["actions"][0] == {"type": "Action.OpenUrl", "title": "Open in CloudSecurity",
+    assert card["actions"][0] == {"type": "Action.OpenUrl", "title": "Open in Sentrigis",
                                   "url": "https://cnapp.example.com/threats?alert=a1"}
     assert card["body"][0]["color"] == "attention"
     text = json.dumps(card)
@@ -111,7 +111,7 @@ def test_email_rendering_is_escaped_and_header_safe():
     subject, text, body = ch.render_email(messages.event_message(sample_event(title="a\r\nBcc: x@evil.com"), ASSET))
     assert "\n" not in subject and "\r" not in subject and subject.startswith("[CNAPP][CRITICAL]")
     assert "<script>" not in body and "&lt;script&gt;" in body
-    assert "https://cnapp.example.com/threats?alert=a1" in body and "Open in CloudSecurity" in text
+    assert "https://cnapp.example.com/threats?alert=a1" in body and "Open in Sentrigis" in text
 
 
 def test_brand_name_in_notifications(monkeypatch):
@@ -121,7 +121,7 @@ def test_brand_name_in_notifications(monkeypatch):
         _, text, body = ch.render_email(messages.event_message(sample_event(), ASSET))
         assert "Open in Acme Shield" in text and "Sent by Acme Shield notifications." in body
         assert "Open in Acme Shield" in json.dumps(ch.render_teams(messages.event_message(sample_event(), ASSET)))
-        assert config.settings.mfa_issuer == "Acme Shield CNAPP"
+        assert config.settings.mfa_issuer == "Acme Shield"
     finally:
         monkeypatch.delenv("BRAND_NAME")
         config.reload_settings()

@@ -19,9 +19,9 @@ from app.notifications import ssrf
 
 from .conftest import BASE_URL, reset_database
 
-SITE = "https://travound.example"
-CONSOLE = "https://console.travound.example"
-CONTACT_TO = "sales-inbox@travound.example"
+SITE = "https://sentrigis.example"
+CONSOLE = "https://console.sentrigis.example"
+CONTACT_TO = "sales-inbox@sentrigis.example"
 GOOD = {"name": "Ada Lovelace", "email": "ada@acme.test", "company": "Acme Ltd",
         "interest": "Cloud security", "message": "Two Azure tenants,\nabout 300 laptops.", "website": ""}
 JSON_HEADERS = {"Origin": SITE}
@@ -42,9 +42,9 @@ def sent(monkeypatch):
 
 
 def _client(monkeypatch, **env):
-    base = {"SIMULATION_MODE": "false", "SITE_HOSTNAMES": "travound.example, www.travound.example",
+    base = {"SIMULATION_MODE": "false", "SITE_HOSTNAMES": "sentrigis.example, www.sentrigis.example",
             "PUBLIC_BASE_URL": CONSOLE, "CONTACT_TO": CONTACT_TO,
-            "PLATFORM_SMTP_HOST": "smtp.example.com", "PLATFORM_SMTP_FROM": "Travound <no-reply@example.com>"}
+            "PLATFORM_SMTP_HOST": "smtp.example.com", "PLATFORM_SMTP_FROM": "Sentrigis <no-reply@example.com>"}
     base.update(env)
     for k, v in base.items():
         if v is None:
@@ -146,18 +146,18 @@ def test_honeypot_pretends_success(c, sent):
 
 @pytest.mark.parametrize("headers, ok", [
     ({"Origin": SITE}, True),
-    ({"Origin": "https://www.travound.example"}, True),
-    ({"Origin": "https://TRAVOUND.example:443"}, True),
+    ({"Origin": "https://www.sentrigis.example"}, True),
+    ({"Origin": "https://SENTRIGIS.example:443"}, True),
     ({"Origin": CONSOLE}, True),
     ({"Origin": "null", "Referer": SITE + "/#contact"}, True),
-    ({"Referer": "https://www.travound.example/"}, True),
+    ({"Referer": "https://www.sentrigis.example/"}, True),
     ({}, False),
     ({"Origin": "null"}, False),
     ({"Origin": "https://evil.example"}, False),
-    ({"Origin": "http://travound.example"}, False),
-    ({"Origin": "https://travound.example.evil.example"}, False),
-    ({"Origin": "https://travound.example:8443"}, False),
-    ({"Referer": "https://evil.example/?https://travound.example"}, False),
+    ({"Origin": "http://sentrigis.example"}, False),
+    ({"Origin": "https://sentrigis.example.evil.example"}, False),
+    ({"Origin": "https://sentrigis.example:8443"}, False),
+    ({"Referer": "https://evil.example/?https://sentrigis.example"}, False),
     ({"Origin": "https://evil.example", "Referer": SITE + "/"}, False),
 ])
 def test_origin_check(c, sent, headers, ok):
@@ -280,7 +280,7 @@ def test_smtp_reply_to_header(monkeypatch):
     for k in ("PLATFORM_ACS_CONNECTION_STRING", "PLATFORM_ACS_SENDER"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("PLATFORM_SMTP_HOST", "smtp.example.com")
-    monkeypatch.setenv("PLATFORM_SMTP_FROM", "Travound <no-reply@example.com>")
+    monkeypatch.setenv("PLATFORM_SMTP_FROM", "Sentrigis <no-reply@example.com>")
     config.reload_settings()
     monkeypatch.setattr(ssrf.socket, "getaddrinfo", lambda host, port, *a, **kw: [
         (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))])
