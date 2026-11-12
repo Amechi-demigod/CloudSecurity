@@ -38,8 +38,10 @@ log = logging.getLogger("cnapp.contact")
 router = APIRouter(tags=["website"])
 
 # The <select> options of website/index.html (no value attribute: the text is sent).
-INTERESTS = ("The whole platform", "Cloud security", "Vulnerability management",
-             "Endpoint management", "IT asset lifecycle")
+INTERESTS = ("The whole platform", "Cloud security", "Endpoints & servers", "Vulnerabilities",
+             "Assets & identity",
+             # Earlier website options, still accepted from pages cached before the menu change.
+             "Vulnerability management", "Endpoint management", "IT asset lifecycle")
 LIMITS = {"name": 120, "email": 200, "company": 160, "message": 2000}
 MAX_BODY_BYTES = 32 * 1024
 PER_IP_LIMITS = ((3, 600.0), (10, 86400.0))  # (requests, window seconds)
