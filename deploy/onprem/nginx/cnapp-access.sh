@@ -435,11 +435,12 @@ server {
     add_header Cache-Control "public, max-age=86400" always;
     try_files \$uri =404;
   }
-  # The page itself (and favicon.svg): always revalidated, so updates show at once.
+  # The pages (and favicon.svg): always revalidated, so updates show at once.
+  # /security also serves security.html (clean URLs).
   location / {
     include /etc/nginx/conf.d/cnapp-site-headers.inc;
     add_header Cache-Control "no-cache" always;
-    try_files \$uri \$uri/ =404;
+    try_files \$uri \$uri.html \$uri/ =404;
   }
 }
 EOF

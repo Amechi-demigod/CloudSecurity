@@ -13,8 +13,10 @@
 }
 *{box-sizing:border-box}
 html{scroll-behavior:smooth}
+section[id],.card[id]{scroll-margin-top:84px}
 body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.6 "Plus Jakarta Sans",system-ui,-apple-system,Segoe UI,sans-serif;-webkit-font-smoothing:antialiased}
 a{color:inherit;text-decoration:none}
+main{display:block}
 .wrap{max-width:1200px;margin:0 auto;padding:0 24px}
 .btn{display:inline-flex;align-items:center;gap:8px;border-radius:10px;padding:12px 20px;font-weight:700;font-size:15px;border:1px solid transparent;transition:background .15s,border-color .15s,transform .15s}
 .btn:hover{transform:translateY(-1px)}
@@ -26,13 +28,51 @@ a{color:inherit;text-decoration:none}
 h1,h2,h3{margin:0;letter-spacing:-.02em;line-height:1.1}
 
 /* nav */
-nav.top{position:sticky;top:0;z-index:20;background:rgba(7,11,20,.82);backdrop-filter:saturate(140%) blur(10px);border-bottom:1px solid rgba(255,255,255,.06)}
-nav.top .wrap{display:flex;align-items:center;justify-content:space-between;height:68px}
+nav.top{position:sticky;top:0;z-index:20;background:rgba(7,11,20,.92);backdrop-filter:saturate(140%) blur(10px);border-bottom:1px solid rgba(255,255,255,.06)}
+nav.top .wrap{position:relative;display:flex;align-items:center;justify-content:space-between;height:68px}
 .brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:18px}
 .brand small{display:block;font-size:10.5px;font-weight:600;letter-spacing:.14em;color:var(--ink3);text-transform:uppercase;margin-top:-2px}
-.links{display:flex;gap:28px;font-size:14.5px;color:var(--ink2);font-weight:500}
-.links a:hover{color:var(--ink)}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.menu{display:flex;align-items:center;flex:1;justify-content:space-between;margin-left:40px}
+.links{display:flex;gap:6px;list-style:none;margin:0;padding:0;height:68px;font-size:14.5px;font-weight:500}
+.links>li{display:flex;align-items:stretch}
+.links>li.has-panel:last-child{position:relative}
+.trig,.links a.plain{display:flex;align-items:center;gap:7px;padding:0 14px;background:none;border:0;color:var(--ink2);font:inherit;cursor:pointer}
+.trig:after{content:"";width:6px;height:6px;border:solid currentColor;border-width:0 1.6px 1.6px 0;transform:rotate(45deg) translateY(-2px)}
+.trig:hover,.trig[aria-expanded="true"],.links a.plain:hover{color:var(--ink)}
+.trig[aria-expanded="true"]:after{transform:rotate(-135deg) translate(-2px,-1px)}
 .navcta{display:flex;gap:10px;align-items:center}
+.navtoggle{display:none}
+:focus-visible{outline:2px solid var(--acc2);outline-offset:2px}
+.menu :focus-visible{outline-offset:-2px;border-radius:8px}
+
+/* menu panels (desktop). Without JavaScript they open on hover / focus; with it (html.js) site.js toggles .open. */
+.mega,.drop{display:none;position:absolute;top:100%;background:#0b1120;border:1px solid #23314a;border-radius:0 0 16px 16px;box-shadow:0 24px 60px rgba(0,0,0,.55);z-index:30}
+.mega{left:24px;right:24px}
+.drop{left:0;width:min(640px,calc(100vw - 48px));padding:22px 26px;grid-template-columns:repeat(3,1fr);gap:24px}
+li.open>.mega{display:block}
+li.open>.drop{display:grid}
+html:not(.js) li.has-panel:hover>.mega,html:not(.js) li.has-panel:focus-within>.mega{display:block}
+html:not(.js) li.has-panel:hover>.drop,html:not(.js) li.has-panel:focus-within>.drop{display:grid}
+.cats{position:relative;min-height:400px;padding:14px}
+.cats:before{content:"";position:absolute;left:0;top:0;bottom:0;width:260px;background:#0a0f1c;border-right:1px solid var(--line);border-radius:0 0 0 16px}
+.cat-btn{position:relative;display:block;width:232px;text-align:left;padding:12px 14px;border:0;border-radius:10px;background:none;color:var(--ink2);font:inherit;font-size:15px;font-weight:600;cursor:pointer}
+.cat.active>.cat-btn,.cat-btn:hover{background:var(--panel2);color:var(--ink)}
+.cat .pane{display:none;position:absolute;top:0;left:260px;right:0;min-height:400px;padding:22px 26px}
+.cat.active>.pane{display:block}
+html:not(.js) .cat:hover>.pane,html:not(.js) .cat:focus-within>.pane{display:block;z-index:1;background:#0b1120}
+.banner{padding:4px 4px 18px;border-bottom:1px solid var(--line)}
+.banner h3{font-size:20px}
+.banner p{margin:6px 0 10px;color:var(--ink2);font-size:14.5px;max-width:520px}
+.more{color:var(--acc2);font-weight:700;font-size:14.5px}.more:hover{text-decoration:underline}
+.items{list-style:none;margin:18px 0 0;padding:0;display:grid;grid-template-columns:1fr 1fr;gap:6px 16px}
+.items a{display:block;padding:10px 12px;border-radius:10px}
+.items a:hover{background:var(--panel2)}
+.items b{display:block;font-size:15px}.items span{display:block;color:var(--ink3);font-size:13.5px;line-height:1.45;margin-top:2px}
+.megafoot{position:absolute;left:260px;right:0;bottom:0;padding:14px 26px;display:flex;justify-content:flex-end;z-index:2}
+.drop .col h3{font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink3);font-weight:700;margin-bottom:10px}
+.drop ul{list-style:none;margin:0;padding:0;display:grid;gap:2px}
+.drop a{display:block;padding:7px 0;color:var(--ink2);font-size:14.5px;font-weight:600}.drop a:hover{color:var(--ink)}
 
 /* hero */
 .hero{position:relative;overflow:hidden;padding:88px 0 0}
@@ -108,21 +148,89 @@ textarea{min-height:110px;resize:vertical}
 .band{background:linear-gradient(120deg,#1d4ed8,#2563eb 45%,#4f46e5);border-radius:22px;padding:56px;display:flex;justify-content:space-between;align-items:center;gap:24px;flex-wrap:wrap}
 .band h2{font-size:clamp(26px,3.4vw,38px);font-weight:800;max-width:640px}
 .band .btn.w{background:#fff;color:#1e3a8a}
-footer{border-top:1px solid var(--line);padding:40px 0;color:var(--ink3);font-size:14px}
-footer .wrap{display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap}
+footer{border-top:1px solid var(--line);padding:56px 0 32px;color:var(--ink3);font-size:14px}
+.fcols{display:grid;grid-template-columns:1.4fr 1fr 1fr 1.2fr;gap:32px}
+.fbrand p{margin:12px 0 0;max-width:260px}
+.fcols h3{font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink2);margin-bottom:12px}
+.fcols ul{list-style:none;margin:0;padding:0;display:grid;gap:8px}
+.fcols a:hover{color:var(--ink)}
+.fbase{margin-top:40px;padding-top:20px;border-top:1px solid var(--line)}
+
+/* platform diagram: three layers */
+.layers{list-style:none;margin:52px 0 0;padding:0;display:grid;gap:34px}
+.layer{position:relative;display:grid;grid-template-columns:260px 1fr;gap:24px;align-items:center;background:linear-gradient(180deg,var(--panel),#0d1424);border:1px solid var(--line);border-radius:18px;padding:24px 28px}
+.layer+.layer:before{content:"";position:absolute;left:50%;top:-26px;width:10px;height:10px;border:solid var(--acc2);border-width:0 2px 2px 0;transform:rotate(45deg)}
+.layer .lh{display:grid;grid-template-columns:auto 1fr;column-gap:14px;align-items:center}
+.layer .ln{grid-row:span 2;width:38px;height:38px;border-radius:50%;background:var(--accs);color:var(--acc2);display:grid;place-items:center;font-weight:800}
+.layer h3{font-size:22px}
+.layer .lh p{margin:2px 0 0;color:var(--ink3);font-size:14px}
+.lc{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:10px}
+.lc li{border:1px solid #26324a;background:#0b1120;border-radius:12px;padding:10px 16px;font-size:15px;font-weight:600;color:var(--ink)}
+
+/* small pages (security, compliance, read-only access) */
+.phead{position:relative;overflow:hidden;padding:88px 0 56px;text-align:center}
+.phead:before{content:"";position:absolute;inset:-60% -10% auto;height:700px;background:radial-gradient(closest-side,rgba(59,130,246,.22),transparent 70%);pointer-events:none}
+.phead .wrap{position:relative}
+.phead h1{font-size:clamp(34px,5vw,54px);font-weight:800;max-width:860px;margin:18px auto 0}
+.phead .lead{font-size:clamp(17px,2vw,19px);color:var(--ink2);max-width:680px;margin:18px auto 0}
+.prose{padding:24px 0 24px}
+.blk{padding:40px 0 0}
+.blk h2{font-size:clamp(24px,3vw,32px);font-weight:800}
+.blk>p{color:var(--ink2);font-size:17px;max-width:780px;margin:14px 0 0}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:18px;margin-top:22px}
+.tile{background:linear-gradient(180deg,var(--panel),#0d1424);border:1px solid var(--line);border-radius:16px;padding:24px}
+.tile h3{font-size:18px}
+.tile p{margin:10px 0 0;color:var(--ink2);font-size:15px}
+.tile b{color:var(--ink)}
+.prose+section.nopt{padding-top:72px}
 
 @media (max-width:900px){
-  .links{display:none}
-  .grid4,.steps,.why,.contact,.row2{grid-template-columns:1fr}
+  .grid4,.steps,.why,.contact,.row2,.fcols{grid-template-columns:1fr}
+  .phead{padding:56px 0 32px}
   section{padding:72px 0}
   .band{padding:36px}
+  /* menu: a button opens a full-width panel; without JavaScript the panel is simply always open */
+  .navtoggle{display:grid;place-items:center;width:44px;height:44px;margin-right:-8px;background:none;border:0;border-radius:10px;cursor:pointer}
+  .navtoggle i,.navtoggle i:before,.navtoggle i:after{display:block;width:20px;height:2px;border-radius:2px;background:var(--ink)}
+  .navtoggle i{position:relative}
+  .navtoggle i:before,.navtoggle i:after{content:"";position:absolute;left:0}
+  .navtoggle i:before{top:-6px}.navtoggle i:after{top:6px}
+  .navtoggle[aria-expanded="true"] i{background:none}
+  .navtoggle[aria-expanded="true"] i:before{top:0;transform:rotate(45deg)}
+  .navtoggle[aria-expanded="true"] i:after{top:0;transform:rotate(-45deg)}
+  .menu{position:absolute;top:100%;left:0;right:0;display:block;margin:0;padding:8px 16px 20px;background:#0b1120;border-bottom:1px solid #23314a;max-height:calc(100vh - 68px);overflow-y:auto}
+  html.js .menu{display:none}
+  html.js .menu.open{display:block}
+  .links{display:block;height:auto}
+  .links>li{display:block;border-bottom:1px solid var(--line)}
+  .trig,.links a.plain{width:100%;min-height:48px;padding:0 4px;font-size:15px}
+  .trig{pointer-events:none;color:var(--ink3);font-size:12px;font-weight:700;letter-spacing:.12em;text-transform:uppercase}
+  .trig:after{display:none}
+  .links a.plain{color:var(--ink)}
+  .mega,.drop{display:block;position:static;border:0;border-radius:0;box-shadow:none;background:none;padding:0 0 12px}
+  .drop{display:block}
+  .drop .col{margin-bottom:12px}
+  .cats{min-height:0;padding:0}
+  .cats:before{display:none}
+  .cat .pane{display:none;position:static;min-height:0;padding:0 0 10px 12px;background:none!important}
+  html:not(.js) .cat .pane,.cat.active>.pane{display:block}
+  html:not(.js) .cat-btn{pointer-events:none}
+  .cat-btn{width:100%;display:flex;justify-content:space-between;align-items:center;min-height:46px;padding:0 4px;color:var(--ink);background:none!important}
+  html.js .cat-btn:after{content:"";width:7px;height:7px;border:solid currentColor;border-width:0 1.8px 1.8px 0;transform:rotate(45deg)}
+  html.js .cat.active>.cat-btn:after{transform:rotate(-135deg)}
+  .banner{padding:0 0 8px;border:0}
+  .banner h3{display:none}
+  .banner p{font-size:14px;margin:0 0 6px}
+  .items{display:block;margin:6px 0 0}
+  .items a{padding:8px 4px}
+  .megafoot{display:none}
+  .navcta{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:18px}
+  .navcta .btn{justify-content:center}
+  .layer{grid-template-columns:1fr!important}
 }
-@media (max-width:520px){ .navcta .btn.ghost{display:none} .wrap{padding:0 16px} }
 /* Phones: a readable crop of the dashboard's top-left (risk score, first tiles) instead of the whole thing shrunk. */
-@media (max-width:520px){
-  .shot{height:300px;overflow:hidden}
-  .shot img{width:200%;max-width:none}
-}
+@media (max-width:520px){ .wrap{padding:0 16px} .shot{height:300px;overflow:hidden} .shot img{width:200%;max-width:none} }
+@media (prefers-reduced-motion:reduce){ html{scroll-behavior:auto} .btn,.card{transition:none} .btn:hover,.card:hover{transform:none} }
 
 /* Former inline style attributes (the site's CSP allows no inline styles). */
 section#contact{padding-top:24px}

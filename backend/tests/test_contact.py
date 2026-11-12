@@ -107,7 +107,7 @@ def test_validation(c, sent, change):
 def test_validation_boundaries_and_cleaning(c, sent):
     r = c.post("/api/contact", headers=JSON_HEADERS, json={
         **GOOD, "name": "n" * 120, "company": "Evil\r\nBcc: victim@example.com", "message": "m" * 2000,
-        "interest": "IT asset lifecycle"})
+        "interest": "Assets & identity"})
     assert r.status_code == 200, r.text
     mail = sent[0]
     assert mail["subject"] == "Demo request: Evil Bcc: victim@example.com"

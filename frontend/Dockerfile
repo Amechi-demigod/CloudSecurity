@@ -28,7 +28,7 @@ USER root
 RUN rm -f /etc/nginx/conf.d/default.conf
 COPY nginx/default.conf.template /etc/nginx/templates/default.conf.template
 COPY --from=build /app/dist /usr/share/nginx/html
-COPY --from=website index.html favicon.svg /usr/share/nginx/site/
+COPY --from=website *.html favicon.svg /usr/share/nginx/site/
 COPY --from=website assets /usr/share/nginx/site/assets
 USER 101
 EXPOSE 8080
