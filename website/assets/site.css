@@ -45,7 +45,7 @@ nav.top .wrap{display:flex;align-items:center;justify-content:space-between;heig
 .hero .ctas{display:flex;gap:12px;justify-content:center;margin-top:32px;flex-wrap:wrap}
 .shot{margin:64px auto 0;max-width:1080px;border-radius:16px 16px 0 0;border:1px solid #23314a;border-bottom:0;background:#0c1322;padding:10px 10px 0;box-shadow:0 -10px 80px rgba(59,130,246,.25)}
 .shot .bar{display:flex;gap:6px;padding:4px 6px 10px}.shot .bar span{width:10px;height:10px;border-radius:50%;background:#26324a}
-.shot img{display:block;width:100%;border-radius:8px 8px 0 0}
+.shot img{display:block;width:100%;height:auto;border-radius:8px 8px 0 0}
 
 /* strip */
 .strip{border-top:1px solid var(--line);border-bottom:1px solid var(--line);background:var(--bg2)}
@@ -118,6 +118,11 @@ footer .wrap{display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap}
   .band{padding:36px}
 }
 @media (max-width:520px){ .navcta .btn.ghost{display:none} .wrap{padding:0 16px} }
+/* Phones: a readable crop of the dashboard's top-left (risk score, first tiles) instead of the whole thing shrunk. */
+@media (max-width:520px){
+  .shot{height:300px;overflow:hidden}
+  .shot img{width:200%;max-width:none}
+}
 
 /* Former inline style attributes (the site's CSP allows no inline styles). */
 section#contact{padding-top:24px}
