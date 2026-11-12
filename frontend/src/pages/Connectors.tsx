@@ -7,9 +7,11 @@ import { useAuth } from "../auth/context";
 import { ConnectCloud, ConnectionForm, ProviderMark } from "../components/cloudConnect";
 import { CollectorsSection } from "../components/collectors";
 import { DirectoriesSection } from "../components/directories";
-import { directoryApi, collectorApi } from "../directoryApi";
-import { Button, Card, ErrorNote, PageHeader, SeverityBadge, Table, Tag } from "../components/ui";
+import { DirectoryMark } from "../components/directoryShared";
+import { directoryApi, collectorApi, DIRECTORY_NAME, type DirectorySource, type SyncRun } from "../directoryApi";
+import { Button, Card, ErrorNote, PageHeader, Select, SeverityBadge, Table, Tag } from "../components/ui";
 import { CLOUD_NAME, CLOUD_PROVIDERS, CLOUD_ROLE, CLOUD_SCOPE } from "../lib/cloudSetup";
+import { RUN_COLOR, RUN_TEXT, RUN_TEXT_SERVER, TRIGGER_TEXT, runDuration } from "../lib/directory";
 import { fmtAgo, fmtHours, fmtTime, fmtUntil } from "../lib/format";
 import { useApi } from "../lib/useApi";
 import { networkApi } from "../networkApi";
@@ -44,6 +46,15 @@ function trigger(run: ScanRun): string {
   if (run.trigger === "first_scan") return "First scan";
   return run.triggered_by ? `Manual (${run.triggered_by})` : "Manual";
 }
+
+/** One row of the merged scan history: a cloud scan or a directory sync (network scans keep their own page). */
+type HistoryRow =
+  | { kind: "cloud"; id: string; at: string; scan: ScanRun }
+  | { kind: "directory"; id: string; at: string; run: SyncRun; source: DirectorySource };
+
+const HISTORY_LIMIT = 50;
+
+const shortTime = (iso: string) => new Date(iso).toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 
 function signed(n: number) {
   return n > 0 ? `+${n.toLocaleString()}` : n < 0 ? `−${Math.abs(n).toLocaleString()}` : "no change";
@@ -379,6 +390,18 @@ export default function Connectors() {
   const [notice, setNotice] = useState<string | null>(null);
   const sources = useApi(directoryApi.sources, [], 30000);
   const collectors = useApi(collectorApi.list, [], 30000);
+  // No all-sources runs endpoint: fetch each source's recent runs (few sources) and merge. Connection tests are not syncs, so they are left out.
+  const sourceKey = (sources.data ?? []).map((s) => s.id).join(",");
+  const dirRuns = useApi(
+    async () => {
+      const list = sources.data ?? [];
+      const all = await Promise.all(list.map((s) => directoryApi.runs(s.id, HISTORY_LIMIT).then((rs) => rs.map((run) => ({ run, source: s })))));
+      return all.flat().filter((x) => x.run.trigger !== "test");
+    },
+    [sourceKey],
+    15000,
+  );
+  const [historyKind, setHistoryKind] = useState("");
   const [connecting, setConnecting] = useState<Provider | null>(null);
 
   const clouds = (connectors.data ?? []).filter((c) => isCloud(c.name));
@@ -419,6 +442,15 @@ export default function Connectors() {
   const adSources = (sources.data ?? []).filter((s) => s.type === "ad").length;
   const cloudStatus = [plural(connected.length, "cloud account"), plural(cloudDirs, "cloud directory", "cloud directories")].join(" · ");
   const onpremStatus = [plural(adSources, "Active Directory source"), plural(collectors.data?.length ?? 0, "collector")].join(" · ");
+
+  const history: HistoryRow[] = [
+    ...(scans.data ?? []).map((scan): HistoryRow => ({ kind: "cloud", id: scan.id, at: scan.started_at, scan })),
+    ...(dirRuns.data ?? []).map(({ run, source }): HistoryRow => ({ kind: "directory", id: run.id, at: run.started_at ?? run.queued_at, run, source })),
+  ]
+    .filter((r) => !historyKind || (historyKind === "failed" ? (r.kind === "cloud" ? r.scan.status : r.run.status) === "failed" : r.kind === historyKind))
+    .sort((a, b) => b.at.localeCompare(a.at))
+    .slice(0, HISTORY_LIMIT);
+  const historyEmpty = scans.data?.length === 0 && (dirRuns.data?.length ?? 0) === 0;
 
   const loaded = connectors.data !== null;
   const before = loaded && connected.length === 0;
@@ -534,53 +566,99 @@ export default function Connectors() {
         <NetworkScansCard isAdmin={isAdmin} />
       </div>
 
-      <Card title="Scan history" className="mt-4">
-        {scans.data?.length === 0 ? (
+      <Card
+        title="Scan history"
+        className="mt-4"
+        actions={
+          <Select
+            label="Show"
+            value={historyKind}
+            onChange={setHistoryKind}
+            options={[
+              { value: "", label: "All" },
+              { value: "cloud", label: "Cloud scans" },
+              { value: "directory", label: "Directory syncs" },
+              { value: "failed", label: "Failed only" },
+            ]}
+          />
+        }
+      >
+        {historyEmpty ? (
           <p className="text-sm text-ink-3">
             {before
               ? "No scans yet. Your first scan starts automatically after you connect a cloud account."
-              : "No scans yet."}
+              : "No scans or syncs yet."}
           </p>
+        ) : history.length === 0 && !scans.loading && !dirRuns.loading ? (
+          <p className="text-sm text-ink-3">Nothing matches this filter.</p>
         ) : (
-          <Table head={["Started", "Cloud", "Trigger", "Result", "Duration", "Resources", "Findings"]} loading={scans.loading} rowCount={scans.data?.length}>
-            {scans.data?.map((s) => (
-              <tr key={s.id}>
-                <td className="whitespace-nowrap px-3 py-2 text-ink-2" title={fmtTime(s.started_at)}>
-                  {new Date(s.started_at).toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
-                </td>
-                <td className="px-3 py-2">
-                  <span className="inline-flex items-center gap-1.5">
-                    {isCloud(s.connector) && <ProviderMark provider={s.connector} size={12} />}
-                    {cloudName(s.connector)}
-                  </span>
-                </td>
-                <td className="px-3 py-2 text-ink-2">{trigger(s)}</td>
-                <td className="px-3 py-2">
-                  <span className="inline-flex items-center gap-1.5 whitespace-nowrap text-ink">
-                    <span aria-hidden className={STATUS_COLOR[s.status]}>
-                      ●
+          <Table head={["Started", "Type", "Source", "Trigger", "Result", "Duration", "Found", "Findings"]} loading={scans.loading} rowCount={history.length}>
+            {history.map((r) => {
+              const s = r.kind === "cloud" ? r.scan : null;
+              const d = r.kind === "directory" ? r.run : null;
+              const status = s ? s.status : d!.status;
+              const message = s ? s.message : d!.error;
+              const errors = s ? s.errors : [];
+              const server = r.kind === "directory" && r.source.type !== "ad";
+              return (
+                <tr key={`${r.kind}-${r.id}`}>
+                  <td className="whitespace-nowrap px-3 py-2 text-ink-2" title={fmtTime(r.at)}>
+                    {shortTime(r.at)}
+                  </td>
+                  <td className="px-3 py-2">
+                    <Tag tone={s ? "default" : "accent"}>{s ? "Cloud" : "Directory"}</Tag>
+                  </td>
+                  <td className="px-3 py-2">
+                    <span className="inline-flex items-center gap-1.5">
+                      {s ? (
+                        <>
+                          {isCloud(s.connector) && <ProviderMark provider={s.connector} size={12} />}
+                          {cloudName(s.connector)}
+                        </>
+                      ) : (
+                        <>
+                          <DirectoryMark size={12} type={r.kind === "directory" ? r.source.type : "ad"} />
+                          {r.kind === "directory" && r.source.name}
+                          <span className="text-ink-3">· {r.kind === "directory" && DIRECTORY_NAME[r.source.type]}</span>
+                        </>
+                      )}
                     </span>
-                    {STATUS_TEXT[s.status]}
-                  </span>
-                  {(s.status !== "succeeded" || s.errors.length > 0) && s.message && (
-                    <div className="mt-1 max-w-md text-xs text-ink-3">{s.message}</div>
-                  )}
-                  {s.errors.length > 0 && (
-                    <details className="mt-1 text-xs">
-                      <summary className="cursor-pointer text-ink-3">{s.errors.length} errors</summary>
-                      <ul className="mt-1 list-disc pl-4 font-mono text-[11px] text-ink-2">
-                        {s.errors.map((e, i) => (
-                          <li key={i}>{e}</li>
-                        ))}
-                      </ul>
-                    </details>
-                  )}
-                </td>
-                <td className="px-3 py-2 text-ink-2">{duration(s) ?? "—"}</td>
-                <td className="px-3 py-2">{s.status === "succeeded" ? s.assets_found.toLocaleString() : "—"}</td>
-                <td className="px-3 py-2">{s.status === "succeeded" ? s.findings_open.toLocaleString() : "—"}</td>
-              </tr>
-            ))}
+                  </td>
+                  <td className="px-3 py-2 text-ink-2">{s ? trigger(s) : TRIGGER_TEXT[d!.trigger] ?? d!.trigger}</td>
+                  <td className="px-3 py-2">
+                    <span className="inline-flex items-center gap-1.5 whitespace-nowrap text-ink">
+                      <span aria-hidden className={s ? STATUS_COLOR[s.status] : RUN_COLOR[d!.status]}>
+                        ●
+                      </span>
+                      {s ? STATUS_TEXT[s.status] : (server ? RUN_TEXT_SERVER : RUN_TEXT)[d!.status]}
+                      {d?.truncated && " (capped)"}
+                    </span>
+                    {(status !== "succeeded" || errors.length > 0) && message && <div className="mt-1 max-w-md text-xs text-ink-3">{message}</div>}
+                    {errors.length > 0 && (
+                      <details className="mt-1 text-xs">
+                        <summary className="cursor-pointer text-ink-3">{errors.length} errors</summary>
+                        <ul className="mt-1 list-disc pl-4 font-mono text-[11px] text-ink-2">
+                          {errors.map((e, i) => (
+                            <li key={i}>{e}</li>
+                          ))}
+                        </ul>
+                      </details>
+                    )}
+                  </td>
+                  <td className="px-3 py-2 text-ink-2">{(s ? duration(s) : runDuration(d!)) ?? "—"}</td>
+                  <td className="px-3 py-2">
+                    {s
+                      ? s.status === "succeeded"
+                        ? `${s.assets_found.toLocaleString()} resources`
+                        : "—"
+                      : d!.status === "succeeded"
+                        ? `${d!.computers_seen.toLocaleString()} computers · ${d!.users_seen.toLocaleString()} users`
+                        : "—"}
+                  </td>
+                  <td className="px-3 py-2">{s && s.status === "succeeded" ? s.findings_open.toLocaleString() : "—"}</td>
+                </tr>
+              );
+            })}
           </Table>
         )}
       </Card>
