@@ -30,6 +30,12 @@ COPY nginx/default.conf.template /etc/nginx/templates/default.conf.template
 COPY --from=build /app/dist /usr/share/nginx/html
 COPY --from=website *.html favicon.svg /usr/share/nginx/site/
 COPY --from=website assets /usr/share/nginx/site/assets
+# Cache busting: Cloudflare keeps assets for a day, so each page links its CSS/JS
+# with a content hash (?v=...) and a deploy never pairs new pages with old assets.
+RUN cd /usr/share/nginx/site && for f in site.css site.js; do \
+      h=$(md5sum "assets/$f" | cut -c1-10); \
+      sed -i "s#assets/$f\"#assets/$f?v=$h\"#g" *.html; \
+    done && grep -q 'site.css?v=' index.html
 USER 101
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
