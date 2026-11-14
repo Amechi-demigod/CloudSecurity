@@ -214,7 +214,8 @@ def create_app() -> FastAPI:
     cloud, endpoints, vulns_mod, assets = (
         [Depends(modules.require_module(m))] for m in (modules.CLOUD, modules.ENDPOINTS, modules.VULNERABILITIES,
                                                        modules.ASSETS))
-    for r, extra in ((platform.router, []), (inventory.router, cloud), (vulns.router, vulns_mod),
+    for r, extra in ((platform.router, []), (inventory.router, cloud), (inventory.shared_router, []),
+                     (vulns.router, vulns_mod),
                      (runtime.router, endpoints),
                      (devices.enrol_router, [Depends(modules.require_module(modules.ENDPOINTS, modules.ASSETS))]),
                      (devices.router, endpoints), (remote_sessions_api.router, endpoints),

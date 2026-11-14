@@ -64,6 +64,21 @@ def test_each_module_gates_its_apis(client):
     assert len(client.get("/api/assets").json()) > 0
 
 
+
+def test_asset_drawer_opens_without_cloud_and_hides_other_modules_sections(client):
+    """The asset drawer is opened from the vulnerability and runtime-threat pages too."""
+    asset_id = client.get("/api/assets").json()[0]["id"]
+    set_modules("default", ["vulnerabilities"])
+    r = client.get("/api/assets/detail", params={"id": asset_id})
+    assert r.status_code == 200
+    assert r.json()["findings"] == [] and r.json()["alerts"] == []
+    assert client.get("/api/rules/detection").status_code == 403
+    set_modules("default", ["assets"])
+    assert client.get("/api/assets/detail", params={"id": asset_id}).status_code == 403
+    set_modules("default", ["endpoints"])
+    assert client.get("/api/rules/detection").status_code == 200
+    set_modules("default", list(ALL_MODULES))
+
 def test_no_bypass_for_platform_admins_and_writes_are_gated(client):
     with dbmod.get_session(unscoped=True) as s:
         s.execute(update(User).where(User.email == ADMIN_EMAIL).values(is_platform_admin=True))

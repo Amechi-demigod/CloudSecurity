@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from .. import modules
 from ..auth import RateLimiter, audit, client_ip, require_analyst
 from ..compliance import finding_report
 from ..db import get_db
@@ -27,7 +28,9 @@ from ..schemas import (
 )
 from ..services import dashboards, finding_detail
 
-router = APIRouter(prefix="/api", tags=["inventory"])
+router = APIRouter(prefix="/api", tags=["inventory"])  # Cloud security module (app/main.py)
+# Opened from several modules' pages (asset drawer, detection rules): gated per route.
+shared_router = APIRouter(prefix="/api", tags=["inventory"])
 pdf_limiter = RateLimiter()
 SEV_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
 
@@ -101,9 +104,11 @@ def asset_facets(db: Session = Depends(get_db)):
     }
 
 
-@router.get("/assets/detail")
+@shared_router.get("/assets/detail", dependencies=[Depends(modules.require_module(
+    modules.CLOUD, modules.ENDPOINTS, modules.VULNERABILITIES))])
 def asset_detail(id: str, db: Session = Depends(get_db)):
-    """Asset detail. (`id` is a query param because ARM ids contain slashes.)"""
+    """Asset detail. (`id` is a query param because ARM ids contain slashes.) Opened from the cloud,
+    vulnerability and runtime-threat pages; sections of modules the organisation lacks stay empty."""
     a = get_asset(db, id)
     if a is None:
         raise HTTPException(404, "asset not found")
@@ -115,10 +120,13 @@ def asset_detail(id: str, db: Session = Depends(get_db)):
             rels.append(RelationshipOut(type=r.type, direction=direction,
                                         asset=AssetRef(id=other.id, name=other.name, type=other.type)))
     findings = sorted(db.scalars(select(Finding).where(Finding.asset_id == id)),
-                      key=lambda f: (f.status != "open", SEV_RANK.get(f.severity, 9)))
+                      key=lambda f: (f.status != "open", SEV_RANK.get(f.severity, 9))) \
+        if modules.has_module(db, modules.CLOUD) else []
     vulns = list(db.scalars(select(Vulnerability).where(Vulnerability.asset_id == id)
-                            .order_by(Vulnerability.risk_score.desc())))
-    alerts = list(db.scalars(select(Alert).where(Alert.asset_id == id).order_by(Alert.last_seen.desc()).limit(50)))
+                            .order_by(Vulnerability.risk_score.desc()))) \
+        if modules.has_module(db, modules.VULNERABILITIES) else []
+    alerts = list(db.scalars(select(Alert).where(Alert.asset_id == id).order_by(Alert.last_seen.desc()).limit(50))) \
+        if modules.has_module(db, modules.ENDPOINTS) else []
     return {
         "asset": AssetOut.model_validate(a),
         "relationships": rels,
@@ -220,7 +228,7 @@ def posture_rules():
             for r in posture.RULES]
 
 
-@router.get("/rules/detection")
+@shared_router.get("/rules/detection", dependencies=[Depends(modules.require_module(modules.ENDPOINTS))])
 def detection_rules():
     return [{"id": r.id, "title": r.title, "severity": r.severity, "description": r.description,
              "mitre_tactic": r.mitre_tactic, "mitre_technique_id": r.mitre_technique_id,

@@ -386,12 +386,13 @@ export default function Connectors() {
   const { has } = useModules();
   const hasCloud = has("cloud");
   const hasAssets = has("assets");
+  const hasEndpoints = has("endpoints");
   const connectors = useApi(() => (hasCloud ? api.connectors() : Promise.resolve([])), [hasCloud], 15000);
   const scans = useApi(() => (hasCloud ? api.scans() : Promise.resolve([])), [hasCloud], 3000);
   const schedule = useApi(() => (hasCloud ? api.scanSchedule() : Promise.resolve(null)), [hasCloud], 15000);
   const configs = useApi(() => (isAdmin && hasCloud ? orgApi.connectors() : Promise.resolve(null)), [isAdmin, hasCloud]);
   const posture = useApi(() => (hasCloud ? api.postureRules() : Promise.resolve([])), [hasCloud]);
-  const detection = useApi(() => (hasCloud ? api.detectionRules() : Promise.resolve([])), [hasCloud]);
+  const detection = useApi(() => (hasEndpoints ? api.detectionRules() : Promise.resolve([])), [hasEndpoints]);
   const [scanError, setScanError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const sources = useApi(() => (hasAssets ? directoryApi.sources() : Promise.resolve([])), [hasAssets], 30000);
@@ -677,8 +678,9 @@ export default function Connectors() {
         )}
       </Card>
 
-      {hasCloud && (
+      {(hasCloud || hasEndpoints) && (
       <div className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-2">
+        {hasCloud && (
         <Card title={`Posture rules (${posture.data?.length ?? 0})`}>
           <ul className="max-h-96 space-y-1.5 overflow-y-auto text-sm">
             {posture.data?.map((r) => (
@@ -690,6 +692,8 @@ export default function Connectors() {
             ))}
           </ul>
         </Card>
+        )}
+        {hasEndpoints && (
         <Card title={`Runtime detection rules (${detection.data?.length ?? 0})`}>
           <ul className="max-h-96 space-y-1.5 overflow-y-auto text-sm">
             {detection.data?.map((r) => (
@@ -701,6 +705,7 @@ export default function Connectors() {
             ))}
           </ul>
         </Card>
+        )}
       </div>
       )}
     </div>
