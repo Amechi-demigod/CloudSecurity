@@ -5,10 +5,10 @@ import { SEV_COLOR, SEVERITIES } from "./format";
 /** URL value of each tab (?tab=), its API name and label. */
 export const TABS = [
   { key: "overview", label: "Overview" },
-  { key: "vulns", label: "Vulnerabilities", badge: "vulnerabilities" },
-  { key: "exposure", label: "External exposure", badge: "exposure" },
-  { key: "identities", label: "Identities", badge: "identities" },
-  { key: "endpoints", label: "Endpoints", badge: "endpoints" },
+  { key: "vulns", label: "Vulnerabilities", badge: "vulnerabilities", module: "vulnerabilities" },
+  { key: "exposure", label: "External exposure", badge: "exposure", module: "cloud" },
+  { key: "identities", label: "Identities", badge: "identities", module: "cloud" },
+  { key: "endpoints", label: "Endpoints", badge: "endpoints", module: "endpoints" },
 ] as const;
 export type TabKey = (typeof TABS)[number]["key"];
 

@@ -19,6 +19,7 @@ from ..auth import RateLimiter, audit, client_ip, require_analyst
 from ..compliance import reports as compliance_reports
 from ..db import get_db
 from ..models import Device, User, utcnow
+from ..modules import ENDPOINTS, require_module
 from ..services import vuln_fixes as svc
 from ..services import vuln_report
 
@@ -70,12 +71,13 @@ def cve_report(request: Request, cve_id: str = CveId, user: User = Depends(requi
     return _pdf_response(data, f"{cve_id}-{now:%Y%m%d}.pdf")
 
 
-@router.get("/api/devices/{device_id}/vulnerability-fixes")
+@router.get("/api/devices/{device_id}/vulnerability-fixes", dependencies=[Depends(require_module(ENDPOINTS))])
 def device_fixes(device_id: str = DeviceId, db: Session = Depends(get_db)):
     return svc.device_fixes(db, _device(db, device_id))
 
 
-@router.get("/api/devices/{device_id}/vulnerability-fixes/report.pdf")
+@router.get("/api/devices/{device_id}/vulnerability-fixes/report.pdf",
+            dependencies=[Depends(require_module(ENDPOINTS))])
 def device_fixes_report(request: Request, device_id: str = DeviceId, user: User = Depends(require_analyst),
                         db: Session = Depends(get_db)):
     _limit(user)

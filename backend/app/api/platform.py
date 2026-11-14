@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import config, tenancy
+from .. import config, modules, tenancy
 from ..auth import audit, client_ip, require_admin, require_analyst
 from ..connectors import CLOUD_CONNECTORS, build_registry
 from ..connectors.org_config import org_settings
@@ -22,6 +22,8 @@ from ..services.scans import start_scan
 router = APIRouter(prefix="/api", tags=["platform"])
 # Unauthenticated: liveness probe only.
 public_router = APIRouter(prefix="/api", tags=["platform"])
+# Cloud security module: attack paths, cloud connectors and scans.
+CLOUD = [Depends(modules.require_module(modules.CLOUD))]
 
 
 @public_router.get("/health")
@@ -46,14 +48,14 @@ def get_compliance(db: Session = Depends(get_db)):
     return analytics.compliance_summary(db)
 
 
-@router.get("/attack-paths")
+@router.get("/attack-paths", dependencies=CLOUD)
 def list_attack_paths(db: Session = Depends(get_db), limit: int = Query(20, le=100),
                       confirmed_only: bool = Query(False, description="Only paths with an exploitable weakness")):
     """Attack paths, confirmed first. Exposure paths (no weakness yet) have `confirmed=false`."""
     return [asdict(p) for p in analytics.attack_paths(db, limit=limit, include_unconfirmed=not confirmed_only)]
 
 
-@router.get("/attack-paths/graph")
+@router.get("/attack-paths/graph", dependencies=CLOUD)
 def attack_path_graph(db: Session = Depends(get_db), limit: int = Query(10, le=50),
                       confirmed_only: bool = Query(False, description="Only paths with an exploitable weakness")):
     """Union of the top-N attack paths as a node/edge graph for visualization."""
@@ -72,7 +74,7 @@ def attack_path_graph(db: Session = Depends(get_db), limit: int = Query(10, le=5
     return {"nodes": nodes, "edges": list(edges.values()), "paths": [asdict(p) for p in paths]}
 
 
-@router.get("/connectors")
+@router.get("/connectors", dependencies=CLOUD)
 def list_connectors(db: Session = Depends(get_db)):
     """Connectors with configuration state, scan scope and their latest scan."""
     out = []
@@ -86,7 +88,7 @@ def list_connectors(db: Session = Depends(get_db)):
     return out
 
 
-@router.post("/scans", response_model=ScanRunOut, status_code=202)
+@router.post("/scans", dependencies=CLOUD, response_model=ScanRunOut, status_code=202)
 def run_scan(body: ScanRequest, request: Request, user: User = Depends(require_analyst),
              db: Session = Depends(get_db)):
     """Start a read-only connector scan in the background (e.g. `{"connector": "azure"}`)."""
@@ -102,13 +104,13 @@ def run_scan(body: ScanRequest, request: Request, user: User = Depends(require_a
     return run
 
 
-@router.get("/scan-schedule", response_model=ScanScheduleOut)
+@router.get("/scan-schedule", dependencies=CLOUD, response_model=ScanScheduleOut)
 def get_scan_schedule(db: Session = Depends(get_db)):
     """Scheduled-scan settings and, per connector, the last scan and the next scheduled one."""
     return scan_schedule.status(db)
 
 
-@router.put("/scan-schedule", response_model=ScanScheduleOut)
+@router.put("/scan-schedule", dependencies=CLOUD, response_model=ScanScheduleOut)
 def update_scan_schedule(body: ScanScheduleUpdate, request: Request, user: User = Depends(require_admin),
                          db: Session = Depends(get_db)):
     """Override the schedule (admin). Only the fields sent are changed; null resets a
@@ -127,7 +129,7 @@ def update_scan_schedule(body: ScanScheduleUpdate, request: Request, user: User 
     return scan_schedule.status(db)
 
 
-@router.get("/scans", response_model=list[ScanRunOut])
+@router.get("/scans", dependencies=CLOUD, response_model=list[ScanRunOut])
 def list_scans(db: Session = Depends(get_db), limit: int = Query(20, ge=1, le=200)):
     runs = [ScanRunOut.model_validate(r) for r in
             db.scalars(select(ScanRun).order_by(ScanRun.started_at.desc()).limit(limit))]
@@ -145,7 +147,7 @@ def list_scans(db: Session = Depends(get_db), limit: int = Query(20, ge=1, le=20
     return runs
 
 
-@router.get("/scans/{scan_id}", response_model=ScanRunOut)
+@router.get("/scans/{scan_id}", dependencies=CLOUD, response_model=ScanRunOut)
 def get_scan(scan_id: str, db: Session = Depends(get_db)):
     run = db.get(ScanRun, scan_id)
     if run is None:

@@ -1,6 +1,6 @@
 // Typed client for organisations: the current organisation (/api/organization),
 // invitations (accepting one is public) and the platform console (/api/platform).
-import { request, type Role, type SessionInfo } from "./api";
+import { request, type ModuleKey, type Role, type SessionInfo } from "./api";
 
 export interface Organization {
   id: string;
@@ -13,6 +13,8 @@ export interface Organization {
   plan: string | null;
   max_users: number | null;
   max_devices: number | null;
+  /** Enabled product modules. */
+  modules: ModuleKey[];
   created_at: string;
 }
 
@@ -155,10 +157,12 @@ export const orgApi = {
   platformOrgs: () => request<PlatformOrg[]>("/api/platform/organizations"),
   platformOrg: (id: string) => request<PlatformOrgDetail>(`/api/platform/organizations/${id}`),
   platformMail: () => request<{ configured: boolean }>("/api/platform/mail"),
-  createOrg: (body: { name: string; slug?: string; contact_email?: string; plan?: string; admin_email: string }) =>
+  createOrg: (body: { name: string; slug?: string; contact_email?: string; plan?: string; admin_email: string; modules?: ModuleKey[] }) =>
     request<{ organization: PlatformOrg; invitation: IssuedInvitation }>("/api/platform/organizations", json("POST", body)),
   updateOrg: (id: string, patch: Partial<Pick<Organization, "name" | "contact_email" | "logo_url" | "plan" | "max_users" | "max_devices">>) =>
     request<PlatformOrg>(`/api/platform/organizations/${id}`, json("PATCH", patch)),
+  setOrgModule: (id: string, module: ModuleKey, enabled: boolean) =>
+    request<PlatformOrg>(`/api/platform/organizations/${id}/modules/${module}`, json("PUT", { enabled })),
   suspendOrg: (id: string, reason: string) => request<PlatformOrg>(`/api/platform/organizations/${id}/suspend`, json("POST", { reason })),
   activateOrg: (id: string) => request<PlatformOrg>(`/api/platform/organizations/${id}/activate`, json("POST", {})),
   platformInvite: (id: string, email: string, role: Role) =>

@@ -4,9 +4,10 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, PlainSerializer
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, PlainSerializer
 
 from .config import MAX_INTERVAL_HOURS, MIN_INTERVAL_HOURS
+from .modules import coerce as coerce_modules
 
 # Timestamps are stored as naive UTC; serialize them with an explicit "Z".
 UTCDateTime = Annotated[
@@ -452,6 +453,8 @@ class OrganizationBrief(ORM):
     status: str
     is_default: bool = False
     logo_url: str | None = None
+    # Enabled product modules (app/modules.py): the console locks the others.
+    modules: Annotated[list[str], BeforeValidator(coerce_modules)] = []
 
 
 class SessionInfo(BaseModel):

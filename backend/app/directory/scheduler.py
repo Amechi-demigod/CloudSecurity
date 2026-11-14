@@ -30,7 +30,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import tenancy
+from .. import modules, tenancy
 from ..auth import audit
 from ..locks import LeaderLock
 from ..models import DeviceCommand, utcnow
@@ -91,6 +91,8 @@ class DirectoryScheduler:
         return out
 
     def tick_org(self, db: Session, org_id: str, now: datetime, out: dict[str, list[str]]) -> None:
+        if not modules.has_module(db, modules.ASSETS):
+            return  # directory syncs, collector checks and network scans belong to Assets & identity
         try:
             coll.check_offline(db, now)  # "collector offline" notifications (once per outage)
             db.commit()

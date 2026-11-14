@@ -26,6 +26,7 @@ from app.models import (
     Vulnerability,
     utcnow,
 )
+from app.modules import ALL_MODULES
 from app.notifications import crypto, ssrf
 from app.notifications.models import NotificationChannel, NotificationDelivery
 from app.services import organizations as orgs
@@ -47,7 +48,7 @@ class Tenants:
 
 def create_org(slug: str, admin_email: str, password: str, name: str | None = None, role: str = "admin") -> str:
     with db.get_session(unscoped=True) as s:
-        org = orgs.create_organization(s, name=name or slug.title(), slug=slug, created_by="test")
+        org = orgs.create_organization(s, name=name or slug.title(), slug=slug, created_by="test", modules=ALL_MODULES)
         oid = org.id
         s.commit()
     with db.get_session(oid) as s:

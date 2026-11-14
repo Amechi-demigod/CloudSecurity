@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Request
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, StringConstraints
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -17,6 +17,8 @@ from ..auth import audit, client_ip, require_admin, require_viewer
 from ..connectors import access_check, build_registry, org_config
 from ..db import get_db
 from ..models import IngestToken, Organization, ScanRun, User, utcnow
+from ..modules import CLOUD, require_module
+from ..modules import coerce as coerce_modules
 from ..schemas import ORM, UTCDateTime
 from ..security import INGEST_TOKEN_PREFIX, hash_ingest_token
 from ..services import onboarding
@@ -38,6 +40,7 @@ class OrganizationOut(ORM):
     plan: str | None = None
     max_users: int | None = None
     max_devices: int | None = None
+    modules: Annotated[list[str], BeforeValidator(coerce_modules)] = []
     created_at: UTCDateTime
 
 
@@ -234,12 +237,14 @@ def _out(db: Session, provider: str) -> ConnectorConfigOut:
     return ConnectorConfigOut(**view, from_environment=env)
 
 
-@router.get("/connectors", response_model=list[ConnectorConfigOut], dependencies=[Depends(require_admin)])
+@router.get("/connectors", response_model=list[ConnectorConfigOut],
+            dependencies=[Depends(require_admin), Depends(require_module(CLOUD))])
 def list_connector_configs(db: Session = Depends(get_db)):
     return [_out(db, p) for p in org_config.PROVIDERS]
 
 
-@router.put("/connectors/{provider}", response_model=ConnectorConfigOut)
+@router.put("/connectors/{provider}", response_model=ConnectorConfigOut,
+            dependencies=[Depends(require_module(CLOUD))])
 def put_connector_config(provider: Provider, body: ConnectorConfigIn, request: Request,
                          admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     """Set this organisation's read-only credentials for a cloud provider
@@ -288,7 +293,8 @@ def _start_first_scan(db: Session, provider: str, admin: User, request: Request)
     return run.id
 
 
-@router.delete("/connectors/{provider}", response_model=ConnectorConfigOut)
+@router.delete("/connectors/{provider}", response_model=ConnectorConfigOut,
+               dependencies=[Depends(require_module(CLOUD))])
 def delete_connector_config(provider: Provider, request: Request, admin: User = Depends(require_admin),
                             db: Session = Depends(get_db)):
     """Remove the stored settings (the default organisation falls back to the environment)."""

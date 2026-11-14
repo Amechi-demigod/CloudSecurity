@@ -697,13 +697,15 @@ def command_finished(device: Device, cmd: DeviceCommand) -> None:
             device.isolation_status = "isolated"
 
 
-def deliver_pending(db: Session, device: Device) -> list[DeviceCommand]:
-    """Hand pending commands to the agent exactly once (pending -> delivered)."""
+def deliver_pending(db: Session, device: Device, only_types: set[str] | None = None) -> list[DeviceCommand]:
+    """Hand pending commands to the agent exactly once (pending -> delivered).
+    `only_types` limits delivery to those command types (others stay pending)."""
     expire_commands(db, device.id)
     now = utcnow()
-    cmds = list(db.scalars(select(DeviceCommand).where(DeviceCommand.device_id == device.id,
-                                                       DeviceCommand.status == "pending")
-                           .order_by(DeviceCommand.created_at).limit(20)))
+    stmt = select(DeviceCommand).where(DeviceCommand.device_id == device.id, DeviceCommand.status == "pending")
+    if only_types is not None:
+        stmt = stmt.where(DeviceCommand.type.in_(only_types))
+    cmds = list(db.scalars(stmt.order_by(DeviceCommand.created_at).limit(20)))
     delivered = []
     for c in cmds:
         res = db.execute(update(DeviceCommand).where(DeviceCommand.id == c.id, DeviceCommand.status == "pending")

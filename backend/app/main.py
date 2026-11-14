@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import JSONResponse, RedirectResponse
 
-from . import auth, config, db, locks, logging_setup, remote_hub, tenancy
+from . import auth, config, db, locks, logging_setup, modules, remote_hub, tenancy
 from .api import agent as agent_api
 from .api import agent_update_auto as agent_update_auto_api
 from .api import agent_updates as agent_updates_api
@@ -155,6 +155,7 @@ def create_app() -> FastAPI:
     agent_api.device_limiter.reset()
     agent_api.enroll_limiter.reset()
     app = FastAPI(
+        exception_handlers={modules.ModuleDisabled: modules.module_disabled_handler},
         debug=s.debug and not s.is_production,
         title=f"{s.brand_name} CNAPP",
         version="0.1.0",
@@ -209,23 +210,30 @@ def create_app() -> FastAPI:
     # Everything else requires a logged-in user (viewer or higher). Write
     # endpoints additionally require analyst/admin via their own dependencies.
     session_required = [Depends(auth.require_viewer)]
-    for r in (platform.router, inventory.router, vulns.router, runtime.router, devices.router,
-              remote_sessions_api.router, os_updates_api.router, vuln_fixes_api.router):
-        app.include_router(r, dependencies=session_required)
+    # Product modules (app/modules.py): the organisation must have the module on.
+    cloud, endpoints, vulns_mod, assets = (
+        [Depends(modules.require_module(m))] for m in (modules.CLOUD, modules.ENDPOINTS, modules.VULNERABILITIES,
+                                                       modules.ASSETS))
+    for r, extra in ((platform.router, []), (inventory.router, cloud), (vulns.router, vulns_mod),
+                     (runtime.router, endpoints),
+                     (devices.enrol_router, [Depends(modules.require_module(modules.ENDPOINTS, modules.ASSETS))]),
+                     (devices.router, endpoints), (remote_sessions_api.router, endpoints),
+                     (os_updates_api.router, endpoints), (vuln_fixes_api.router, vulns_mod)):
+        app.include_router(r, dependencies=session_required + extra)
     # Remote-session WebSockets (own authentication: device credential + single-use
     # token, or session cookie + Origin). Served only with REMOTE_RELAY_MODE=all|relay.
     app.include_router(remote_relay_api.router)
-    app.include_router(exposure_api.router, dependencies=session_required)  # /api/exposure: any signed-in user
+    app.include_router(exposure_api.router, dependencies=session_required + cloud)  # /api/exposure: any signed-in user
     app.include_router(dashboards_api.router, dependencies=session_required)  # /api/dashboards/*: any signed-in user
     app.include_router(auth_api.admin_router)
     app.include_router(agent_update_auto_api.router)  # /api/updates/automation, /api/updates/update-now
     app.include_router(notifications_api.router)  # analyst read-only, admin writes
     app.include_router(mfa_sso_api.admin_router)
-    app.include_router(it_assets_api.router)  # /api/it-assets/*: viewer reads, analyst/admin writes
-    app.include_router(directory_api.router)  # /api/directory/*: viewer reads, admin writes
-    app.include_router(collector_api.admin_router)  # /api/collectors/*: viewer reads, admin writes
-    app.include_router(network_api.router)  # /api/network/*: viewer reads, analyst exports, admin writes
-    app.include_router(directory_deploy_api.router)  # /api/directory/deployments/*: viewer reads, admin writes
+    app.include_router(it_assets_api.router, dependencies=assets)  # /api/it-assets/*: viewer reads, analyst/admin writes
+    app.include_router(directory_api.router, dependencies=assets)  # /api/directory/*: viewer reads, admin writes
+    app.include_router(collector_api.admin_router, dependencies=assets)  # /api/collectors/*: viewer reads, admin writes
+    app.include_router(network_api.router, dependencies=assets)  # /api/network/*: viewer reads, analyst exports, admin writes
+    app.include_router(directory_deploy_api.router, dependencies=assets)  # /api/directory/deployments/*
     app.include_router(compliance_api.router)  # /api/compliance/*: viewer reads / exports, admin schedules
     app.include_router(agent_updates_api.router)  # /api/updates/*: viewer reads, admin writes (all audited)
     app.include_router(approvals_api.router)  # /api/approvals/*: admin only (two-person rule)
