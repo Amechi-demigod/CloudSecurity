@@ -13,9 +13,12 @@ Static marketing site served by the frontend image's nginx for the hostnames in
   `SITE_CONSOLE_URL` (default `https://<CNAPP_HOSTNAME>`) when that differs.
 - The "Request a demo" form posts to `POST /api/contact` (backend
   `app/api/contact.py`), which emails `CONTACT_TO`.
-- Pages: `index.html` (home) plus `security.html`, `compliance.html` and
-  `read-only-access.html` (also served as `/security` etc.). The header and footer
+- Pages: `index.html` (home), one page per product (`cloud-security.html`,
+  `endpoints.html`, `vulnerabilities.html`, `assets-identity.html`) plus
+  `security.html`, `compliance.html` and `read-only-access.html` (also served as
+  `/security` etc.). The header and footer
   are repeated in each page; keep them in sync. Only add menu items that have
   content, and never show prices (pricing is "Contact us").
-- Platform menu product links point at anchors on the home page
-  (`/#cloud-security`, `/#endpoints`, `/#vulnerabilities`, `/#assets`).
+- Platform menu and footer product links point at the product pages. Product
+  claims were checked against the code (Nov 2026); recheck before adding new ones,
+  and name the OS when a feature is not on all of them.

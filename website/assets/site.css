@@ -174,6 +174,8 @@ footer{border-top:1px solid var(--line);padding:56px 0 32px;color:var(--ink3);fo
 .phead h1{font-size:clamp(34px,5vw,54px);font-weight:800;max-width:860px;margin:18px auto 0}
 .phead .lead{font-size:clamp(17px,2vw,19px);color:var(--ink2);max-width:680px;margin:18px auto 0}
 .prose{padding:24px 0 24px}
+.phead .ctas{display:flex;gap:12px;justify-content:center;margin-top:28px;flex-wrap:wrap}
+.card .more{display:inline-block;margin-top:18px}
 .blk{padding:40px 0 0}
 .blk h2{font-size:clamp(24px,3vw,32px);font-weight:800}
 .blk>p{color:var(--ink2);font-size:17px;max-width:780px;margin:14px 0 0}

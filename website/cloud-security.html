@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cloud security · Sentrigis</title>
+<meta name="description" content="Read-only cloud security posture for Azure, AWS and Google Cloud: misconfigurations, internet exposure, attack paths, Kubernetes checks and compliance evidence.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preload" href="/assets/fonts/plus-jakarta-sans-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/assets/site.css">
+<script src="/assets/site.js" defer></script>
+</head>
+<body>
+
+<nav class="top" aria-label="Main">
+  <div class="wrap">
+    <a class="brand" href="/" aria-label="Sentrigis home">
+      <svg width="30" height="32" viewBox="0 0 24 26" aria-hidden="true"><path d="M12 1 3 5v7c0 6 4 10.5 9 13 5-2.5 9-7 9-13V5z" fill="rgba(59,130,246,.18)" stroke="#60a5fa" stroke-width="1.8"/><path d="M8.5 12.5l2.5 2.5 4.5-5" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span>Sentrigis</span>
+    </a>
+    <button class="navtoggle" type="button" aria-expanded="false" aria-controls="menu"><span class="sr">Menu</span><i aria-hidden="true"></i></button>
+    <div class="menu" id="menu">
+      <ul class="links">
+        <li class="has-panel">
+          <button class="trig" type="button" aria-expanded="false" aria-controls="mega">Platform</button>
+          <div class="mega" id="mega">
+            <div class="cats">
+            <div class="cat active">
+              <button class="cat-btn" type="button" aria-expanded="true">Platform</button>
+              <div class="pane">
+                <div class="banner"><h3>Platform</h3><p>One console for cloud, endpoints and IT assets, with one inventory and one risk score.</p><a class="more" href="/#overview">Learn more →</a></div>
+                <ul class="items"><li><a href="/#how"><b>How it works</b><span>Connect read-only, deploy the agent, fix what matters.</span></a></li><li><a href="/#works-with"><b>Integrations</b><span>Azure, AWS, Google Cloud, Entra ID, Google Workspace, Active Directory.</span></a></li><li><a href="/#overview"><b>Alerts &amp; workflows</b><span>Email, Teams and Slack, with approvals and an audit trail.</span></a></li></ul>
+              </div>
+            </div>
+            <div class="cat">
+              <button class="cat-btn" type="button" aria-expanded="false">Cloud security</button>
+              <div class="pane">
+                <div class="banner"><h3>Cloud security</h3><p>Read-only posture scanning for Azure, AWS and Google Cloud.</p><a class="more" href="/cloud-security.html">Learn more →</a></div>
+                <ul class="items"><li><a href="/cloud-security.html#posture"><b>Cloud posture</b><span>Misconfigurations mapped to CIS and Microsoft benchmarks.</span></a></li><li><a href="/cloud-security.html#exposure"><b>Exposure &amp; attack paths</b><span>Internet exposure and the paths to your crown jewels.</span></a></li><li><a href="/compliance.html"><b>Compliance</b><span>Evidence against CIS, ISO 27001, SOC 2, NIST CSF and PCI DSS.</span></a></li><li><a href="/cloud-security.html#posture"><b>Kubernetes</b><span>Control-plane checks for AKS, EKS and GKE.</span></a></li></ul>
+              </div>
+            </div>
+            <div class="cat">
+              <button class="cat-btn" type="button" aria-expanded="false">Endpoints &amp; servers</button>
+              <div class="pane">
+                <div class="banner"><h3>Endpoints &amp; servers</h3><p>One lightweight agent for Windows, macOS and Linux servers.</p><a class="more" href="/endpoints.html">Learn more →</a></div>
+                <ul class="items"><li><a href="/endpoints.html#posture"><b>Endpoint management</b><span>Posture checks and inventory for every managed device.</span></a></li><li><a href="/endpoints.html#actions"><b>Remote actions</b><span>Lock, lost mode and suspend sign-in on laptops and desktops; wipe on Windows. With approvals.</span></a></li><li><a href="/endpoints.html#runtime"><b>Runtime detection</b><span>A sensor for Linux servers, VMs and Kubernetes nodes.</span></a></li><li><a href="/endpoints.html#updates"><b>OS updates</b><span>Missing Windows updates per device.</span></a></li></ul>
+              </div>
+            </div>
+            <div class="cat">
+              <button class="cat-btn" type="button" aria-expanded="false">Vulnerabilities</button>
+              <div class="pane">
+                <div class="banner"><h3>Vulnerabilities</h3><p>CVEs on devices, Linux servers and network equipment, ranked by real-world risk.</p><a class="more" href="/vulnerabilities.html">Learn more →</a></div>
+                <ul class="items"><li><a href="/vulnerabilities.html#priority"><b>Prioritisation</b><span>Known-exploited and internet-exposed first.</span></a></li><li><a href="/vulnerabilities.html#priority"><b>In-use detection</b><span>Loaded packages separated from dormant ones on monitored servers.</span></a></li><li><a href="/vulnerabilities.html#fix"><b>Fix guidance</b><span>Fix availability and the assets affected.</span></a></li></ul>
+              </div>
+            </div>
+            <div class="cat">
+              <button class="cat-btn" type="button" aria-expanded="false">Assets &amp; identity</button>
+              <div class="pane">
+                <div class="banner"><h3>Assets &amp; identity</h3><p>Every device and account, from purchase to disposal.</p><a class="more" href="/assets-identity.html">Learn more →</a></div>
+                <ul class="items"><li><a href="/assets-identity.html#register"><b>IT asset lifecycle</b><span>Owners, locations, warranty and refresh dates.</span></a></li><li><a href="/assets-identity.html#discovery"><b>Discovery</b><span>Active Directory, Entra ID, Google Workspace and network scans.</span></a></li><li><a href="/assets-identity.html#identity"><b>Identity hygiene</b><span>Stale, disabled and privileged accounts.</span></a></li><li><a href="/assets-identity.html#register"><b>Offboarding</b><span>Device retrieval, with disposal records and certificates kept.</span></a></li></ul>
+              </div>
+            </div>
+            </div>
+            <div class="megafoot"><a class="btn pri sm" href="/#contact">Request a demo</a></div>
+          </div>
+        </li>
+        <li><a class="plain" href="/#why">Why Sentrigis</a></li>
+        <li class="has-panel">
+          <button class="trig" type="button" aria-expanded="false" aria-controls="resources">Resources</button>
+          <div class="drop" id="resources"><div class="col"><h3>Company</h3><ul><li><a href="/#contact">Contact</a></li></ul></div><div class="col"><h3>Explore</h3><ul><li><a href="/security.html">Security &amp; trust</a></li><li><a href="/compliance.html">Compliance coverage</a></li><li><a href="/read-only-access.html">How read-only cloud access works</a></li></ul></div><div class="col"><h3>Console</h3><ul><li><a href="https://console.sentrigis.com">Log in to the console</a></li></ul></div></div>
+        </li>
+      </ul>
+      <div class="navcta">
+        <a class="btn ghost sm" href="/#contact">Contact us</a>
+        <a class="btn pri sm" href="https://console.sentrigis.com">Log in →</a>
+      </div>
+    </div>
+  </div>
+</nav>
+
+<header class="phead">
+  <div class="wrap">
+    <span class="eyebrow"><i></i>Cloud security</span>
+    <h1>Find the misconfigurations and exposure in your cloud, without changing a thing.</h1>
+    <p class="lead">Sentrigis connects to Azure, AWS and Google Cloud with read-only access, scans on a schedule, and shows what is open to the internet and how an attacker could reach your data.</p>
+    <div class="ctas">
+      <a class="btn pri" href="/#contact">Request a demo</a>
+      <a class="btn ghost" href="/read-only-access.html">How read-only access works</a>
+    </div>
+  </div>
+</header>
+
+<main class="prose">
+  <div class="wrap">
+    <section class="blk" id="posture">
+      <h2>What it checks</h2>
+      <p>Every scan refreshes a full inventory of your cloud resources and runs 134 posture checks against it.</p>
+      <div class="tiles"><div class="tile"><h3>Posture checks</h3><p>Misconfigurations across Azure, AWS and Google Cloud, tagged to the CIS Benchmarks, the Microsoft cloud security benchmark and AWS Foundational Security Best Practices.</p></div><div class="tile"><h3>Cloud inventory</h3><p>Virtual machines, storage, databases, serverless functions, key vaults, identities and network controls, kept current by every scan.</p></div><div class="tile"><h3>Kubernetes</h3><p>Control-plane checks for AKS, EKS and GKE, such as public API endpoints, RBAC and audit logging.</p></div><div class="tile"><h3>End-of-life software</h3><p>Azure app runtimes and database engines that are past end of support.</p></div></div>
+    </section>
+    <section class="blk" id="exposure">
+      <h2>Exposure and attack paths</h2>
+      <p>Knowing a resource is misconfigured is half the picture. Sentrigis also shows whether it can be reached.</p>
+      <div class="tiles"><div class="tile"><h3>Internet exposure</h3><p>Which ports are reachable from the internet once the network controls in front of each resource are taken into account. On Azure that includes network security groups, load balancers, application gateways and Azure Firewall.</p></div><div class="tile"><h3>Attack paths</h3><p>Routes from the internet, through an exposed resource, to a store of sensitive data, marked as confirmed or possible.</p></div><div class="tile"><h3>Risk score</h3><p>Findings, critical vulnerabilities, runtime alerts and attack paths combine into one 0 to 100 score, so you can see whether things are getting better.</p></div></div>
+    </section>
+    <section class="blk" id="compliance">
+      <h2>Compliance and reports</h2>
+      <p>Results map to CIS, ISO 27001:2022, SOC 2, NIST CSF 2.0 and PCI DSS 4.0. Export CSV or PDF, or have the PDF emailed weekly or monthly. <a class="lnk" href="/compliance.html">See compliance coverage →</a></p>
+    </section>
+    <section class="blk" id="alerts">
+      <h2>Alerts and day-to-day work</h2>
+      <p>Send new findings to email, Microsoft Teams, Slack or a signed webhook. Repeat alerts are grouped so nobody is flooded. Scans run every six hours by default, or whenever you start one, and a finding you have accepted can be suppressed so the list stays focused.</p>
+    </section>
+    <section class="blk" id="setup">
+      <h2>Read-only by design</h2>
+      <p>Connecting a cloud takes one script in Azure, AWS or Google Cloud Shell. It creates an identity that can only list and read configuration, and Sentrigis tests it before saving. Nothing in your cloud is ever changed. <a class="lnk" href="/read-only-access.html">How read-only access works →</a></p>
+    </section>
+  </div>
+</main>
+
+<section class="nopt">
+  <div class="wrap">
+    <div class="band">
+      <h2>See your cloud's posture on the first call.</h2>
+      <div class="acts">
+        <a class="btn w" href="/#contact">Request a demo</a>
+        <a class="btn ghost" href="https://console.sentrigis.com">Log in</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="fcols">
+      <div class="fbrand">
+        <a class="brand" href="/" aria-label="Sentrigis home"><svg width="30" height="32" viewBox="0 0 24 26" aria-hidden="true"><path d="M12 1 3 5v7c0 6 4 10.5 9 13 5-2.5 9-7 9-13V5z" fill="rgba(59,130,246,.18)" stroke="#60a5fa" stroke-width="1.8"/><path d="M8.5 12.5l2.5 2.5 4.5-5" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Sentrigis</span></a>
+        <p>Cloud, endpoint and IT asset security in one console.</p>
+      </div>
+      <div><h3>Platform</h3><ul><li><a href="/#overview">Platform</a></li><li><a href="/cloud-security.html">Cloud security</a></li><li><a href="/endpoints.html">Endpoints &amp; servers</a></li><li><a href="/vulnerabilities.html">Vulnerabilities</a></li><li><a href="/assets-identity.html">Assets &amp; identity</a></li></ul></div>
+      <div><h3>Why Sentrigis</h3><ul><li><a href="/#why">Why Sentrigis</a></li><li><a href="/#contact">Request a demo</a></li></ul></div>
+      <div><h3>Resources</h3><ul><li><a href="/#contact">Contact</a></li><li><a href="/security.html">Security &amp; trust</a></li><li><a href="/compliance.html">Compliance coverage</a></li><li><a href="/read-only-access.html">How read-only cloud access works</a></li><li><a href="https://console.sentrigis.com">Log in to the console</a></li></ul></div>
+    </div>
+    <div class="fbase"><span>© 2026 Sentrigis</span></div>
+  </div>
+</footer>
+</body>
+</html>
