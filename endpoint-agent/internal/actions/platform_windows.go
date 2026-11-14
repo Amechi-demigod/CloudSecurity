@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -342,6 +344,8 @@ func (winPrograms) Lookup(source, key string) (Program, error) {
 	p.InstallLocation, _, _ = k.GetStringValue("InstallLocation")
 	p.UninstallString, _, _ = k.GetStringValue("UninstallString")
 	p.QuietUninstallString, _, _ = k.GetStringValue("QuietUninstallString")
+	p.InnoSetupVersion, _, _ = k.GetStringValue("Inno Setup: Setup Version")
+	p.InnoAppPath, _, _ = k.GetStringValue("Inno Setup: App Path")
 	if v, _, err := k.GetIntegerValue("WindowsInstaller"); err == nil && v == 1 {
 		p.WindowsInstaller = true
 	}
@@ -359,6 +363,13 @@ func (c *capped) Write(p []byte) (int, error) {
 
 func (winPrograms) Run(ctx context.Context, c Cmd) (int, string, error) {
 	cmd := exec.CommandContext(ctx, c.Path, c.Args...)
+	// On timeout kill the whole process tree: Inno and NSIS uninstallers run
+	// their work in a child, and killing only the parent would leave it going.
+	cmd.Cancel = func() error {
+		_ = exec.Command("taskkill", "/T", "/F", "/PID", strconv.Itoa(cmd.Process.Pid)).Run()
+		return cmd.Process.Kill()
+	}
+	cmd.WaitDelay = 10 * time.Second // do not wait on pipes a surviving child holds open
 	attr := &syscall.SysProcAttr{HideWindow: true}
 	if c.CmdLine != "" {
 		attr.CmdLine = c.CmdLine // verbatim QuietUninstallString, no shell

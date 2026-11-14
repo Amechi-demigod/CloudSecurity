@@ -31,10 +31,13 @@ type Program struct {
 	UninstallString      string
 	QuietUninstallString string
 	WindowsInstaller     bool
+	// Inno Setup's own registry values ("Inno Setup: Setup Version" / "Inno Setup: App Path").
+	InnoSetupVersion string
+	InnoAppPath      string
 }
 
 // Cmd is an uninstaller to run. Path is always the absolute executable;
-// CmdLine (QuietUninstallString only) is passed verbatim as the Windows
+// CmdLine (QuietUninstallString and NSIS) is passed verbatim as the Windows
 // command line, never through a shell.
 type Cmd struct {
 	Path    string
@@ -56,8 +59,9 @@ var UninstallSources = []string{"registry_hklm64", "registry_hklm32"}
 // AgentProductName is this agent's MSI product name (never uninstalled).
 const AgentProductName = "CNAPP Endpoint Agent"
 
-// ErrNoSilentUninstaller: the program has no MSI product code and no QuietUninstallString.
-var ErrNoSilentUninstaller = errors.New("no silent uninstaller: this program has no MSI product code and no QuietUninstallString - use a script")
+// ErrNoSilentUninstaller: the program is none of the supported kinds.
+var ErrNoSilentUninstaller = errors.New("no silent uninstaller: supported are MSI (product code), a registered QuietUninstallString, " +
+	"and Inno Setup or NSIS (Nullsoft) uninstallers; this program is none of them - use a script")
 
 var (
 	productCodeRe = regexp.MustCompile(`^\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\}$`)
@@ -141,15 +145,21 @@ func (m *Manager) msiexec() string {
 }
 
 // Plan picks the uninstaller: MSI by product code, otherwise the
-// QuietUninstallString, otherwise ErrNoSilentUninstaller. It never falls back
-// to the (interactive) UninstallString.
+// QuietUninstallString, otherwise an Inno Setup / NSIS uninstaller identified
+// from the UninstallString (PlanInstallerUninstall), otherwise
+// ErrNoSilentUninstaller. It never runs an unidentified (interactive)
+// UninstallString.
 func (m *Manager) Plan(p Program) (Cmd, string, error) {
 	if p.WindowsInstaller && productCodeRe.MatchString(p.Key) {
 		return Cmd{Path: m.msiexec(), Args: MsiexecArgs(p.Key)}, MethodMSI, nil
 	}
 	q := strings.TrimSpace(p.QuietUninstallString)
 	if q == "" {
-		return Cmd{}, "", ErrNoSilentUninstaller
+		isNSIS := m.IsNSIS
+		if isNSIS == nil {
+			isNSIS = FileHasNSISSignature
+		}
+		return PlanInstallerUninstall(p, isNSIS)
 	}
 	exe, err := CommandExe(q)
 	if err != nil {
@@ -265,7 +275,7 @@ func (m *Manager) uninstall(ctx context.Context, p UninstallParams) Result {
 	data := map[string]any{"name": prog.DisplayName, "version": prog.DisplayVersion, "method": method}
 	if err != nil {
 		if errors.Is(rctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
-			return Result{Status: "failed", Output: fmt.Sprintf("the uninstaller did not finish within %s and was stopped", m.UninstallTime),
+			return Result{Status: "failed", Output: fmt.Sprintf("the uninstaller did not finish within %s; it and its child processes were stopped", m.UninstallTime),
 				Data: data, Refresh: true}
 		}
 		return Result{Status: "failed", Output: fmt.Sprintf("starting the uninstaller: %v", err), Data: data}

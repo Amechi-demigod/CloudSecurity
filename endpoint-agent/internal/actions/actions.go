@@ -4,7 +4,8 @@
 //     Disabled and later restore exactly the startup type it had before
 //   - uninstall_software: remove a program with its own silent uninstaller
 //     (MSI: msiexec /x {ProductCode} /qn /norestart; otherwise the registry's
-//     QuietUninstallString; nothing else)
+//     QuietUninstallString; Inno Setup / NSIS uninstallers identified
+//     from the registry entry or the file, run silently; nothing else)
 //   - block_usb_storage / unblock_usb_storage: the standard, reversible
 //     USB mass-storage block (USBSTOR driver Start=4 plus the "Removable
 //     Disks: Deny read/write/execute" policy), restoring the previous values
@@ -94,6 +95,8 @@ type Manager struct {
 	RemoteActive func() bool
 	// AgentDir is the directory of the running agent binary (never uninstalled).
 	AgentDir string
+	// IsNSIS checks an uninstaller for the Nullsoft signature (default FileHasNSISSignature; replaced in tests).
+	IsNSIS func(path string) bool
 	// SystemRoot is %SystemRoot% (for msiexec.exe).
 	SystemRoot string
 

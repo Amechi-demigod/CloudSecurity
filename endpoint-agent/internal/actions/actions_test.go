@@ -1,6 +1,7 @@
 package actions
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -581,6 +582,87 @@ func TestSavedFileCorrupt(t *testing.T) {
 		t.Fatal(err)
 	}
 	if r := m.Execute(context.Background(), cmd(BlockUSBStorage, "b", nil)); r.Status != "failed" || !strings.Contains(r.Output, "corrupt") {
+		t.Fatalf("%+v", r)
+	}
+}
+
+func TestPlanInstallerUninstall(t *testing.T) {
+	never := func(string) bool { return false }
+	always := func(string) bool { return true }
+
+	// Inno via its registry values (any file name), existing arguments kept, exec argument list.
+	c, method, err := PlanInstallerUninstall(Program{InnoSetupVersion: "6.2.0",
+		UninstallString: `"C:\Program Files\My App\remove.exe" /LOG="C:\t x\l.txt"`}, never)
+	if err != nil || method != MethodInno || c.CmdLine != "" || c.Path != `C:\Program Files\My App\remove.exe` ||
+		!reflect.DeepEqual(c.Args, []string{`/LOG=C:\t x\l.txt`, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"}) {
+		t.Fatalf("%+v %s %v", c, method, err)
+	}
+	c, method, err = PlanInstallerUninstall(Program{InnoAppPath: `C:\App`, UninstallString: `C:\App\x.exe`}, never)
+	if err != nil || method != MethodInno {
+		t.Fatalf("app path: %s %v", method, err)
+	}
+	// Inno via the file name, quoted and unquoted paths with spaces.
+	for _, u := range []string{`"C:\Program Files\Foo Bar\unins000.exe"`, `C:\Program Files\Foo Bar\UNINS001.EXE`} {
+		c, method, err = PlanInstallerUninstall(Program{UninstallString: u}, never)
+		if err != nil || method != MethodInno || c.Path != strings.Trim(u, `"`) ||
+			!reflect.DeepEqual(c.Args, InnoSilentArgs) {
+			t.Fatalf("%s: %+v %s %v", u, c, method, err)
+		}
+	}
+	// NSIS: signature confirmed; /S and _?= last; own /S and _?= replaced; spaces kept in the directory.
+	c, method, err = PlanInstallerUninstall(Program{UninstallString: `"C:\Program Files\Foo Bar\uninst.exe" /allusers /S _?=C:\old`}, always)
+	want := `"C:\Program Files\Foo Bar\uninst.exe" /allusers /S _?=C:\Program Files\Foo Bar`
+	if err != nil || method != MethodNSIS || c.CmdLine != want || c.Path != `C:\Program Files\Foo Bar\uninst.exe` || len(c.Args) != 0 {
+		t.Fatalf("%+v %s %v", c, method, err)
+	}
+	// A file named uninstall.exe / uninst.exe without the signature is refused.
+	for _, u := range []string{`"C:\Foo\uninstall.exe"`, `C:\Foo\uninst.exe /S`} {
+		if _, _, err := PlanInstallerUninstall(Program{UninstallString: u}, never); !errors.Is(err, ErrNoSilentUninstaller) {
+			t.Errorf("%s: %v", u, err)
+		}
+	}
+	// Other refusals: no UninstallString, relative path, script host, non-exe, msiexec /I, unterminated quote.
+	for _, u := range []string{"", `uninst.exe /S`, `cmd.exe /c x`, `C:\Foo\x.bat`, `"C:\Foo\unins000.exe /S`} {
+		if _, _, err := PlanInstallerUninstall(Program{InnoSetupVersion: "6", UninstallString: u}, always); err == nil {
+			t.Errorf("%q accepted", u)
+		}
+	}
+}
+
+func TestFileHasNSISSignature(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name string, b []byte) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	pad := bytes.Repeat([]byte{0x90}, 40000)
+	if !FileHasNSISSignature(write("nsis.exe", append(append([]byte("MZ"), pad...), []byte("\xef\xbe\xad\xdeNullsoftInst")...))) {
+		t.Error("NullsoftInst not found")
+	}
+	if !FileHasNSISSignature(write("nsis2.exe", append(append([]byte("MZ"), pad...), []byte("Nullsoft Install System v3.08")...))) {
+		t.Error("stub string not found")
+	}
+	if FileHasNSISSignature(write("uninstall.exe", append([]byte("MZ"), pad...))) {
+		t.Error("plain file named uninstall.exe accepted")
+	}
+	// A signature beyond the scan limit is not read for.
+	if FileHasNSISSignature(write("huge.exe", append(bytes.Repeat([]byte{0}, nsisScanLimit+10), []byte("NullsoftInst")...))) {
+		t.Error("scan not bounded")
+	}
+	if FileHasNSISSignature(filepath.Join(dir, "missing.exe")) {
+		t.Error("missing file accepted")
+	}
+}
+
+func TestUninstallInnoThroughManager(t *testing.T) {
+	m, _, _, progs := newManager(t)
+	progs.progs["registry_hklm64|Foo_is1"] = Program{Key: "Foo_is1", Source: "registry_hklm64", DisplayName: "Foo",
+		UninstallString: `"C:\Program Files\Foo\unins000.exe"`}
+	r := m.uninstall(context.Background(), UninstallParams{Identifier: "Foo_is1", Source: "registry_hklm64", Name: "Foo"})
+	if r.Status != "succeeded" || r.Data["method"] != MethodInno || len(progs.ran) != 1 {
 		t.Fatalf("%+v", r)
 	}
 }
