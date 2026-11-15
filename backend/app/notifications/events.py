@@ -110,6 +110,7 @@ SOURCE_MODULES = {
     "posture_finding": "cloud", "attack_path": "cloud", "scan": "cloud",
     "vulnerability": "vulnerabilities",
     "directory_source": "assets", "asset_lifecycle": "assets",
+    "external_finding": "external",
 }
 
 

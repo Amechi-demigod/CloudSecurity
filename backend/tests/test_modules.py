@@ -41,6 +41,8 @@ PROBES = {
     "endpoints": ["/api/devices", "/api/alerts", "/api/runtime/events", "/api/scripts", "/api/devices/summary"],
     "vulnerabilities": ["/api/vulnerabilities", "/api/vulnerabilities/stats"],
     "assets": ["/api/it-assets", "/api/directory/sources", "/api/network/scans", "/api/collectors"],
+    "external": ["/api/external/overview", "/api/external/targets", "/api/external/findings", "/api/external/hosts",
+                 "/api/external/scans", "/api/external/reports", "/api/external/report/preview"],
 }
 
 
@@ -166,6 +168,7 @@ def test_only_platform_admins_can_switch_modules(client):
 # --- migration ------------------------------------------------------------------------
 
 def test_migration_turns_every_existing_organisation_fully_on(tmp_path):
+    """0031: the four modules of that time; `external` (0032, bought separately) stays off."""
     if IS_POSTGRES:
         reset_database()
         eng = dbmod.create_db_engine(TEST_DATABASE_URL)
@@ -182,7 +185,7 @@ def test_migration_turns_every_existing_organisation_fully_on(tmp_path):
             rows = dict(conn.execute(text("SELECT id, modules FROM organizations")).all())
         assert set(rows) == {"default", "old1"}
         for oid, value in rows.items():
-            assert (value if isinstance(value, list) else json.loads(value)) == list(ALL_MODULES), oid
+            assert (value if isinstance(value, list) else json.loads(value)) == [m for m in ALL_MODULES if m != "external"], oid
     finally:
         eng.dispose()
 

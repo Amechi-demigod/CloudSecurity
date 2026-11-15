@@ -43,6 +43,10 @@ os.environ.update({
     "DASHBOARD_SNAPSHOT_WORKER_ENABLED": "false",
     # Scheduled compliance reports: tests drive the runner explicitly.
     "COMPLIANCE_REPORT_WORKER_ENABLED": "false",
+    # Attack surface scans: tests drive the scheduler explicitly (never any scan traffic).
+    "EXTERNAL_SCHEDULER_WORKER_ENABLED": "false",
+    "EXTERNAL_CRTSH_ENABLED": "false",
+    "EXTERNAL_SCANNER_EGRESS_IP": "",
     # Directory discovery: tests drive the sync scheduler explicitly.
     "DIRECTORY_SCHEDULER_WORKER_ENABLED": "false",
     # Vulnerability matching: tests drive the worker explicitly with fake feeds

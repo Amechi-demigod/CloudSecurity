@@ -1205,3 +1205,157 @@ from .compliance import models as _compliance_models  # noqa: E402, F401
 from .directory import models as _directory_models  # noqa: E402, F401
 from .network import models as _network_models  # noqa: E402, F401
 from .notifications import models as _notification_models  # noqa: E402, F401
+
+# --- Attack surface & pre-ASV (app/external, docs/ATTACK_SURFACE.md) ---------------------------
+
+class ExternalTarget(TenantMixin, Base):
+    """A domain, public IPv4 address or CIDR (at most /24) to scan from the internet. Never scanned until
+    `scannable` (verified domain / resolves to a verified domain / cloud inventory IP / approved by a platform owner)."""
+
+    __tablename__ = "external_targets"
+    __table_args__ = (UniqueConstraint("organization_id", "value", name="uq_external_targets_org_value"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    kind: Mapped[str] = mapped_column(String(8))  # domain | ip | cidr
+    value: Mapped[str] = mapped_column(String(255))
+    token: Mapped[str] = mapped_column(String(64))  # sentrigis-verification=<token>
+    # domain: dns | http | None.  ip/cidr: domain | cloud | platform | None
+    verified_method: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    verified_detail: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    last_check_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_check_error: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Platform-owner approval of an IP / CIDR the customer cannot prove another way.
+    attested_by: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    attested_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    attestation: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    approval_status: Mapped[str] = mapped_column(String(12), default="none")  # none|requested|approved|rejected
+    approval_note: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    approved_by: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Opt-in vendor-default credential checks (consent is audit-logged).
+    default_password_checks: Mapped[bool] = mapped_column(Boolean, default=False)
+    consent_by: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    consent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Optional scan window (UTC hours 0-23; start == end or None = any time).
+    window_start_hour: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    window_end_hour: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class ExternalSettings(TenantMixin, Base):
+    """Per organisation: scope declaration and schedule."""
+
+    __tablename__ = "external_settings"
+
+    organization_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("organizations.id", name="fk_external_settings_organization_id"), primary_key=True)
+    scope_text: Mapped[str] = mapped_column(Text, default="")
+    scope_confirmed_by: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    scope_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    schedule_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    interval_hours: Mapped[float] = mapped_column(Float, default=168.0)  # weekly
+    next_finding_seq: Mapped[int] = mapped_column(Integer, default=1)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class ExternalScan(TenantMixin, Base):
+    __tablename__ = "external_scans"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    trigger: Mapped[str] = mapped_column(String(12), default="manual")  # manual | scheduled | retest
+    status: Mapped[str] = mapped_column(String(12), default="running")  # running|succeeded|failed|partial
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    started_by: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    scanner_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    hosts: Mapped[int] = mapped_column(Integer, default=0)
+    open_ports: Mapped[int] = mapped_column(Integer, default=0)
+    new_hosts: Mapped[int] = mapped_column(Integer, default=0)
+    findings_open: Mapped[int] = mapped_column(Integer, default=0)
+    result: Mapped[str | None] = mapped_column(String(8), nullable=True)  # pass | fail
+    targets: Mapped[list] = mapped_column(JSON, default=list)  # values scanned
+    skipped: Mapped[list] = mapped_column(JSON, default=list)  # [{value, reason}]
+    message: Mapped[str] = mapped_column(Text, default="")
+
+
+class ExternalHost(TenantMixin, Base):
+    __tablename__ = "external_hosts"
+    __table_args__ = (UniqueConstraint("organization_id", "host", name="uq_external_hosts_org_host"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    host: Mapped[str] = mapped_column(String(255))  # name or IP as discovered
+    ip: Mapped[str | None] = mapped_column(String(45), nullable=True, index=True)
+    target_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    dns: Mapped[dict] = mapped_column(JSON, default=dict)
+    ports: Mapped[list] = mapped_column(JSON, default=list)  # [{port, service, product, version, banner}]
+    tls: Mapped[dict] = mapped_column(JSON, default=dict)
+    software: Mapped[list] = mapped_column(JSON, default=list)
+    asset_id: Mapped[str | None] = mapped_column(String(512), nullable=True)  # linked cloud asset
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    first_seen: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_seen: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_scan_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+
+class ExternalFinding(TenantMixin, Base):
+    __tablename__ = "external_findings"
+    __table_args__ = (UniqueConstraint("organization_id", "seq", name="uq_external_findings_org_seq"),
+                      UniqueConstraint("organization_id", "key", name="uq_external_findings_org_key"))
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    seq: Mapped[int] = mapped_column(Integer)  # EXT-0001 per organisation
+    key: Mapped[str] = mapped_column(String(400))  # check | host | port | path (one finding per key)
+    check_id: Mapped[str] = mapped_column(String(48), index=True)
+    title: Mapped[str] = mapped_column(String(255))
+    severity: Mapped[str] = mapped_column(String(12), index=True)
+    cvss: Mapped[float] = mapped_column(Float, default=0.0)
+    vector: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    cwe: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    cve_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    host: Mapped[str] = mapped_column(String(255), index=True)
+    ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
+    port: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    detail: Mapped[dict] = mapped_column(JSON, default=dict)  # description, impact, steps, fix, references, compliance
+    evidence: Mapped[dict] = mapped_column(JSON, default=dict)  # headers only, never secrets / file contents
+    auto_fail: Mapped[bool] = mapped_column(Boolean, default=False)
+    dos_only: Mapped[bool] = mapped_column(Boolean, default=False)
+    special_note: Mapped[str | None] = mapped_column(String(24), nullable=True)  # Part 3b category
+    status: Mapped[str] = mapped_column(String(16), default="open", index=True)  # open|resolved|accepted|disputed
+    status_note: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    status_by: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    first_seen: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_seen: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_scan_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+
+class ExternalDispute(TenantMixin, Base):
+    __tablename__ = "external_disputes"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    finding_id: Mapped[str] = mapped_column(String(32), ForeignKey("external_findings.id", ondelete="CASCADE"),
+                                            index=True)
+    kind: Mapped[str] = mapped_column(String(24))  # false_positive | compensating_control
+    reason: Mapped[str] = mapped_column(Text)
+    submitted_by: Mapped[str] = mapped_column(String(320))
+    submitted_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    status: Mapped[str] = mapped_column(String(12), default="pending", index=True)  # pending|accepted|rejected
+    reviewed_by: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    review_note: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+
+
+class ExternalReport(TenantMixin, Base):
+    """A generated pre-ASV report (snapshot of the data; the PDF is rendered on download)."""
+
+    __tablename__ = "external_reports"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    scan_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    generated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    generated_by: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    result: Mapped[str] = mapped_column(String(8))
+    data: Mapped[dict] = mapped_column(JSON, default=dict)
