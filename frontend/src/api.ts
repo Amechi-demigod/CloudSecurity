@@ -396,6 +396,9 @@ export interface User {
   auth_sources: string[];
 }
 
+/** Product modules a platform owner switches on or off per organisation (backend app/modules.py). */
+export type ModuleKey = "cloud" | "endpoints" | "vulnerabilities" | "assets";
+
 export interface OrganizationBrief {
   id: string;
   name: string;
@@ -403,6 +406,8 @@ export interface OrganizationBrief {
   status: "active" | "suspended";
   is_default: boolean;
   logo_url: string | null;
+  /** Enabled modules; the others are shown locked. */
+  modules: ModuleKey[];
 }
 
 export interface SessionInfo {
@@ -1033,6 +1038,8 @@ export async function request<T>(path: string, init?: RequestInit & { skipAuthHa
     }
     if (!init?.skipAuthHandling) {
       if (res.status === 401) onUnauthorized?.();
+      // A module the subscription does not include: pages show their locked state, no "not permitted" banner.
+      if (res.status === 403 && detail === "module_disabled") throw new ApiError(403, detail);
       if (res.status === 403) {
         const msg = `Not permitted: ${detail}`;
         onForbidden?.(msg);

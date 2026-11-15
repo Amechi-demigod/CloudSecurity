@@ -6,6 +6,7 @@ import type { Connector, ConnectorSchedule, ScanRun, ScanSchedule } from "../api
 import { useAuth } from "../auth/context";
 import { ConnectCloud, ConnectionForm, ProviderMark } from "../components/cloudConnect";
 import { CollectorsSection } from "../components/collectors";
+import { LockedCard } from "../components/ModuleLocked";
 import { DirectoriesSection } from "../components/directories";
 import { DirectoryMark } from "../components/directoryShared";
 import { directoryApi, collectorApi, DIRECTORY_NAME, type DirectorySource, type SyncRun } from "../directoryApi";
@@ -13,6 +14,7 @@ import { Button, Card, ErrorNote, PageHeader, Select, SeverityBadge, Table, Tag 
 import { CLOUD_NAME, CLOUD_PROVIDERS, CLOUD_ROLE, CLOUD_SCOPE } from "../lib/cloudSetup";
 import { RUN_COLOR, RUN_TEXT, RUN_TEXT_SERVER, TRIGGER_TEXT, runDuration } from "../lib/directory";
 import { fmtAgo, fmtHours, fmtTime, fmtUntil } from "../lib/format";
+import { useModules } from "../lib/modules";
 import { useApi } from "../lib/useApi";
 import { networkApi } from "../networkApi";
 import { orgApi, type ConnectorConfig, type Provider } from "../orgApi";
@@ -380,16 +382,21 @@ export default function Connectors() {
   const auth = useAuth();
   const canScan = auth.can("analyst");
   const isAdmin = auth.can("admin");
-  const connectors = useApi(api.connectors, [], 15000);
-  const scans = useApi(api.scans, [], 3000);
-  const schedule = useApi(api.scanSchedule, [], 15000);
-  const configs = useApi(() => (isAdmin ? orgApi.connectors() : Promise.resolve(null)), [isAdmin]);
-  const posture = useApi(api.postureRules, []);
-  const detection = useApi(api.detectionRules, []);
+  // Sections of a product module the organisation does not have are shown locked and not loaded.
+  const { has } = useModules();
+  const hasCloud = has("cloud");
+  const hasAssets = has("assets");
+  const hasEndpoints = has("endpoints");
+  const connectors = useApi(() => (hasCloud ? api.connectors() : Promise.resolve([])), [hasCloud], 15000);
+  const scans = useApi(() => (hasCloud ? api.scans() : Promise.resolve([])), [hasCloud], 3000);
+  const schedule = useApi(() => (hasCloud ? api.scanSchedule() : Promise.resolve(null)), [hasCloud], 15000);
+  const configs = useApi(() => (isAdmin && hasCloud ? orgApi.connectors() : Promise.resolve(null)), [isAdmin, hasCloud]);
+  const posture = useApi(() => (hasCloud ? api.postureRules() : Promise.resolve([])), [hasCloud]);
+  const detection = useApi(() => (hasEndpoints ? api.detectionRules() : Promise.resolve([])), [hasEndpoints]);
   const [scanError, setScanError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const sources = useApi(directoryApi.sources, [], 30000);
-  const collectors = useApi(collectorApi.list, [], 30000);
+  const sources = useApi(() => (hasAssets ? directoryApi.sources() : Promise.resolve([])), [hasAssets], 30000);
+  const collectors = useApi(() => (hasAssets ? collectorApi.list() : Promise.resolve([])), [hasAssets], 30000);
   // No all-sources runs endpoint: fetch each source's recent runs (few sources) and merge. Connection tests are not syncs, so they are left out.
   const sourceKey = (sources.data ?? []).map((s) => s.id).join(",");
   const dirRuns = useApi(
@@ -468,9 +475,11 @@ export default function Connectors() {
         </div>
       )}
 
-      <GroupHeading id="cloud" title="Cloud" status={loaded ? cloudStatus : undefined} />
+      <GroupHeading id="cloud" title="Cloud" status={hasCloud && loaded ? cloudStatus : undefined} />
 
-      {before &&
+      {!hasCloud && <LockedCard module="cloud" className="mb-4" />}
+
+      {hasCloud && before &&
         (isAdmin ? (
           <ConnectCloud providers={CLOUD_PROVIDERS} configs={configs.data} onSaved={saved} />
         ) : (
@@ -482,7 +491,7 @@ export default function Connectors() {
           </Card>
         ))}
 
-      {connected.map((c) => (
+      {hasCloud && connected.map((c) => (
         <CloudCard
           key={c.name}
           c={c}
@@ -497,7 +506,7 @@ export default function Connectors() {
         />
       ))}
 
-      {!before && connecting && isAdmin && (
+      {hasCloud && !before && connecting && isAdmin && (
         <ConnectCloud
           providers={unconnected}
           configs={configs.data}
@@ -508,7 +517,7 @@ export default function Connectors() {
         />
       )}
 
-      {loaded && !before && (
+      {hasCloud && loaded && !before && (
         <div className="mb-4 grid grid-cols-1 gap-4 xl:grid-cols-12">
           {schedule.data && (
             <Card
@@ -555,16 +564,22 @@ export default function Connectors() {
         </div>
       )}
 
-      <DirectoriesSection isAdmin={isAdmin} group="cloud" />
+      {hasAssets && <DirectoriesSection isAdmin={isAdmin} group="cloud" />}
 
-      <GroupHeading id="on-premises" title="On-premises" status={sources.data && collectors.data ? onpremStatus : undefined} />
-      <DirectoriesSection isAdmin={isAdmin} group="onprem" />
-      <div className="mt-4">
-        <CollectorsSection isAdmin={isAdmin} />
-      </div>
-      <div className="mt-4">
-        <NetworkScansCard isAdmin={isAdmin} />
-      </div>
+      <GroupHeading id="on-premises" title="On-premises" status={hasAssets && sources.data && collectors.data ? onpremStatus : undefined} />
+      {hasAssets ? (
+        <>
+          <DirectoriesSection isAdmin={isAdmin} group="onprem" />
+          <div className="mt-4">
+            <CollectorsSection isAdmin={isAdmin} />
+          </div>
+          <div className="mt-4">
+            <NetworkScansCard isAdmin={isAdmin} />
+          </div>
+        </>
+      ) : (
+        <LockedCard module="assets" className="mb-4" />
+      )}
 
       <Card
         title="Scan history"
@@ -663,7 +678,9 @@ export default function Connectors() {
         )}
       </Card>
 
+      {(hasCloud || hasEndpoints) && (
       <div className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-2">
+        {hasCloud && (
         <Card title={`Posture rules (${posture.data?.length ?? 0})`}>
           <ul className="max-h-96 space-y-1.5 overflow-y-auto text-sm">
             {posture.data?.map((r) => (
@@ -675,6 +692,8 @@ export default function Connectors() {
             ))}
           </ul>
         </Card>
+        )}
+        {hasEndpoints && (
         <Card title={`Runtime detection rules (${detection.data?.length ?? 0})`}>
           <ul className="max-h-96 space-y-1.5 overflow-y-auto text-sm">
             {detection.data?.map((r) => (
@@ -686,7 +705,9 @@ export default function Connectors() {
             ))}
           </ul>
         </Card>
+        )}
       </div>
+      )}
     </div>
   );
 }

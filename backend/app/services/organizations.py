@@ -4,11 +4,14 @@ access) unless stated otherwise; callers commit."""
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..models import Asset, Device, Organization, OrganizationMembership, ScanRun, User, utcnow
+from ..modules import enabled_modules
+from ..modules import normalize as normalize_modules
 
 SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
 RESERVED_SLUGS = frozenset({"api", "admin", "platform", "login", "invite", "system", "www", "static"})
@@ -33,8 +36,9 @@ def validate_slug(slug: str) -> str:
 
 
 def create_organization(db: Session, *, name: str, slug: str | None = None, contact_email: str | None = None,
-                        logo_url: str | None = None, plan: str | None = None, created_by: str | None = None
-                        ) -> Organization:
+                        logo_url: str | None = None, plan: str | None = None, created_by: str | None = None,
+                        modules: Iterable[str] = ()) -> Organization:
+    """New organisations start with no product modules unless `modules` names some."""
     name = name.strip()
     if not name:
         raise OrgError("name is required")
@@ -43,7 +47,7 @@ def create_organization(db: Session, *, name: str, slug: str | None = None, cont
         raise OrgError(f"an organisation with slug {slug!r} already exists")
     org = Organization(name=name[:128], slug=slug, contact_email=(contact_email or "").strip().lower() or None,
                        logo_url=logo_url or None, plan=plan or None, status="active", is_default=False,
-                       created_by=created_by)
+                       created_by=created_by, modules=normalize_modules(modules))
     db.add(org)
     db.flush()
     return org
@@ -58,6 +62,15 @@ def set_status(db: Session, org: Organization, status: str, reason: str | None =
     org.suspended_at = utcnow() if status == "suspended" else None
     org.suspended_reason = (reason or "")[:500] or None if status == "suspended" else None
     org.updated_at = utcnow()
+
+
+def set_modules(org: Organization, modules: Iterable[str]) -> tuple[list[str], list[str]]:
+    """Set the enabled modules; returns (turned on, turned off). Data is never touched."""
+    before = enabled_modules(org)
+    after = normalize_modules(modules)
+    org.modules = after
+    org.updated_at = utcnow()
+    return [m for m in after if m not in before], [m for m in before if m not in after]
 
 
 def usage(db: Session) -> dict[str, dict[str, int]]:

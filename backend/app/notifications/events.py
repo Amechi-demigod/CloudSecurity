@@ -102,11 +102,27 @@ def normalize_severity(sev: str | None) -> str:
     return s if s in SEV_RANK else "info"
 
 
+# Event sources that belong to a product module (app/modules.py): nothing is queued for an
+# organisation that does not have it. Unlisted sources (approvals, agent security, ...) always are.
+SOURCE_MODULES = {
+    "runtime_alert": "endpoints", "device": "endpoints", "host_isolation": "endpoints", "endpoint_action": "endpoints",
+    "remote_session": "endpoints", "server_update": "endpoints",
+    "posture_finding": "cloud", "attack_path": "cloud", "scan": "cloud",
+    "vulnerability": "vulnerabilities",
+    "directory_source": "assets", "asset_lifecycle": "assets",
+}
+
+
 def emit(db: Session, ev: Event):
-    """Queue `ev` in the caller's transaction (the caller commits). Never raises."""
+    """Queue `ev` in the caller's transaction (the caller commits). Never raises.
+    Returns None (nothing queued) when the organisation does not have the source's module."""
+    from .. import modules, tenancy
     from .models import NotificationEvent
 
     try:
+        module = SOURCE_MODULES.get(ev.source)
+        if module and tenancy.org_id(db) and not modules.has_module(db, module):
+            return None
         if not _NAME_RE.match(ev.source):
             raise ValueError(f"invalid event source {ev.source!r}")
         row = NotificationEvent(

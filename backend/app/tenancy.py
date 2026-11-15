@@ -232,11 +232,12 @@ def ensure_default_org(session: Session) -> None:
     get it from the 0013 migration / SQLite startup upgrade). Caller commits."""
     from . import config
     from .models import Organization
+    from .modules import ALL_MODULES
 
     with unscoped(session):
         if session.get(Organization, DEFAULT_ORG_ID) is None:
             s = config.settings
             session.add(Organization(id=DEFAULT_ORG_ID, name=s.default_org_name, slug=DEFAULT_ORG_SLUG,
-                                     is_default=True, status="active"))
+                                     is_default=True, status="active", modules=list(ALL_MODULES)))
             session.flush()
             log.info("Created the default organisation %r", s.default_org_name)

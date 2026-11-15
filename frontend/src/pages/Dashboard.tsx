@@ -3,6 +3,7 @@ import { api, type DashMeta, type DashRange } from "../api";
 import { GettingStarted } from "../components/org";
 import { ErrorNote } from "../components/ui";
 import { TABS, type TabKey } from "../lib/dash";
+import { useModules } from "../lib/modules";
 import { useApi } from "../lib/useApi";
 import { useUrlState } from "../lib/useUrlState";
 import EndpointsTab from "./dashboards/Endpoints";
@@ -55,7 +56,10 @@ export default function DashboardPage() {
   const [tabParam, setTab] = useUrlState("tab", "overview");
   const [rangeParam, setRange] = useUrlState("range", "30d");
   const [account, setAccount] = useUrlState("account", "");
-  const tab: TabKey = TABS.some((t) => t.key === tabParam) ? (tabParam as TabKey) : "overview";
+  // Tabs of a product module the organisation does not have are left out (the overview still shows everything).
+  const { has } = useModules();
+  const tabs = TABS.filter((t) => !("module" in t) || has(t.module));
+  const tab: TabKey = tabs.some((t) => t.key === tabParam) ? (tabParam as TabKey) : "overview";
   const range: DashRange = RANGES.includes(rangeParam as DashRange) ? (rangeParam as DashRange) : "30d";
   const { data: meta, error } = useApi(() => api.dashboards({ range, account: account || undefined }), [range, account], 60000);
   const heading = HEADINGS[tab];
@@ -110,7 +114,7 @@ export default function DashboardPage() {
 
       <nav aria-label="Dashboards" className="mb-[18px] mt-4 overflow-x-auto border-b border-line" data-print="hide">
         <ul role="tablist" className="flex min-w-max gap-1">
-          {TABS.map((t) => {
+          {tabs.map((t) => {
             const on = t.key === tab;
             const badge = "badge" in t && meta ? meta.tabs[t.badge] : null;
             return (

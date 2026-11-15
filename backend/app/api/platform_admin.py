@@ -16,6 +16,7 @@ from .. import mailer
 from ..auth import audit, client_ip, require_platform_admin
 from ..db import get_db
 from ..models import Organization, OrganizationInvitation, OrganizationMembership, User, utcnow
+from ..modules import enabled_modules
 from ..schemas import UTCDateTime
 from ..services import invitations as inv_svc
 from ..services import organizations as orgs
@@ -25,6 +26,7 @@ from .organization import OrganizationOut
 router = APIRouter(prefix="/api/platform", tags=["platform-admin"], dependencies=[Depends(require_platform_admin)])
 OrgId = Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]{1,32}$")]
 Role = Literal["viewer", "analyst", "admin"]
+ModuleKey = Literal["cloud", "endpoints", "vulnerabilities", "assets"]  # app/modules.py
 Email = Annotated[str, StringConstraints(strip_whitespace=True, min_length=3, max_length=320,
                                          pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")]
 
@@ -67,6 +69,8 @@ class OrgCreate(BaseModel):
     plan: Annotated[str, StringConstraints(max_length=32)] | None = None
     # The first admin, invited by email.
     admin_email: Email
+    # Product modules switched on from the start (none by default).
+    modules: list[ModuleKey] = []
 
 
 class OrgUpdate(BaseModel):
@@ -77,6 +81,11 @@ class OrgUpdate(BaseModel):
     plan: Annotated[str, StringConstraints(max_length=32)] | None = None
     max_users: int | None = Field(None, ge=0, le=1_000_000)
     max_devices: int | None = Field(None, ge=0, le=10_000_000)
+
+
+class ModuleIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool
 
 
 class StatusIn(BaseModel):
@@ -137,7 +146,7 @@ def create_organization(body: OrgCreate, request: Request, admin: User = Depends
     returned instead when no platform mail server is configured)."""
     try:
         org = orgs.create_organization(db, name=body.name, slug=body.slug or None, contact_email=body.contact_email,
-                                       plan=body.plan, created_by=admin.email)
+                                       plan=body.plan, created_by=admin.email, modules=body.modules)
         issued = inv_svc.create(db, org, email=body.admin_email, role="admin", invited_by=admin.email,
                                 base_url=request_base(request))
     except inv_svc.InvitationError as e:
@@ -147,7 +156,8 @@ def create_organization(body: OrgCreate, request: Request, admin: User = Depends
         db.rollback()
         raise HTTPException(409 if "already exists" in str(e) else 422, str(e)) from None
     audit(db, "organization_created", actor=admin, target=f"organization:{org.slug}", ip=client_ip(request),
-          organization_id=org.id, name=org.name, admin_email=issued.invitation.email, emailed=issued.emailed)
+          organization_id=org.id, name=org.name, admin_email=issued.invitation.email, emailed=issued.emailed,
+          modules=org.modules)
     db.commit()
     return CreatedOut(organization=_org_out(org, None, 1), invitation=issued_out(issued))
 
@@ -187,6 +197,26 @@ def update_organization(org_id: OrgId, body: OrgUpdate, request: Request,
         audit(db, "organization_updated", actor=admin, target=f"organization:{org.slug}", ip=client_ip(request),
               organization_id=org.id, changes=changes, by="platform")
         db.commit()
+    return _org_out(org, orgs.usage(db).get(org.id), _pending_counts(db).get(org.id, 0))
+
+
+@router.put("/organizations/{org_id}/modules/{module}", response_model=PlatformOrg)
+def set_module(body: ModuleIn, request: Request, org_id: OrgId, module: ModuleKey,
+               admin: User = Depends(require_platform_admin), db: Session = Depends(get_db)):
+    """Switch one product module on or off for an organisation. Off hides it and
+    refuses its APIs; the data is kept and shows again when it is switched back on."""
+    org = _get(db, org_id)
+    on = set(enabled_modules(org))
+    if body.enabled:
+        on.add(module)
+    else:
+        on.discard(module)
+    turned_on, turned_off = orgs.set_modules(org, on)
+    for m in turned_on + turned_off:
+        audit(db, "org_module_enabled" if m in turned_on else "org_module_disabled", actor=admin,
+              target=f"organization:{org.slug}", ip=client_ip(request), organization_id=org.id, module=m,
+              by="platform")
+    db.commit()
     return _org_out(org, orgs.usage(db).get(org.id), _pending_counts(db).get(org.id, 0))
 
 

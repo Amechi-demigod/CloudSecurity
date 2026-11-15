@@ -8,6 +8,7 @@ import {
   Globe,
   Laptop,
   LayoutDashboard,
+  Lock,
   Menu,
   Moon,
   Network,
@@ -24,11 +25,13 @@ import {
 } from "lucide-react";
 import { Fragment, useState, type ReactNode } from "react";
 import { NavLink, Navigate, Route, Routes, useLocation } from "react-router-dom";
-import { api, type Role } from "./api";
+import { api, type ModuleKey, type Role } from "./api";
 import { useAuth } from "./auth/context";
+import { RequireModule } from "./components/ModuleLocked";
 import UserMenu from "./components/UserMenu";
 import { useBrand } from "./lib/brand";
 import { PROVIDER_LABEL } from "./lib/format";
+import { useModules } from "./lib/modules";
 import { useTheme } from "./lib/theme";
 import { useApi } from "./lib/useApi";
 import Approvals from "./pages/Approvals";
@@ -69,7 +72,7 @@ import Users from "./pages/admin/Users";
 import Invite from "./pages/Invite";
 import Organizations from "./pages/platform/Organizations";
 
-type NavItem = { to: string; label: string; icon: LucideIcon; role?: Role; badge?: "approvals" };
+type NavItem = { to: string; label: string; icon: LucideIcon; role?: Role; badge?: "approvals"; module?: ModuleKey };
 
 // Grouped by what the user is looking after; the order inside a group follows a typical triage.
 const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
@@ -83,20 +86,20 @@ const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
   {
     title: "Cloud security",
     items: [
-      { to: "/inventory", label: "Inventory", icon: Boxes },
-      { to: "/exposure", label: "Exposure", icon: Globe },
-      { to: "/findings", label: "Posture findings", icon: ClipboardCheck },
-      { to: "/vulnerabilities", label: "Vulnerabilities", icon: Bug },
-      { to: "/attack-paths", label: "Attack paths", icon: RouteIcon },
-      { to: "/threats", label: "Runtime threats", icon: Siren },
+      { to: "/inventory", label: "Inventory", icon: Boxes, module: "cloud" },
+      { to: "/exposure", label: "Exposure", icon: Globe, module: "cloud" },
+      { to: "/findings", label: "Posture findings", icon: ClipboardCheck, module: "cloud" },
+      { to: "/vulnerabilities", label: "Vulnerabilities", icon: Bug, module: "vulnerabilities" },
+      { to: "/attack-paths", label: "Attack paths", icon: RouteIcon, module: "cloud" },
+      { to: "/threats", label: "Runtime threats", icon: Siren, module: "endpoints" },
     ],
   },
   {
     title: "Endpoints & assets",
     items: [
-      { to: "/devices", label: "Devices", icon: Laptop },
-      { to: "/it-assets", label: "IT assets", icon: Package },
-      { to: "/network-devices", label: "Network devices", icon: NetworkIcon },
+      { to: "/devices", label: "Devices", icon: Laptop, module: "endpoints" },
+      { to: "/it-assets", label: "IT assets", icon: Package, module: "assets" },
+      { to: "/network-devices", label: "Network devices", icon: NetworkIcon, module: "assets" },
     ],
   },
   {
@@ -197,9 +200,11 @@ function OrgIndicator() {
 function Shell() {
   const { can, forbidden, dismissForbidden, platformAdmin } = useAuth();
   const brand = useBrand();
+  const { has } = useModules();
   const { data: health, error } = useApi(api.health, [], 15000);
   // This organisation's connectors (console settings, or the environment for the default one).
-  const { data: connectors } = useApi(api.connectors, [], 60000);
+  const hasCloud = has("cloud");
+  const { data: connectors } = useApi(() => (hasCloud ? api.connectors() : Promise.resolve(null)), [hasCloud], 60000);
   const admin = can("admin");
   const { data: approvals } = useApi(() => (admin ? api.approvalSummary() : Promise.resolve(null)), [admin], admin ? 30000 : undefined);
   // Below the md breakpoint the sidebar is an overlay opened from the header's menu button.
@@ -227,14 +232,23 @@ function Shell() {
             return (
               <Fragment key={g.title || "home"}>
                 {g.title && <NavSection title={g.title} />}
-                {items.map((n) => (
-                  <li key={n.to}>
-                    <NavLink to={n.to} end={n.to === "/"} className={navClass}>
-                      <n.icon aria-hidden className="h-4 w-4 shrink-0" />
-                      {n.label}
-                    </NavLink>
-                  </li>
-                ))}
+                {items.map((n) => {
+                  const locked = !!n.module && !has(n.module);
+                  return (
+                    <li key={n.to}>
+                      <NavLink to={n.to} end={n.to === "/"} className={navClass}>
+                        <n.icon aria-hidden className={`h-4 w-4 shrink-0 ${locked ? "opacity-60" : ""}`} />
+                        <span className={`flex-1 ${locked ? "text-ink-3" : ""}`}>{n.label}</span>
+                        {locked && (
+                          <>
+                            <Lock aria-hidden className="h-3.5 w-3.5 shrink-0 text-ink-3" />
+                            <span className="sr-only">(not in your subscription)</span>
+                          </>
+                        )}
+                      </NavLink>
+                    </li>
+                  );
+                })}
               </Fragment>
             );
           })}
@@ -323,32 +337,32 @@ function Shell() {
           <Routes>
             <Route path="/" element={<DashboardPage />} />
             <Route path="/compliance" element={<Compliance />} />
-            <Route path="/inventory" element={<Inventory />} />
-            <Route path="/findings" element={<Findings />} />
-            <Route path="/findings/:id" element={<FindingDetail />} />
-            <Route path="/vulnerabilities" element={<Vulnerabilities />} />
-            <Route path="/vulnerabilities/:cveId" element={<VulnerabilityDetail />} />
-            <Route path="/threats" element={<Threats />} />
-            <Route path="/exposure" element={<Exposure />} />
-            <Route path="/attack-paths" element={<AttackPaths />} />
+            <Route path="/inventory" element={<RequireModule module="cloud"><Inventory /></RequireModule>} />
+            <Route path="/findings" element={<RequireModule module="cloud"><Findings /></RequireModule>} />
+            <Route path="/findings/:id" element={<RequireModule module="cloud"><FindingDetail /></RequireModule>} />
+            <Route path="/vulnerabilities" element={<RequireModule module="vulnerabilities"><Vulnerabilities /></RequireModule>} />
+            <Route path="/vulnerabilities/:cveId" element={<RequireModule module="vulnerabilities"><VulnerabilityDetail /></RequireModule>} />
+            <Route path="/threats" element={<RequireModule module="endpoints"><Threats /></RequireModule>} />
+            <Route path="/exposure" element={<RequireModule module="cloud"><Exposure /></RequireModule>} />
+            <Route path="/attack-paths" element={<RequireModule module="cloud"><AttackPaths /></RequireModule>} />
             <Route path="/connectors" element={<Connectors />} />
-            <Route path="/devices" element={<Devices />} />
-            <Route path="/devices/enrollment" element={<RequireRole role="admin"><Enrollment /></RequireRole>} />
-            <Route path="/devices/updates" element={<AgentUpdates />} />
-            <Route path="/devices/scripts" element={<Scripts />} />
-            <Route path="/devices/:id" element={<DeviceDetail />} />
-            <Route path="/devices/:id/remote/:sid" element={<RequireRole role="analyst"><RemoteViewer /></RequireRole>} />
-            <Route path="/network-devices" element={<NetworkDevices />} />
-            <Route path="/network-devices/:id" element={<NetworkDeviceDetail />} />
-            <Route path="/network-scans" element={<NetworkScans />} />
-            <Route path="/it-assets" element={<Assets />} />
-            <Route path="/it-assets/offboarding" element={<Offboarding />} />
-            <Route path="/it-assets/discovery" element={<Discovery />} />
-            <Route path="/it-assets/discovery/deploy" element={<RequireRole role="admin"><DeployAgent /></RequireRole>} />
-            <Route path="/it-assets/discovery/deployments" element={<Deployments />} />
-            <Route path="/it-assets/discovery/deployments/:id" element={<DeploymentDetail />} />
-            <Route path="/it-assets/settings" element={<RequireRole role="admin"><AssetSettings /></RequireRole>} />
-            <Route path="/it-assets/:id" element={<AssetDetail />} />
+            <Route path="/devices" element={<RequireModule module="endpoints"><Devices /></RequireModule>} />
+            <Route path="/devices/enrollment" element={<RequireModule module={["endpoints", "assets"]}><RequireRole role="admin"><Enrollment /></RequireRole></RequireModule>} />
+            <Route path="/devices/updates" element={<RequireModule module="endpoints"><AgentUpdates /></RequireModule>} />
+            <Route path="/devices/scripts" element={<RequireModule module="endpoints"><Scripts /></RequireModule>} />
+            <Route path="/devices/:id" element={<RequireModule module="endpoints"><DeviceDetail /></RequireModule>} />
+            <Route path="/devices/:id/remote/:sid" element={<RequireModule module="endpoints"><RequireRole role="analyst"><RemoteViewer /></RequireRole></RequireModule>} />
+            <Route path="/network-devices" element={<RequireModule module="assets"><NetworkDevices /></RequireModule>} />
+            <Route path="/network-devices/:id" element={<RequireModule module="assets"><NetworkDeviceDetail /></RequireModule>} />
+            <Route path="/network-scans" element={<RequireModule module="assets"><NetworkScans /></RequireModule>} />
+            <Route path="/it-assets" element={<RequireModule module="assets"><Assets /></RequireModule>} />
+            <Route path="/it-assets/offboarding" element={<RequireModule module="assets"><Offboarding /></RequireModule>} />
+            <Route path="/it-assets/discovery" element={<RequireModule module="assets"><Discovery /></RequireModule>} />
+            <Route path="/it-assets/discovery/deploy" element={<RequireModule module="assets"><RequireRole role="admin"><DeployAgent /></RequireRole></RequireModule>} />
+            <Route path="/it-assets/discovery/deployments" element={<RequireModule module="assets"><Deployments /></RequireModule>} />
+            <Route path="/it-assets/discovery/deployments/:id" element={<RequireModule module="assets"><DeploymentDetail /></RequireModule>} />
+            <Route path="/it-assets/settings" element={<RequireModule module="assets"><RequireRole role="admin"><AssetSettings /></RequireRole></RequireModule>} />
+            <Route path="/it-assets/:id" element={<RequireModule module="assets"><AssetDetail /></RequireModule>} />
             <Route path="/notifications" element={<RequireRole role="analyst"><Notifications /></RequireRole>} />
             <Route path="/account/security" element={<Security />} />
             <Route path="/approvals" element={<RequireRole role="admin"><Approvals /></RequireRole>} />

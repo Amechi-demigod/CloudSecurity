@@ -61,6 +61,8 @@ class Organization(Base):
     # active | suspended (suspended: no sign-in, agent / sensor requests refused, no background jobs)
     status: Mapped[str] = mapped_column(String(16), default="active", index=True)
     is_default: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Enabled product modules (app/modules.py); NULL = never set = all on.
+    modules: Mapped[list | None] = mapped_column(JSON, nullable=True)
     # Commercial plan and limits, for later (not enforced yet).
     plan: Mapped[str | None] = mapped_column(String(32), nullable=True)
     max_users: Mapped[int | None] = mapped_column(Integer, nullable=True)

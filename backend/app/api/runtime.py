@@ -10,7 +10,7 @@ from pydantic import Discriminator, Tag, TypeAdapter, ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import config
+from .. import config, modules
 from ..auth import audit, client_ip, require_analyst
 from ..db import get_db
 from ..models import Alert, AlertEvent, Asset, RuntimeEvent, User, get_asset, get_runtime_event
@@ -36,6 +36,11 @@ from ..vulnmatch.inventory import ingest_packages
 router = APIRouter(prefix="/api", tags=["runtime"])
 # Sensor ingest: authenticated by the INGEST_API_TOKEN bearer token, not user sessions.
 ingest_router = APIRouter(prefix="/api", tags=["runtime"])
+
+
+def sensor_module(db: Session = Depends(get_db)) -> None:
+    """Runtime sensors belong to the Endpoints & servers module (the ingest token scoped `db`)."""
+    modules.check(db, modules.ENDPOINTS)
 TIMELINE_CONTEXT = timedelta(minutes=10)
 
 
@@ -63,7 +68,7 @@ def _unpack(payload: Any) -> list[Any]:
 
 
 @ingest_router.post("/runtime/events", response_model=IngestResult, status_code=202,
-             dependencies=[Depends(require_ingest_token)])
+             dependencies=[Depends(require_ingest_token), Depends(sensor_module)])
 def ingest_runtime_events(payload: Any = Body(...), db: Session = Depends(get_db)):
     """Ingest runtime-sensor events.
 
@@ -114,7 +119,7 @@ def ingest_runtime_events(payload: Any = Body(...), db: Session = Depends(get_db
 
 
 @ingest_router.post("/runtime/packages", response_model=PackageIngestResult, status_code=202,
-                    dependencies=[Depends(require_ingest_token)])
+                    dependencies=[Depends(require_ingest_token), Depends(sensor_module)])
 def ingest_runtime_packages(inv: SensorPackageInventoryV1, db: Session = Depends(get_db)):
     """Package inventory of one Linux host (sensor/EVENT_SCHEMA.md#package-inventory).
 

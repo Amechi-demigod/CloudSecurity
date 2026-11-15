@@ -22,14 +22,16 @@ from sqlalchemy.orm import Session, undefer
 from ..auth import audit, client_ip, require_admin, require_installation_admin, require_viewer
 from ..db import get_db
 from ..models import Device, DeviceApproval, DeviceCommand, DeviceScript, DeviceScriptBundle, User, utcnow
+from ..modules import ENDPOINTS, require_module
 from ..services import approvals
 from ..services import device_scripts as svc
 from ..services import devices as dsvc
-from .agent import current_device
+from .agent import current_device, device_endpoints
 
 log = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/scripts", tags=["device-scripts"], dependencies=[Depends(require_viewer)])
-device_router = APIRouter(prefix="/api/agent/scripts", tags=["agent"])
+router = APIRouter(prefix="/api/scripts", tags=["device-scripts"],
+                   dependencies=[Depends(require_viewer), Depends(require_module(ENDPOINTS))])
+device_router = APIRouter(prefix="/api/agent/scripts", tags=["agent"], dependencies=[Depends(device_endpoints)])
 Id32 = Annotated[str, Path(pattern=r"^[0-9a-f]{32}$")]
 
 

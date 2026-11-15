@@ -38,6 +38,7 @@ from ..models import (
     Vulnerability,
     utcnow,
 )
+from ..modules import VULNERABILITIES, require_module
 from ..notifications import host_isolation_source
 from ..schemas_devices import (
     COMMAND_ROLES,
@@ -59,6 +60,9 @@ from ..services import devices as svc
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/devices", tags=["devices"])
+# Enrolment (tokens, installers) stays available with Assets & identity alone: the
+# agent then feeds IT assets (app/main.py includes this router with its own module check).
+enrol_router = APIRouter(prefix="/api/devices", tags=["devices"])
 installer_limiter = RateLimiter()
 DeviceId = Path(pattern=r"^[0-9a-f]{32}$")
 
@@ -146,7 +150,7 @@ def issue_types():
 
 
 # ----------------------------------------------------------------------------- enrollment (admin)
-@router.get("/enrollment/info", dependencies=[Depends(require_admin)])
+@enrol_router.get("/enrollment/info", dependencies=[Depends(require_admin)])
 def enrollment_info():
     s = config.settings
     return {"agent_download_url": s.agent_download_url, "server_url": installers.server_url_or_none(),
@@ -154,13 +158,13 @@ def enrollment_info():
             svc.DEFAULT_INTERVAL_SECONDS, "command_poll_seconds": svc.COMMAND_POLL_SECONDS}
 
 
-@router.get("/enrollment-tokens", response_model=list[EnrollmentTokenOut], dependencies=[Depends(require_admin)])
+@enrol_router.get("/enrollment-tokens", response_model=list[EnrollmentTokenOut], dependencies=[Depends(require_admin)])
 def list_tokens(db: Session = Depends(get_db)):
     return [_token_out(t) for t in db.scalars(select(EnrollmentToken).where(EnrollmentToken.kind == "agent")
                                                 .order_by(EnrollmentToken.created_at.desc()))]
 
 
-@router.post("/enrollment-tokens", response_model=EnrollmentTokenCreated, status_code=201)
+@enrol_router.post("/enrollment-tokens", response_model=EnrollmentTokenCreated, status_code=201)
 def create_token(body: EnrollmentTokenCreate, request: Request, admin: User = Depends(require_admin),
                  db: Session = Depends(get_db)):
     raw = svc.new_enrollment_token()
@@ -176,7 +180,7 @@ def create_token(body: EnrollmentTokenCreate, request: Request, admin: User = De
     return _token_out(t, EnrollmentTokenCreated, token=raw)
 
 
-@router.get("/installers", dependencies=[Depends(require_admin)])
+@enrol_router.get("/installers", dependencies=[Depends(require_admin)])
 def installer_info(db: Session = Depends(get_db)):
     """What a pre-configured installer would contain (never the token) and which platforms are available."""
     try:
@@ -205,7 +209,7 @@ def _linux_packages(db: Session) -> list[dict]:
     return out
 
 
-@router.get("/installers/linux/{fmt}/{arch}", dependencies=[Depends(require_admin)])
+@enrol_router.get("/installers/linux/{fmt}/{arch}", dependencies=[Depends(require_admin)])
 def download_linux_package(request: Request, fmt: str = Path(pattern="^(deb|rpm)$"),
                            arch: str = Path(pattern="^(amd64|arm64)$"), admin: User = Depends(require_admin),
                            db: Session = Depends(get_db)):
@@ -223,7 +227,7 @@ def download_linux_package(request: Request, fmt: str = Path(pattern="^(deb|rpm)
         "X-Content-SHA256": p.sha256, "X-Agent-Version": p.release.version})
 
 
-@router.post("/installers")
+@enrol_router.post("/installers")
 def create_installer(body: InstallerCreate, request: Request, admin: User = Depends(require_admin),
                      db: Session = Depends(get_db)):
     """Mint a package-bound enrollment token and return the installer with it embedded.
@@ -295,7 +299,7 @@ def installer_download(db: Session, admin: User, request: Request, *, platform: 
         "X-Allow-Wipe": "true" if allow_wipe else "false"}), t
 
 
-@router.post("/enrollment-tokens/{token_id}/revoke", response_model=EnrollmentTokenOut)
+@enrol_router.post("/enrollment-tokens/{token_id}/revoke", response_model=EnrollmentTokenOut)
 def revoke_token(request: Request, token_id: str = Path(pattern=r"^[0-9a-f]{32}$"),
                  admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     t = db.get(EnrollmentToken, token_id)
@@ -356,7 +360,7 @@ def device_services(device_id: str = DeviceId, q: str | None = Query(None, max_l
     return list(db.scalars(stmt.order_by(DeviceService.display_name, DeviceService.name)))
 
 
-@router.get("/{device_id}/vulnerabilities")
+@router.get("/{device_id}/vulnerabilities", dependencies=[Depends(require_module(VULNERABILITIES))])
 def device_vulnerabilities(device_id: str = DeviceId, status: str = Query("open", pattern="^(open|resolved|all)$"),
                            db: Session = Depends(get_db)):
     """CVEs matched on this device's OS and installed software (docs/VULNERABILITIES.md),

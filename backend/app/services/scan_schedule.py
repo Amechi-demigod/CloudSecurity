@@ -35,7 +35,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import config, tenancy
+from .. import config, modules, tenancy
 from ..connectors import build_registry
 from ..connectors.base import Connector
 from ..connectors.org_config import org_settings
@@ -243,8 +243,8 @@ class ScanScheduler:
 
     def _tick_org(self, db: Session, org_id: str, now: datetime, started: list[str], skipped: list[str]) -> None:
         sched = effective(db)
-        if not sched.enabled:
-            return
+        if not sched.enabled or not modules.has_module(db, modules.CLOUD):
+            return  # (a module that is off keeps its schedule settings and data)
         for conn in schedulable(self._registry_factory(db, org_id)):
             label = _label(org_id, conn.name)
             try:

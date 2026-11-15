@@ -18,7 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.requests import HTTPConnection
 
-from .. import config, tenancy
+from .. import config, modules, tenancy
 from ..asset_lifecycle import service as asset_svc
 from ..auth import RateLimiter, audit, client_ip
 from ..db import get_db
@@ -92,6 +92,11 @@ def device_from_connection(request: HTTPConnection, authorization: str | None, d
     return device
 
 
+def device_endpoints(device: Device = Depends(current_device), db: Session = Depends(get_db)) -> None:
+    """Device endpoints that exist for remote actions (scripts): only with the Endpoints & servers module."""
+    modules.ensure(db, modules.ENDPOINTS, device.organization_id)
+
+
 def _require_active_org(db: Session, org_id: str, request: HTTPConnection) -> None:
     org = tenancy.get_org(db, org_id)
     if org is None or org.status != "active":
@@ -117,6 +122,9 @@ def enroll(body: EnrollRequest, request: Request, db: Session = Depends(get_db))
     if org_id is not None:
         _require_active_org(db, org_id, request)
         tenancy.set_org(db, org_id)
+        # The agent enrols for Endpoints & servers, or for Assets & identity (it feeds IT assets).
+        if not (modules.has_module(db, modules.ENDPOINTS) or modules.has_module(db, modules.ASSETS)):
+            raise HTTPException(403, "module_disabled")
     token = svc.consume_enrollment_token(db, body.token) if org_id is not None else None
     info = body.device
     if token is None:
@@ -218,8 +226,12 @@ def checkin(body: CheckinRequest, request: Request, device: Device = Depends(cur
 @router.get("/commands", response_model=AgentCommandList)
 def fetch_commands(device: Device = Depends(current_device), db: Session = Depends(get_db)):
     """Pending commands for this device. Each is handed out once (then 'delivered')."""
-    approvals.release_due(db, device.id)  # self-approved actions whose cooling-off delay is over
-    cmds = svc.deliver_pending(db, device)
+    if modules.has_module(db, modules.ENDPOINTS, device.organization_id):
+        approvals.release_due(db, device.id)  # self-approved actions whose cooling-off delay is over
+        cmds = svc.deliver_pending(db, device)
+    else:
+        # Assets & identity only: no remote actions or scripts, but directory syncs still run.
+        cmds = svc.deliver_pending(db, device, {directory_svc.COMMAND_TYPE})
     out = []
     for c in cmds:
         params = c.params or {}

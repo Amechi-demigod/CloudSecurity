@@ -1,14 +1,107 @@
 import { useState, type FormEvent } from "react";
-import { ApiError, type Role } from "../../api";
-import { ROLE_LABEL } from "../../auth/context";
+import { ApiError, type ModuleKey, type Role } from "../../api";
+import { ROLE_LABEL, useAuth } from "../../auth/context";
 import { InvitationStateTag, InviteResult } from "../../components/org";
 import { Button, Card, Drawer, ErrorNote, Field, Modal, PageHeader, Table, Tag } from "../../components/ui";
 import { fmtAgo, fmtTime } from "../../lib/format";
+import { MODULES, MODULE_KEYS } from "../../lib/modules";
 import { useApi } from "../../lib/useApi";
 import { orgApi, type IssuedInvitation, type PlatformOrg } from "../../orgApi";
 
 function errMsg(e: unknown) {
   return e instanceof ApiError ? e.message : String(e);
+}
+
+/** Product modules of an organisation as chips (the platform owner's at-a-glance view). */
+function ModuleChips({ modules }: { modules: ModuleKey[] }) {
+  if (modules.length === 0) return <span className="text-xs text-ink-3">None</span>;
+  return (
+    <span className="flex flex-wrap gap-1">
+      {modules.map((m) => (
+        <Tag key={m} tone="accent">
+          {MODULES[m].label}
+        </Tag>
+      ))}
+    </span>
+  );
+}
+
+function ModuleSwitch({ on, label, disabled, onChange }: { on: boolean; label: string; disabled?: boolean; onChange: (next: boolean) => void }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      aria-label={label}
+      disabled={disabled}
+      onClick={() => onChange(!on)}
+      className={`relative h-5 w-9 shrink-0 rounded-full transition focus:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-50 ${
+        on ? "bg-accent" : "bg-line"
+      }`}
+    >
+      <span aria-hidden className={`absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${on ? "translate-x-4" : ""}`} />
+    </button>
+  );
+}
+
+/** The four product modules of an organisation. Turning one on applies at once; turning one off asks first. */
+function ModulesSection({ orgId, modules, busy, onSet }: { orgId: string; modules: ModuleKey[]; busy: boolean; onSet: (m: ModuleKey, enabled: boolean) => void }) {
+  const [confirming, setConfirming] = useState<ModuleKey | null>(null);
+  const has = (m: ModuleKey) => modules.includes(m);
+  const noData = has("vulnerabilities") && !has("cloud") && !has("endpoints");
+  return (
+    <section key={orgId}>
+      <h3 className="mb-2 font-semibold">Modules</h3>
+      <ul className="space-y-3">
+        {MODULE_KEYS.map((m) => (
+          <li key={m}>
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div id={`mod-${m}`} className="font-medium">{MODULES[m].label}</div>
+                <p className="text-xs text-ink-3">{MODULES[m].description}</p>
+                {m === "vulnerabilities" && noData && (
+                  <p className="mt-1 text-xs text-sev-high">Needs Cloud security or Endpoints &amp; servers to have data.</p>
+                )}
+              </div>
+              <ModuleSwitch
+                on={has(m)}
+                label={MODULES[m].label}
+                disabled={busy}
+                onChange={(next) => {
+                  if (next) {
+                    setConfirming(null);
+                    onSet(m, true);
+                  } else {
+                    setConfirming(m);
+                  }
+                }}
+              />
+            </div>
+            {confirming === m && (
+              <div role="alert" className="mt-2 rounded border border-sev-high/60 bg-sev-high/10 p-3 text-xs">
+                <p className="font-medium text-ink">Turn off {MODULES[m].label}?</p>
+                <p className="mt-1 text-ink-2">{MODULES[m].stops}</p>
+                <p className="mt-1 text-ink-2">Their data is kept. Turning the module back on shows it again.</p>
+                <div className="mt-2 flex gap-2">
+                  <Button
+                    variant="danger"
+                    disabled={busy}
+                    onClick={() => {
+                      setConfirming(null);
+                      onSet(m, false);
+                    }}
+                  >
+                    Turn off
+                  </Button>
+                  <Button onClick={() => setConfirming(null)}>Keep on</Button>
+                </div>
+              </div>
+            )}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
 }
 
 function CreateOrgDialog({ open, onClose, onCreated }: { open: boolean; onClose: () => void; onCreated: (i: IssuedInvitation) => void }) {
@@ -17,6 +110,7 @@ function CreateOrgDialog({ open, onClose, onCreated }: { open: boolean; onClose:
   const [contact, setContact] = useState("");
   const [adminEmail, setAdminEmail] = useState("");
   const [plan, setPlan] = useState("");
+  const [modules, setModules] = useState<ModuleKey[]>([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -26,6 +120,7 @@ function CreateOrgDialog({ open, onClose, onCreated }: { open: boolean; onClose:
     setContact("");
     setAdminEmail("");
     setPlan("");
+    setModules([]);
     setErr(null);
     onClose();
   }
@@ -41,6 +136,7 @@ function CreateOrgDialog({ open, onClose, onCreated }: { open: boolean; onClose:
         contact_email: contact.trim() || undefined,
         plan: plan.trim() || undefined,
         admin_email: adminEmail.trim(),
+        modules,
       });
       onCreated(r.invitation);
       close();
@@ -63,6 +159,26 @@ function CreateOrgDialog({ open, onClose, onCreated }: { open: boolean; onClose:
         <Field label="First administrator's email" id="no-admin" type="email" required value={adminEmail}
           hint="They receive a single-use invitation to set their password, then invite their team."
           onChange={(e) => setAdminEmail(e.target.value)} />
+        <fieldset>
+          <legend className="mb-1 block text-sm font-medium text-ink-2">Modules</legend>
+          <div className="space-y-1.5">
+            {MODULE_KEYS.map((m) => (
+              <label key={m} className="flex items-start gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  className="mt-0.5"
+                  checked={modules.includes(m)}
+                  onChange={(e) => setModules(e.target.checked ? [...modules, m] : modules.filter((x) => x !== m))}
+                />
+                <span>
+                  {MODULES[m].label}
+                  <span className="block text-xs text-ink-3">{MODULES[m].description}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+          <p className="mt-1 text-xs text-ink-3">Switch on what they have bought. You can change this at any time.</p>
+        </fieldset>
         <div className="flex justify-end gap-2 pt-2">
           <Button onClick={close}>Cancel</Button>
           <Button type="submit" variant="primary" disabled={busy || !name.trim() || !adminEmail.trim()}>
@@ -81,12 +197,15 @@ function OrgDrawer({ orgId, onClose, onChanged }: { orgId: string | null; onClos
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<Role>("admin");
   const [busy, setBusy] = useState(false);
+  const { organization, refresh } = useAuth();
 
   async function act(fn: () => Promise<unknown>) {
     setErr(null);
     setBusy(true);
     try {
       const r = await fn();
+      // The platform owner's own organisation: the sidebar's locks follow the change.
+      if (orgId && orgId === organization?.id) await refresh();
       if (r && typeof r === "object" && "invitation" in r && "emailed" in r) setIssued(r as IssuedInvitation);
       reload();
       onChanged();
@@ -145,6 +264,7 @@ function OrgDrawer({ orgId, onClose, onChanged }: { orgId: string | null; onClos
               )}
             </div>
           )}
+          <ModulesSection orgId={org.id} modules={org.modules} busy={busy} onSet={(m, enabled) => void act(() => orgApi.setOrgModule(org.id, m, enabled))} />
           <section>
             <h3 className="mb-2 font-semibold">Members</h3>
             {org.members.length ? (
@@ -240,7 +360,7 @@ export default function Organizations() {
       )}
       {issued && <InviteResult issued={issued} onDismiss={() => setIssued(null)} />}
       <Card>
-        <Table head={["Organisation", "Status", "Users", "Devices", "Assets", "Pending invitations", "Created"]}>
+        <Table head={["Organisation", "Status", "Modules", "Users", "Devices", "Assets", "Pending invitations", "Created"]}>
           {orgs?.map((o: PlatformOrg) => (
             <tr key={o.id} className="cursor-pointer hover:bg-surface-2" onClick={() => setOpen(o.id)}>
               <td className="px-3 py-2">
@@ -255,6 +375,7 @@ export default function Organizations() {
                 </div>
               </td>
               <td className="px-3 py-2">{o.status === "active" ? <Tag tone="good">Active</Tag> : <Tag tone="critical">Suspended</Tag>}</td>
+              <td className="px-3 py-2"><ModuleChips modules={o.modules} /></td>
               <td className="px-3 py-2">{o.usage.users}</td>
               <td className="px-3 py-2">{o.usage.devices}</td>
               <td className="px-3 py-2">{o.usage.assets}</td>
