@@ -397,7 +397,7 @@ export interface User {
 }
 
 /** Product modules a platform owner switches on or off per organisation (backend app/modules.py). */
-export type ModuleKey = "cloud" | "endpoints" | "vulnerabilities" | "assets";
+export type ModuleKey = "cloud" | "endpoints" | "vulnerabilities" | "assets" | "external";
 
 export interface OrganizationBrief {
   id: string;

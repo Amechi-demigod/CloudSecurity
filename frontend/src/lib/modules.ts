@@ -4,7 +4,7 @@ import { useAuth } from "../auth/context";
 /** Where a customer asks for a module that is not part of their subscription. */
 export const CONTACT_URL = "https://sentrigis.com/#contact";
 
-export const MODULE_KEYS: ModuleKey[] = ["cloud", "endpoints", "vulnerabilities", "assets"];
+export const MODULE_KEYS: ModuleKey[] = ["cloud", "endpoints", "vulnerabilities", "assets", "external"];
 
 export interface ModuleInfo {
   label: string;
@@ -35,6 +35,12 @@ export const MODULES: Record<ModuleKey, ModuleInfo> = {
     label: "Assets & identity",
     description: "Assets & identity keeps your IT asset register, directories (Active Directory, Entra ID, Google) and network devices in one place.",
     stops: "IT assets and Network devices are locked, directory and network-scan settings stop, and scheduled directory syncs and network scans are skipped.",
+  },
+  external: {
+    label: "Attack surface & pre-ASV",
+    description:
+      "Attack surface & pre-ASV scans your internet-facing domains and addresses from outside, lists what an attacker can see and produces a pre-ASV report (not an ASV scan report or attestation).",
+    stops: "Attack surface, Findings and Reports are locked and scheduled external scans stop. Targets, findings and reports are kept.",
   },
 };
 
