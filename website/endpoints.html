@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Endpoints & servers · Sentrigis</title>
+<meta name="description" content="One lightweight agent for Windows, macOS and Linux servers: posture checks, software inventory, missing Windows updates, remote actions with approvals, and runtime detection for Linux servers.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preload" href="/assets/fonts/plus-jakarta-sans-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/assets/site.css">
+<script src="/assets/site.js" defer></script>
+</head>
+<body>
+
+<nav class="top" aria-label="Main">
+  <div class="wrap">
+    <a class="brand" href="/" aria-label="Sentrigis home">
+      <svg width="30" height="32" viewBox="0 0 24 26" aria-hidden="true"><path d="M12 1 3 5v7c0 6 4 10.5 9 13 5-2.5 9-7 9-13V5z" fill="rgba(59,130,246,.18)" stroke="#60a5fa" stroke-width="1.8"/><path d="M8.5 12.5l2.5 2.5 4.5-5" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span>Sentrigis</span>
+    </a>
+    <button class="navtoggle" type="button" aria-expanded="false" aria-controls="menu"><span class="sr">Menu</span><i aria-hidden="true"></i></button>
+    <div class="menu" id="menu">
+      <ul class="links">
+        <li class="has-panel">
+          <button class="trig" type="button" aria-expanded="false" aria-controls="mega">Platform</button>
+          <div class="mega" id="mega">
+            <div class="cats">
+            <div class="cat active">
+              <button class="cat-btn" type="button" aria-expanded="true">Platform</button>
+              <div class="pane">
+                <div class="banner"><h3>Platform</h3><p>One console for cloud, endpoints and IT assets, with one inventory and one risk score.</p><a class="more" href="/#overview">Learn more →</a></div>
+                <ul class="items"><li><a href="/#how"><b>How it works</b><span>Connect read-only, deploy the agent, fix what matters.</span></a></li><li><a href="/#works-with"><b>Integrations</b><span>Azure, AWS, Google Cloud, Entra ID, Google Workspace, Active Directory.</span></a></li><li><a href="/#overview"><b>Alerts &amp; workflows</b><span>Email, Teams and Slack, with approvals and an audit trail.</span></a></li></ul>
+              </div>
+            </div>
+            <div class="cat">
+              <button class="cat-btn" type="button" aria-expanded="false">Cloud security</button>
+              <div class="pane">
+                <div class="banner"><h3>Cloud security</h3><p>Read-only posture scanning for Azure, AWS and Google Cloud.</p><a class="more" href="/cloud-security.html">Learn more →</a></div>
+                <ul class="items"><li><a href="/cloud-security.html#posture"><b>Cloud posture</b><span>Misconfigurations mapped to CIS and Microsoft benchmarks.</span></a></li><li><a href="/cloud-security.html#exposure"><b>Exposure &amp; attack paths</b><span>Internet exposure and the paths to your crown jewels.</span></a></li><li><a href="/compliance.html"><b>Compliance</b><span>Evidence against CIS, ISO 27001, SOC 2, NIST CSF and PCI DSS.</span></a></li><li><a href="/cloud-security.html#posture"><b>Kubernetes</b><span>Control-plane checks for AKS, EKS and GKE.</span></a></li></ul>
+              </div>
+            </div>
+            <div class="cat">
+              <button class="cat-btn" type="button" aria-expanded="false">Endpoints &amp; servers</button>
+              <div class="pane">
+                <div class="banner"><h3>Endpoints &amp; servers</h3><p>One lightweight agent for Windows, macOS and Linux servers.</p><a class="more" href="/endpoints.html">Learn more →</a></div>
+                <ul class="items"><li><a href="/endpoints.html#posture"><b>Endpoint management</b><span>Posture checks and inventory for every managed device.</span></a></li><li><a href="/endpoints.html#actions"><b>Remote actions</b><span>Lock, lost mode and suspend sign-in on laptops and desktops; wipe on Windows. With approvals.</span></a></li><li><a href="/endpoints.html#runtime"><b>Runtime detection</b><span>A sensor for Linux servers, VMs and Kubernetes nodes.</span></a></li><li><a href="/endpoints.html#updates"><b>OS updates</b><span>Missing Windows updates per device.</span></a></li></ul>
+              </div>
+            </div>
+            <div class="cat">
+              <button class="cat-btn" type="button" aria-expanded="false">Vulnerabilities</button>
+              <div class="pane">
+                <div class="banner"><h3>Vulnerabilities</h3><p>CVEs on devices, Linux servers and network equipment, ranked by real-world risk.</p><a class="more" href="/vulnerabilities.html">Learn more →</a></div>
+                <ul class="items"><li><a href="/vulnerabilities.html#priority"><b>Prioritisation</b><span>Known-exploited and internet-exposed first.</span></a></li><li><a href="/vulnerabilities.html#priority"><b>In-use detection</b><span>Loaded packages separated from dormant ones on monitored servers.</span></a></li><li><a href="/vulnerabilities.html#fix"><b>Fix guidance</b><span>Fix availability and the assets affected.</span></a></li></ul>
+              </div>
+            </div>
+            <div class="cat">
+              <button class="cat-btn" type="button" aria-expanded="false">Assets &amp; identity</button>
+              <div class="pane">
+                <div class="banner"><h3>Assets &amp; identity</h3><p>Every device and account, from purchase to disposal.</p><a class="more" href="/assets-identity.html">Learn more →</a></div>
+                <ul class="items"><li><a href="/assets-identity.html#register"><b>IT asset lifecycle</b><span>Owners, locations, warranty and refresh dates.</span></a></li><li><a href="/assets-identity.html#discovery"><b>Discovery</b><span>Active Directory, Entra ID, Google Workspace and network scans.</span></a></li><li><a href="/assets-identity.html#identity"><b>Identity hygiene</b><span>Stale, disabled and privileged accounts.</span></a></li><li><a href="/assets-identity.html#register"><b>Offboarding</b><span>Device retrieval, with disposal records and certificates kept.</span></a></li></ul>
+              </div>
+            </div>
+            </div>
+            <div class="megafoot"><a class="btn pri sm" href="/#contact">Request a demo</a></div>
+          </div>
+        </li>
+        <li><a class="plain" href="/#why">Why Sentrigis</a></li>
+        <li class="has-panel">
+          <button class="trig" type="button" aria-expanded="false" aria-controls="resources">Resources</button>
+          <div class="drop" id="resources"><div class="col"><h3>Company</h3><ul><li><a href="/#contact">Contact</a></li></ul></div><div class="col"><h3>Explore</h3><ul><li><a href="/security.html">Security &amp; trust</a></li><li><a href="/compliance.html">Compliance coverage</a></li><li><a href="/read-only-access.html">How read-only cloud access works</a></li></ul></div><div class="col"><h3>Console</h3><ul><li><a href="https://console.sentrigis.com">Log in to the console</a></li></ul></div></div>
+        </li>
+      </ul>
+      <div class="navcta">
+        <a class="btn ghost sm" href="/#contact">Contact us</a>
+        <a class="btn pri sm" href="https://console.sentrigis.com">Log in →</a>
+      </div>
+    </div>
+  </div>
+</nav>
+
+<header class="phead">
+  <div class="wrap">
+    <span class="eyebrow"><i></i>Endpoints &amp; servers</span>
+    <h1>Keep laptops, desktops and Linux servers healthy and under control.</h1>
+    <p class="lead">One lightweight agent reports each device's security posture, software and missing updates, and carries out remote actions only when an authorised person asks. High-risk actions also need a second admin's approval.</p>
+    <div class="ctas">
+      <a class="btn pri" href="/#contact">Request a demo</a>
+      <a class="btn ghost" href="#actions">See remote actions</a>
+    </div>
+  </div>
+</header>
+
+<main class="prose">
+  <div class="wrap">
+    <section class="blk" id="systems">
+      <h2>Supported systems</h2>
+      <div class="tiles"><div class="tile"><h3>Windows</h3><p>Windows 10 and 11, installed from a pre-configured MSI package.</p></div><div class="tile"><h3>macOS</h3><p>One package for Intel and Apple silicon Macs.</p></div><div class="tile"><h3>Linux servers</h3><p>Ubuntu 20.04 to 24.04, Debian 11 and 12, RHEL, Rocky Linux and AlmaLinux 8 and 9, and Amazon Linux 2023. Packages for x86-64 and Arm64.</p></div></div>
+    </section>
+    <section class="blk" id="posture">
+      <h2>Posture checks</h2>
+      <p>Every device reports the settings that matter, and anything out of line becomes an issue with a severity.</p>
+      <div class="tiles"><div class="tile"><h3>Windows</h3><p>Disk encryption, firewall, antivirus, Secure Boot, TPM, OS updates, screen lock and local administrators.</p></div><div class="tile"><h3>macOS</h3><p>FileVault, firewall, Gatekeeper, System Integrity Protection, XProtect, screen lock, OS updates and local administrators.</p></div><div class="tile"><h3>Linux servers</h3><p>Security updates, pending reboots, automatic updates, firewall, disk encryption, SSH root and password login, admin accounts, SELinux or AppArmor, auditd, time sync, listening ports and installed packages.</p></div></div>
+    </section>
+    <section class="blk" id="actions">
+      <h2>Remote actions, with approvals</h2>
+      <p>Every action needs a reason and is written to the audit log. Wipes and higher-risk scripts need a second admin to approve, and unapproved requests expire after 24 hours.</p>
+      <div class="tiles"><div class="tile"><h3>Lock and lost mode</h3><p>Windows and macOS.</p></div><div class="tile"><h3>Suspend sign-in</h3><p>Signs users out and blocks sign-in until you restore it. Windows and macOS.</p></div><div class="tile"><h3>Remote wipe</h3><p>Windows devices that were set up to allow it at install time.</p></div><div class="tile"><h3>Signed scripts</h3><p>PowerShell on Windows, zsh or bash on macOS. Only scripts you have signed can run.</p></div><div class="tile"><h3>Remote support</h3><p>View-only or full control, and only after the user accepts. Windows.</p></div><div class="tile"><h3>Linux servers</h3><p>Re-run checks, collect logs and restart the agent. No lock or wipe on servers.</p></div></div>
+    </section>
+    <section class="blk" id="updates">
+      <h2>Missing updates and software</h2>
+      <p>Sentrigis lists the Windows updates each device is missing, checked through Windows Update or WSUS about every 12 hours, plus the software installed on every Windows, macOS and Linux device. It reports what is missing; your existing tools install it.</p>
+    </section>
+    <section class="blk" id="runtime">
+      <h2>Runtime detection for Linux servers</h2>
+      <p>Add the Sentrigis runtime sensor to Linux servers, VMs or Kubernetes nodes (as a service or a DaemonSet). It watches processes, network connections and file access, and flags reverse shells, crypto miners, privilege escalation, access to credential files, shells inside containers and cloud metadata access from containers, mapped to MITRE ATT&amp;CK. It only observes and never blocks.</p>
+    </section>
+    <section class="blk" id="deploy">
+      <h2>Deployment and updates</h2>
+      <p>Download a pre-configured package and push it with Group Policy, Intune, SCCM, Jamf or Kandji, or install it by hand. Devices enrol themselves. Agent updates are signed and roll out in stages, starting with a pilot group, and pause automatically if something goes wrong.</p>
+    </section>
+  </div>
+</main>
+
+<section class="nopt">
+  <div class="wrap">
+    <div class="band">
+      <h2>See your devices in the console on the first call.</h2>
+      <div class="acts">
+        <a class="btn w" href="/#contact">Request a demo</a>
+        <a class="btn ghost" href="https://console.sentrigis.com">Log in</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="fcols">
+      <div class="fbrand">
+        <a class="brand" href="/" aria-label="Sentrigis home"><svg width="30" height="32" viewBox="0 0 24 26" aria-hidden="true"><path d="M12 1 3 5v7c0 6 4 10.5 9 13 5-2.5 9-7 9-13V5z" fill="rgba(59,130,246,.18)" stroke="#60a5fa" stroke-width="1.8"/><path d="M8.5 12.5l2.5 2.5 4.5-5" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Sentrigis</span></a>
+        <p>Cloud, endpoint and IT asset security in one console.</p>
+      </div>
+      <div><h3>Platform</h3><ul><li><a href="/#overview">Platform</a></li><li><a href="/cloud-security.html">Cloud security</a></li><li><a href="/endpoints.html">Endpoints &amp; servers</a></li><li><a href="/vulnerabilities.html">Vulnerabilities</a></li><li><a href="/assets-identity.html">Assets &amp; identity</a></li></ul></div>
+      <div><h3>Why Sentrigis</h3><ul><li><a href="/#why">Why Sentrigis</a></li><li><a href="/#contact">Request a demo</a></li></ul></div>
+      <div><h3>Resources</h3><ul><li><a href="/#contact">Contact</a></li><li><a href="/security.html">Security &amp; trust</a></li><li><a href="/compliance.html">Compliance coverage</a></li><li><a href="/read-only-access.html">How read-only cloud access works</a></li><li><a href="https://console.sentrigis.com">Log in to the console</a></li></ul></div>
+    </div>
+    <div class="fbase"><span>© 2026 Sentrigis</span></div>
+  </div>
+</footer>
+</body>
+</html>
