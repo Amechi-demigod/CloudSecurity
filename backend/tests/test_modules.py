@@ -180,6 +180,10 @@ def test_migration_turns_every_existing_organisation_fully_on(tmp_path):
         with eng.begin() as conn:
             conn.execute(text("INSERT INTO organizations (id, name, slug, status, is_default, created_at, updated_at) "
                               "VALUES ('old1', 'Old', 'old', 'active', :f, :n, :n)"), {"f": False, "n": now})
+            # an existing install has users (0032 gives a brand-new install's default org every module)
+            conn.execute(text("INSERT INTO users (id, email, name, password_hash, is_active, is_platform_admin, created_at, "
+                              "failed_login_count) "
+                              "VALUES ('u1', 'old@example.com', 'Old', 'x', :t, :f, :n, 0)"), {"t": True, "f": False, "n": now})
         dbmod.run_migrations(eng)
         with eng.connect() as conn:
             rows = dict(conn.execute(text("SELECT id, modules FROM organizations")).all())

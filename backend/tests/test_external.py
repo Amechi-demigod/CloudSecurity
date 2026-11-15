@@ -997,10 +997,26 @@ def test_migration_does_not_give_existing_organisations_the_external_module(tmp_
         with eng.begin() as c:
             c.execute(text("UPDATE organizations SET modules = :m WHERE id = 'default'"),
                       {"m": json.dumps(["cloud", "endpoints", "vulnerabilities", "assets"])})
+            c.execute(text("INSERT INTO users (id, email, name, password_hash, is_active, is_platform_admin, created_at, "
+                        "failed_login_count) "
+                        "VALUES ('u1', 'old@example.com', 'Old', 'x', :t, :f, :n, 0)"),
+                      {"t": True, "f": False, "n": dt.datetime(2026, 11, 1)})
         command.upgrade(db.alembic_config(eng), "0032_attack_surface")
         with eng.connect() as c:
             mods = json.loads(c.execute(text("SELECT modules FROM organizations WHERE id = 'default'")).scalar())
             assert "external" not in mods and mods == ["cloud", "endpoints", "vulnerabilities", "assets"]
             assert c.execute(text("SELECT count(*) FROM external_targets")).scalar() == 0
+    finally:
+        eng.dispose()
+
+
+def test_migration_gives_a_brand_new_install_every_module(tmp_path):
+    """A fresh database (no users yet) is not an existing customer: its default org gets `external` too."""
+    eng = db.create_db_engine(f"sqlite:///{tmp_path / 'fresh.db'}")
+    try:
+        db.run_migrations(eng)
+        with eng.connect() as c:
+            mods = json.loads(c.execute(text("SELECT modules FROM organizations WHERE id = 'default'")).scalar())
+        assert mods == list(ALL_MODULES)
     finally:
         eng.dispose()

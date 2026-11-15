@@ -1,6 +1,7 @@
 """Attack surface & pre-ASV module (app/external): targets, scans, hosts, findings, disputes, reports. Existing
 organisations do NOT get the new `external` product module (they never bought it): their explicit module list
-from 0031 is left as it is.
+from 0031 is left as it is. A brand-new install (no users yet) is not an existing customer: its default
+organisation gets every module, as `ensure_default_org` gives it on SQLite.
 
 Revision ID: 0032_attack_surface
 Revises: 0031_org_modules
@@ -17,6 +18,8 @@ revision: str = '0032_attack_surface'
 down_revision: str | None = '0031_org_modules'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
+
+ALL_MODULES = ['cloud', 'endpoints', 'vulnerabilities', 'assets', 'external']
 
 
 def upgrade() -> None:
@@ -175,6 +178,11 @@ def upgrade() -> None:
     )
     op.create_index(op.f('ix_external_reports_generated_at'), 'external_reports', ['generated_at'], unique=False)
     op.create_index(op.f('ix_external_reports_organization_id'), 'external_reports', ['organization_id'], unique=False)
+
+    bind = op.get_bind()
+    if not bind.execute(sa.text("SELECT 1 FROM users LIMIT 1")).first():
+        orgs = sa.table('organizations', sa.column('id', sa.String), sa.column('modules', sa.JSON()))
+        op.execute(orgs.update().where(orgs.c.id == 'default').values(modules=ALL_MODULES))
 
 
 def downgrade() -> None:
