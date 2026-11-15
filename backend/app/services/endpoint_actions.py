@@ -3,7 +3,8 @@
 manage_service       stop / start a service, set its startup type to Disabled,
                      restore the startup type it had before
 uninstall_software   remove a program with its own silent uninstaller (MSI
-                     product code or QuietUninstallString; never the agent)
+                     product code, QuietUninstallString, or an Inno Setup / NSIS
+                     uninstaller the agent positively identifies; never the agent)
 block_usb_storage    USBSTOR driver off + "Removable Disks: Deny read / write /
 unblock_usb_storage  execute"; unblock restores the previous values exactly
 

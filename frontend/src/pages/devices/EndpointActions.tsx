@@ -460,7 +460,7 @@ function uninstallAction(s: DeviceSoftware): PendingAction {
           </p>
         ) : (
           <p>
-            The agent runs the program's own silent uninstaller (its registered <code>QuietUninstallString</code>). If the program has none,
+            The agent runs the program's own silent uninstaller (its registered <code>QuietUninstallString</code>, or an Inno Setup / NSIS uninstaller it can identify, run silently). If the program has none,
             the agent refuses and nothing changes; use a script instead.
           </p>
         )}
