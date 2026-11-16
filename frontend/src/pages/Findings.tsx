@@ -23,6 +23,8 @@ export default function Findings() {
   const [category, setCategory] = useUrlState("category");
   const [subscription, setSubscription] = useUrlState("subscription");
   const [rule, setRule] = useUrlState("rule");
+  // Closed findings only: "removed" = closed because the cloud resource no longer exists.
+  const [reason, setReason] = useUrlState("reason");
   const [expanded, setExpanded] = useState<string | null>(null);
   const [asset, setAsset] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -39,8 +41,9 @@ export default function Findings() {
         category: category || undefined,
         subscription_id: subscription || undefined,
         rule_id: rule || undefined,
+        close_reason: reason === "removed" ? "resource_removed" : undefined,
       }),
-    [severity, status, source, provider, compliance, category, subscription, rule],
+    [severity, status, source, provider, compliance, category, subscription, rule, reason],
   );
   const sorted = useSort(
     data,
@@ -78,6 +81,15 @@ export default function Findings() {
       <div className="mb-3 flex flex-wrap items-center gap-3">
         <Select label="Severity" value={severity} onChange={setSeverity} options={["", "critical", "high", "medium", "low"]} />
         <Select label="Status" value={status} onChange={setStatus} options={["open", "suppressed", "resolved", "all"]} />
+        <Select
+          label="Reason"
+          value={reason}
+          onChange={(v) => {
+            setReason(v);
+            if (v && status === "open") setStatus("resolved");
+          }}
+          options={[{ value: "", label: "Any" }, { value: "removed", label: "Resource removed" }]}
+        />
         <Select
           label="Cloud"
           value={provider}
@@ -129,7 +141,7 @@ export default function Findings() {
             loading={loading}
             rowCount={data?.length ?? 0}
             empty={
-              <Empty icon={ShieldCheck} title={status === "open" && !severity && !provider && !source && !compliance && !category && !subscription && !rule ? "No open findings" : "No findings match these filters"}>
+              <Empty icon={ShieldCheck} title={status === "open" && !severity && !provider && !source && !compliance && !category && !subscription && !rule && !reason ? "No open findings" : "No findings match these filters"}>
                 {status === "open" ? "Nothing to fix here right now. Run a scan under Connectors & scans to re-check." : "Try another status or clear a filter."}
               </Empty>
             }
@@ -164,7 +176,11 @@ export default function Findings() {
                     ))}
                   </td>
                   <td className="px-3 py-2">
-                    <Tag tone={f.status === "open" ? "warn" : f.status === "resolved" ? "good" : "default"}>{f.status}</Tag>
+                    {f.status === "resolved" && f.close_reason === "resource_removed" ? (
+                      <Tag>Closed · resource removed</Tag>
+                    ) : (
+                      <Tag tone={f.status === "open" ? "warn" : f.status === "resolved" ? "good" : "default"}>{f.status}</Tag>
+                    )}
                   </td>
                   <td className="px-3 py-2 text-xs text-ink-2">{fmtAgo(f.first_seen)}</td>
                   <td className="px-3 py-2 text-right text-xs text-ink-3">{expanded === f.id ? "▲" : "▼"}</td>

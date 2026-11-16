@@ -61,6 +61,10 @@ class CollectionResult:
     relationships: list[RelationshipRecord] = field(default_factory=list)
     vulnerabilities: list[VulnerabilityRecord] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    # Scopes (subscription / account / project ids, as in `AssetRecord.subscription_id`) this scan read completely:
+    # no failed step and no error for them. Only these count for removal detection
+    # (app/services/cloud_lifecycle.py); empty = count nothing.
+    scopes_read: list[str] = field(default_factory=list)
 
 
 SENSITIVE_TAG_KEYS = {"data_classification", "data-classification", "dataclassification", "classification",

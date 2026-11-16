@@ -67,7 +67,7 @@ def attack_path_graph(db: Session = Depends(get_db), limit: int = Query(10, le=5
             node_ids.update((e["source"], e["target"]))
             edges.setdefault((e["source"], e["target"], e["type"]), {**e, "paths": []})["paths"].append(p.id)
     node_ids.discard(INTERNET_NODE)
-    assets = {a.id: a for a in db.scalars(select(Asset).where(Asset.id.in_(node_ids)))}
+    assets = {a.id: a for a in db.scalars(select(Asset).where(Asset.id.in_(node_ids), Asset.removed_at.is_(None)))}
     nodes = [{"id": INTERNET_NODE, "name": "Internet", "type": "internet"}] if paths else []
     nodes += [{"id": a.id, "name": a.name, "type": a.type, "internet_exposed": a.internet_exposed,
                "sensitive_data": a.sensitive_data} for a in assets.values()]
@@ -81,7 +81,8 @@ def list_connectors(db: Session = Depends(get_db)):
     for c in build_registry(org_settings(db)).values():
         last = db.scalar(select(ScanRun).where(ScanRun.connector == c.name).order_by(ScanRun.started_at.desc()).limit(1))
         accounts = sorted({(sid, name) for sid, name in db.execute(
-            select(Asset.subscription_id, Asset.subscription_name).where(Asset.source == c.name).distinct()) if sid})
+            select(Asset.subscription_id, Asset.subscription_name).where(Asset.source == c.name,
+                                                                        Asset.removed_at.is_(None)).distinct()) if sid})
         out.append({**c.info(),
                     "last_scan": ScanRunOut.model_validate(last).model_dump(mode="json") if last else None,
                     "discovered_scopes": [{"id": sid, "name": name or sid} for sid, name in accounts]})

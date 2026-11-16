@@ -362,6 +362,8 @@ class GcpConnector(Connector):
             except Exception as exc:  # keep scanning other projects
                 log.warning("GCP scan failed for project %s: %s", pid, exc)
                 res.errors.append(f"{pid}: {type(exc).__name__}: {exc}")
+            if not any(e.startswith(f"{pid}/") or e.startswith(f"{pid}:") for e in res.errors):
+                res.scopes_read.append(pid)
         return res
 
     def _projects(self, client: ReadOnlyGcpClient, res: CollectionResult) -> list[dict]:

@@ -44,3 +44,5 @@ Adding a rule: add the `@rule` and a `GUIDANCE["<id>"] = g(...)` entry. `tests/t
 fails if any registered rule lacks complete guidance, if the risk score is outside the severity's
 CVSS band (critical 9.0-10, high 7.0-8.9, medium 4.0-6.9, low 0.1-3.9), if a reference is not https
 or if a verify command looks mutating. Everything is guidance: the platform never runs a command.
+
+Findings of a cloud resource that was deleted in the cloud close with the reason `resource_removed`; see [CLOUD_INVENTORY.md](CLOUD_INVENTORY.md).

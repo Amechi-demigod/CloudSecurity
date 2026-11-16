@@ -21,6 +21,8 @@ export interface Asset {
   source: string;
   first_seen: string;
   last_seen: string;
+  /** Set when the resource no longer exists in the cloud (Removed tab). */
+  removed_at?: string | null;
 }
 
 export interface AssetSummary extends Asset {
@@ -45,6 +47,8 @@ export interface Finding {
   first_seen: string;
   last_seen: string;
   resolved_at: string | null;
+  /** "resource_removed" when closed because its cloud resource no longer exists. */
+  close_reason?: string | null;
   asset_name: string | null;
   asset_type: string | null;
 }
@@ -1535,6 +1539,7 @@ export const api = {
       regions: string[];
       sources: string[];
       subscriptions: { id: string; name: string; provider: string }[];
+      counts: { active: number; removed: number; retention_days: number };
     }>(
       "/api/assets/facets",
     ),

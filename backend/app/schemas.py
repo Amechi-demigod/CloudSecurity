@@ -39,6 +39,7 @@ class AssetOut(ORM):
     source: str
     first_seen: UTCDateTime
     last_seen: UTCDateTime
+    removed_at: UTCDateTime | None = None
 
 
 class AssetSummary(AssetOut):
@@ -75,6 +76,7 @@ class FindingOut(ORM):
     first_seen: UTCDateTime
     last_seen: UTCDateTime
     resolved_at: UTCDateTime | None
+    close_reason: str | None = None
     asset_name: str | None = None
     asset_type: str | None = None
 

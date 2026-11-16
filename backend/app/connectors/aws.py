@@ -371,8 +371,11 @@ class AwsConnector(Connector):
         else:
             targets = [("default account", lambda: base)]
         for label, make_session in targets:
+            errors_before = len(res.errors)
             try:
-                self._collect_account(AwsClients(make_session()), res)
+                acct = self._collect_account(AwsClients(make_session()), res)
+                if len(res.errors) == errors_before:  # read completely: every step ran without an error
+                    res.scopes_read.append(acct)
             except ReadOnlyViolation:
                 raise
             except Exception as exc:  # keep scanning the other accounts
@@ -389,7 +392,7 @@ class AwsConnector(Connector):
             log.warning("AWS %s failed: %s", label, exc)
             res.errors.append(f"{label}: {type(exc).__name__}: {exc}")
 
-    def _collect_account(self, c: AwsClients, res: CollectionResult) -> None:  # noqa: C901 - one flow per service
+    def _collect_account(self, c: AwsClients, res: CollectionResult) -> str:  # noqa: C901 - one flow per service
         home = self.settings.aws_home_region
         ident = c("sts", home).get_caller_identity()
         acct = ident["Account"]
@@ -746,6 +749,7 @@ class AwsConnector(Connector):
 
         res.assets.extend(assets.values())
         res.relationships.extend(r for r in rels if r.source_id in assets and r.target_id in assets)
+        return str(acct)
 
     def _bucket(self, c: AwsClients, home: str, acct: str, part: str, name: str, acct_pab: dict,
                 base: dict) -> AssetRecord:

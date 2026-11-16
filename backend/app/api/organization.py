@@ -7,7 +7,7 @@ import secrets
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Request
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, StringConstraints
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -16,14 +16,15 @@ from .. import tenancy
 from ..auth import audit, client_ip, require_admin, require_viewer
 from ..connectors import access_check, build_registry, org_config
 from ..db import get_db
+from ..locks import advisory_lock
 from ..models import IngestToken, Organization, ScanRun, User, utcnow
 from ..modules import CLOUD, require_module
 from ..modules import coerce as coerce_modules
 from ..schemas import ORM, UTCDateTime
 from ..security import INGEST_TOKEN_PREFIX, hash_ingest_token
-from ..services import onboarding
+from ..services import cloud_lifecycle, onboarding
 from ..services import organizations as orgs
-from ..services.scans import FIRST_SCAN, start_scan
+from ..services.scans import FIRST_SCAN, scan_lock_name, start_scan
 
 router = APIRouter(prefix="/api/organization", tags=["organization"], dependencies=[Depends(require_viewer)])
 Provider = Literal["azure", "aws", "gcp"]
@@ -304,3 +305,86 @@ def delete_connector_config(provider: Provider, request: Request, admin: User = 
         audit(db, "connector_config_deleted", actor=admin, target=f"connector:{provider}", ip=client_ip(request))
         db.commit()
     return _out(db, provider)
+
+
+# ----------------------------------------------------------------------------- subscriptions / accounts / projects
+class ScopeOut(BaseModel):
+    id: str
+    # In the connector's scan list (else it only exists in data, e.g. left by a failed first scan).
+    configured: bool
+    resources: int
+    removed_resources: int
+    last_scanned: UTCDateTime | None = None
+    last_scan_status: str | None = None
+    last_scan_at: UTCDateTime | None = None
+
+
+class ScopeRemoved(BaseModel):
+    provider: str
+    id: str
+    config_updated: bool
+    deleted: dict[str, int]
+
+
+def _scope_state(db: Session, provider: str) -> tuple[list[str], bool, bool]:
+    """(ids the organisation's connector scans, whether they come from the stored list a console user can edit
+    rather than the server environment, whether GCP also discovers projects through an organisation)."""
+    row = org_config.rows(db).get(provider)
+    if row is not None:
+        cfg = row.config or {}
+        return cloud_lifecycle.configured_scopes(provider, cfg), True, provider == "gcp" and bool(
+            cfg.get("organization_id"))
+    s = org_config.org_settings(db)
+    cfg = {"azure": {"subscription_ids": s.azure_subscription_ids},
+           "aws": {"role_arns": s.aws_role_arns}, "gcp": {"project_ids": s.gcp_project_ids}}[provider]
+    return cloud_lifecycle.configured_scopes(provider, cfg), False, provider == "gcp" and bool(s.gcp_organization_id)
+
+
+@router.get("/connectors/{provider}/scopes", response_model=list[ScopeOut],
+            dependencies=[Depends(require_admin), Depends(require_module(CLOUD))])
+def list_connector_scopes(provider: Provider, db: Session = Depends(get_db)):
+    """Every Azure subscription, AWS account or GCP project known for this organisation: the ones its connector
+    scans plus any that only exist in data, each with its resource count and last scan."""
+    scanned, _, _ = _scope_state(db, provider)
+    return [ScopeOut(id=s["id"], configured=s["configured"], resources=s["resources"],
+                     removed_resources=s["removed"], last_scanned=s["last_scanned"],
+                     last_scan_status=s["last_scan_status"], last_scan_at=s["last_scan_at"])
+            for s in cloud_lifecycle.list_scopes(db, provider, scanned)]
+
+
+@router.delete("/connectors/{provider}/scopes/{scope_id}", response_model=ScopeRemoved,
+               dependencies=[Depends(require_module(CLOUD))])
+def remove_connector_scope(provider: Provider, request: Request,
+                           scope_id: str = Path(pattern=r"^[A-Za-z0-9._:-]{1,128}$"),
+                           confirm: str = Query("", description="The first 8 characters of the id"),
+                           admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    """Remove a subscription / account / project: stop scanning it and delete its assets, findings,
+    relationships, vulnerabilities and every other row that references them, permanently. The cloud itself is
+    not touched."""
+    if confirm.strip().lower() != scope_id[:8].lower():
+        raise HTTPException(422, "type the first 8 characters of the id to confirm")
+    org_id = tenancy.require_org(db)
+    scanned, from_row, org_discovery = _scope_state(db, provider)
+    row = org_config.rows(db).get(provider)
+    in_list = any(x.lower() == scope_id.lower() for x in scanned)
+    ids = cloud_lifecycle.scope_asset_ids(db, provider, scope_id)
+    if not in_list and not ids:
+        raise HTTPException(404, "unknown subscription / account / project")
+    if in_list and not from_row:
+        raise HTTPException(409, "this scope is configured on the server (environment settings); remove it there first")
+    if not in_list and org_discovery:
+        raise HTTPException(409, "this project is found through the Google Cloud organisation and would be scanned "
+                                 "and added again; remove the organisation setting first")
+    with advisory_lock(scan_lock_name(org_id, provider), blocking=False) as free:
+        if not free:
+            raise HTTPException(409, "a scan of this provider is running; try again when it has finished")
+        config_updated = False
+        if in_list:
+            row.config = cloud_lifecycle.drop_from_config(provider, row.config or {}, scope_id)
+            row.updated_at, row.updated_by = utcnow(), admin.email
+            config_updated = True
+        counts = cloud_lifecycle.delete_assets(db, ids)
+        audit(db, "cloud_scope_removed", actor=admin, target=f"connector:{provider}", ip=client_ip(request),
+              provider=provider, scope_id=scope_id, config_updated=config_updated, **counts)
+        db.commit()
+    return ScopeRemoved(provider=provider, id=scope_id, config_updated=config_updated, deleted=counts)

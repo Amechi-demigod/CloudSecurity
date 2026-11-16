@@ -87,7 +87,7 @@ class AssetResolver:
     def _resolve(self, rid: str | None, pod: str | None, namespace: str | None, host: str | None) -> str | None:
         db = self.db
         if pod:  # a container event belongs to the pod, not the node VM
-            for a in db.scalars(select(Asset).where(Asset.type == "pod", Asset.name == pod)):
+            for a in db.scalars(select(Asset).where(Asset.type == "pod", Asset.name == pod, Asset.removed_at.is_(None))):
                 if not namespace or (a.properties or {}).get("namespace") in (None, namespace):
                     return a.id
         if rid:
@@ -95,7 +95,8 @@ class AssetResolver:
             if a is not None:
                 return a.id
         if host:
-            a = db.scalar(select(Asset).where(Asset.type == "vm", func.lower(Asset.name) == host.lower()))
+            a = db.scalar(select(Asset).where(Asset.type == "vm", func.lower(Asset.name) == host.lower(),
+                                           Asset.removed_at.is_(None)))
             if a is not None:
                 return a.id
         # Unknown to the inventory: keep the sensor's own identity so alerts are still attributable.

@@ -275,7 +275,7 @@ def _end_of(d: date, w: Window) -> datetime:
 
 # ----------------------------------------------------------------------------- scoping
 def _account_assets(account: str):
-    return select(Asset.id).where(Asset.subscription_id == account)
+    return select(Asset.id).where(Asset.subscription_id == account, Asset.removed_at.is_(None))
 
 
 def _f(stmt, w: Window):
@@ -291,6 +291,7 @@ def _al(stmt, w: Window):
 
 
 def _a(stmt, w: Window):
+    stmt = stmt.where(Asset.removed_at.is_(None))  # removed cloud resources are history, not inventory
     return stmt.where(Asset.subscription_id == w.account) if w.account else stmt
 
 
@@ -338,7 +339,7 @@ def scoped_paths(db: Session, w: Window, limit: int = 500) -> list[AttackPath]:
 
 
 def _sensitive_ids(db: Session) -> set[str]:
-    return set(db.scalars(select(Asset.id).where(Asset.sensitive_data.is_(True))))
+    return set(db.scalars(select(Asset.id).where(Asset.sensitive_data.is_(True), Asset.removed_at.is_(None))))
 
 
 def risk_score(db: Session, w: Window, findings: dict[str, int], alerts: dict[str, int],
@@ -573,7 +574,7 @@ def write_snapshot(db: Session, account: str | None = None, day: date | None = N
 
 def accounts(db: Session) -> list[dict[str, str]]:
     rows = db.execute(select(Asset.provider, Asset.subscription_id, func.max(Asset.subscription_name))
-                      .where(Asset.subscription_id.is_not(None))
+                      .where(Asset.subscription_id.is_not(None), Asset.removed_at.is_(None))
                       .group_by(Asset.provider, Asset.subscription_id)).all()
     return sorted(({"id": sid, "name": name or sid, "provider": prov} for prov, sid, name in rows if sid),
                   key=lambda a: (a["provider"], a["name"].lower()))
@@ -650,6 +651,7 @@ def _mttr(db: Session, start: datetime, end: datetime, w: Window) -> dict[str, A
     met = case(*[(and_(Finding.severity == s, days <= d), 1) for s, d in sla.items()], else_=0)
     rows = db.execute(_f(select(Finding.severity, func.count(), func.avg(days), func.sum(met))
                          .where(Finding.status == "resolved", Finding.resolved_at.is_not(None),
+                                Finding.close_reason.is_(None),  # not closed because the resource was removed
                                 Finding.resolved_at >= start, Finding.resolved_at < end)
                          .group_by(Finding.severity), w)).all()
     n = sum(r[1] for r in rows)
@@ -668,6 +670,7 @@ def _issue_trend(db: Session, w: Window) -> dict[str, Any]:
                         .group_by(func.date(Finding.first_seen)), w)).all()
     resolved = db.execute(_f(select(func.date(Finding.resolved_at), func.count())
                              .where(Finding.status == "resolved", Finding.resolved_at.is_not(None),
+                                    Finding.close_reason.is_(None),
                                     Finding.resolved_at >= datetime.combine(w.bar_buckets()[0][0], datetime.min.time()))
                              .group_by(func.date(Finding.resolved_at)), w)).all()
     new_by = {_day(d): n for d, n in new}

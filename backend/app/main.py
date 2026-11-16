@@ -48,6 +48,7 @@ from .notifications import settings as notification_settings
 from .notifications.worker import NotificationWorker, set_worker
 from .security import BodySizeLimitMiddleware, SecurityHeadersMiddleware
 from .services.agent_update_auto import AgentUpdateWorker
+from .services.cloud_lifecycle import CloudPurgeWorker
 from .services.dashboard_snapshots import DashboardSnapshotWorker
 from .services.scan_schedule import ScanScheduler
 from .services.simulation import RuntimeSimulator, seed_if_empty
@@ -105,6 +106,11 @@ async def lifespan(app: FastAPI):
     if s.external_scheduler_worker_enabled:
         app.state.external_scheduler = ExternalScheduler()
         app.state.external_scheduler.start()
+    # Permanent deletion of removed cloud assets past their retention (leader-elected).
+    app.state.cloud_purge = None
+    if s.cloud_purge_worker_enabled:
+        app.state.cloud_purge = CloudPurgeWorker()
+        app.state.cloud_purge.start()
     # Daily dashboard metric snapshots ("vs previous period" changes; leader-elected).
     app.state.dashboard_snapshots = None
     if s.dashboard_snapshot_worker_enabled:
@@ -135,6 +141,8 @@ async def lifespan(app: FastAPI):
         app.state.external_scheduler.stop()
     if app.state.dashboard_snapshots:
         app.state.dashboard_snapshots.stop()
+    if app.state.cloud_purge:
+        app.state.cloud_purge.stop()
     if app.state.compliance_reports:
         app.state.compliance_reports.stop()
     if app.state.simulator:

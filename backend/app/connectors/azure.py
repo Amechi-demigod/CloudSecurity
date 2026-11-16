@@ -514,11 +514,14 @@ class AzureConnector(Connector):
         res = CollectionResult()
         factory = self._client_factory()
         for sub in self.settings.azure_subscription_ids:
+            errors_before = len(res.errors)
             try:
                 self._collect_subscription(factory, sub, res)
             except Exception as exc:  # keep scanning other subscriptions
                 log.exception("Azure scan failed for subscription %s", sub)
                 res.errors.append(f"{sub}: {type(exc).__name__}: {exc}")
+            if len(res.errors) == errors_before:  # read completely: every step ran without an error
+                res.scopes_read.append(sub)
         return res
 
     def _step(self, res: CollectionResult, label: str, fn: Callable[[], None]) -> None:
