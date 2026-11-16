@@ -32,7 +32,7 @@ COPY --from=website *.html favicon.svg /usr/share/nginx/site/
 COPY --from=website assets /usr/share/nginx/site/assets
 # Cache busting: Cloudflare keeps assets for a day, so each page links its CSS/JS
 # with a content hash (?v=...) and a deploy never pairs new pages with old assets.
-RUN cd /usr/share/nginx/site && for f in site.css site.js; do \
+RUN cd /usr/share/nginx/site && for f in site.css site.js scanner.css scanner.js; do \
       h=$(md5sum "assets/$f" | cut -c1-10); \
       sed -i "s#assets/$f\"#assets/$f?v=$h\"#g" *.html; \
     done && grep -q 'site.css?v=' index.html

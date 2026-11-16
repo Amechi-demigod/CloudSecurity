@@ -3,147 +3,82 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>About the Sentrigis scanner · Sentrigis</title>
-<meta name="description" content="Seeing Sentrigis-AttackSurface in your logs? What the Sentrigis scanner is, why it only scans systems whose owners asked for it, what it does and does not do, and how to reach us.">
+<title>Sentrigis scanner notice · Sentrigis</title>
+<meta name="description" content="Seeing Sentrigis-AttackSurface or 100.56.83.158 in your logs? What the Sentrigis scanner is, why it only scans systems whose owners proved they own them, what it does and never does, and how to reach us.">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="preload" href="/assets/fonts/plus-jakarta-sans-latin.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="stylesheet" href="/assets/site.css">
-<script src="/assets/site.js" defer></script>
+<link rel="stylesheet" href="/assets/scanner.css">
+<script src="/assets/scanner.js" defer></script>
 </head>
 <body>
 
-<nav class="top" aria-label="Main">
-  <div class="wrap">
-    <a class="brand" href="/" aria-label="Sentrigis home">
-      <svg width="27" height="33" viewBox="5.6 1.4 36.8 45.2" aria-hidden="true"><path d="M24 3 41 9v13c0 11-7.5 19-17 23C14.5 41 7 33 7 22V9Z" fill="#0f1d3a" stroke="#3b82f6" stroke-width="2.4" stroke-linejoin="round"/><path d="M24 10.5c-6.6 0-10.6 4.8-10.6 11.2V30l3.2 6.5h4.9V27.6h5V36.5h4.9L34.6 30v-8.3c0-6.4-4-11.2-10.6-11.2Z" fill="#fff"/><path d="M16.8 21.2h14.4v3.2h-5.6v12.1h-3.2V24.4h-5.6Z" fill="#0f1d3a"/><path d="M24 10.5V7.2" stroke="#fff" stroke-width="2.6" stroke-linecap="round"/></svg>
-      <span>Sentrigis</span>
-    </a>
-    <button class="navtoggle" type="button" aria-expanded="false" aria-controls="menu"><span class="sr">Menu</span><i aria-hidden="true"></i></button>
-    <div class="menu" id="menu">
-      <ul class="links">
-        <li class="has-panel">
-          <button class="trig" type="button" aria-expanded="false" aria-controls="mega">Platform</button>
-          <div class="mega" id="mega">
-            <div class="cats">
-            <div class="cat active">
-              <button class="cat-btn" type="button" aria-expanded="true">Platform</button>
-              <div class="pane">
-                <div class="banner"><h3>Platform</h3><p>One console for cloud, endpoints and IT assets, with one inventory and one risk score.</p><a class="more" href="/#overview">Learn more →</a></div>
-                <ul class="items"><li><a href="/#how"><b>How it works</b><span>Connect read-only, deploy the agent, fix what matters.</span></a></li><li><a href="/#works-with"><b>Integrations</b><span>Azure, AWS, Google Cloud, Entra ID, Google Workspace, Active Directory.</span></a></li><li><a href="/#overview"><b>Alerts &amp; workflows</b><span>Email, Teams and Slack, with approvals and an audit trail.</span></a></li></ul>
-              </div>
-            </div>
-            <div class="cat">
-              <button class="cat-btn" type="button" aria-expanded="false">Cloud security</button>
-              <div class="pane">
-                <div class="banner"><h3>Cloud security</h3><p>Read-only posture scanning for Azure, AWS and Google Cloud.</p><a class="more" href="/cloud-security.html">Learn more →</a></div>
-                <ul class="items"><li><a href="/cloud-security.html#posture"><b>Cloud posture</b><span>Misconfigurations mapped to CIS and Microsoft benchmarks.</span></a></li><li><a href="/cloud-security.html#exposure"><b>Exposure &amp; attack paths</b><span>Internet exposure and the paths to your crown jewels.</span></a></li><li><a href="/compliance.html"><b>Compliance</b><span>Evidence against CIS, ISO 27001, SOC 2, NIST CSF and PCI DSS.</span></a></li><li><a href="/cloud-security.html#posture"><b>Kubernetes</b><span>Control-plane checks for AKS, EKS and GKE.</span></a></li></ul>
-              </div>
-            </div>
-            <div class="cat">
-              <button class="cat-btn" type="button" aria-expanded="false">Endpoints &amp; servers</button>
-              <div class="pane">
-                <div class="banner"><h3>Endpoints &amp; servers</h3><p>One lightweight agent for Windows, macOS and Linux servers.</p><a class="more" href="/endpoints.html">Learn more →</a></div>
-                <ul class="items"><li><a href="/endpoints.html#posture"><b>Endpoint management</b><span>Posture checks and inventory for every managed device.</span></a></li><li><a href="/endpoints.html#actions"><b>Remote actions</b><span>Lock, lost mode and suspend sign-in on laptops and desktops; wipe on Windows. With approvals.</span></a></li><li><a href="/endpoints.html#runtime"><b>Runtime detection</b><span>A sensor for Linux servers, VMs and Kubernetes nodes.</span></a></li><li><a href="/endpoints.html#updates"><b>OS updates</b><span>Missing Windows updates per device.</span></a></li></ul>
-              </div>
-            </div>
-            <div class="cat">
-              <button class="cat-btn" type="button" aria-expanded="false">Vulnerabilities</button>
-              <div class="pane">
-                <div class="banner"><h3>Vulnerabilities</h3><p>CVEs on devices, Linux servers and network equipment, ranked by real-world risk.</p><a class="more" href="/vulnerabilities.html">Learn more →</a></div>
-                <ul class="items"><li><a href="/vulnerabilities.html#priority"><b>Prioritisation</b><span>Known-exploited and internet-exposed first.</span></a></li><li><a href="/vulnerabilities.html#priority"><b>In-use detection</b><span>Loaded packages separated from dormant ones on monitored servers.</span></a></li><li><a href="/vulnerabilities.html#fix"><b>Fix guidance</b><span>Fix availability and the assets affected.</span></a></li></ul>
-              </div>
-            </div>
-            <div class="cat">
-              <button class="cat-btn" type="button" aria-expanded="false">Assets &amp; identity</button>
-              <div class="pane">
-                <div class="banner"><h3>Assets &amp; identity</h3><p>Every device and account, from purchase to disposal.</p><a class="more" href="/assets-identity.html">Learn more →</a></div>
-                <ul class="items"><li><a href="/assets-identity.html#register"><b>IT asset lifecycle</b><span>Owners, locations, warranty and refresh dates.</span></a></li><li><a href="/assets-identity.html#discovery"><b>Discovery</b><span>Active Directory, Entra ID, Google Workspace and network scans.</span></a></li><li><a href="/assets-identity.html#identity"><b>Identity hygiene</b><span>Stale, disabled and privileged accounts.</span></a></li><li><a href="/assets-identity.html#register"><b>Offboarding</b><span>Device retrieval, with disposal records and certificates kept.</span></a></li></ul>
-              </div>
-            </div>
-            </div>
-            <div class="megafoot"><a class="btn pri sm" href="/#contact">Request a demo</a></div>
-          </div>
-        </li>
-        <li><a class="plain" href="/#why">Why Sentrigis</a></li>
-        <li class="has-panel">
-          <button class="trig" type="button" aria-expanded="false" aria-controls="resources">Resources</button>
-          <div class="drop" id="resources"><div class="col"><h3>Company</h3><ul><li><a href="/#contact">Contact</a></li></ul></div><div class="col"><h3>Explore</h3><ul><li><a href="/security.html">Security &amp; trust</a></li><li><a href="/compliance.html">Compliance coverage</a></li><li><a href="/read-only-access.html">How read-only cloud access works</a></li></ul></div><div class="col"><h3>Console</h3><ul><li><a href="https://console.sentrigis.com">Log in to the console</a></li></ul></div></div>
-        </li>
-      </ul>
-      <div class="navcta">
-        <a class="btn ghost sm" href="/#contact">Contact us</a>
-        <a class="btn pri sm" href="https://console.sentrigis.com">Log in →</a>
-      </div>
+<div class="bar"><div class="wrap">
+  <a class="brand" href="/" aria-label="Sentrigis home"><svg viewBox="5.6 1.4 36.8 45.2" aria-hidden="true"><path d="M24 3 41 9v13c0 11-7.5 19-17 23C14.5 41 7 33 7 22V9Z" fill="#0f1d3a" stroke="#3b82f6" stroke-width="2.4" stroke-linejoin="round"/><path d="M24 10.5c-6.6 0-10.6 4.8-10.6 11.2V30l3.2 6.5h4.9V27.6h5V36.5h4.9L34.6 30v-8.3c0-6.4-4-11.2-10.6-11.2Z" fill="#fff"/><path d="M16.8 21.2h14.4v3.2h-5.6v12.1h-3.2V24.4h-5.6Z" fill="#0f1d3a"/><path d="M24 10.5V7.2" stroke="#fff" stroke-width="2.6" stroke-linecap="round"/></svg>Sentrigis</a>
+  <a class="home" href="/">sentrigis.com &rarr;</a>
+</div></div>
+
+<div class="wrap">
+  <div class="hero">
+    <span class="tag mono">Scanner notice</span>
+    <h1>You saw our scanner in your logs.</h1>
+    <p class="lead">It is checking internet-facing systems for a Sentrigis customer who proved they own them. Here is how to recognise it, what it does, and how to reach us.</p>
+
+    <div class="id">
+      <div class="hd"><span><i></i>Scanner identity</span><span class="mono">v1.0</span></div>
+      <div class="row"><span class="k">Source IP</span><span class="v mono">100.56.83.158</span><button class="copy" data-t="100.56.83.158">Copy</button></div>
+      <div class="row"><span class="k">User-Agent</span><span class="v mono">Sentrigis-AttackSurface/1.0 (+https://sentrigis.com/scanner)</span><button class="copy" data-t="Sentrigis-AttackSurface/1.0 (+https://sentrigis.com/scanner)">Copy</button></div>
+      <div class="row"><span class="k">Ownership record</span><span class="v mono">TXT sentrigis-verification=&hellip;</span><button class="copy" data-t="sentrigis-verification=">Copy</button></div>
+      <div class="row"><span class="k">Verification file</span><span class="v mono">/.well-known/sentrigis-verification.txt</span><button class="copy" data-t="/.well-known/sentrigis-verification.txt">Copy</button></div>
     </div>
   </div>
-</nav>
 
-<header class="phead">
-  <div class="wrap">
-    <span class="eyebrow"><i></i>Our scanner</span>
-    <h1>Seeing Sentrigis in your logs?</h1>
-    <p class="lead">If your logs show the user agent <b>Sentrigis-AttackSurface/1.0</b> or connections from <b>100.56.83.158</b>, this page explains what it is and how to reach us.</p>
-  </div>
-</header>
-
-<main class="prose">
-  <div class="wrap">
-    <section class="blk">
-      <h2>What it is</h2>
-      <p>Sentrigis is a Nigerian cybersecurity company. Our attack surface scanner checks internet-facing systems for security weaknesses, on behalf of a Sentrigis customer who has asked us to check their own domains and addresses. It is a careful, non-intrusive check, the same kind of outside view an attacker would get.</p>
-    </section>
-    <section class="blk">
-      <h2>We only scan with proof of ownership</h2>
-      <p>Before anything is scanned, the customer must prove they control it. A domain needs a DNS record or a verification file that only its owner can add, and that proof is checked again at the start of every scan. An IP address is scanned only if a verified domain points to it, if it belongs to the customer's own connected cloud account, or if the customer confirmed they are authorised to test it and a Sentrigis administrator approved the request. Every approval is recorded.</p>
-    </section>
-    <section class="blk">
-      <h2>What it does, and what it never does</h2>
-      <div class="tiles">
-        <div class="tile"><h3>What it does</h3><p>Connects to common service ports, reads the greeting a service sends and the details of its TLS certificate, checks web server headers, and sends harmless requests to see whether well-known sensitive files are exposed. For those files it reads at most the first 256 bytes, and never stores the contents.</p></div>
-        <div class="tile"><h3>What it never does</h3><p>No exploits, no injection or attack payloads, no attempts to break in, and no downloading of data. The only login check is a short list of manufacturers' default passwords on web login pages, and only when the system's owner has switched that check on for their own system.</p></div>
-        <div class="tile"><h3>Gentle by design</h3><p>At most 20 connection attempts per second and 10 at a time to any one host. A scan stops after one hour at the latest, and most customers scan once a week.</p></div>
-      </div>
-    </section>
-    <section class="blk">
-      <h2>How to recognise it</h2>
-      <div class="tiles">
-        <div class="tile"><h3>Source address</h3><p><b>100.56.83.158</b></p></div>
-        <div class="tile"><h3>User agent</h3><p><b>Sentrigis-AttackSurface/1.0 (+https://sentrigis.com/scanner)</b></p></div>
-        <div class="tile"><h3>Ownership record</h3><p>A DNS TXT record starting <b>sentrigis-verification=</b> on the domain or on <b>_sentrigis.</b> plus the domain, or the file <b>/.well-known/sentrigis-verification.txt</b>.</p></div>
-      </div>
-    </section>
-    <section class="blk">
-      <h2>Think we scanned you by mistake?</h2>
-      <p>If you believe we scanned a system that belongs to you without your permission, contact us with the IP address or domain and the time you saw the traffic. We will investigate, tell you what we find, and block that address from future scans.</p>
-    </section>
-  </div>
-</main>
-
-<section class="nopt">
-  <div class="wrap">
-    <div class="band">
-      <h2>Questions about our scanner? Talk to us.</h2>
-      <div class="acts">
-        <a class="btn w" href="/#contact">Contact us</a>
-        <a class="btn ghost" href="https://console.sentrigis.com">Log in</a>
-      </div>
+  <section>
+    <h2>Scanned only with proof of ownership</h2>
+    <div class="steps">
+      <div class="step"><div><b>The customer proves control.</b><br><span>A DNS TXT record or a verification file that only the domain's owner can add. IP addresses only if a verified domain points to them, they are in the customer's own cloud account, or a Sentrigis administrator approved them after the customer confirmed authorisation (recorded).</span></div></div>
+      <div class="step"><div><b>We check it again before every scan.</b><br><span>If the record or file has gone, the domain is skipped.</span></div></div>
+      <div class="step"><div><b>Private and reserved addresses are always refused.</b><br><span>Even if a domain points to one.</span></div></div>
     </div>
-  </div>
-</section>
+  </section>
 
-<footer>
-  <div class="wrap">
-    <div class="fcols">
-      <div class="fbrand">
-        <a class="brand" href="/" aria-label="Sentrigis home"><svg width="27" height="33" viewBox="5.6 1.4 36.8 45.2" aria-hidden="true"><path d="M24 3 41 9v13c0 11-7.5 19-17 23C14.5 41 7 33 7 22V9Z" fill="#0f1d3a" stroke="#3b82f6" stroke-width="2.4" stroke-linejoin="round"/><path d="M24 10.5c-6.6 0-10.6 4.8-10.6 11.2V30l3.2 6.5h4.9V27.6h5V36.5h4.9L34.6 30v-8.3c0-6.4-4-11.2-10.6-11.2Z" fill="#fff"/><path d="M16.8 21.2h14.4v3.2h-5.6v12.1h-3.2V24.4h-5.6Z" fill="#0f1d3a"/><path d="M24 10.5V7.2" stroke="#fff" stroke-width="2.6" stroke-linecap="round"/></svg><span>Sentrigis</span></a>
-        <p>Cloud, endpoint and IT asset security in one console.</p>
-      </div>
-      <div><h3>Platform</h3><ul><li><a href="/#overview">Platform</a></li><li><a href="/cloud-security.html">Cloud security</a></li><li><a href="/endpoints.html">Endpoints &amp; servers</a></li><li><a href="/vulnerabilities.html">Vulnerabilities</a></li><li><a href="/assets-identity.html">Assets &amp; identity</a></li></ul></div>
-      <div><h3>Why Sentrigis</h3><ul><li><a href="/#why">Why Sentrigis</a></li><li><a href="/#contact">Request a demo</a></li></ul></div>
-      <div><h3>Resources</h3><ul><li><a href="/#contact">Contact</a></li><li><a href="/security.html">Security &amp; trust</a></li><li><a href="/compliance.html">Compliance coverage</a></li><li><a href="/read-only-access.html">How read-only cloud access works</a></li><li><a href="https://console.sentrigis.com">Log in to the console</a></li></ul></div>
+  <section>
+    <h2>What it does and never does</h2>
+    <div class="cols">
+      <div class="box yes"><h3>Does</h3><ul>
+        <li>Connects to common service ports (TCP)</li>
+        <li>Reads service greetings and TLS certificate details</li>
+        <li>Checks web server security headers</li>
+        <li>Checks whether well-known sensitive files are exposed, reading at most 256 bytes and storing no contents</li>
+      </ul></div>
+      <div class="box never"><h3>Never does</h3><ul>
+        <li>Exploits, injection or attack payloads</li>
+        <li>Attempts to break in or download data</li>
+        <li>Password guessing (only a short list of manufacturers' default passwords, and only when the system's owner switches that check on)</li>
+        <li>IPv6 or UDP scanning</li>
+      </ul></div>
     </div>
-    <div class="fbase"><span>© 2026 Sentrigis</span></div>
-  </div>
-</footer>
+  </section>
+
+  <section>
+    <h2>Gentle by design</h2>
+    <div class="limits">
+      <div class="lim"><b>20 / s</b><span>connection attempts per host, at most</span></div>
+      <div class="lim"><b>10</b><span>parallel connections per host</span></div>
+      <div class="lim"><b>1 hour</b><span>maximum length of a scan</span></div>
+      <div class="lim"><b>Weekly</b><span>how often most customers scan</span></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="report">
+      <h3>Think we scanned you by mistake?</h3>
+      <p>Email us at <a class="mail" href="mailto:hi@sentrigis.com">hi@sentrigis.com</a> with the IP address or domain and when you saw the traffic. We will investigate, tell you what we find, and block that address from future scans.</p>
+      <a class="btn" href="mailto:hi@sentrigis.com?subject=Sentrigis%20scanner">Email hi@sentrigis.com</a>
+    </div>
+  </section>
+</div>
+
+<footer><div class="wrap">Sentrigis, a Nigerian cybersecurity company &middot; <a class="home" href="/">sentrigis.com</a> &middot; hi@sentrigis.com</div></footer>
+
 </body>
 </html>
