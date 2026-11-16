@@ -16,7 +16,8 @@ Static marketing site served by the frontend image's nginx for the hostnames in
 - Pages: `index.html` (home), one page per product (`cloud-security.html`,
   `endpoints.html`, `vulnerabilities.html`, `assets-identity.html`) plus
   `security.html`, `compliance.html` and `read-only-access.html` (also served as
-  `/security` etc.). The header and footer
+  `/security` etc.), and `scanner.html` (`/scanner`, linked from the Attack surface scanner's
+  User-Agent and not from the menu; keep its source IP in sync with `EXTERNAL_SCANNER_EGRESS_IP`). The header and footer
   are repeated in each page; keep them in sync. Only add menu items that have
   content, and never show prices (pricing is "Contact us").
 - Platform menu and footer product links point at the product pages. Product
