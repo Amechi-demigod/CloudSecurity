@@ -313,7 +313,7 @@ def _directory(db: Session, ids: list[str]) -> dict[str, Result]:
         if n:
             for f in db.scalars(select(DirectoryFinding).where(DirectoryFinding.type == t)
                                 .order_by(DirectoryFinding.name, DirectoryFinding.id).limit(ITEMS)):
-                r.items.append({"label": f.name, "detail": f.detail, "since": f.first_seen,
+                r.items.append({"label": f.name, "detail": f.detail, "since": f.first_seen_at,
                                 "link": f"/it-assets/discovery?type={t}"})
         out[cid] = r
     return out

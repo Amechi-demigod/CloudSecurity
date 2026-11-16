@@ -220,6 +220,20 @@ def test_directory_and_inventory_checks_without_sources(empty_client):
         assert {x.status for x in r.values()} == {"no_data"}
 
 
+def test_directory_check_lists_failing_objects(empty_client):
+    """Regression: the item list read `first_seen` (the model has `first_seen_at`) and crashed the snapshot."""
+    from app.directory.models import DirectoryFinding
+
+    seen = utcnow() - timedelta(days=3)
+    with db.get_session(DEFAULT_ORG_ID) as s:
+        s.add(DirectoryFinding(key="not_managed:c1", type="not_managed", kind="computer", name="PC-01",
+                               detail="no agent", first_seen_at=seen))
+        s.commit()
+        r = checks.evaluate(s, ["directory:not_managed"])["directory:not_managed"]
+        assert r.status == "fail" and r.failing == 1
+        assert r.items[0]["label"] == "PC-01" and r.items[0]["since"] == seen
+
+
 # ----------------------------------------------------------------------------- API, RBAC, tenancy
 def test_api_overview_posture_csv_and_scopes(client):
     r = client.get("/api/compliance/frameworks")
