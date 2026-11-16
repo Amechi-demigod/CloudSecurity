@@ -44,7 +44,7 @@ function ModuleSwitch({ on, label, disabled, onChange }: { on: boolean; label: s
   );
 }
 
-/** The four product modules of an organisation. Turning one on applies at once; turning one off asks first. */
+/** The product modules of an organisation. Turning one on applies at once; turning one off asks first. */
 function ModulesSection({ orgId, modules, busy, onSet }: { orgId: string; modules: ModuleKey[]; busy: boolean; onSet: (m: ModuleKey, enabled: boolean) => void }) {
   const [confirming, setConfirming] = useState<ModuleKey | null>(null);
   const has = (m: ModuleKey) => modules.includes(m);

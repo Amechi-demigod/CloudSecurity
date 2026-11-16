@@ -40,6 +40,8 @@ from .directory import api as directory_api
 from .directory import collector_api
 from .directory import deploy_api as directory_deploy_api
 from .directory.scheduler import DirectoryScheduler
+from .external import api as external_api
+from .external.scheduler import ExternalScheduler
 from .network import api as network_api
 from .notifications import api as notifications_api
 from .notifications import settings as notification_settings
@@ -98,6 +100,11 @@ async def lifespan(app: FastAPI):
     if s.directory_scheduler_worker_enabled:
         app.state.directory_scheduler = DirectoryScheduler()
         app.state.directory_scheduler.start()
+    # Weekly attack-surface scans (leader-elected; only organisations with the external module).
+    app.state.external_scheduler = None
+    if s.external_scheduler_worker_enabled:
+        app.state.external_scheduler = ExternalScheduler()
+        app.state.external_scheduler.start()
     # Daily dashboard metric snapshots ("vs previous period" changes; leader-elected).
     app.state.dashboard_snapshots = None
     if s.dashboard_snapshot_worker_enabled:
@@ -124,6 +131,8 @@ async def lifespan(app: FastAPI):
         app.state.scan_scheduler.stop()
     if app.state.directory_scheduler:
         app.state.directory_scheduler.stop()
+    if app.state.external_scheduler:
+        app.state.external_scheduler.stop()
     if app.state.dashboard_snapshots:
         app.state.dashboard_snapshots.stop()
     if app.state.compliance_reports:
@@ -235,6 +244,8 @@ def create_app() -> FastAPI:
     app.include_router(collector_api.admin_router, dependencies=assets)  # /api/collectors/*: viewer reads, admin writes
     app.include_router(network_api.router, dependencies=assets)  # /api/network/*: viewer reads, analyst exports, admin writes
     app.include_router(directory_deploy_api.router, dependencies=assets)  # /api/directory/deployments/*
+    app.include_router(external_api.router)  # /api/external/*: the Attack surface & pre-ASV module
+    app.include_router(external_api.platform_router)  # /api/platform/external/*: approvals and dispute reviews
     app.include_router(compliance_api.router)  # /api/compliance/*: viewer reads / exports, admin schedules
     app.include_router(agent_updates_api.router)  # /api/updates/*: viewer reads, admin writes (all audited)
     app.include_router(approvals_api.router)  # /api/approvals/*: admin only (two-person rule)

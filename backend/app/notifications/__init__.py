@@ -17,6 +17,7 @@ from . import (
     device_source,  # noqa: F401  (endpoint devices: posture issues, connectivity, remote actions)
     directory_source,  # noqa: F401  (directory discovery: failed syncs, unmanaged computers)
     endpoint_action_source,  # noqa: F401  (built-in endpoint actions: failures, refusals, restarts)
+    external_source,  # noqa: F401  (attack surface: new critical / high external findings)
     host_isolation_source,  # noqa: F401  (host isolation: sign-in suspension and restore)
     remote_session_source,  # noqa: F401  (attended remote desktop sessions)
     server_update_source,  # noqa: F401  (on-prem server updates: failures and automatic rollbacks)

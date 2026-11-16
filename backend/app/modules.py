@@ -4,9 +4,9 @@ data (it is hidden and its APIs answer 403 `module_disabled`); turning it back
 on shows it again.
 
 `Organization.modules` is a JSON list of enabled keys. NULL means "never set":
-every module is on (databases that predate modules; the Alembic migration also
-writes the full list for existing organisations). New organisations are created
-with an explicit empty list."""
+every module is on, including `external` (databases that predate modules; the Alembic migrations write
+explicit lists for existing organisations: 0031 the first four, so `external` stays off for them).
+New organisations are created with an explicit empty list."""
 from __future__ import annotations
 
 from collections.abc import Iterable
@@ -22,10 +22,11 @@ CLOUD = "cloud"
 ENDPOINTS = "endpoints"
 VULNERABILITIES = "vulnerabilities"
 ASSETS = "assets"
-ALL_MODULES: tuple[str, ...] = (CLOUD, ENDPOINTS, VULNERABILITIES, ASSETS)
+EXTERNAL = "external"
+ALL_MODULES: tuple[str, ...] = (CLOUD, ENDPOINTS, VULNERABILITIES, ASSETS, EXTERNAL)
 
 LABELS = {CLOUD: "Cloud security", ENDPOINTS: "Endpoints & servers", VULNERABILITIES: "Vulnerabilities",
-          ASSETS: "Assets & identity"}
+          ASSETS: "Assets & identity", EXTERNAL: "Attack surface & pre-ASV"}
 
 
 class ModuleDisabled(Exception):

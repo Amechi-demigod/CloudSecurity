@@ -26,7 +26,7 @@ from .organization import OrganizationOut
 router = APIRouter(prefix="/api/platform", tags=["platform-admin"], dependencies=[Depends(require_platform_admin)])
 OrgId = Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]{1,32}$")]
 Role = Literal["viewer", "analyst", "admin"]
-ModuleKey = Literal["cloud", "endpoints", "vulnerabilities", "assets"]  # app/modules.py
+ModuleKey = Literal["cloud", "endpoints", "vulnerabilities", "assets", "external"]  # app/modules.py
 Email = Annotated[str, StringConstraints(strip_whitespace=True, min_length=3, max_length=320,
                                          pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")]
 

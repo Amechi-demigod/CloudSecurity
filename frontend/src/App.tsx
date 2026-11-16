@@ -14,6 +14,9 @@ import {
   Network,
   Network as NetworkIcon,
   Package,
+  Radar,
+  ScanSearch,
+  FileText,
   PlugZap,
   Route as RouteIcon,
   ScrollText,
@@ -71,6 +74,11 @@ import OrganizationPage from "./pages/admin/Organization";
 import Users from "./pages/admin/Users";
 import Invite from "./pages/Invite";
 import Organizations from "./pages/platform/Organizations";
+import ExternalReview from "./pages/platform/ExternalReview";
+import AttackSurface from "./pages/external/AttackSurface";
+import ExternalFindings from "./pages/external/ExternalFindings";
+import ExternalFindingDetail from "./pages/external/ExternalFindingDetail";
+import ExternalReports from "./pages/external/ExternalReports";
 
 type NavItem = { to: string; label: string; icon: LucideIcon; role?: Role; badge?: "approvals"; module?: ModuleKey };
 
@@ -100,6 +108,14 @@ const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
       { to: "/devices", label: "Devices", icon: Laptop, module: "endpoints" },
       { to: "/it-assets", label: "IT assets", icon: Package, module: "assets" },
       { to: "/network-devices", label: "Network devices", icon: NetworkIcon, module: "assets" },
+    ],
+  },
+  {
+    title: "Attack surface & pre-ASV",
+    items: [
+      { to: "/attack-surface", label: "Attack surface", icon: Radar, module: "external" },
+      { to: "/attack-surface/findings", label: "Findings", icon: ScanSearch, module: "external" },
+      { to: "/attack-surface/reports", label: "Reports", icon: FileText, module: "external" },
     ],
   },
   {
@@ -282,6 +298,12 @@ function Shell() {
                   Organisations
                 </NavLink>
               </li>
+              <li>
+                <NavLink to="/platform/attack-surface" className={navClass}>
+                  <ScanSearch aria-hidden className="h-4 w-4 shrink-0" />
+                  Attack surface review
+                </NavLink>
+              </li>
             </>
           )}
         </ul>
@@ -363,6 +385,11 @@ function Shell() {
             <Route path="/it-assets/discovery/deployments/:id" element={<RequireModule module="assets"><DeploymentDetail /></RequireModule>} />
             <Route path="/it-assets/settings" element={<RequireModule module="assets"><RequireRole role="admin"><AssetSettings /></RequireRole></RequireModule>} />
             <Route path="/it-assets/:id" element={<RequireModule module="assets"><AssetDetail /></RequireModule>} />
+            <Route path="/attack-surface" element={<RequireModule module="external"><AttackSurface /></RequireModule>} />
+            <Route path="/attack-surface/findings" element={<RequireModule module="external"><ExternalFindings /></RequireModule>} />
+            <Route path="/attack-surface/findings/:id" element={<RequireModule module="external"><ExternalFindingDetail /></RequireModule>} />
+            <Route path="/attack-surface/reports" element={<RequireModule module="external"><ExternalReports /></RequireModule>} />
+            <Route path="/platform/attack-surface" element={<RequirePlatformAdmin><ExternalReview /></RequirePlatformAdmin>} />
             <Route path="/notifications" element={<RequireRole role="analyst"><Notifications /></RequireRole>} />
             <Route path="/account/security" element={<Security />} />
             <Route path="/approvals" element={<RequireRole role="admin"><Approvals /></RequireRole>} />

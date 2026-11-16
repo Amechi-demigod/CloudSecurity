@@ -163,6 +163,26 @@ class Settings:
     # turn it off; to stop scheduled scans use SCAN_SCHEDULE_ENABLED instead.
     scan_scheduler_worker_enabled: bool = field(default_factory=lambda: _bool("SCAN_SCHEDULER_WORKER_ENABLED", True))
 
+    # Attack surface & pre-ASV module (app/external, docs/ATTACK_SURFACE.md). The scheduler thread is
+    # leader-elected; tests turn it off. The egress IP is only displayed (customers allow-list it in their WAF).
+    external_scheduler_worker_enabled: bool = field(
+        default_factory=lambda: _bool("EXTERNAL_SCHEDULER_WORKER_ENABLED", True))
+    external_scanner_egress_ip: str = field(default_factory=lambda: os.getenv("EXTERNAL_SCANNER_EGRESS_IP", "").strip())
+    # Extra addresses / CIDRs the scanner must never touch (besides the built-in private/reserved ranges and
+    # this server's own addresses), e.g. the platform's own public IPs.
+    external_blocked_cidrs: list[str] = field(default_factory=lambda: _list("EXTERNAL_BLOCKED_CIDRS"))
+    external_max_concurrent_scans: int = field(default_factory=lambda: int(os.getenv("EXTERNAL_MAX_CONCURRENT_SCANS", "2") or 2))
+    external_max_scans_per_org: int = field(default_factory=lambda: int(os.getenv("EXTERNAL_MAX_SCANS_PER_ORG", "1") or 1))
+    external_max_scan_seconds: int = field(default_factory=lambda: int(os.getenv("EXTERNAL_MAX_SCAN_SECONDS", "3600") or 3600))
+    external_connect_timeout: float = field(default_factory=lambda: float(os.getenv("EXTERNAL_CONNECT_TIMEOUT", "4") or 4))
+    external_read_timeout: float = field(default_factory=lambda: float(os.getenv("EXTERNAL_READ_TIMEOUT", "6") or 6))
+    # Connection attempts per second per host (rate limit) and parallel connections per host.
+    external_host_rate: float = field(default_factory=lambda: float(os.getenv("EXTERNAL_HOST_RATE", "20") or 20))
+    external_host_parallel: int = field(default_factory=lambda: int(os.getenv("EXTERNAL_HOST_PARALLEL", "10") or 10))
+    external_max_targets: int = field(default_factory=lambda: int(os.getenv("EXTERNAL_MAX_TARGETS", "25") or 25))
+    external_max_hosts_per_scan: int = field(default_factory=lambda: int(os.getenv("EXTERNAL_MAX_HOSTS_PER_SCAN", "512") or 512))
+    external_crtsh_enabled: bool = field(default_factory=lambda: _bool("EXTERNAL_CRTSH_ENABLED", True))
+
     # Dashboards (app/services/dashboards.py). Remediation SLA targets in days
     # for the "Mean time to resolve" tile's "SLA met" share: a critical / high
     # finding resolved within this many days of first being seen meets its SLA.
