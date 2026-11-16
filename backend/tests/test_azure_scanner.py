@@ -173,6 +173,19 @@ def test_service_failures_are_isolated(clients):
     assert "web-01" in by_name(res) and "sql-app" not in by_name(res)
 
 
+def test_keyvault_access_policies_with_sdk_mapping_models(clients):
+    """azure-mgmt-keyvault 14+ models are mappings: `permissions.keys` is Mapping.keys(), the key permissions are
+    `keys_property`. Reading them as an attribute raised "'method' object is not iterable" and dropped the step."""
+    from azure.mgmt.keyvault.models import Permissions
+
+    vault = clients["keyvault"].vaults.list_by_subscription.return_value[0]
+    vault.properties.access_policies = [NS(object_id="kv-reader", permissions=Permissions(
+        keys_property=["get", "list"], secrets=["get"], certificates=[]))]
+    res = make_connector(clients).collect()
+    assert not any("keyvault" in e for e in res.errors), res.errors
+    assert "kv-app" in by_name(res) and SUB not in res.unreliable_types
+
+
 def test_not_configured_without_credentials():
     s = Settings()
     s.azure_subscription_ids = [SUB]

@@ -11,11 +11,15 @@ Code: `backend/app/services/cloud_lifecycle.py`, `backend/app/services/ingest.py
 A scan only adds and updates assets. To notice resources that were deleted in the cloud, every successful scan
 of a scope also counts the assets it did **not** return:
 
-1. **Only successfully read scopes count.** A connector lists in `CollectionResult.scopes_read` the
-   subscriptions / accounts / projects it read completely: the scope's collection finished and produced no error
-   at all (no failed step, no permission error, no exception). A scan that fails, or fails for one scope, never
-   counts for that scope; each scope is judged on its own. A scope that returned no asset (not even its own
-   subscription / account / project asset) does not count either. When in doubt, nothing is counted.
+1. **Only successfully read scopes count, type by type.** A connector lists in `CollectionResult.scopes_read`
+   the subscriptions / accounts / projects whose collection ran to the end (no exception, no failure of the
+   scope itself). A scan that fails, or fails for one scope, never counts for that scope; each scope is judged on
+   its own. Within a scope, `CollectionResult.unreliable_types` lists the asset types whose listing failed: a
+   collection step that raised (for example `keyvault`) makes only the types it lists (`STEP_ASSET_TYPES` in each
+   connector, for example `key_vault`) untrusted for that scope in that scan; a failed step missing from the map
+   makes the whole scope untrusted. Errors inside a step's loop that only enrich a resource that was listed
+   (firewall rules, auditing, ...) do not matter. A scope that returned no asset (not even its own subscription /
+   account / project asset) does not count either. When in doubt, nothing is counted.
 2. For each scope read, every cloud asset of that connector in that scope that was not returned gets
    `assets.missed_scans` + 1; one that was returned is reset to 0.
 3. At `CLOUD_REMOVE_AFTER_MISSES` misses in a row (default 2) the asset is **removed**: `assets.removed_at` is
@@ -40,6 +44,7 @@ Nothing disappears when this is deployed: existing assets start with 0 misses an
 | --- | --- | --- |
 | `CLOUD_REMOVE_AFTER_MISSES` | 2 | successful scans of a scope without an asset before it is marked removed |
 | `CLOUD_REMOVED_RETENTION_DAYS` | 60 | days a removed asset (and its closed findings) is kept before permanent deletion |
+| `CLOUD_MASS_MISSING_MIN` / `CLOUD_MASS_MISSING_RATIO` | 20 / 0.5 | safeguard: if more than max(MIN, RATIO x the scope's active assets) of one scope are missing from a scan, none is counted for that scope and a warning is added to the scan run |
 | `CLOUD_PURGE_WORKER_ENABLED` | true | run the purge job in this process (internal; tests turn it off) |
 
 ## Removing a subscription, account or project

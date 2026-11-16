@@ -677,3 +677,33 @@ def test_eol_runtimes_and_engines_become_vulnerabilities(empty_client):
         assert session.query(Vulnerability).filter_by(cve_id="EOL-PHP-7.4").one().status == "resolved"
     finally:
         session.close()
+
+
+# ----------------------------------------------------------------------------- Entra authentication off
+def test_entra_auth_disabled_answer_is_a_server_fact_not_a_scan_error():
+    from azure.core.exceptions import HttpResponseError
+
+    clients = build_clients()
+    pg = clients["postgresql"]
+    pg.servers.list_by_subscription.return_value[0].auth_config = None
+    pg.administrators_microsoft_entra.list_by_server.side_effect = HttpResponseError(
+        message="(AzureADAuthenticationNotEnabled) Azure AD authentication is not enabled for this server")
+    res = collect(clients)
+    assert res.errors == []
+    server = by_name(res)["pg-orders"]
+    assert server.properties["entra_auth"] is False
+    assert "AZ-PG-006" in {r.id for r, _ in evaluate_asset(asset_to_dict(server))}
+
+
+def test_other_entra_administrator_errors_are_still_scan_errors():
+    clients = build_clients()
+    clients["postgresql"].administrators_microsoft_entra.list_by_server.side_effect = RuntimeError("AuthorizationFailed")
+    res = collect(clients)
+    assert any("Entra administrators" in e and "AuthorizationFailed" in e for e in res.errors)
+    from app.connectors.azure import entra_auth_disabled
+
+    class Forbidden(Exception):
+        status_code = 403
+
+    assert not entra_auth_disabled(Forbidden("Azure AD authentication is not enabled for this server"))
+    assert not entra_auth_disabled(RuntimeError("Operation not enabled"))

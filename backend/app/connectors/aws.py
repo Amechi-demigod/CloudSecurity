@@ -29,7 +29,15 @@ from datetime import UTC, datetime
 from typing import Any
 
 from ..config import Settings
-from .base import AssetRecord, CollectionResult, Connector, RelationshipRecord, ScopeAccessError, sensitive_from_tags
+from .base import (
+    AssetRecord,
+    CollectionResult,
+    Connector,
+    RelationshipRecord,
+    ScopeAccessError,
+    sensitive_from_tags,
+    unreliable_types,
+)
 
 log = logging.getLogger(__name__)
 
@@ -298,6 +306,21 @@ def _age_days(ts: str | None, now: datetime) -> int | None:
     return max(0, (now - dt).days)
 
 
+_REGIONAL_TYPES = {"cloudtrail_trail", "ec2_instance", "security_group", "eks_cluster", "rds_instance",
+                   "lambda_function", "kms_key"}
+
+#: Step name (first argument of `step(...)` in `_collect_account`) -> asset types that step lists. A failed step
+#: makes only these types of the account untrusted for removal detection (a regional step failing counts for the
+#: whole account); an empty set = it only enriches. A step missing here makes the whole account untrusted;
+#: tests/test_cloud_lifecycle.py checks every step name of this file is in the map. "regions" is the region
+#: discovery (a failure leaves only the home region scanned).
+STEP_ASSET_TYPES: dict[str, set[str]] = {
+    "iam": {"iam_role", "iam_user"}, "iam credential report": set(), "s3": {"s3_bucket"},
+    "cloudtrail": {"cloudtrail_trail"}, "ec2": {"ec2_instance", "security_group"}, "eks": {"eks_cluster"},
+    "rds": {"rds_instance"}, "lambda": {"lambda_function"}, "kms": {"kms_key"}, "regions": _REGIONAL_TYPES,
+}
+
+
 class AwsConnector(Connector):
     name = "aws"
     provider = "aws"
@@ -371,11 +394,12 @@ class AwsConnector(Connector):
         else:
             targets = [("default account", lambda: base)]
         for label, make_session in targets:
-            errors_before = len(res.errors)
             try:
-                acct = self._collect_account(AwsClients(make_session()), res)
-                if len(res.errors) == errors_before:  # read completely: every step ran without an error
-                    res.scopes_read.append(acct)
+                acct, failed = self._collect_account(AwsClients(make_session()), res)
+                # Ran to the end: counts for removal detection, except for the types of the steps that failed.
+                res.scopes_read.append(acct)
+                if failed:
+                    res.unreliable_types[acct] = unreliable_types(STEP_ASSET_TYPES, failed)
             except ReadOnlyViolation:
                 raise
             except Exception as exc:  # keep scanning the other accounts
@@ -383,7 +407,8 @@ class AwsConnector(Connector):
                 res.errors.append(f"{label}: {type(exc).__name__}: {exc}")
         return res
 
-    def _step(self, res: CollectionResult, label: str, fn: Callable[[], None]) -> None:
+    def _step(self, res: CollectionResult, label: str, fn: Callable[[], None]) -> bool:
+        """Run one collection step; False (and an error) when it raised."""
         try:
             fn()
         except ReadOnlyViolation:
@@ -391,11 +416,14 @@ class AwsConnector(Connector):
         except Exception as exc:
             log.warning("AWS %s failed: %s", label, exc)
             res.errors.append(f"{label}: {type(exc).__name__}: {exc}")
+            return False
+        return True
 
-    def _collect_account(self, c: AwsClients, res: CollectionResult) -> str:  # noqa: C901 - one flow per service
+    def _collect_account(self, c: AwsClients, res: CollectionResult) -> tuple[str, list[str]]:  # noqa: C901 - one flow per service
         home = self.settings.aws_home_region
         ident = c("sts", home).get_caller_identity()
         acct = ident["Account"]
+        failed: list[str] = []  # names of the steps that failed (see STEP_ASSET_TYPES)
         part = str(ident.get("Arn", "arn:aws:")).split(":")[1] or "aws"
         now = self._now()
         assets: dict[str, AssetRecord] = {}
@@ -404,6 +432,10 @@ class AwsConnector(Connector):
         def add(a: AssetRecord) -> AssetRecord:
             assets[a.id] = a
             return a
+
+        def step(name: str, label: str, fn: Callable[[], None]) -> None:
+            if not self._step(res, label, fn):
+                failed.append(name)
 
         alias = None
         try:
@@ -496,7 +528,7 @@ class AwsConnector(Connector):
                                 "access_keys": []}))
                 identities.append(users_by_name[u["UserName"]])
 
-        self._step(res, f"{acct}/iam", iam)
+        step("iam", f"{acct}/iam", iam)
 
         def credential_report():
             cl = c("iam", home)
@@ -526,7 +558,7 @@ class AwsConnector(Connector):
                 a.properties["access_keys"] = keys
                 a.properties["password_last_used"] = row.get("password_last_used") or None
 
-        self._step(res, f"{acct}/iam credential report", credential_report)
+        step("iam credential report", f"{acct}/iam credential report", credential_report)
 
         # ----------------------------------------------------------- S3 (global list, per-bucket region)
         buckets: list[AssetRecord] = []
@@ -546,8 +578,9 @@ class AwsConnector(Connector):
                     raise
                 except Exception as exc:
                     res.errors.append(f"{acct}/s3 {name}: {type(exc).__name__}: {exc}")
+                    failed.append("s3")  # this bucket is missing from the inventory
 
-        self._step(res, f"{acct}/s3", s3)
+        step("s3", f"{acct}/s3", s3)
 
         # ----------------------------------------------------------- regions
         regions = list(self.settings.aws_regions)
@@ -558,6 +591,7 @@ class AwsConnector(Connector):
                 raise
             except Exception as exc:
                 res.errors.append(f"{acct}/regions: {type(exc).__name__}: {exc} (scanning {home} only)")
+                failed.append("regions")  # the other regions were not scanned
                 regions = [home]
 
         rds_assets: list[AssetRecord] = []
@@ -584,7 +618,7 @@ class AwsConnector(Connector):
             cloudtrail(home, True)
             ct_ok[0] = True
 
-        self._step(res, f"{acct}/{home}/cloudtrail", ct_home)
+        step("cloudtrail", f"{acct}/{home}/cloudtrail", ct_home)
 
         for region in regions:
             sgs: dict[str, AssetRecord] = {}
@@ -637,7 +671,7 @@ class AwsConnector(Connector):
                         if role:
                             rels.append(RelationshipRecord(aid, role, "uses_identity"))
 
-            self._step(res, f"{acct}/{region}/ec2", ec2)
+            step("ec2", f"{acct}/{region}/ec2", ec2)
 
             def eks(region=region):
                 ek = c("eks", region)
@@ -660,7 +694,7 @@ class AwsConnector(Connector):
                                     "secrets_encryption": bool(cl.get("encryptionConfig")),
                                     "exposure": "public API endpoint open to 0.0.0.0/0" if unrestricted else None}))
 
-            self._step(res, f"{acct}/{region}/eks", eks)
+            step("eks", f"{acct}/{region}/eks", eks)
 
             def rds(region=region, sgs=sgs):
                 rd = c("rds", region)
@@ -688,7 +722,7 @@ class AwsConnector(Connector):
                         if gid in sgs:
                             rels.append(RelationshipRecord(sgs[gid].id, aid, "protects"))
 
-            self._step(res, f"{acct}/{region}/rds", rds)
+            step("rds", f"{acct}/{region}/rds", rds)
 
             def lam(region=region):
                 lm = c("lambda", region)
@@ -708,7 +742,7 @@ class AwsConnector(Connector):
                     if f.get("Role"):
                         rels.append(RelationshipRecord(arn, f["Role"], "uses_identity"))
 
-            self._step(res, f"{acct}/{region}/lambda", lam)
+            step("lambda", f"{acct}/{region}/lambda", lam)
 
             def kms(region=region):
                 km = c("kms", region)
@@ -729,10 +763,10 @@ class AwsConnector(Connector):
                         properties={"key_id": k["KeyId"], "key_state": md.get("KeyState"), "key_spec": md.get("KeySpec"),
                                     "origin": md.get("Origin"), "symmetric": symmetric, "rotation_enabled": rotation}))
 
-            self._step(res, f"{acct}/{region}/kms", kms)
+            step("kms", f"{acct}/{region}/kms", kms)
 
             if region != home:
-                self._step(res, f"{acct}/{region}/cloudtrail", lambda region=region: cloudtrail(region, False))
+                step("cloudtrail", f"{acct}/{region}/cloudtrail", lambda region=region: cloudtrail(region, False))
 
         if ct_ok[0]:
             account.properties["cloudtrail_multi_region_logging"] = any(
@@ -749,7 +783,7 @@ class AwsConnector(Connector):
 
         res.assets.extend(assets.values())
         res.relationships.extend(r for r in rels if r.source_id in assets and r.target_id in assets)
-        return str(acct)
+        return str(acct), failed
 
     def _bucket(self, c: AwsClients, home: str, acct: str, part: str, name: str, acct_pab: dict,
                 base: dict) -> AssetRecord:

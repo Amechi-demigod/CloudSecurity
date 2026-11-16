@@ -89,7 +89,8 @@ def ingest_collection(db: Session, result: CollectionResult, source: str) -> dic
 
     scanned = [get_asset(db, i) for i in seen_ids]
     stats = evaluate_posture(db, scanned, source)
-    stats.update(cloud_lifecycle.apply_scan(db, source, result.scopes_read, seen_ids, now))
+    stats.update(cloud_lifecycle.apply_scan(db, source, result.scopes_read, seen_ids, now,
+                                                  result.unreliable_types))
     stats["assets_restored"] = len(restored)
     # end-of-life runtimes / database engines also land on the Vulnerabilities page
     eol_assets = [a for a in scanned if a is not None and a.type in EOL_VULN_TYPES]

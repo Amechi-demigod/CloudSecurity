@@ -256,6 +256,74 @@ def test_retention_is_a_setting(world, monkeypatch):
     assert cloud_lifecycle.purge_expired(s, utcnow() + dt.timedelta(days=6))["assets"] == 1
 
 
+# ----------------------------------------------------------------------------- unreliable types / mass safeguard
+def test_unreliable_types_are_not_counted_but_other_types_are(world):
+    s, a1, a2, b1, base = world
+    vault = AssetRecord(id=f"/subscriptions/{SUB_A}/resourcegroups/rg/providers/microsoft.keyvault/vaults/kv1",
+                        name="kv1", type="key_vault", subscription_id=SUB_A, subscription_name=SUB_A)
+    scan(s, [*base, vault], [SUB_A, SUB_B])
+    rest = [x for x in base if x.id != a1.id]  # storage account and the key vault are both missing
+    for _ in range(3):
+        scan(s, rest, [SUB_A, SUB_B], unreliable_types={SUB_A: ["key_vault"]})
+    assert asset(s, vault).missed_scans == 0 and asset(s, vault).removed_at is None  # key vault listing failed
+    assert asset(s, a1).removed_at is not None  # storage listing was fine
+    # "*" protects every type of that scope only
+    scan(s, [sub_asset(SUB_A), sub_asset(SUB_B), stg(SUB_B, "stb")], [SUB_A, SUB_B], unreliable_types={SUB_A: ["*"]})
+    assert asset(s, a2).missed_scans == 0 and asset(s, a2).removed_at is None
+
+
+def test_mass_missing_scope_counts_nothing_and_warns(session):
+    many = [stg(SUB_A, f"st{i}") for i in range(30)]
+    base = [sub_asset(SUB_A), *many]
+    scan(session, base, [SUB_A])
+    out = scan(session, base[:5], [SUB_A])  # 26 of 31 missing: above max(20, 50%)
+    assert out["assets_missed"] == 0 and len(out["warnings"]) == 1 and SUB_A in out["warnings"][0]
+    assert asset(session, many[-1]).missed_scans == 0
+    scan(session, base[:5], [SUB_A])
+    assert asset(session, many[-1]).removed_at is None
+    # a small scope may lose everything below the floor: 3 of 4 missing
+    small = [sub_asset(SUB_B), stg(SUB_B, "a"), stg(SUB_B, "b"), stg(SUB_B, "c")]
+    scan(session, small, [SUB_B])
+    out = scan(session, small[:1], [SUB_B])
+    assert out["assets_missed"] == 3 and out["warnings"] == []
+
+
+def test_mass_missing_thresholds_are_settings(session, monkeypatch):
+    many = [stg(SUB_A, f"st{i}") for i in range(10)]
+    base = [sub_asset(SUB_A), *many]
+    scan(session, base, [SUB_A])
+    monkeypatch.setattr(config.settings, "cloud_mass_missing_min", 2)
+    out = scan(session, base[:4], [SUB_A])  # 7 missing > max(2, 5.5)
+    assert out["assets_missed"] == 0 and out["warnings"]
+    monkeypatch.setattr(config.settings, "cloud_mass_missing_ratio", 0.9)
+    out = scan(session, base[:4], [SUB_A])  # 7 <= max(2, 9.9)
+    assert out["assets_missed"] == 7 and out["warnings"] == []
+
+
+def test_mass_missing_warning_is_recorded_on_the_scan_run(tenants):  # noqa: F811
+    from app.connectors.base import Connector
+    from app.services.scans import start_scan
+
+    base = [sub_asset(SUB_A), *[stg(SUB_A, f"st{i}") for i in range(30)]]
+
+    class Fake(Connector):
+        name = "azure"
+        provider = "azure"
+
+        def __init__(self, assets):
+            self.assets = assets
+
+        def is_configured(self):
+            return True
+
+        def collect(self):
+            return CollectionResult(assets=self.assets, scopes_read=[SUB_A])
+
+    start_scan(Fake(base), tenants.acme_id, background=False)
+    run = start_scan(Fake(base[:3]), tenants.acme_id, background=False)
+    assert run.status == "succeeded" and any("not counted as deleted" in e for e in run.errors)
+
+
 # ----------------------------------------------------------------------------- connectors report scopes
 def _azure(monkeypatch, behaviour: dict):
     monkeypatch.setattr(config.settings, "azure_subscription_ids", list(behaviour))
@@ -265,18 +333,91 @@ def _azure(monkeypatch, behaviour: dict):
         how = behaviour[sub]
         if how == "raise":
             raise RuntimeError("boom")
-        if how == "step_error":
-            res.errors.append(f"{sub}/compute: Forbidden")
+        if how == "ok":
+            return []
+        res.errors.append(f"{sub}/{how}: Forbidden")
+        return [how]
 
     monkeypatch.setattr(conn, "_collect_subscription", fake)
     return conn
 
 
-def test_azure_scope_is_read_only_when_it_finished_without_errors(monkeypatch):
-    conn = _azure(monkeypatch, {SUB_A: "ok", SUB_B: "raise", "cccccccc-1111-2222-3333-444444444444": "step_error"})
+def test_azure_scope_is_read_when_collection_ran_to_the_end(monkeypatch):
+    other = "cccccccc-1111-2222-3333-444444444444"
+    conn = _azure(monkeypatch, {SUB_A: "ok", SUB_B: "raise", other: "keyvault"})
     res = conn.collect()
-    assert res.scopes_read == [SUB_A]
+    assert res.scopes_read == [SUB_A, other]  # SUB_B raised: not read at all
+    assert res.unreliable_types == {other: ["key_vault"]}  # only the failed step's types
     assert len(res.errors) == 2
+
+
+def test_unknown_failed_step_makes_the_whole_scope_unreliable():
+    from app.connectors.base import unreliable_types
+
+    steps = {"a": {"x"}, "b": {"y", "z"}, "c": set()}
+    assert unreliable_types(steps, ["a", "b", "c"]) == ["x", "y", "z"]
+    assert unreliable_types(steps, ["c"]) == []
+    assert unreliable_types(steps, ["a", "new-step"]) == ["*"]
+
+
+def _step_labels(path: str, pattern: str) -> set[str]:
+    import re
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1] / "app" / "connectors" / path).read_text()
+    return set(re.findall(pattern, src))
+
+
+def test_every_connector_step_is_in_its_asset_type_map():
+    """A new step must declare which asset types it lists, or a failure of it would make the whole scope untrusted
+    (safe) -- and the map would silently drift from the code."""
+    from app.connectors import aws, azure, gcp
+
+    az = _step_labels("azure.py", r'\bstep\("([^"]+)"')
+    assert az and az == set(azure.STEP_ASSET_TYPES), az ^ set(azure.STEP_ASSET_TYPES)
+    aw = _step_labels("aws.py", r'\bstep\("([^"]+)"')
+    assert aw and aw | {"regions"} == set(aws.STEP_ASSET_TYPES), aw ^ set(aws.STEP_ASSET_TYPES)
+    gc = _step_labels("gcp.py", r'\bstep\("([^"]+)"')
+    assert gc and gc == set(gcp.STEP_ASSET_TYPES), gc ^ set(gcp.STEP_ASSET_TYPES)
+    # the types a step lists exist as asset types somewhere in the connector
+    for mod, name in ((azure, "azure.py"), (aws, "aws.py"), (gcp, "gcp.py")):
+        declared = {t for types in mod.STEP_ASSET_TYPES.values() for t in types}
+        used = _step_labels(name, r'type="([a-z_0-9]+)"') | _step_labels(name, r'rtype = "([a-z_0-9]+)"')
+        assert declared - {"identity", "function_app", "web_app", "postgresql_server", "mysql_server"} <= used, \
+            declared - used
+
+
+def test_aws_and_gcp_scopes_follow_the_same_rule(monkeypatch):
+    from app.connectors.aws import AwsConnector
+    from app.connectors.gcp import GcpConnector
+
+    aws = AwsConnector(config.Settings(), session_factory=lambda: object())
+
+    def account(c, res):
+        res.errors.append("111111111111/ec2: boom")
+        return "111111111111", ["ec2"]
+
+    monkeypatch.setattr(aws, "_collect_account", lambda c, res: account(c, res))
+    monkeypatch.setattr("app.connectors.aws.AwsClients", lambda session: None)
+    res = aws.collect()
+    assert res.scopes_read == ["111111111111"]
+    assert res.unreliable_types == {"111111111111": ["ec2_instance", "security_group"]}
+
+    gcp_s = config.Settings()
+    gcp_s.gcp_project_ids = ["proj-ok", "proj-bad", "proj-err"]
+    gcp = GcpConnector(gcp_s, session_factory=lambda: object())
+    monkeypatch.setattr(gcp, "_projects", lambda client, res: [{"projectId": "proj-ok"}, {"projectId": "proj-bad"},
+                                                              {"projectId": "proj-err"}])
+
+    def project(cl, p, res):
+        if p["projectId"] == "proj-err":
+            raise RuntimeError("boom")
+        return ["storage"] if p["projectId"] == "proj-bad" else []
+
+    monkeypatch.setattr(gcp, "_collect_project", project)
+    res = gcp.collect()
+    assert res.scopes_read == ["proj-ok", "proj-bad"]
+    assert res.unreliable_types == {"proj-bad": ["gcs_bucket"]}
 
 
 # ----------------------------------------------------------------------------- active views

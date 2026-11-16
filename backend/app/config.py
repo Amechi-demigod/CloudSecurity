@@ -171,6 +171,12 @@ class Settings:
         default_factory=lambda: max(1, int(os.getenv("CLOUD_REMOVE_AFTER_MISSES") or 2)))
     cloud_removed_retention_days: int = field(
         default_factory=lambda: max(1, int(os.getenv("CLOUD_REMOVED_RETENTION_DAYS") or 60)))
+    # Safeguard: when more than max(CLOUD_MASS_MISSING_MIN, CLOUD_MASS_MISSING_RATIO x the scope's active assets) of
+    # one subscription / account / project are missing from a scan, none of them is counted (an incomplete listing
+    # is far more likely than a mass deletion); a warning is added to the scan run's errors.
+    cloud_mass_missing_min: int = field(default_factory=lambda: max(0, int(os.getenv("CLOUD_MASS_MISSING_MIN") or 20)))
+    cloud_mass_missing_ratio: float = field(
+        default_factory=lambda: min(1.0, max(0.0, float(os.getenv("CLOUD_MASS_MISSING_RATIO") or 0.5))))
     # Internal: run the (leader-elected) purge job of removed cloud assets in this process. Tests turn it off.
     cloud_purge_worker_enabled: bool = field(default_factory=lambda: _bool("CLOUD_PURGE_WORKER_ENABLED", True))
 

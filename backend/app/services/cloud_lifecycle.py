@@ -1,8 +1,9 @@
 """Lifecycle of cloud assets (Azure, AWS, GCP): removal detection, restore and permanent deletion
 (docs/CLOUD_INVENTORY.md).
 
-* A scan reports the scopes (subscriptions / accounts / projects) it read completely
-  (`CollectionResult.scopes_read`). For each of those, an asset of the connector in that scope that was not
+* A scan reports the scopes (subscriptions / accounts / projects) whose collection ran to the end
+  (`CollectionResult.scopes_read`) and, per scope, the asset types whose listing failed
+  (`CollectionResult.unreliable_types`). For each of those, an asset of the connector in that scope that was not
   returned gets `missed_scans` + 1, one that was returned gets 0 (app/services/ingest.py). A scan that fails,
   or fails for one scope, never counts for that scope.
 * At `CLOUD_REMOVE_AFTER_MISSES` misses in a row the asset is marked removed (`removed_at`): its open findings
@@ -26,6 +27,7 @@ from sqlalchemy import case, delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from .. import config, tenancy
+from ..connectors.base import ALL_TYPES
 from ..locks import LeaderLock
 from ..models import (
     Alert,
@@ -56,33 +58,47 @@ def _chunks(items: Sequence[str]) -> Iterable[list[str]]:
 
 
 # ----------------------------------------------------------------------------- scan time
-def apply_scan(db: Session, source: str, scopes_read: Iterable[str], seen_ids: set[str], now: datetime) -> dict:
-    """After ingesting a scan: count misses for the assets of the scopes it read completely and mark the ones
-    that reached the limit removed. Returned assets were already reset by the ingest. Caller commits."""
+def apply_scan(db: Session, source: str, scopes_read: Iterable[str], seen_ids: set[str], now: datetime,
+               unreliable: dict[str, list[str]] | None = None) -> dict:
+    """After ingesting a scan: count misses for the assets of the scopes it read and mark the ones that reached
+    the limit removed. Returned assets were already reset by the ingest. Caller commits.
+
+    Per scope: assets of a type the scan could not list (`unreliable`, "*" = all) are left alone, and so is the
+    whole scope when more than max(CLOUD_MASS_MISSING_MIN, CLOUD_MASS_MISSING_RATIO of its active assets) would
+    count as missing at once (a broken listing, not a mass deletion): a warning is returned for the scan run."""
     if source not in CLOUD_SOURCES:
         return {}
-    limit = config.settings.cloud_remove_after_misses
+    cfg = config.settings
+    unreliable = unreliable or {}
     # A scope only counts when the scan also returned something for it (its own subscription / account / project
     # asset at least): an empty answer is not evidence that everything is gone.
     returned = {sid for (sid,) in db.execute(select(Asset.subscription_id).where(
         Asset.id.in_(list(seen_ids)))) if sid} if seen_ids else set()
     removed: list[Asset] = []
+    warnings: list[str] = []
     missed = 0
     for scope in sorted(set(scopes_read) & returned):
-        stmt = select(Asset).where(Asset.source == source, Asset.subscription_id == scope,
-                                   Asset.removed_at.is_(None))
-        for a in db.scalars(stmt):
-            if a.id in seen_ids:
-                continue
+        skip = set(unreliable.get(scope) or [])
+        active = list(db.scalars(select(Asset).where(Asset.source == source, Asset.subscription_id == scope,
+                                                     Asset.removed_at.is_(None))))
+        missing = [a for a in active if a.id not in seen_ids and ALL_TYPES not in skip and a.type not in skip]
+        limit = max(cfg.cloud_mass_missing_min, cfg.cloud_mass_missing_ratio * len(active))
+        if len(missing) > limit:
+            msg = (f"{scope}: {len(missing)} of {len(active)} resources are missing from this scan; "
+                   "not counted as deleted (looks like an incomplete listing)")
+            log.warning("cloud lifecycle: %s", msg)
+            warnings.append(msg)
+            continue
+        for a in missing:
             a.missed_scans = (a.missed_scans or 0) + 1
             missed += 1
-            if a.missed_scans >= limit:
+            if a.missed_scans >= cfg.cloud_remove_after_misses:
                 a.removed_at = now
                 removed.append(a)
     db.flush()
     closed = _close_for_removed(db, [a.id for a in removed], now) if removed else (0, 0)
     return {"assets_missed": missed, "assets_removed": len(removed), "findings_closed": closed[0],
-            "vulnerabilities_closed": closed[1]}
+            "vulnerabilities_closed": closed[1], "warnings": warnings}
 
 
 def _close_for_removed(db: Session, asset_ids: list[str], now: datetime) -> tuple[int, int]:

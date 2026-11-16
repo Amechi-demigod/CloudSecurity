@@ -32,7 +32,15 @@ from typing import Any
 from urllib.parse import quote, urlsplit
 
 from ..config import Settings
-from .base import AssetRecord, CollectionResult, Connector, RelationshipRecord, ScopeAccessError, sensitive_from_tags
+from .base import (
+    AssetRecord,
+    CollectionResult,
+    Connector,
+    RelationshipRecord,
+    ScopeAccessError,
+    sensitive_from_tags,
+    unreliable_types,
+)
 
 log = logging.getLogger(__name__)
 
@@ -282,6 +290,18 @@ def _public_members(policy: dict, roles: set[str] | None = None) -> list[str]:
                    if m in PUBLIC_MEMBERS and (roles is None or b.get("role") in roles)})
 
 
+#: Step label (as passed to `step(...)` in `_collect_project`) -> asset types that step lists. A failed step makes
+#: only these types of the project untrusted for removal detection; an empty set = it only enriches. A step
+#: missing here makes the whole project untrusted; tests/test_cloud_lifecycle.py checks every step label of this
+#: file is in the map.
+STEP_ASSET_TYPES: dict[str, set[str]] = {
+    "iam policy": set(), "service accounts": {"gcp_service_account"},
+    "compute": {"gce_instance", "gcp_firewall_rule"}, "storage": {"gcs_bucket"}, "gke": {"gke_cluster"},
+    "cloud sql": {"cloud_sql_instance"}, "kms": {"gcp_kms_key"}, "cloud run": {"cloud_run_service"},
+    "cloud functions": {"cloud_function"},
+}
+
+
 class GcpConnector(Connector):
     name = "gcp"
     provider = "gcp"
@@ -356,14 +376,19 @@ class GcpConnector(Connector):
         for project in self._projects(client, res):
             pid = project.get("projectId", "?")
             try:
-                self._collect_project(client, project, res)
+                failed = self._collect_project(client, project, res)
             except ReadOnlyViolation:
                 raise
             except Exception as exc:  # keep scanning other projects
                 log.warning("GCP scan failed for project %s: %s", pid, exc)
                 res.errors.append(f"{pid}: {type(exc).__name__}: {exc}")
-            if not any(e.startswith(f"{pid}/") or e.startswith(f"{pid}:") for e in res.errors):
-                res.scopes_read.append(pid)
+                continue
+            if any(e.startswith(f"{pid}/project:") for e in res.errors):
+                continue  # the project itself could not be read
+            # Ran to the end: counts for removal detection, except for the types of the steps that failed.
+            res.scopes_read.append(pid)
+            if failed:
+                res.unreliable_types[pid] = unreliable_types(STEP_ASSET_TYPES, failed)
         return res
 
     def _projects(self, client: ReadOnlyGcpClient, res: CollectionResult) -> list[dict]:
@@ -399,7 +424,9 @@ class GcpConnector(Connector):
                 res.errors.append(f"organizations/{org}: project discovery: {type(exc).__name__}: {exc}")
         return list(found.values())
 
-    def _collect_project(self, cl: ReadOnlyGcpClient, project: dict, res: CollectionResult) -> None:  # noqa: C901
+    def _collect_project(self, cl: ReadOnlyGcpClient, project: dict, res: CollectionResult) -> list[str]:  # noqa: C901
+        """Collect one project; returns the names of the steps that failed (see STEP_ASSET_TYPES)."""
+        failed: list[str] = []
         pid = project["projectId"]
         number = _last(project.get("name")) if str(project.get("name", "")).startswith("projects/") else None
         now = self._now()
@@ -429,9 +456,11 @@ class GcpConnector(Connector):
                     return
                 log.warning("GCP %s/%s failed: %s", pid, label, exc)
                 res.errors.append(f"{pid}/{label}: {exc}")
+                failed.append(label)
             except Exception as exc:
                 log.warning("GCP %s/%s failed: %s", pid, label, exc)
                 res.errors.append(f"{pid}/{label}: {type(exc).__name__}: {exc}")
+                failed.append(label)
 
         # ----------------------------------------------------------- project IAM policy
         sa_project_roles: dict[str, set[str]] = {}
@@ -749,3 +778,4 @@ class GcpConnector(Connector):
             if r.source_id in assets and r.target_id in assets and k not in seen:
                 seen.add(k)
                 res.relationships.append(r)
+        return failed

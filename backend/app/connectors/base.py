@@ -14,6 +14,7 @@ they push events to `POST /api/runtime/events` instead.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -61,10 +62,28 @@ class CollectionResult:
     relationships: list[RelationshipRecord] = field(default_factory=list)
     vulnerabilities: list[VulnerabilityRecord] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
-    # Scopes (subscription / account / project ids, as in `AssetRecord.subscription_id`) this scan read completely:
-    # no failed step and no error for them. Only these count for removal detection
+    # Scopes (subscription / account / project ids, as in `AssetRecord.subscription_id`) whose collection ran to
+    # the end (no exception, no scope-level failure). Only these count for removal detection
     # (app/services/cloud_lifecycle.py); empty = count nothing.
     scopes_read: list[str] = field(default_factory=list)
+    # Per scope read: the asset types whose listing failed in this scan (a step that raised), so assets of those
+    # types in that scope are not counted as missing; ["*"] = every type. No entry = nothing failed.
+    unreliable_types: dict[str, list[str]] = field(default_factory=dict)
+
+
+ALL_TYPES = "*"
+
+
+def unreliable_types(step_types: dict[str, set[str]], failed_steps: Iterable[str]) -> list[str]:
+    """Asset types that the failed steps list (`step_types`: step name -> types it lists). A step missing from
+    the map is unknown, so every type of the scope becomes unreliable."""
+    out: set[str] = set()
+    for step in failed_steps:
+        types = step_types.get(step)
+        if types is None:
+            return [ALL_TYPES]
+        out |= types
+    return sorted(out)
 
 
 SENSITIVE_TAG_KEYS = {"data_classification", "data-classification", "dataclassification", "classification",

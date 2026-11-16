@@ -13,13 +13,13 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from enum import Enum
 from typing import Any
 
 from ..config import Settings
 from ..engine import nsg as nsgeval
-from .base import AssetRecord, CollectionResult, Connector, RelationshipRecord, ScopeAccessError
+from .base import AssetRecord, CollectionResult, Connector, RelationshipRecord, ScopeAccessError, unreliable_types
 from .base import sensitive_from_tags as _sensitive_from_tags
 
 log = logging.getLogger(__name__)
@@ -306,12 +306,18 @@ def build_credential(settings: Settings) -> Any:
 
 # ----------------------------------------------------------------------------- helpers
 def _g(obj: Any, *path: str, default: Any = None) -> Any:
-    """Safe nested getattr (also tolerates dicts)."""
+    """Safe nested getattr (also tolerates dicts and the SDK's mapping models)."""
     cur = obj
     for p in path:
         if cur is None:
             return default
-        cur = cur.get(p) if isinstance(cur, dict) else getattr(cur, p, None)
+        if isinstance(cur, dict):
+            cur = cur.get(p)
+        else:
+            val = getattr(cur, p, None)
+            # azure-mgmt-keyvault 14+ models are mappings: `permissions.keys` is Mapping.keys(), not the list of
+            # key permissions (that one is `keys_property`; `.get("keys")` returns it).
+            cur = cur.get(p) if callable(val) and isinstance(cur, Mapping) else val
     return default if cur is None else cur
 
 
@@ -468,6 +474,39 @@ def apply_exposure(asset: AssetRecord, methods: list[dict], set_exposed: bool = 
         p["exposure"] = "; ".join(dict.fromkeys(m["detail"] for m in open_m)) or None
 
 
+_NETWORK_TYPES = {"nsg", "vnet", "private_endpoint", "firewall_policy", "azure_firewall"}
+
+#: Step label (as passed to `step(...)` in `_collect_subscription`) -> asset types that step lists. When a step
+#: raises, only these types of the subscription are not trusted for removal detection (cloud_lifecycle); an empty
+#: set = the step only enriches assets other steps list. A step missing here makes the whole subscription
+#: untrusted; tests/test_cloud_lifecycle.py checks every step label of this file is in the map.
+STEP_ASSET_TYPES: dict[str, set[str]] = {
+    "network": _NETWORK_TYPES,
+    "network/route-tables": set(), "network/subnets": {"vnet"}, "network/load-balancers": set(),
+    "network/app-gateways": set(), "network/private-endpoints": {"private_endpoint"},
+    "network/firewall-policies": {"firewall_policy"}, "network/azure-firewalls": {"azure_firewall"},
+    "compute": {"vm", "identity"}, "compute/scale-sets": {"vmss", "identity"},
+    "storage": {"storage_account"},
+    "sql": {"sql_server", "sql_database"}, "sql/managed-instances": {"sql_managed_instance", "identity"},
+    "keyvault": {"key_vault"}, "keyvault/access-policies": set(),
+    "web/plans": {"app_service_plan"}, "web": {"web_app", "function_app", "identity"},
+    "postgresql": {"postgresql_server", "identity"}, "mysql": {"mysql_server", "identity"},
+    "cosmosdb": {"cosmos_account"}, "redis": {"redis_cache", "identity"}, "aks": {"aks_cluster", "identity"},
+    "resources": {"function_app", "postgresql_server", "mysql_server", "identity"},
+    "exposure": set(), "rbac": set(),
+}
+
+
+def entra_auth_disabled(exc: Exception) -> bool:
+    """Azure's answer to "list Entra administrators" for a server without Entra authentication ("Azure AD
+    authentication is not enabled for this server"): a fact about the server, not a scan error."""
+    status = getattr(exc, "status_code", None)
+    if status in (401, 403) or (isinstance(status, int) and status >= 500):
+        return False
+    msg = str(exc).lower()
+    return "not enabled" in msg and ("azure ad" in msg or "entra" in msg or "active directory" in msg)
+
+
 class AzureConnector(Connector):
     name = "azure"
     provider = "azure"
@@ -514,17 +553,20 @@ class AzureConnector(Connector):
         res = CollectionResult()
         factory = self._client_factory()
         for sub in self.settings.azure_subscription_ids:
-            errors_before = len(res.errors)
             try:
-                self._collect_subscription(factory, sub, res)
+                failed = self._collect_subscription(factory, sub, res)
             except Exception as exc:  # keep scanning other subscriptions
                 log.exception("Azure scan failed for subscription %s", sub)
                 res.errors.append(f"{sub}: {type(exc).__name__}: {exc}")
-            if len(res.errors) == errors_before:  # read completely: every step ran without an error
-                res.scopes_read.append(sub)
+                continue
+            # Ran to the end: counts for removal detection, except for the types of the steps that failed.
+            res.scopes_read.append(sub)
+            if failed:
+                res.unreliable_types[sub] = unreliable_types(STEP_ASSET_TYPES, failed)
         return res
 
-    def _step(self, res: CollectionResult, label: str, fn: Callable[[], None]) -> None:
+    def _step(self, res: CollectionResult, label: str, fn: Callable[[], None]) -> bool:
+        """Run one collection step; False (and an error) when it raised."""
         try:
             fn()
         except ReadOnlyViolation:
@@ -532,8 +574,12 @@ class AzureConnector(Connector):
         except Exception as exc:
             log.warning("Azure %s failed: %s", label, exc)
             res.errors.append(f"{label}: {type(exc).__name__}: {exc}")
+            return False
+        return True
 
-    def _collect_subscription(self, factory, sub: str, res: CollectionResult) -> None:
+    def _collect_subscription(self, factory, sub: str, res: CollectionResult) -> list[str]:
+        """Collect one subscription; returns the labels of the steps that failed (see STEP_ASSET_TYPES)."""
+        failed: list[str] = []
         sub_asset_id = f"/subscriptions/{sub}".lower()
         sub_name = sub
         base = dict(provider="azure", subscription_id=sub, subscription_name=sub_name)
@@ -542,7 +588,8 @@ class AzureConnector(Connector):
         principal_to_identity: dict[str, str] = {}
 
         def step(label: str, fn: Callable[[], None]) -> None:
-            self._step(res, f"{sub}/{label}", fn)
+            if not self._step(res, f"{sub}/{label}", fn):
+                failed.append(label)
 
         def add(a: AssetRecord) -> AssetRecord:
             assets[a.id] = a
@@ -1179,6 +1226,7 @@ class AzureConnector(Connector):
                         rels.append(RelationshipRecord(sid, did, "contains"))
                 except Exception as exc:
                     res.errors.append(f"{sub}/sql databases {srv.name}: {exc}")
+                    failed.append("sql")  # this server's databases are missing from the listing
 
         step("sql", sql)
 
@@ -1399,10 +1447,20 @@ class AzureConnector(Connector):
                     secure = _bool(conf(rg, name, "require_secure_transport"))
                     tls = conf(rg, name, tls_param)
                     admins = None
+
+                    def entra_admins(o: str, r_: str, n_: str) -> list:
+                        try:
+                            return _list(getattr(cl, o).list_by_server(r_, n_))
+                        except ReadOnlyViolation:
+                            raise
+                        except Exception as exc:  # noqa: BLE001
+                            if entra_auth_disabled(exc):  # Entra authentication is off: no administrators
+                                return []
+                            raise
+
                     for op in admins_ops:
                         if hasattr_safe(cl, op):
-                            admins = opt("Entra administrators",
-                                         lambda o, r_, n_: _list(getattr(cl, o).list_by_server(r_, n_)), op, rg, name)
+                            admins = opt("Entra administrators", entra_admins, op, rg, name)
                             break
                     for adm in admins or []:
                         oid = _g(adm, "object_id") or _g(adm, "sid")
@@ -1804,3 +1862,4 @@ class AzureConnector(Connector):
         res.assets.extend(assets.values())
         # drop edges to unknown nodes (e.g. NSG on another subscription) and merge duplicates
         res.relationships.extend(_dedupe(r for r in rels if r.source_id in assets and r.target_id in assets))
+        return failed
