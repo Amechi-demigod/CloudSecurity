@@ -424,15 +424,17 @@ server {
     return 404;
   }
 
-  # Fonts never change under the same name; other assets are revalidated daily.
+  # Fonts never change under the same name; other assets are revalidated daily. No "always" on these
+  # Cache-Control headers: a 404 must not be cached for a day by Cloudflare or browsers (a file added later
+  # would stay "not found"); nginx then sends them only on success responses.
   location /assets/fonts/ {
     include /etc/nginx/conf.d/cnapp-site-headers.inc;
-    add_header Cache-Control "public, max-age=31536000, immutable" always;
+    add_header Cache-Control "public, max-age=31536000, immutable";
     try_files \$uri =404;
   }
   location /assets/ {
     include /etc/nginx/conf.d/cnapp-site-headers.inc;
-    add_header Cache-Control "public, max-age=86400" always;
+    add_header Cache-Control "public, max-age=86400";
     try_files \$uri =404;
   }
   # The pages (and favicon.svg): always revalidated, so updates show at once.
