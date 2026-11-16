@@ -219,7 +219,7 @@ function Shell() {
         className={`${navOpen ? "fixed inset-y-0 left-0 z-40 flex shadow-2xl" : "hidden"} w-60 shrink-0 flex-col border-r border-line bg-surface-1 md:static md:z-auto md:flex md:shadow-none`}
       >
         <div className="flex items-center gap-2.5 px-5 py-4">
-          <img src="/shield.svg" alt="" className="h-7 w-7" />
+          <img src="/shield.svg" alt="" className="h-8 w-auto" />
           <div>
             <div className="text-sm font-bold leading-tight tracking-tight">{brand.name}</div>
             <div className="text-[11px] text-ink-3">{brand.tagline}</div>

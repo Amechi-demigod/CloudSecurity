@@ -31,7 +31,7 @@ export function AuthLayout({ children, footer }: { children: ReactNode; footer?:
         <div aria-hidden className="pointer-events-none absolute -left-16 top-1/4 h-80 w-80 rounded-full bg-accent/20 blur-3xl" />
         <div className="relative flex items-center gap-3">
           <span className="flex h-11 w-11 items-center justify-center rounded-xl border border-line bg-surface-0 shadow-lg">
-            <img src="/shield.svg" alt="" className="h-6 w-6" />
+            <img src="/shield.svg" alt="" className="h-7 w-auto" />
           </span>
           <div>
             <div className="text-lg font-bold tracking-tight text-ink">{brand.name}</div>
@@ -63,7 +63,7 @@ export function AuthLayout({ children, footer }: { children: ReactNode; footer?:
         <main className="w-full max-w-sm">
           <div className="mb-6 flex flex-col items-center text-center lg:sr-only">
             <span className="mb-3 flex h-12 w-12 items-center justify-center rounded-xl border border-line bg-surface-1 shadow-lg">
-              <img src="/shield.svg" alt="" className="h-7 w-7" />
+              <img src="/shield.svg" alt="" className="h-8 w-auto" />
             </span>
             <h1 className="text-xl font-semibold text-ink">{brand.name}</h1>
             <p className="mt-1 text-sm text-ink-3">{brand.tagline}</p>
