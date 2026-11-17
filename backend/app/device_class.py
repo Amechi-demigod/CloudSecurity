@@ -151,16 +151,18 @@ def cloud_resource(db: Session, device: Any) -> dict[str, Any] | None:
     provider, iid = device.cloud_provider, (device.cloud_instance_id or "").lower()
     found = None
     if provider == "aws" and iid:
-        found = db.scalars(select(Asset).where(Asset.type == "ec2_instance", Asset.id.like(f"%:instance/{iid}"))
+        found = db.scalars(select(Asset).where(Asset.type == "ec2_instance", Asset.id.like(f"%:instance/{iid}"),
+                                                   Asset.removed_at.is_(None))
                            ).first()
     elif provider == "azure" and iid:
         want = {iid, _swapped_uuid(iid)}
-        found = next((a for a in db.scalars(select(Asset).where(Asset.type == "vm"))
+        found = next((a for a in db.scalars(select(Asset).where(Asset.type == "vm", Asset.removed_at.is_(None)))
                       if str((a.properties or {}).get("vm_id") or "").lower() in want), None)
     elif provider == "gcp":
         # GCE puts no instance id into SMBIOS: link by instance name when unique.
         host = (device.hostname or "").split(".")[0].lower()
-        rows = list(db.scalars(select(Asset).where(Asset.type == "gce_instance", Asset.name == host).limit(2)))
+        rows = list(db.scalars(select(Asset).where(Asset.type == "gce_instance", Asset.name == host,
+                                                          Asset.removed_at.is_(None)).limit(2)))
         found = rows[0] if len(rows) == 1 else None
     if found is None:
         return None

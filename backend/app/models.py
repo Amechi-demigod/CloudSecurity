@@ -176,6 +176,10 @@ class Asset(TenantMixin, Base):
     source: Mapped[str] = mapped_column(String(32), default="simulated", index=True)
     first_seen: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     last_seen: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    # Cloud resource lifecycle (app/services/cloud_lifecycle.py): consecutive successful scans of its
+    # subscription / account / project that did not return it, and when it was marked removed (NULL = active).
+    missed_scans: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    removed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
 
 
 def get_asset(db, asset_id: str | None) -> Asset | None:
@@ -229,6 +233,8 @@ class Finding(TenantMixin, Base):
     description: Mapped[str] = mapped_column(Text, default="")
     severity: Mapped[str] = mapped_column(String(16), index=True)
     status: Mapped[str] = mapped_column(String(16), default="open", index=True)  # open|resolved|suppressed
+    # Why a resolved finding was closed: "resource_removed" (its cloud resource no longer exists); NULL = fixed.
+    close_reason: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     remediation: Mapped[str] = mapped_column(Text, default="")
     compliance: Mapped[list] = mapped_column(JSON, default=list)
     evidence: Mapped[dict] = mapped_column(JSON, default=dict)

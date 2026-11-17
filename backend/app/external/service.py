@@ -279,7 +279,7 @@ def cloud_ip_map(db: Session) -> dict[str, str]:
     if not modules.has_module(db, modules.CLOUD):
         return {}
     out: dict[str, str] = {}
-    for aid, props in db.execute(select(Asset.id, Asset.properties)):
+    for aid, props in db.execute(select(Asset.id, Asset.properties).where(Asset.removed_at.is_(None))):
         props = props or {}
         vals = list(props.get("public_ips") or []) + list(props.get("external_ips") or [])
         if props.get("public_ip"):

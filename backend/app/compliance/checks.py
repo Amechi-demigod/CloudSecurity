@@ -166,13 +166,13 @@ class Result:
 
 
 def _account_assets(account: str):
-    return select(Asset.id).where(Asset.subscription_id == account)
+    return select(Asset.id).where(Asset.subscription_id == account, Asset.removed_at.is_(None))
 
 
 # ----------------------------------------------------------------------------- cloud
 def _cloud(db: Session, ids: list[str], scope: Scope) -> dict[str, Result]:
     reg = registry()
-    type_stmt = select(Asset.type, func.count()).group_by(Asset.type)
+    type_stmt = select(Asset.type, func.count()).where(Asset.removed_at.is_(None)).group_by(Asset.type)
     find_stmt = (select(Finding.rule_id, func.count(func.distinct(Finding.asset_id)))
                  .where(Finding.status == "open").group_by(Finding.rule_id))
     if scope.account:
@@ -198,7 +198,7 @@ def _cloud(db: Session, ids: list[str], scope: Scope) -> dict[str, Result]:
         if n:
             stmt = (select(Finding.id, Finding.asset_id, Asset.name, Finding.severity, Finding.first_seen)
                     .join(Asset, (Asset.id == Finding.asset_id) & (Asset.organization_id == Finding.organization_id))
-                    .where(Finding.rule_id == rule.id, Finding.status == "open"))
+                    .where(Finding.rule_id == rule.id, Finding.status == "open", Asset.removed_at.is_(None)))
             if scope.account:
                 stmt = stmt.where(Asset.subscription_id == scope.account)
             for fid, _aid, name, sev, first in db.execute(stmt.order_by(Asset.name, Finding.id).limit(ITEMS)):
@@ -326,7 +326,8 @@ def _inventory(db: Session, ids: list[str], scope: Scope, now: datetime) -> dict
         key = cid.split(":", 1)[1]
         if key == "cloud_scan":
             if scope.account:
-                last = db.scalar(select(func.max(Asset.last_seen)).where(Asset.subscription_id == scope.account))
+                last = db.scalar(select(func.max(Asset.last_seen)).where(Asset.subscription_id == scope.account,
+                                                                       Asset.removed_at.is_(None)))
                 ran = last is not None
             else:
                 ran = (db.scalar(select(func.count()).select_from(ScanRun)) or 0) > 0

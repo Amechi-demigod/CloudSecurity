@@ -86,7 +86,8 @@ def usage(db: Session) -> dict[str, dict[str, int]]:
                             .where(User.is_active.is_(True)).group_by(OrganizationMembership.organization_id)))
     add("devices", db.execute(select(Device.organization_id, func.count()).where(Device.status == "active")
                               .group_by(Device.organization_id)))
-    add("assets", db.execute(select(Asset.organization_id, func.count()).group_by(Asset.organization_id)))
+    add("assets", db.execute(select(Asset.organization_id, func.count()).where(Asset.removed_at.is_(None))
+                    .group_by(Asset.organization_id)))
     add("scans", db.execute(select(ScanRun.organization_id, func.count()).group_by(ScanRun.organization_id)))
     return out
 

@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from .. import modules
+from .. import config, modules
 from ..auth import RateLimiter, audit, client_ip, require_analyst
 from ..compliance import finding_report
 from ..db import get_db
@@ -51,8 +51,10 @@ def list_assets(
     region: str | None = None,
     internet_exposed: bool | None = None,
     q: str | None = Query(None, description="Substring match on name / id"),
+    removed: bool = Query(False, description="true: the removed tab (cloud resources that no longer exist, "
+                                             "kept for history); default: active assets"),
 ):
-    stmt = select(Asset)
+    stmt = select(Asset).where(Asset.removed_at.is_not(None) if removed else Asset.removed_at.is_(None))
     if type:
         stmt = stmt.where(Asset.type == type)
     if provider:
@@ -89,16 +91,22 @@ def list_assets(
 @router.get("/assets/facets")
 def asset_facets(db: Session = Depends(get_db)):
     def distinct(col):
-        return sorted(v for (v,) in db.execute(select(col).distinct()) if v)
+        return sorted(v for (v,) in db.execute(select(col).where(Asset.removed_at.is_(None)).distinct()) if v)
 
     subs = sorted({(s, n, p) for s, n, p in db.execute(
-        select(Asset.subscription_id, Asset.subscription_name, Asset.provider).distinct()) if s},
+        select(Asset.subscription_id, Asset.subscription_name, Asset.provider)
+        .where(Asset.removed_at.is_(None)).distinct()) if s},
         key=lambda x: (x[2] or "", x[1] or ""))
     return {
         "types": distinct(Asset.type),
         "providers": distinct(Asset.provider),
         "sources": distinct(Asset.source),
         "regions": distinct(Asset.region),
+        # tab counts of the inventory page
+        "counts": {"active": db.scalar(select(func.count()).select_from(Asset).where(Asset.removed_at.is_(None))) or 0,
+                   "removed": db.scalar(select(func.count()).select_from(Asset)
+                                        .where(Asset.removed_at.is_not(None))) or 0,
+                   "retention_days": config.settings.cloud_removed_retention_days},
         # Azure subscriptions, AWS accounts and GCP projects
         "subscriptions": [{"id": s, "name": n or s, "provider": p} for s, n, p in subs],
     }
@@ -147,6 +155,7 @@ def list_findings(
     provider: str | None = Query(None, description="Cloud of the affected asset: azure|aws|gcp"),
     subscription_id: str | None = Query(None, description="Azure subscription, AWS account or GCP project"),
     compliance: str | None = Query(None, description="Substring of a compliance control, e.g. 'CIS Azure 6'"),
+    close_reason: str | None = Query(None, description="Why a resolved finding was closed: resource_removed"),
     category: str | None = Query(None, description="Dashboard category: Network, Storage, Identity, Databases, "
                                                    "Kubernetes, Secrets, Compute or Other"),
     limit: int = Query(500, le=5000),
@@ -160,6 +169,8 @@ def list_findings(
         stmt = stmt.where(Finding.severity == severity)
     if status and status != "all":
         stmt = stmt.where(Finding.status == status)
+    if close_reason:
+        stmt = stmt.where(Finding.close_reason == close_reason)
     if rule_id:
         stmt = stmt.where(Finding.rule_id == rule_id)
     if asset_id:
@@ -217,6 +228,7 @@ def update_finding(finding_id: str, body: FindingUpdate, request: Request, user:
         notify.finding_status_changed(db, f, f.status, body.status, actor=user.email)
     f.status = body.status
     f.resolved_at = utcnow() if body.status == "resolved" else None
+    f.close_reason = None
     db.commit()
     return finding_out(f)
 

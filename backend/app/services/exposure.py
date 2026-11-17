@@ -71,7 +71,7 @@ def _fallback(a: Asset) -> tuple[list[dict], list[str]]:
 def exposure_items(db: Session, provider: str | None = None, subscription: str | None = None,
                    type_: str | None = None, port: int | None = None, level: str | None = None,
                    with_paths: bool = True) -> dict[str, Any]:
-    assets = {a.id: a for a in db.scalars(select(Asset))}
+    assets = {a.id: a for a in db.scalars(select(Asset).where(Asset.removed_at.is_(None)))}
     exposed = {aid: lvl for aid, a in assets.items() if (lvl := _level(a))}
 
     controls: dict[str, list[dict]] = defaultdict(list)

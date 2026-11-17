@@ -5,6 +5,7 @@ import { api } from "../api";
 import type { Connector, ConnectorSchedule, ScanRun, ScanSchedule } from "../api";
 import { useAuth } from "../auth/context";
 import { ConnectCloud, ConnectionForm, ProviderMark } from "../components/cloudConnect";
+import { ScopeList } from "../components/cloudScopes";
 import { CollectorsSection } from "../components/collectors";
 import { LockedCard } from "../components/ModuleLocked";
 import { DirectoriesSection } from "../components/directories";
@@ -89,6 +90,7 @@ function CloudCard({
   isAdmin,
   onScan,
   onSaved,
+  onScopesChanged,
 }: {
   c: Connector;
   config: ConnectorConfig | undefined;
@@ -99,9 +101,11 @@ function CloudCard({
   isAdmin: boolean;
   onScan: () => void;
   onSaved: (saved: ConnectorConfig) => void;
+  onScopesChanged: () => void;
 }) {
   const provider = c.name as Provider;
   const [editing, setEditing] = useState(false);
+  const [showScopes, setShowScopes] = useState(false);
   const last = runs[0] ?? c.last_scan ?? undefined;
   const running = runs.some((r) => r.status === "running") || !!sched?.running;
   const done = runs.filter((r) => r.status === "succeeded");
@@ -140,6 +144,11 @@ function CloudCard({
           {isAdmin && (
             <Button onClick={() => setEditing((v) => !v)} disabled={editing}>
               Edit connection
+            </Button>
+          )}
+          {isAdmin && (
+            <Button onClick={() => setShowScopes((v) => !v)}>
+              {showScopes ? "Hide" : "Manage"} {many}
             </Button>
           )}
           {canScan && (
@@ -181,6 +190,7 @@ function CloudCard({
         </p>
       )}
       {c.problem && <p className="mt-2 px-1 text-xs text-sev-high">{c.problem}</p>}
+      {isAdmin && showScopes && <ScopeList provider={provider} onChanged={onScopesChanged} />}
       {editing && (
         <div className="mt-4 border-t border-line px-1 pt-4">
           <h3 className="mb-3 text-[13px] font-semibold text-ink">Edit {CLOUD_NAME[provider]} connection</h3>
@@ -503,6 +513,7 @@ export default function Connectors() {
           isAdmin={isAdmin}
           onScan={() => void runScan(c.name)}
           onSaved={saved}
+          onScopesChanged={reloadAll}
         />
       ))}
 

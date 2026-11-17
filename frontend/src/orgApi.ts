@@ -117,6 +117,18 @@ export interface SignInRequired {
   reason: string;
 }
 
+/** A subscription / account / project known for a cloud connector (Settings > Cloud connections). */
+export interface CloudScope {
+  id: string;
+  /** In the connector's scan list; false = only exists in data (e.g. left by a failed first scan). */
+  configured: boolean;
+  resources: number;
+  removed_resources: number;
+  last_scanned: string | null;
+  last_scan_status: string | null;
+  last_scan_at: string | null;
+}
+
 const json = (method: string, body?: unknown): RequestInit => ({ method, body: body === undefined ? undefined : JSON.stringify(body) });
 
 export const orgApi = {
@@ -143,6 +155,12 @@ export const orgApi = {
   ) =>
     request<ConnectorConfig>(`/api/organization/connectors/${provider}`, json("PUT", body)),
   deleteConnector: (provider: Provider) => request<ConnectorConfig>(`/api/organization/connectors/${provider}`, json("DELETE")),
+  connectorScopes: (provider: Provider) => request<CloudScope[]>(`/api/organization/connectors/${provider}/scopes`),
+  removeConnectorScope: (provider: Provider, id: string, confirm: string) =>
+    request<{ provider: string; id: string; config_updated: boolean; deleted: Record<string, number> }>(
+      `/api/organization/connectors/${provider}/scopes/${encodeURIComponent(id)}?confirm=${encodeURIComponent(confirm)}`,
+      json("DELETE"),
+    ),
 
   // --- accepting an invitation (public) ---
   lookupInvitation: (token: string) =>

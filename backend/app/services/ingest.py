@@ -11,6 +11,7 @@ from ..engine import posture
 from ..engine.risk import cvss_severity, priority_for, vuln_risk_score
 from ..models import Asset, Finding, Relationship, Vulnerability, get_asset, new_id, utcnow
 from ..notifications import builtin as notify
+from . import cloud_lifecycle
 from .eol_vulns import sync_eol_vulnerabilities
 
 log = logging.getLogger(__name__)
@@ -26,6 +27,7 @@ def ingest_collection(db: Session, result: CollectionResult, source: str) -> dic
     """
     now = utcnow()
     seen_ids: set[str] = set()
+    restored: list[str] = []
     for rec in result.assets:
         aid = rec.id
         seen_ids.add(aid)
@@ -33,6 +35,10 @@ def ingest_collection(db: Session, result: CollectionResult, source: str) -> dic
         if a is None:
             a = Asset(id=aid, first_seen=now)
             db.add(a)
+        elif a.removed_at is not None:  # back in the cloud: active again
+            restored.append(aid)
+        a.removed_at = None
+        a.missed_scans = 0
         a.name = rec.name
         a.type = rec.type
         a.provider = rec.provider
@@ -47,6 +53,8 @@ def ingest_collection(db: Session, result: CollectionResult, source: str) -> dic
         a.source = source
         a.last_seen = now
     db.flush()
+    if restored:
+        cloud_lifecycle.clear_removed_reason(db, restored)
 
     # A connector can report the same edge more than once in one scan (e.g. an
     # identity granted two data roles on the same key vault). The session doesn't
@@ -81,6 +89,9 @@ def ingest_collection(db: Session, result: CollectionResult, source: str) -> dic
 
     scanned = [get_asset(db, i) for i in seen_ids]
     stats = evaluate_posture(db, scanned, source)
+    stats.update(cloud_lifecycle.apply_scan(db, source, result.scopes_read, seen_ids, now,
+                                                  result.unreliable_types))
+    stats["assets_restored"] = len(restored)
     # end-of-life runtimes / database engines also land on the Vulnerabilities page
     eol_assets = [a for a in scanned if a is not None and a.type in EOL_VULN_TYPES]
     if eol_assets:
@@ -191,12 +202,14 @@ def evaluate_posture(db: Session, assets: list[Asset], source: str) -> dict:
                 if f.status == "resolved":  # regression
                     f.status = "open"
                     f.resolved_at = None
+                    f.close_reason = None
                     notify.finding_opened(db, f, regression=True)
                     opened += 1
         for rid, f in existing.items():
             if rid not in failures and f.status == "open":
                 f.status = "resolved"
                 f.resolved_at = now
+                f.close_reason = None
                 resolved += 1
     db.flush()
     return {"findings_opened": opened, "findings_resolved": resolved}
@@ -208,7 +221,7 @@ def rescore_vulnerabilities(db: Session) -> None:
     Exposure and sensitive-data access are derived from the asset and its
     graph neighbours (identity -> data store).
     """
-    assets = {a.id: a for a in db.scalars(select(Asset))}
+    assets = {a.id: a for a in db.scalars(select(Asset).where(Asset.removed_at.is_(None)))}
     rels = list(db.scalars(select(Relationship)))
     out: dict[str, list[tuple[str, str]]] = {}
     parents: dict[str, list[str]] = {}

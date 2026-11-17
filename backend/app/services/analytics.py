@@ -19,9 +19,9 @@ def attack_paths(db: Session, limit: int = 20, include_unconfirmed: bool = True)
     """Top attack paths (confirmed first). `include_unconfirmed=False`: confirmed paths only."""
     assets = {a.id: {"id": a.id, "name": a.name, "type": a.type, "internet_exposed": a.internet_exposed,
                      "sensitive_data": a.sensitive_data, "properties": a.properties or {}}
-              for a in db.scalars(select(Asset))}
+              for a in db.scalars(select(Asset).where(Asset.removed_at.is_(None)))}
     rels = [{"source_id": r.source_id, "target_id": r.target_id, "type": r.type, "properties": r.properties or {}}
-            for r in db.scalars(select(Relationship))]
+            for r in db.scalars(select(Relationship)) if r.source_id in assets and r.target_id in assets]
     vulns: dict[str, list] = defaultdict(list)
     for v in db.scalars(select(Vulnerability).where(Vulnerability.status == "open",
                                                     Vulnerability.asset_id.is_not(None))):
@@ -38,7 +38,8 @@ def compliance_summary(db: Session, account: str | None = None) -> list[dict]:
     `account`: only findings on assets of that cloud account (subscription / account / project)."""
     stmt = select(Finding.rule_id).where(Finding.status == "open")
     if account:
-        stmt = stmt.where(Finding.asset_id.in_(select(Asset.id).where(Asset.subscription_id == account)))
+        stmt = stmt.where(Finding.asset_id.in_(select(Asset.id).where(Asset.subscription_id == account,
+                                                                   Asset.removed_at.is_(None))))
     failing_rules = {r for (r,) in db.execute(stmt.distinct())}
     frameworks: dict[str, dict] = {}
     for control, rule_ids in posture.compliance_controls().items():
@@ -58,8 +59,9 @@ def compliance_summary(db: Session, account: str | None = None) -> list[dict]:
 
 
 def dashboard(db: Session) -> dict:
-    asset_count = db.scalar(select(func.count()).select_from(Asset)) or 0
-    exposed = db.scalar(select(func.count()).select_from(Asset).where(Asset.internet_exposed.is_(True))) or 0
+    asset_count = db.scalar(select(func.count()).select_from(Asset).where(Asset.removed_at.is_(None))) or 0
+    exposed = db.scalar(select(func.count()).select_from(Asset).where(Asset.internet_exposed.is_(True),
+                                                                      Asset.removed_at.is_(None))) or 0
     open_findings = list(db.execute(select(Finding.severity).where(Finding.status == "open")).scalars())
     by_sev = Counter(open_findings)
     vulns = list(db.scalars(select(Vulnerability).where(Vulnerability.status == "open")))
@@ -102,7 +104,7 @@ def dashboard(db: Session) -> dict:
         top_risks.append({"kind": "finding", "id": f.id, "title": f"{f.title} ({f.asset.name})",
                           "severity": f.severity, "score": None, "asset_id": f.asset_id})
 
-    assets_by_type = Counter(t for (t,) in db.execute(select(Asset.type)))
+    assets_by_type = Counter(t for (t,) in db.execute(select(Asset.type).where(Asset.removed_at.is_(None))))
     return {
         "risk_score": score,
         "assets": {"total": asset_count, "internet_exposed": exposed, "by_type": dict(assets_by_type)},

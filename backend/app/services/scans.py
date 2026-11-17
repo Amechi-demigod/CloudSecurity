@@ -58,10 +58,12 @@ def execute_scan(connector: Connector, run_id: str, org_id: str) -> None:
             run.findings_open = db.scalar(
                 select(func.count()).select_from(Finding).where(Finding.source == connector.name,
                                                                 Finding.status == "open")) or 0
-            run.errors = result.errors[:200]
+            run.errors = (result.errors + stats.get("warnings", []))[:200]
             run.status = "succeeded" if not result.errors or result.assets else "failed"
             run.message = (f"{stats['assets']} assets, {stats['findings_opened']} findings opened, "
                            f"{stats['findings_resolved']} resolved")
+            if stats.get("assets_removed"):
+                run.message += f", {stats['assets_removed']} removed from the cloud"
         except Exception as exc:
             log.exception("scan %s failed", run_id)
             db.rollback()
