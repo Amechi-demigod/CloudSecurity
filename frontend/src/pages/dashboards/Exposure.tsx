@@ -2,9 +2,11 @@ import { Link } from "react-router-dom";
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { api } from "../../api";
 import { BarRows, ChartEmpty, ChartTip, DashCard, KpiTile, LegendKeys, ViewLink } from "../../components/dash";
+import SortHeader from "../../components/SortHeader";
 import { ErrorNote, SeverityBadge } from "../../components/ui";
 import { AXIS, bucketLabel, catSegments, dayLabel, GRID, href, sevSegments } from "../../lib/dash";
 import { useApi } from "../../lib/useApi";
+import { SEV_RANK, useSort } from "../../lib/useSort";
 import type { TabProps } from "../Dashboard";
 import { TabSkeleton } from "./Skeleton";
 
@@ -13,6 +15,20 @@ const JEWEL_COLOR = "var(--color-cat-3)";
 
 export default function ExposureTab({ range, account }: TabProps) {
   const { data: d, error } = useApi(() => api.dashExposure({ range, account: account || undefined }), [range, account], 60000);
+  // "default" keeps the server's order (highest risk first)
+  const sorted = useSort(
+    d?.paths,
+    {
+      default: (p) => d?.paths.indexOf(p),
+      entry: (p) => p.entry.name,
+      path: (p) => p.steps.map((s) => s.name).join(" "),
+      target: (p) => p.target.name,
+      severity: (p) => SEV_RANK[p.severity] ?? 0,
+      steps: (p) => p.steps.length,
+    },
+    { key: "default", dir: "asc" },
+    { severity: "desc", steps: "desc" },
+  );
   if (!d) return error ? <ErrorNote error={error} /> : <TabSkeleton />;
   const k = d.kpis;
   const days = d.days;
@@ -122,15 +138,15 @@ export default function ExposureTab({ range, account }: TabProps) {
             <table className="w-full min-w-[640px] text-[13px]">
               <thead>
                 <tr className="border-b border-line text-left text-[11px] uppercase tracking-[0.06em] text-ink-3">
-                  <th className="px-1 py-1.5 font-semibold">Entry point</th>
-                  <th className="px-1 py-1.5 font-semibold">Path</th>
-                  <th className="px-1 py-1.5 font-semibold">Target</th>
-                  <th className="px-1 py-1.5 font-semibold">Severity</th>
-                  <th className="px-1 py-1.5 text-right font-semibold">Steps</th>
+                  <SortHeader sortKey="entry" label="Entry point" sort={sorted.sort} onSort={sorted.onSort} className="px-1 py-1.5 font-semibold" />
+                  <SortHeader sortKey="path" label="Path" sort={sorted.sort} onSort={sorted.onSort} className="px-1 py-1.5 font-semibold" />
+                  <SortHeader sortKey="target" label="Target" sort={sorted.sort} onSort={sorted.onSort} className="px-1 py-1.5 font-semibold" />
+                  <SortHeader sortKey="severity" label="Severity" sort={sorted.sort} onSort={sorted.onSort} className="px-1 py-1.5 font-semibold" />
+                  <SortHeader sortKey="steps" label="Steps" sort={sorted.sort} onSort={sorted.onSort} className="px-1 py-1.5 text-right font-semibold" />
                 </tr>
               </thead>
               <tbody className="divide-y divide-line">
-                {d.paths.map((p) => (
+                {sorted.rows.map((p) => (
                   <tr key={p.id}>
                     <td className="max-w-[16rem] px-1 py-2">
                       <Link to={href("/attack-paths", { path: p.id })} className="block truncate font-semibold text-ink hover:text-accent hover:underline" title={p.entry.detail ?? p.entry.name}>

@@ -7,7 +7,9 @@ import { errMsg } from "../lib/directory";
 import { fmtAgo } from "../lib/format";
 import { contains, countAddresses, parseTarget, size, splitList } from "../lib/netTargets";
 import { useApi } from "../lib/useApi";
+import { useSort } from "../lib/useSort";
 import { networkApi, PORT_CHIPS, type CredentialIn, type NetCredential, type NetRun, type NetScan, type Suggestion } from "../networkApi";
+import SortHeader from "./SortHeader";
 import { Button, ErrorNote, Field, Tag } from "./ui";
 
 const WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
@@ -124,6 +126,23 @@ export default function NetworkScanWizard({ scan, onCancel, onDone }: { scan?: N
   const [collectorId, setCollectorId] = useState(scan?.collector_id ?? "");
   const [rows, setRows] = useState<Row[]>(() =>
     (scan?.targets ?? []).map((t) => ({ subnet: t, name: scan?.target_notes[t]?.replace(/^.*?: /, "") || "Added by hand", by: scan?.target_notes[t] ? [scan.target_notes[t]] : ["Added by hand"], addresses: 0, checked: true })),
+  );
+  const sortedRows = useSort(
+    rows,
+    {
+      default: (r) => rows.indexOf(r), // the order they were suggested / added in
+      subnet: (r) => r.subnet,
+      name: (r) => r.name,
+      by: (r) => r.by.join(", "),
+      addresses: (r) => {
+        if (r.addresses) return r.addresses;
+        const p = parseTarget(r.subnet);
+        return typeof p === "string" ? null : size(p);
+      },
+    },
+    { key: "default", dir: "asc" },
+    { addresses: "desc" },
+    "subnetsort",
   );
   const [subnetInput, setSubnetInput] = useState("");
   const [exclude, setExclude] = useState((scan?.exclude ?? []).join("\n"));
@@ -353,10 +372,10 @@ export default function NetworkScanWizard({ scan, onCancel, onDone }: { scan?: N
                 <th className="w-8 px-3 py-2">
                   <span className="sr-only">Scan</span>
                 </th>
-                <th className="px-3 py-2">Subnet</th>
-                <th className="px-3 py-2">Name</th>
-                <th className="px-3 py-2">Suggested by</th>
-                <th className="px-3 py-2 text-right">Addresses</th>
+                <SortHeader sortKey="subnet" label="Subnet" sort={sortedRows.sort} onSort={sortedRows.onSort} className="px-3 py-2" />
+                <SortHeader sortKey="name" label="Name" sort={sortedRows.sort} onSort={sortedRows.onSort} className="px-3 py-2" />
+                <SortHeader sortKey="by" label="Suggested by" sort={sortedRows.sort} onSort={sortedRows.onSort} className="px-3 py-2" />
+                <SortHeader sortKey="addresses" label="Addresses" sort={sortedRows.sort} onSort={sortedRows.onSort} className="px-3 py-2 text-right" />
               </tr>
             </thead>
             <tbody className="divide-y divide-line">
@@ -367,7 +386,7 @@ export default function NetworkScanWizard({ scan, onCancel, onDone }: { scan?: N
                   </td>
                 </tr>
               )}
-              {rows.map((r) => (
+              {sortedRows.rows.map((r) => (
                 <tr key={r.subnet}>
                   <td className="px-3 py-2">
                     <input type="checkbox" aria-label={`Scan ${r.subnet}`} checked={r.checked} onChange={(e) => setRows((p) => p.map((x) => (x.subnet === r.subnet ? { ...x, checked: e.target.checked } : x)))} />

@@ -9,6 +9,7 @@ import { Button, Card, Empty, ErrorNote, Modal, PageHeader, Stat, Table, Tag } f
 import { externalApi, type ExtTarget } from "../../externalApi";
 import { fmtAgo, fmtTime } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
+import { useSort } from "../../lib/useSort";
 
 function TargetStatus({ t }: { t: ExtTarget }) {
   if (t.verified) return <Tag tone="good">Verified{t.verified_method ? ` (${t.verified_method})` : ""}</Tag>;
@@ -146,6 +147,19 @@ export default function AttackSurface() {
   const targets = useApi(externalApi.targets, []);
   const hosts = useApi(externalApi.hosts, [], 20000);
   const scans = useApi(externalApi.scans, [], 20000);
+  const sortedHosts = useSort(
+    hosts.data,
+    {
+      host: (h) => h.host,
+      ip: (h) => (h.ip ?? "").split(".").map((n) => n.padStart(3, "0")).join("."),
+      ports: (h) => h.ports.length,
+      software: (h) => [...new Set(h.software.map((s) => `${s.product} ${s.version}`))].join(", "),
+      tls: (h) => h.tls_summary,
+      findings: (h) => h.findings,
+    },
+    { key: "host", dir: "asc" },
+    { ports: "desc", findings: "desc" },
+  );
   const [value, setValue] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const [scope, setScope] = useState<string | null>(null);
@@ -242,12 +256,14 @@ export default function AttackSurface() {
       </div>
       <Card title="Hosts">
         <Table
-          head={["Host", "IP", "Open ports", "Detected software", "TLS", { label: "Findings", align: "right" }]}
+          head={[{ label: "Host", sort: "host" }, { label: "IP", sort: "ip" }, { label: "Open ports", sort: "ports" }, { label: "Detected software", sort: "software" }, { label: "TLS", sort: "tls" }, { label: "Findings", sort: "findings", align: "right" }]}
+          sort={sortedHosts.sort}
+          onSort={sortedHosts.onSort}
           loading={hosts.loading}
           rowCount={hosts.data?.length ?? 0}
           empty={<Empty icon={Globe2} title="No hosts discovered yet">Verify a target and run a scan.</Empty>}
         >
-          {hosts.data?.map((h) => (
+          {sortedHosts.rows.map((h) => (
             <tr key={h.id}>
               <td className="px-3 py-2 font-mono text-xs">{h.host}</td>
               <td className="px-3 py-2 font-mono text-xs">{h.ip}</td>

@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { ApiError, api, type Approval, type ApprovalSettings, type RiskLevel } from "../api";
 import { useAuth } from "../auth/context";
 import { fmtAgo, fmtTime } from "../lib/format";
+import { rankOf, ts, useSort } from "../lib/useSort";
 import { Button, Empty, Field, Modal, Table, Tag } from "./ui";
 
 const RISK_TONE: Record<RiskLevel, "good" | "warn" | "critical"> = { low: "good", medium: "warn", high: "critical" };
@@ -168,22 +169,46 @@ export function ApprovalList({
   onChanged,
   showDevice = true,
   empty = "No requests.",
+  sortParam = "sort",
 }: {
   items: Approval[] | null;
   settings?: ApprovalSettings | null;
   onChanged: () => void;
   showDevice?: boolean;
   empty?: string;
+  /** URL query key of this list's sort (give each list on a page its own). */
+  sortParam?: string;
 }) {
   const { can } = useAuth();
   const admin = can("admin");
   const [open, setOpen] = useState<{ approval: Approval; decision: Decision } | null>(null);
+  const statusRank = rankOf(["pending", "approved", "executed", "rejected", "cancelled", "expired"]);
+  const sorted = useSort(
+    items,
+    {
+      device: (a) => a.hostname,
+      request: (a) => a.summary,
+      by: (a) => a.requested_by_email,
+      requested: (a) => ts(a.requested_at),
+      status: (a) => statusRank(a.status),
+    },
+    { key: "requested", dir: "desc" },
+    { requested: "desc" },
+    sortParam,
+  );
   if (items && items.length === 0) return <Empty>{empty}</Empty>;
-  const head = [...(showDevice ? ["Device"] : []), "Request", "Requested by", "Requested", "Status", ""];
+  const head = [
+    ...(showDevice ? [{ label: "Device", sort: "device" }] : []),
+    { label: "Request", sort: "request" },
+    { label: "Requested by", sort: "by" },
+    { label: "Requested", sort: "requested" },
+    { label: "Status", sort: "status" },
+    "",
+  ];
   return (
     <>
-      <Table head={head}>
-        {(items ?? []).map((a) => {
+      <Table head={head} sort={sorted.sort} onSort={sorted.onSort}>
+        {sorted.rows.map((a) => {
           const isOpen = a.status === "pending" || a.status === "approved";
           return (
             <tr key={a.id} className="align-top">

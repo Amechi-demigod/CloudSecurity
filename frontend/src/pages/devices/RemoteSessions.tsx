@@ -8,6 +8,7 @@ import { fmtDuration } from "../../lib/devices";
 import { fmtTime } from "../../lib/format";
 import { describeEnd } from "../../lib/remote/protocol";
 import { useApi } from "../../lib/useApi";
+import { rankOf, ts, useSort } from "../../lib/useSort";
 
 const MODE_LABEL: Record<RemoteMode, string> = { view: "View only", control: "View and control" };
 
@@ -161,14 +162,28 @@ export function RemoteSessionsCard({ deviceId }: { deviceId: string }) {
   const { can } = useAuth();
   const { data, error } = useApi(() => api.deviceRemoteSessions(deviceId, 100), [deviceId], 15000);
   const navigate = useNavigate();
+  const state = rankOf(["active", "awaiting_consent", "requested", "ended", "denied", "failed"]);
+  const sorted = useSort(
+    data,
+    {
+      requested: (s) => ts(s.created_at), by: (s) => s.requested_by_name || s.requested_by_email, mode: (s) => MODE_LABEL[s.mode],
+      duration: (s) => s.duration_seconds, outcome: (s) => state(s.state), reason: (s) => s.reason,
+    },
+    { key: "requested", dir: "desc" },
+    { requested: "desc", duration: "desc" },
+  );
   return (
     <Card title="Remote sessions" className="mb-4">
       <ErrorNote error={error} />
       {data && data.length === 0 ? (
         <Empty>No remote sessions yet.</Empty>
       ) : (
-        <Table head={["Requested", "By", "Mode", "Duration", "Outcome", "Reason"]}>
-          {(data ?? []).map((s) => {
+        <Table
+          head={[{ label: "Requested", sort: "requested" }, { label: "By", sort: "by" }, { label: "Mode", sort: "mode" }, { label: "Duration", sort: "duration" }, { label: "Outcome", sort: "outcome" }, { label: "Reason", sort: "reason" }]}
+          sort={sorted.sort}
+          onSort={sorted.onSort}
+        >
+          {sorted.rows.map((s) => {
             const open = s.state === "requested" || s.state === "awaiting_consent" || s.state === "active";
             return (
               <tr key={s.id}>

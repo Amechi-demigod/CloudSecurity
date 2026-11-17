@@ -8,6 +8,7 @@ import { Button, Card, Empty, ErrorNote, Select, Table, Tag } from "../../compon
 import { fmtBytes } from "../../lib/devices";
 import { fmtAgo, fmtTime } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
+import { ts, useSort } from "../../lib/useSort";
 import { CLASSIFICATION_LABEL, SOURCE_LABEL, catalogUrl, osUpdatesApi, type MissingUpdate } from "../../osUpdatesApi";
 
 /** Issue codes raised from the Windows Update report (app/services/os_updates.py). */
@@ -99,6 +100,16 @@ export function OsUpdatesTab({ device, onChanged }: { device: Device; onChanged?
   const { can } = useAuth();
   const { data, error, reload } = useApi(() => osUpdatesApi.device(device.id), [device.id], 15000);
   const [scope, setScope] = useState("security");
+  const MSRC_RANK: Record<string, number> = { critical: 4, important: 3, moderate: 2, low: 1, unspecified: 0 };
+  const sorted = useSort(
+    (data?.report?.updates ?? []).filter((u) => scope === "all" || u.security),
+    {
+      update: (u) => u.title, classification: (u) => CLASSIFICATION_LABEL[u.classification], severity: (u) => (u.msrc_severity ? MSRC_RANK[u.msrc_severity.toLowerCase()] ?? 0 : null),
+      released: (u) => ts(u.release_date), cves: (u) => u.known_cves.length, restart: (u) => REBOOT_LABEL[u.reboot_behavior], size: (u) => u.size_bytes,
+    },
+    { key: "severity", dir: "desc" },
+    { severity: "desc", released: "desc", cves: "desc", size: "desc" },
+  );
   if (!data) return <ErrorNote error={error} />;
   const r = data.report;
   const canScan = can("analyst") && device.status === "active" && data.supported;
@@ -228,8 +239,12 @@ export function OsUpdatesTab({ device, onChanged }: { device: Device; onChanged?
               {r.missing_count > 0 && scope === "security" ? `${r.missing_count} other update(s) are available; choose "All" to see them.` : "Windows Update reports nothing missing."}
             </Empty>
           ) : (
-            <Table head={["Update", "Classification", "Severity", "Released", "CVEs", "Restart", "Size"]}>
-              {rows.map((u, i) => (
+            <Table
+              head={[{ label: "Update", sort: "update" }, { label: "Classification", sort: "classification" }, { label: "Severity", sort: "severity" }, { label: "Released", sort: "released" }, { label: "CVEs", sort: "cves" }, { label: "Restart", sort: "restart" }, { label: "Size", sort: "size" }]}
+              sort={sorted.sort}
+              onSort={sorted.onSort}
+            >
+              {sorted.rows.map((u, i) => (
                 <tr key={`${u.update_id}-${i}`} className="align-top">
                   <td className="max-w-[28rem] px-3 py-2">
                     <div className="text-sm">{u.title}</div>

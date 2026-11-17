@@ -3,6 +3,7 @@ import { ApiError } from "../api";
 import { Button, Card, Empty, ErrorNote, Select, SeverityBadge, Table, Tag } from "../components/ui";
 import { fmtAgo, fmtTime } from "../lib/format";
 import { useApi } from "../lib/useApi";
+import { rankOf, ts, useSort } from "../lib/useSort";
 import { useUrlState } from "../lib/useUrlState";
 import { notificationsApi, type Delivery } from "../notificationsApi";
 
@@ -21,6 +22,19 @@ export default function NotificationsLog({ isAdmin, onChange }: { isAdmin: boole
     () => notificationsApi.deliveries({ status: status || undefined, kind: kind || undefined, limit: 300 }),
     [status, kind],
     10000,
+  );
+  const statusRank = rankOf(["dead", "pending", "sending", "sent"]);
+  const sorted = useSort(
+    data,
+    {
+      time: (d) => ts(d.created_at),
+      channel: (d) => d.channel_name || "(deleted)",
+      notification: (d) => d.title,
+      status: (d) => statusRank(d.status),
+      attempts: (d) => d.attempts,
+    },
+    { key: "time", dir: "desc" },
+    { time: "desc", attempts: "desc" },
   );
 
   async function retry(d: Delivery) {
@@ -66,8 +80,12 @@ export default function NotificationsLog({ isAdmin, onChange }: { isAdmin: boole
         {data && data.length === 0 ? (
           <Empty>No deliveries yet.</Empty>
         ) : (
-          <Table head={["Time", "Channel", "Notification", "Status", "Attempts", "Details", ...(isAdmin ? [""] : [])]}>
-            {data?.map((d) => (
+          <Table
+            head={[{ label: "Time", sort: "time" }, { label: "Channel", sort: "channel" }, { label: "Notification", sort: "notification" }, { label: "Status", sort: "status" }, { label: "Attempts", sort: "attempts" }, "Details", ...(isAdmin ? [""] : [])]}
+            sort={sorted.sort}
+            onSort={sorted.onSort}
+          >
+            {sorted.rows.map((d) => (
               <tr key={d.id}>
                 <td className="whitespace-nowrap px-3 py-2 text-xs text-ink-2" title={fmtTime(d.created_at)}>
                   {fmtAgo(d.created_at)}

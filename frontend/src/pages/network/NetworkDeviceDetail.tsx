@@ -6,6 +6,7 @@ import { Breadcrumbs, Button, Card, Empty, ErrorNote, SeverityBadge, Table, Tag 
 import { errMsg } from "../../lib/assets";
 import { fmtTime } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
+import { SEV_RANK, useSort } from "../../lib/useSort";
 import { networkApi, TRACK_TONE, type NetDeviceDetail } from "../../networkApi";
 
 type Tab = "overview" | "vulnerabilities" | "findings" | "interfaces" | "connected" | "history";
@@ -88,6 +89,33 @@ export default function NetworkDeviceDetail() {
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const { data: d, error, reload } = useApi(() => networkApi.device(id), [id]);
+  const vulnSort = useSort(
+    d?.vulnerabilities,
+    {
+      cve: (v) => v.cve_id, severity: (v) => SEV_RANK[v.severity] ?? 0, cvss: (v) => v.cvss, kev: (v) => (v.kev ? 1 : 0),
+      firmware: (v) => v.version, fixed: (v) => v.fixed_version,
+    },
+    { key: "severity", dir: "desc" },
+    { severity: "desc", cvss: "desc", kev: "desc" },
+    "vuln_sort",
+  );
+  const ifaceSort = useSort(
+    d?.interfaces,
+    { name: (i) => i.name, descr: (i) => i.descr, mac: (i) => i.mac, state: (i) => (i.oper_up ? 1 : 0), speed: (i) => i.speed_mbps },
+    { key: "name", dir: "asc" },
+    { speed: "desc" },
+    "if_sort",
+  );
+  // Status: a named device, then unmanaged, uplink, endpoint / known.
+  const connStatus = (r: NonNullable<typeof d>["connected"]["rows"][number]) =>
+    r.device ? r.device.name : r.unmanaged ? "unmanaged" : r.uplink ? "uplink port" : r.endpoint ? "endpoint" : "known";
+  const connSort = useSort(
+    d?.connected.rows,
+    { mac: (r) => r.mac, vendor: (r) => r.vendor, port: (r) => r.port, vlan: (r) => r.vlan, status: connStatus },
+    { key: "mac", dir: "asc" },
+    {},
+    "conn_sort",
+  );
   if (!d) return <ErrorNote error={error} />;
 
   async function rescan() {
@@ -301,8 +329,14 @@ export default function NetworkDeviceDetail() {
 
       {tab === "vulnerabilities" && (
         <Card>
-          <Table head={["CVE", "Severity", "CVSS", "KEV", "Firmware", "Fixed in"]} rowCount={d.vulnerabilities.length} empty={<Empty>{d.vuln_status.reason ?? "No open vulnerabilities."}</Empty>}>
-            {d.vulnerabilities.map((v) => (
+          <Table
+            head={[{ label: "CVE", sort: "cve" }, { label: "Severity", sort: "severity" }, { label: "CVSS", sort: "cvss" }, { label: "KEV", sort: "kev" }, { label: "Firmware", sort: "firmware" }, { label: "Fixed in", sort: "fixed" }]}
+            sort={vulnSort.sort}
+            onSort={vulnSort.onSort}
+            rowCount={d.vulnerabilities.length}
+            empty={<Empty>{d.vuln_status.reason ?? "No open vulnerabilities."}</Empty>}
+          >
+            {vulnSort.rows.map((v) => (
               <tr key={v.id}>
                 <td className="px-3 py-2">
                   <Link to={`/vulnerabilities/${v.cve_id}`} className="font-mono text-xs text-accent hover:underline">
@@ -352,8 +386,14 @@ export default function NetworkDeviceDetail() {
 
       {tab === "interfaces" && (
         <Card>
-          <Table head={["Name", "Description", "MAC", "State", "Speed"]} rowCount={d.interfaces.length} empty={<Empty>No interface data: it needs SNMP.</Empty>}>
-            {d.interfaces.map((i) => (
+          <Table
+            head={[{ label: "Name", sort: "name" }, { label: "Description", sort: "descr" }, { label: "MAC", sort: "mac" }, { label: "State", sort: "state" }, { label: "Speed", sort: "speed" }]}
+            sort={ifaceSort.sort}
+            onSort={ifaceSort.onSort}
+            rowCount={d.interfaces.length}
+            empty={<Empty>No interface data: it needs SNMP.</Empty>}
+          >
+            {ifaceSort.rows.map((i) => (
               <tr key={i.index}>
                 <td className="px-3 py-2 text-sm">{i.name}</td>
                 <td className="px-3 py-2 text-xs text-ink-2">{i.descr}</td>
@@ -370,8 +410,14 @@ export default function NetworkDeviceDetail() {
 
       {tab === "connected" && (
         <Card>
-          <Table head={["MAC", "Vendor", "Port", "VLAN", "Status"]} rowCount={d.connected.rows.length} empty={<Empty>No forwarding table: it needs a switch read over SNMP.</Empty>}>
-            {d.connected.rows.map((r) => (
+          <Table
+            head={[{ label: "MAC", sort: "mac" }, { label: "Vendor", sort: "vendor" }, { label: "Port", sort: "port" }, { label: "VLAN", sort: "vlan" }, { label: "Status", sort: "status" }]}
+            sort={connSort.sort}
+            onSort={connSort.onSort}
+            rowCount={d.connected.rows.length}
+            empty={<Empty>No forwarding table: it needs a switch read over SNMP.</Empty>}
+          >
+            {connSort.rows.map((r) => (
               <tr key={r.mac + r.port}>
                 <td className="px-3 py-2 font-mono text-xs">{r.mac}</td>
                 <td className="px-3 py-2 text-xs text-ink-2">{r.vendor || "-"}</td>

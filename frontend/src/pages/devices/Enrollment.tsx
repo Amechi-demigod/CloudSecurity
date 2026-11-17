@@ -4,6 +4,7 @@ import { ApiError, api, type EnrollmentToken, type InstallerPlatform } from "../
 import { Button, Card, Empty, ErrorNote, Field, Modal, PageHeader, Table, Tag } from "../../components/ui";
 import { fmtAgo, fmtTime } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
+import { rankOf, ts, useSort } from "../../lib/useSort";
 
 function errMsg(e: unknown) {
   return e instanceof ApiError ? e.message : String(e);
@@ -340,6 +341,16 @@ const STATE_TONE: Record<EnrollmentToken["state"], "good" | "default" | "warn"> 
 
 export default function Enrollment() {
   const { data: tokens, error, reload } = useApi(api.enrollmentTokens, []);
+  const tokenState = rankOf(["active", "expired", "exhausted", "revoked"]);
+  const sorted = useSort(
+    tokens,
+    {
+      name: (t) => t.name, token: (t) => t.token_prefix, state: (t) => tokenState(t.state), uses: (t) => t.use_count,
+      expires: (t) => ts(t.expires_at), created: (t) => ts(t.created_at),
+    },
+    { key: "created", dir: "desc" },
+    { uses: "desc", expires: "desc", created: "desc" },
+  );
   const [createOpen, setCreateOpen] = useState(false);
   const [newToken, setNewToken] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -388,8 +399,12 @@ export default function Enrollment() {
         {tokens && tokens.length === 0 ? (
           <Empty>No tokens yet.</Empty>
         ) : (
-          <Table head={["Name", "Token", "State", "Uses", "Expires", "Created", ""]}>
-            {(tokens ?? []).map((t) => (
+          <Table
+            head={[{ label: "Name", sort: "name" }, { label: "Token", sort: "token" }, { label: "State", sort: "state" }, { label: "Uses", sort: "uses" }, { label: "Expires", sort: "expires" }, { label: "Created", sort: "created" }, ""]}
+            sort={sorted.sort}
+            onSort={sorted.onSort}
+          >
+            {sorted.rows.map((t) => (
               <tr key={t.id}>
                 <td className="px-3 py-2">
                   {t.name}

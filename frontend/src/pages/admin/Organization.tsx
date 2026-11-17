@@ -6,6 +6,7 @@ import { InvitationStateTag, InviteResult } from "../../components/org";
 import { Button, Card, ErrorNote, Field, PageHeader, Stat, Table } from "../../components/ui";
 import { fmtAgo, fmtTime } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
+import { rankOf, ts, useSort } from "../../lib/useSort";
 import { orgApi, type IssuedInvitation } from "../../orgApi";
 
 const ROLES: Role[] = ["viewer", "analyst", "admin"];
@@ -88,6 +89,19 @@ function Profile() {
 function Invitations() {
   const { data: invitations, error, reload } = useApi(orgApi.invitations, []);
   const { data: mail } = useApi(orgApi.mailStatus, []);
+  const roleRank = rankOf(["admin", "analyst", "viewer"]);
+  const sorted = useSort(
+    invitations,
+    {
+      email: (i) => i.email,
+      role: (i) => roleRank(i.role),
+      status: (i) => String(i.state),
+      invited: (i) => ts(i.created_at),
+      expires: (i) => (i.state === "pending" || i.state === "expired" ? ts(i.expires_at) : null),
+    },
+    { key: "invited", dir: "desc" },
+    { invited: "desc", expires: "desc" },
+  );
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<Role>("viewer");
   const [busy, setBusy] = useState(false);
@@ -155,8 +169,12 @@ function Invitations() {
         </Button>
       </form>
       {!!invitations?.length && (
-        <Table head={["Email", "Role", "Status", "Invited", "Expires", "Actions"]}>
-          {invitations.map((i) => (
+        <Table
+          head={[{ label: "Email", sort: "email" }, { label: "Role", sort: "role" }, { label: "Status", sort: "status" }, { label: "Invited", sort: "invited" }, { label: "Expires", sort: "expires" }, "Actions"]}
+          sort={sorted.sort}
+          onSort={sorted.onSort}
+        >
+          {sorted.rows.map((i) => (
             <tr key={i.id}>
               <td className="px-3 py-2">
                 <div className="text-ink">{i.email}</div>

@@ -3,6 +3,8 @@ import { api } from "../api";
 import { Drawer, ErrorNote, RiskBar, SeverityBadge, Tag } from "./ui";
 import { SCOPE_LABEL, TYPE_LABEL, fmtAgo } from "../lib/format";
 import { useApi } from "../lib/useApi";
+import { useSort } from "../lib/useSort";
+import SortHeader from "./SortHeader";
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -10,6 +12,49 @@ function Section({ title, children }: { title: string; children: React.ReactNode
       <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-3">{title}</h3>
       {children}
     </div>
+  );
+}
+
+/** Network security rules of an asset; the default order is the rule order of the cloud (priority). */
+function SecurityRules({ rules }: { rules: Record<string, unknown>[] }) {
+  const sorted = useSort(
+    rules,
+    {
+      default: (r) => rules.indexOf(r),
+      rule: (r) => String(r.name),
+      dir: (r) => String(r.direction),
+      access: (r) => String(r.access),
+      source: (r) => fmtValue(r.source_prefixes),
+      ports: (r) => fmtValue(r.port_ranges),
+    },
+    { key: "default", dir: "asc" },
+    {},
+    "rulesort",
+  );
+  const h = { sort: sorted.sort, onSort: sorted.onSort, className: "text-left font-medium" };
+  return (
+    <table className="mt-2 w-full text-xs">
+      <thead className="text-ink-3">
+        <tr>
+          <SortHeader sortKey="rule" label="Rule" {...h} />
+          <SortHeader sortKey="dir" label="Dir" {...h} />
+          <SortHeader sortKey="access" label="Access" {...h} />
+          <SortHeader sortKey="source" label="Source" {...h} />
+          <SortHeader sortKey="ports" label="Ports" {...h} />
+        </tr>
+      </thead>
+      <tbody className="font-mono text-ink-2">
+        {sorted.rows.map((r, i) => (
+          <tr key={i}>
+            <td>{String(r.name)}</td>
+            <td>{String(r.direction)}</td>
+            <td>{String(r.access)}</td>
+            <td>{fmtValue(r.source_prefixes)}</td>
+            <td>{fmtValue(r.port_ranges)}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }
 
@@ -69,30 +114,7 @@ export default function AssetDrawer({ assetId, onClose, onNavigate }: { assetId:
                   </div>
                 ))}
             </dl>
-            {Array.isArray(a.properties.security_rules) && (
-              <table className="mt-2 w-full text-xs">
-                <thead className="text-ink-3">
-                  <tr>
-                    <th className="text-left font-medium">Rule</th>
-                    <th className="text-left font-medium">Dir</th>
-                    <th className="text-left font-medium">Access</th>
-                    <th className="text-left font-medium">Source</th>
-                    <th className="text-left font-medium">Ports</th>
-                  </tr>
-                </thead>
-                <tbody className="font-mono text-ink-2">
-                  {(a.properties.security_rules as Record<string, unknown>[]).map((r, i) => (
-                    <tr key={i}>
-                      <td>{String(r.name)}</td>
-                      <td>{String(r.direction)}</td>
-                      <td>{String(r.access)}</td>
-                      <td>{fmtValue(r.source_prefixes)}</td>
-                      <td>{fmtValue(r.port_ranges)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
+            {Array.isArray(a.properties.security_rules) && <SecurityRules rules={a.properties.security_rules as Record<string, unknown>[]} />}
           </Section>
 
           <Section title={`Relationships (${data.relationships.length})`}>

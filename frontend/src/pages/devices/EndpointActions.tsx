@@ -18,6 +18,7 @@ import {
 } from "../../endpointActionsApi";
 import { fmtAgo, fmtTime } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
+import { rankOf, ts, useSort } from "../../lib/useSort";
 
 const STATUS_TONE: Record<DeviceCommand["status"], "default" | "warn" | "good" | "accent"> = {
   pending: "accent",
@@ -231,6 +232,13 @@ export function ActionsTab({ device, commands, reload, error }: {
   const usb = device.endpoint_actions?.usb_storage;
   const usbCmd = latest(commands, (c) => c.type === "block_usb_storage" || c.type === "unblock_usb_storage");
   const recent = (commands ?? []).filter(isEndpointAction).slice(0, 20);
+  const cmdStatus = rankOf(["pending", "delivered", "succeeded", "failed", "rejected", "expired", "cancelled"]);
+  const sorted = useSort(
+    recent,
+    { requested: (c) => ts(c.created_at), action: (c) => endpointActionLabel(c), status: (c) => cmdStatus(c.status), result: (c) => c.exit_code },
+    { key: "requested", dir: "desc" },
+    { requested: "desc" },
+  );
   const isBlocked = usb?.state === "blocked";
   return (
     <div className="space-y-4">
@@ -282,8 +290,12 @@ export function ActionsTab({ device, commands, reload, error }: {
         {recent.length === 0 ? (
           <Empty>No endpoint actions yet.</Empty>
         ) : (
-          <Table head={["Requested", "Action", "Status", "Result"]}>
-            {recent.map((c) => (
+          <Table
+            head={[{ label: "Requested", sort: "requested" }, { label: "Action", sort: "action" }, { label: "Status", sort: "status" }, { label: "Result", sort: "result" }]}
+            sort={sorted.sort}
+            onSort={sorted.onSort}
+          >
+            {sorted.rows.map((c) => (
               <tr key={c.id} className="align-top">
                 <td className="px-3 py-2 text-xs">
                   {fmtTime(c.created_at)}
@@ -356,6 +368,14 @@ export function ServicesTab({ device, commands, reload }: { device: Device; comm
   const [pending, setPending] = useState<PendingAction | null>(null);
   const { data, error, reload: reloadServices } = useApi(() => endpointActionsApi.services(device.id, q.trim() || undefined), [device.id, q], 30000);
   const blocked = actionsBlockedReason(device);
+  const startType = rankOf(["auto", "automatic", "manual", "disabled"]);
+  const svcStatus = rankOf(["running", "start_pending", "stop_pending", "paused", "stopped"]);
+  const sorted = useSort(
+    data,
+    { service: (x) => x.display_name || x.name, status: (x) => svcStatus(x.status), startup: (x) => startType(x.start_type) },
+    { key: "service", dir: "asc" },
+    {},
+  );
   const protectedSet = new Set((device.endpoint_actions?.protected_services ?? []).map((s) => s.toLowerCase()));
   // Linux servers: the systemd services are listed read-only (the agent never changes a service there).
   const readOnly = device.os_family === "linux";
@@ -380,8 +400,12 @@ export function ServicesTab({ device, commands, reload }: { device: Device; comm
                 : `No services reported yet: agents ${device.endpoint_actions?.min_agent_version ?? "1.4.0"}+ send them with each check-in.`}
           </Empty>
         ) : (
-          <Table head={["Service", "Status", "Startup type", admin ? "Actions" : ""]}>
-            {(data ?? []).map((s) => {
+          <Table
+            head={[{ label: "Service", sort: "service" }, { label: "Status", sort: "status" }, { label: "Startup type", sort: "startup" }, admin ? "Actions" : ""]}
+            sort={sorted.sort}
+            onSort={sorted.onSort}
+          >
+            {sorted.rows.map((s) => {
               const isProtected = protectedSet.has(s.name.toLowerCase());
               const last = latest(commands, (c) => c.type === "manage_service" && String(c.params.service ?? "").toLowerCase() === s.name.toLowerCase());
               const busy = inFlight(last);

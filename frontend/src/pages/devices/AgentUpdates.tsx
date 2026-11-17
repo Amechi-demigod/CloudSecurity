@@ -5,6 +5,7 @@ import { useAuth } from "../../auth/context";
 import { Button, Card, Empty, ErrorNote, PageHeader, Stat, Table, Tag } from "../../components/ui";
 import { fmtAgo, fmtTime } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
+import { ts, useSort } from "../../lib/useSort";
 import { summarizeUpdateNow, updatesApi } from "../../updatesApi";
 import UpdateAutomationCard from "./UpdateAutomation";
 
@@ -222,6 +223,35 @@ export default function AgentUpdates() {
   }
 
   const progress = new Map((summary.data?.rings ?? []).map((r) => [r.ring_id, r]));
+  const ringSort = useSort(
+    rings.data,
+    {
+      ring: (r) => r.name,
+      groups: (r) => r.device_groups.join(", "),
+      target: (r) => r.target_version,
+      rollout: (r) => r.rollout_percent,
+      progress: (r) => { const p = progress.get(r.id); return p && p.devices ? p.on_target / p.devices : null; },
+    },
+    { key: "ring", dir: "asc" },
+    { rollout: "desc", progress: "desc" },
+    "ring_sort",
+  );
+  const verSort = useSort(summary.data?.versions, { version: (v) => v.version, devices: (v) => v.devices }, { key: "devices", dir: "desc" }, { devices: "desc" }, "ver_sort");
+  const relSort = useSort(
+    releases.data,
+    {
+      version: (r) => r.version,
+      state: (r) => (r.withdrawn_at ? 2 : Date.parse(r.expires_at) <= Date.now() ? 1 : 0),
+      signed: (r) => shortKey(r.key_id),
+      released: (r) => ts(r.released_at),
+      expires: (r) => ts(r.expires_at),
+      platforms: (r) => r.artifacts.length,
+      running: (r) => r.devices_running,
+    },
+    { key: "released", dir: "desc" },
+    { released: "desc", expires: "desc", running: "desc", platforms: "desc" },
+    "rel_sort",
+  );
   return (
     <div>
       <PageHeader
@@ -258,8 +288,12 @@ export default function AgentUpdates() {
           device page overrides its ring. Devices that fail an update roll back automatically and are not offered that release again.
         </p>
         {rings.data && releases.data && (
-          <Table head={["Ring", "Device groups", "Target release", "Rollout %", "Progress", ""]}>
-            {rings.data.map((r) => (
+          <Table
+            head={[{ label: "Ring", sort: "ring" }, { label: "Device groups", sort: "groups" }, { label: "Target release", sort: "target" }, { label: "Rollout %", sort: "rollout" }, { label: "Progress", sort: "progress" }, ""]}
+            sort={ringSort.sort}
+            onSort={ringSort.onSort}
+          >
+            {ringSort.rows.map((r) => (
               <RingRow key={`${r.id}-${r.updated_at}`} ring={r} releases={releases.data ?? []} progress={progress.get(r.id)} admin={admin} onSaved={reload} />
             ))}
           </Table>
@@ -268,8 +302,12 @@ export default function AgentUpdates() {
 
       <Card title="Fleet versions" className="mb-4">
         {summary.data && summary.data.versions.length > 0 ? (
-          <Table head={["Agent version", "Devices"]}>
-            {summary.data.versions.map((v) => (
+          <Table
+            head={[{ label: "Agent version", sort: "version" }, { label: "Devices", sort: "devices" }]}
+            sort={verSort.sort}
+            onSort={verSort.onSort}
+          >
+            {verSort.rows.map((v) => (
               <tr key={v.version} className="border-t border-line">
                 <td className="py-1.5 pr-3 font-mono text-sm">{v.version}</td>
                 <td className="py-1.5">{v.devices}</td>
@@ -301,8 +339,21 @@ export default function AgentUpdates() {
         <ErrorNote error={uploadErr} />
         {releases.data && releases.data.length === 0 && <Empty>No releases imported yet. See docs/AGENT_UPDATES.md for the release process.</Empty>}
         {releases.data && releases.data.length > 0 && (
-          <Table head={["Version", "State", "Signed by", "Released", "Expires", "Platforms", "Running", ""]}>
-            {releases.data.map((r) => (
+          <Table
+            head={[
+              { label: "Version", sort: "version" },
+              { label: "State", sort: "state" },
+              { label: "Signed by", sort: "signed" },
+              { label: "Released", sort: "released" },
+              { label: "Expires", sort: "expires" },
+              { label: "Platforms", sort: "platforms" },
+              { label: "Running", sort: "running" },
+              "",
+            ]}
+            sort={relSort.sort}
+            onSort={relSort.onSort}
+          >
+            {relSort.rows.map((r) => (
               <tr key={r.id} className="border-t border-line align-top">
                 <td className="py-1.5 pr-3">
                   <div className="font-mono text-sm">{r.version}</div>

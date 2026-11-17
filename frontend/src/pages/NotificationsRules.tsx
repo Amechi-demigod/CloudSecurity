@@ -2,6 +2,7 @@ import { useState, type FormEvent, type ReactNode } from "react";
 import { ApiError, type Severity } from "../api";
 import { Button, Card, Empty, ErrorNote, Field, Modal, SeverityBadge, Table, Tag } from "../components/ui";
 import { useApi } from "../lib/useApi";
+import { SEV_RANK, useSort } from "../lib/useSort";
 import { notificationsApi, type Channel, type NotificationMeta, type Rule, type RuleInput } from "../notificationsApi";
 
 const inputCls =
@@ -282,6 +283,19 @@ export default function NotificationsRules({ meta, isAdmin }: { meta: Notificati
   const [notice, setNotice] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const chName = (id: string) => channels.data?.find((c) => c.id === id)?.name ?? "(deleted)";
+  const sorted = useSort(
+    rules.data,
+    {
+      rule: (r) => r.name,
+      matches: (r) => describe(r, meta),
+      severity: (r) => SEV_RANK[r.min_severity] ?? 0,
+      channels: (r) => r.channel_ids.map(chName).join(", "),
+      delivery: (r) => (r.mode === "digest" ? 1 : 0) * 100 + (r.mode === "digest" ? r.digest_hour : 0),
+      status: (r) => (r.enabled ? 0 : 1),
+    },
+    { key: "rule", dir: "asc" },
+    { severity: "desc" },
+  );
 
   async function act(fn: () => Promise<unknown>, msg: string) {
     setActionError(null);
@@ -315,8 +329,12 @@ export default function NotificationsRules({ meta, isAdmin }: { meta: Notificati
         {rules.data && rules.data.length === 0 ? (
           <Empty>No rules: nothing is sent until a rule routes events to a channel.</Empty>
         ) : (
-          <Table head={["Rule", "Matches", "Min. severity", "Channels", "Delivery", "Status", ...(isAdmin ? [""] : [])]}>
-            {rules.data?.map((r) => (
+          <Table
+            head={[{ label: "Rule", sort: "rule" }, { label: "Matches", sort: "matches" }, { label: "Min. severity", sort: "severity" }, { label: "Channels", sort: "channels" }, { label: "Delivery", sort: "delivery" }, { label: "Status", sort: "status" }, ...(isAdmin ? [""] : [])]}
+            sort={sorted.sort}
+            onSort={sorted.onSort}
+          >
+            {sorted.rows.map((r) => (
               <tr key={r.id}>
                 <td className="px-3 py-2 font-medium">{r.name}</td>
                 <td className="max-w-[22rem] px-3 py-2 text-xs text-ink-2">{describe(r, meta)}</td>

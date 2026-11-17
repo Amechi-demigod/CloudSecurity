@@ -8,6 +8,7 @@ import { directoryApi, ROUTE_LABEL, type DeployMachine, type DeployRoute, type D
 import { errMsg } from "../../lib/assets";
 import { EXCLUDED_HINT, ROUTE_HINT } from "../../lib/deploy";
 import { useApi } from "../../lib/useApi";
+import { useSort } from "../../lib/useSort";
 
 /** Selection handed over from Discovery (router state; never in the URL). */
 export interface DeployState {
@@ -30,6 +31,53 @@ function RoutePicker({ m, value, onChange }: { m: DeployMachine; value: DeployRo
         </option>
       ))}
     </select>
+  );
+}
+
+/** Machines of one route with a sortable header (one sort per route, kept in the URL as ?m_<route>=). */
+function MachineTable({
+  route,
+  machines,
+  overrides,
+  sourceNames,
+  onRoute,
+}: {
+  route: string;
+  machines: DeployMachine[];
+  overrides: Record<string, DeployRoute>;
+  sourceNames: React.ComponentProps<typeof SourceBadges>["names"];
+  onRoute: (m: DeployMachine, r: DeployRoute) => void;
+}) {
+  const routeOf = (m: DeployMachine) => overrides[m.computer_id] ?? (m.route as DeployRoute);
+  const sorted = useSort(
+    machines,
+    { machine: (m) => m.name, found: (m) => m.kinds.join(", "), os: (m) => m.os, ou: (m) => m.ou || m.domain, route: (m) => ROUTE_LABEL[routeOf(m)] },
+    { key: "machine", dir: "asc" },
+    {},
+    `m_${route}`,
+  );
+  return (
+    <Table
+      head={[{ label: "Machine", sort: "machine" }, { label: "Found in", sort: "found" }, { label: "OS", sort: "os" }, { label: "OU / domain", sort: "ou" }, { label: "Route", sort: "route" }]}
+      sort={sorted.sort}
+      onSort={sorted.onSort}
+    >
+      {sorted.rows.map((m) => (
+        <tr key={m.computer_id}>
+          <td className="px-3 py-1.5 font-medium text-ink">{m.name}</td>
+          <td className="px-3 py-1.5 text-xs">
+            <SourceBadges refs={m.kinds.map((k) => ({ id: m.computer_id, source_id: m.source_ids[0] ?? "", type: "", kind: k }))} names={sourceNames} />
+          </td>
+          <td className="px-3 py-1.5 text-xs text-ink-2">{m.os}</td>
+          <td className="max-w-xs truncate px-3 py-1.5 text-xs text-ink-3" title={m.ou}>
+            {m.ou || m.domain || "—"}
+          </td>
+          <td className="px-3 py-1.5">
+            <RoutePicker m={m} value={routeOf(m)} onChange={(r) => onRoute(m, r)} />
+          </td>
+        </tr>
+      ))}
+    </Table>
   );
 }
 
@@ -146,34 +194,20 @@ export default function DeployAgent() {
                 <details className="mb-4">
                   <summary className="cursor-pointer text-sm font-medium text-accent">Machines ({g.items.length}) and route per machine</summary>
                   <div className="mt-2">
-                    <Table head={["Machine", "Found in", "OS", "OU / domain", "Route"]}>
-                      {g.items.map((m) => (
-                        <tr key={m.computer_id}>
-                          <td className="px-3 py-1.5 font-medium text-ink">{m.name}</td>
-                          <td className="px-3 py-1.5 text-xs">
-                            <SourceBadges refs={m.kinds.map((k) => ({ id: m.computer_id, source_id: m.source_ids[0] ?? "", type: "", kind: k }))} names={sourceNames} />
-                          </td>
-                          <td className="px-3 py-1.5 text-xs text-ink-2">{m.os}</td>
-                          <td className="max-w-xs truncate px-3 py-1.5 text-xs text-ink-3" title={m.ou}>
-                            {m.ou || m.domain || "—"}
-                          </td>
-                          <td className="px-3 py-1.5">
-                            <RoutePicker
-                              m={m}
-                              value={overrides[m.computer_id] ?? (m.route as DeployRoute)}
-                              onChange={(r) =>
-                                setOverrides((o) => {
-                                  const next = { ...o };
-                                  if (r === m.route) delete next[m.computer_id];
-                                  else next[m.computer_id] = r;
-                                  return next;
-                                })
-                              }
-                            />
-                          </td>
-                        </tr>
-                      ))}
-                    </Table>
+                    <MachineTable
+                      route={g.route}
+                      machines={g.items}
+                      overrides={overrides}
+                      sourceNames={sourceNames}
+                      onRoute={(m, r) =>
+                        setOverrides((o) => {
+                          const next = { ...o };
+                          if (r === m.route) delete next[m.computer_id];
+                          else next[m.computer_id] = r;
+                          return next;
+                        })
+                      }
+                    />
                   </div>
                 </details>
                 <RouteGuidance facts={facts} names={g.items.map((m) => m.name)} serverUrl={p.server_url} />

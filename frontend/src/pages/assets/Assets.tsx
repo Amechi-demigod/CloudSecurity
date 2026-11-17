@@ -8,7 +8,7 @@ import { Button, Card, Empty, ErrorNote, Modal, PageHeader, Select, Stat, Table,
 import { STATUS_LABEL, STATUS_ORDER, TYPE_LABEL, errMsg, fmtDate, fmtMoney, namedByHost, ownerLabel } from "../../lib/assets";
 import { fmtAgo } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
-import { useSort } from "../../lib/useSort";
+import { rankOf, useSort } from "../../lib/useSort";
 
 function BriefList({ items, render, empty }: { items: AssetBrief[]; render: (a: AssetBrief) => string; empty: string }) {
   if (items.length === 0) return <p className="text-sm text-ink-3">{empty}</p>;
@@ -130,10 +130,11 @@ export default function Assets() {
     {
       name: (a) => a.display_name.toLowerCase(),
       type: (a) => TYPE_LABEL[a.asset_type] ?? a.asset_type,
-      status: (a) => STATUS_LABEL[a.status] ?? a.status,
+      status: (a) => rankOf(STATUS_ORDER)(a.status),
       owner: (a) => ownerLabel(a).toLowerCase(),
       site: (a) => a.location,
       warranty: (a) => (a.warranty_end ? Date.parse(a.warranty_end) : null),
+      agent: (a) => (a.device_id ? 1 : 0),
     },
     { key: "name", dir: "asc" },
   );
@@ -259,7 +260,7 @@ export default function Assets() {
               { label: "Owner", sort: "owner" },
               { label: "Site", sort: "site" },
               { label: "Warranty", sort: "warranty" },
-              "Agent",
+              { label: "Agent", sort: "agent" },
             ]}
             sort={sorted.sort}
             onSort={sorted.onSort}

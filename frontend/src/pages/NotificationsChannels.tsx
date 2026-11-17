@@ -3,6 +3,7 @@ import { ApiError } from "../api";
 import { Button, Card, Empty, ErrorNote, Field, Modal, Table, Tag } from "../components/ui";
 import { fmtAgo } from "../lib/format";
 import { useApi } from "../lib/useApi";
+import { ts, useSort } from "../lib/useSort";
 import { notificationsApi, type Channel, type ChannelType, type FieldSpec, type NotificationMeta } from "../notificationsApi";
 
 const inputCls =
@@ -203,6 +204,18 @@ export default function NotificationsChannels({ meta, isAdmin, onChange }: { met
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const label = (t: string) => meta.channel_types.find((x) => x.type === t)?.label ?? t;
+  const sorted = useSort(
+    data,
+    {
+      name: (c) => c.name,
+      type: (c) => label(c.type),
+      destination: (c) => destination(c),
+      status: (c) => (c.enabled ? 0 : 1),
+      last_test: (c) => ts(c.last_test_at),
+    },
+    { key: "name", dir: "asc" },
+    { last_test: "desc" },
+  );
 
   async function act(id: string, fn: () => Promise<string>) {
     setBusy(id);
@@ -242,8 +255,12 @@ export default function NotificationsChannels({ meta, isAdmin, onChange }: { met
         {data && data.length === 0 ? (
           <Empty>No channels yet.{isAdmin ? " Add a Teams, Slack, email or webhook channel to start." : ""}</Empty>
         ) : (
-          <Table head={["Name", "Type", "Destination", "Status", "Last test", ...(isAdmin ? ["Actions"] : [])]}>
-            {data?.map((c) => (
+          <Table
+            head={[{ label: "Name", sort: "name" }, { label: "Type", sort: "type" }, { label: "Destination", sort: "destination" }, { label: "Status", sort: "status" }, { label: "Last test", sort: "last_test" }, ...(isAdmin ? ["Actions"] : [])]}
+            sort={sorted.sort}
+            onSort={sorted.onSort}
+          >
+            {sorted.rows.map((c) => (
               <tr key={c.id}>
                 <td className="px-3 py-2 font-medium">{c.name}</td>
                 <td className="px-3 py-2 text-sm text-ink-2">{label(c.type)}</td>

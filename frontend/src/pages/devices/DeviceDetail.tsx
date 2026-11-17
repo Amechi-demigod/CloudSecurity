@@ -11,6 +11,7 @@ import { Breadcrumbs, Button, Card, Empty, ErrorNote, Field, Modal, PageHeader, 
 import { CHECK_LABEL, LINUX_COMMANDS, OS_LABEL, fmtBytes, fmtDuration } from "../../lib/devices";
 import { fmtAgo, fmtTime } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
+import { rankOf, ts, useSort } from "../../lib/useSort";
 import { useUrlState } from "../../lib/useUrlState";
 import { AssetRecordLink } from "../assets/AssetRecordLink";
 import { endpointActionLabel } from "../../endpointActionsApi";
@@ -449,6 +450,16 @@ function SoftwareTab({ device, commands, reload }: { device: Device; commands: D
   const { data, error, reload: reloadSoftware } = useApi(() => api.deviceSoftware(id, q.trim() || undefined), [id, q]);
   // Uninstall: Windows devices, admins (the button explains when the agent is too old).
   const uninstall = can("admin") && device.os_family === "windows" && device.status === "active";
+  const sw = useSort(
+    data,
+    {
+      name: (x) => x.name, version: (x) => x.version, publisher: (x) => x.publisher, installed: (x) => ts(x.install_date) ?? x.install_date,
+      source: (x) => x.source, srcpkg: (x) => x.source_name || x.name, feed: (x) => x.ecosystem,
+    },
+    { key: "name", dir: "asc" },
+    { installed: "desc" },
+    "sw_sort",
+  );
   return (
     <Card title={`${device.os_family === "linux" ? "Installed packages" : "Installed software"}${data ? ` (${data.length})` : ""}`} actions={
       <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filter by name or publisher" aria-label="Filter software"
@@ -458,8 +469,14 @@ function SoftwareTab({ device, commands, reload }: { device: Device; commands: D
       {data && data.length === 0 ? (
         <Empty>No software reported.</Empty>
       ) : (
-        <Table head={device.os_family === "linux" ? ["Package", "Version", "Source package", "Vulnerability feed", "Manager"] : ["Name", "Version", "Publisher", "Installed", "Source", ...(uninstall ? [""] : [])]}>
-          {(data ?? []).map((s, i) => device.os_family === "linux" ? (
+        <Table
+          head={device.os_family === "linux"
+            ? [{ label: "Package", sort: "name" }, { label: "Version", sort: "version" }, { label: "Source package", sort: "srcpkg" }, { label: "Vulnerability feed", sort: "feed" }, { label: "Manager", sort: "source" }]
+            : [{ label: "Name", sort: "name" }, { label: "Version", sort: "version" }, { label: "Publisher", sort: "publisher" }, { label: "Installed", sort: "installed" }, { label: "Source", sort: "source" }, ...(uninstall ? [""] : [])]}
+          sort={sw.sort}
+          onSort={sw.onSort}
+        >
+          {sw.rows.map((s, i) => device.os_family === "linux" ? (
             <tr key={`${s.name}-${s.version}-${i}`} className="align-top">
               <td className="px-3 py-1.5">{s.name}</td>
               <td className="px-3 py-1.5 font-mono text-xs text-ink-2">{s.version || "—"}</td>
@@ -494,6 +511,20 @@ function VulnerabilitiesTab({ id, os }: { id: string; os: string }) {
   const [showChecked, setShowChecked] = useState(false);
   const [showAll, setShowAll] = useState(false);
   const kev = data?.vulnerabilities.filter((v) => v.kev).length ?? 0;
+  const checkedSort = useSort(
+    data?.checked,
+    { name: (c) => c.name, version: (c) => c.version, eco: (c) => c.cpe ?? (c as { ecosystem?: string }).ecosystem },
+    { key: "name", dir: "asc" },
+    {},
+    "checked_sort",
+  );
+  const notCheckedSort = useSort(
+    data?.not_checked,
+    { name: (c) => c.name, version: (c) => c.version, reason: (c) => c.reason },
+    { key: "name", dir: "asc" },
+    {},
+    "unchecked_sort",
+  );
   return (
     <div className="space-y-4">
       <VulnerabilityFixes id={id} showAll={showAll} onShowAll={() => setShowAll(!showAll)} />
@@ -538,8 +569,12 @@ function VulnerabilitiesTab({ id, os }: { id: string; os: string }) {
           actions={<Button onClick={() => setShowChecked(!showChecked)}>{showChecked ? "Show not checked" : "Show checked"}</Button>}
         >
           {showChecked ? (
-            <Table head={[os === "linux" ? "Package" : "Software", "Version", os === "linux" ? "Ecosystem" : "Matched as"]}>
-              {data.checked.map((c, i) => (
+            <Table
+              head={[{ label: os === "linux" ? "Package" : "Software", sort: "name" }, { label: "Version", sort: "version" }, { label: os === "linux" ? "Ecosystem" : "Matched as", sort: "eco" }]}
+              sort={checkedSort.sort}
+              onSort={checkedSort.onSort}
+            >
+              {checkedSort.rows.map((c, i) => (
                 <tr key={`${c.name}-${i}`}>
                   <td className="px-3 py-1.5">{c.name}</td>
                   <td className="px-3 py-1.5 font-mono text-xs text-ink-2">{c.version || "—"}</td>
@@ -550,8 +585,12 @@ function VulnerabilitiesTab({ id, os }: { id: string; os: string }) {
           ) : data.not_checked.length === 0 ? (
             <Empty>{os === "linux" ? "All reported packages are covered by the vulnerability feed." : "All reported software is covered by the CPE mapping."}</Empty>
           ) : (
-            <Table head={["Software", "Version", "Why not checked"]}>
-              {data.not_checked.map((c, i) => (
+            <Table
+              head={[{ label: "Software", sort: "name" }, { label: "Version", sort: "version" }, { label: "Why not checked", sort: "reason" }]}
+              sort={notCheckedSort.sort}
+              onSort={notCheckedSort.onSort}
+            >
+              {notCheckedSort.rows.map((c, i) => (
                 <tr key={`${c.name}-${i}`}>
                   <td className="px-3 py-1.5">{c.name}</td>
                   <td className="px-3 py-1.5 font-mono text-xs text-ink-2">{c.version || "—"}</td>
@@ -568,14 +607,29 @@ function VulnerabilitiesTab({ id, os }: { id: string; os: string }) {
 
 function HistoryTab({ id }: { id: string }) {
   const { data, error } = useApi(() => api.deviceHistory(id, 100), [id]);
+  const sorted = useSort(
+    data,
+    {
+      received: (h) => ts(h.received_at), os: (h) => h.os_version, agent: (h) => h.agent_version,
+      posture: (h) => Object.values(h.posture).filter((c) => c.status === "fail").length,
+      issues: (h) => h.issues.length,
+    },
+    { key: "received", dir: "desc" },
+    { received: "desc", posture: "desc", issues: "desc" },
+    "hist_sort",
+  );
   return (
     <Card title="Check-in history">
       <ErrorNote error={error} />
       {data && data.length === 0 ? (
         <Empty>No check-ins yet.</Empty>
       ) : (
-        <Table head={["Received", "OS version", "Agent", "Posture", "Issues"]}>
-          {(data ?? []).map((h) => {
+        <Table
+          head={[{ label: "Received", sort: "received" }, { label: "OS version", sort: "os" }, { label: "Agent", sort: "agent" }, { label: "Posture", sort: "posture" }, { label: "Issues", sort: "issues" }]}
+          sort={sorted.sort}
+          onSort={sorted.onSort}
+        >
+          {sorted.rows.map((h) => {
             const counts = Object.values(h.posture).reduce<Record<string, number>>((acc, c) => {
               acc[c.status] = (acc[c.status] ?? 0) + 1;
               return acc;
@@ -602,6 +656,17 @@ function CommandsTab({ device, commands, error, reload }: { device: Device; comm
   const { can } = useAuth();
   const [busy, setBusy] = useState<string | null>(null);
   const [cancelError, setCancelError] = useState<string | null>(null);
+  const cmdStatus = rankOf(["pending", "delivered", "succeeded", "failed", "rejected", "expired", "cancelled"]);
+  const sorted = useSort(
+    commands,
+    {
+      requested: (c) => ts(c.created_at), action: (c) => commandLabel(c), status: (c) => cmdStatus(c.status), reason: (c) => c.reason,
+      output: (c) => c.exit_code,
+    },
+    { key: "requested", dir: "desc" },
+    { requested: "desc" },
+    "cmd_sort",
+  );
   async function cancel(c: DeviceCommand) {
     setBusy(c.id);
     setCancelError(null);
@@ -620,8 +685,12 @@ function CommandsTab({ device, commands, error, reload }: { device: Device; comm
       {commands && commands.length === 0 ? (
         <Empty>No remote actions yet.</Empty>
       ) : (
-        <Table head={["Requested", "Action", "Status", "Reason", "Output", ""]}>
-          {(commands ?? []).map((c) => (
+        <Table
+          head={[{ label: "Requested", sort: "requested" }, { label: "Action", sort: "action" }, { label: "Status", sort: "status" }, { label: "Reason", sort: "reason" }, { label: "Output", sort: "output" }, ""]}
+          sort={sorted.sort}
+          onSort={sorted.onSort}
+        >
+          {sorted.rows.map((c) => (
             <tr key={c.id} className="align-top">
               <td className="px-3 py-2 text-xs">
                 {fmtTime(c.created_at)}
@@ -711,6 +780,17 @@ function UpdatesTab({ id, admin, analyst }: { id: string; admin: boolean; analys
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const s = st.data;
+  const updStatus = rankOf(["installed", "installing", "verified", "downloading", "rolled_back", "failed", "rejected"]);
+  const histSort = useSort(
+    s?.history,
+    {
+      when: (h) => ts(h.created_at), status: (h) => updStatus(h.status), from: (h) => h.from_version, to: (h) => h.to_version,
+      detail: (h) => h.detail,
+    },
+    { key: "when", dir: "desc" },
+    { when: "desc" },
+    "upd_sort",
+  );
 
   async function apply(body: { ring_id?: string; clear_ring?: boolean; pinned_release_id?: string; clear_pin?: boolean }) {
     setBusy(true);
@@ -789,8 +869,12 @@ function UpdatesTab({ id, admin, analyst }: { id: string; admin: boolean; analys
       <Card title="Update history">
         {s && s.history.length === 0 && <Empty>No updates reported yet.</Empty>}
         {s && s.history.length > 0 && (
-          <Table head={["When", "Status", "From", "To", "Detail"]}>
-            {s.history.map((h) => (
+          <Table
+            head={[{ label: "When", sort: "when" }, { label: "Status", sort: "status" }, { label: "From", sort: "from" }, { label: "To", sort: "to" }, { label: "Detail", sort: "detail" }]}
+            sort={histSort.sort}
+            onSort={histSort.onSort}
+          >
+            {histSort.rows.map((h) => (
               <tr key={h.id} className="border-t border-line align-top">
                 <td className="py-1.5 pr-3 text-xs" title={fmtTime(h.created_at)}>{fmtAgo(h.created_at)}</td>
                 <td className="py-1.5 pr-3"><Tag tone={UPDATE_TONE[h.status] ?? "default"}>{h.status.replace("_", " ")}</Tag></td>

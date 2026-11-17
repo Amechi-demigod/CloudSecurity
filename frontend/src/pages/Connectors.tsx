@@ -17,6 +17,7 @@ import { RUN_COLOR, RUN_TEXT, RUN_TEXT_SERVER, TRIGGER_TEXT, runDuration } from 
 import { fmtAgo, fmtHours, fmtTime, fmtUntil } from "../lib/format";
 import { useModules } from "../lib/modules";
 import { useApi } from "../lib/useApi";
+import { rankOf, ts, useSort } from "../lib/useSort";
 import { networkApi } from "../networkApi";
 import { orgApi, type ConnectorConfig, type Provider } from "../orgApi";
 
@@ -467,6 +468,25 @@ export default function Connectors() {
     .filter((r) => !historyKind || (historyKind === "failed" ? (r.kind === "cloud" ? r.scan.status : r.run.status) === "failed" : r.kind === historyKind))
     .sort((a, b) => b.at.localeCompare(a.at))
     .slice(0, HISTORY_LIMIT);
+  const resultRank = rankOf(["failed", "running", "queued", "skipped", "cancelled", "succeeded"]);
+  const sortedHistory = useSort(
+    history,
+    {
+      started: (r) => ts(r.at),
+      type: (r) => r.kind,
+      source: (r) => (r.kind === "cloud" ? cloudName(r.scan.connector) : r.source.name),
+      trigger: (r) => (r.kind === "cloud" ? trigger(r.scan) : TRIGGER_TEXT[r.run.trigger] ?? r.run.trigger),
+      result: (r) => resultRank(r.kind === "cloud" ? r.scan.status : r.run.status),
+      duration: (r) =>
+        r.kind === "cloud"
+          ? r.scan.finished_at ? ts(r.scan.finished_at)! - ts(r.scan.started_at)! : null
+          : r.run.duration_ms,
+      found: (r) => (r.kind === "cloud" ? (r.scan.status === "succeeded" ? r.scan.assets_found : null) : r.run.status === "succeeded" ? r.run.computers_seen + r.run.users_seen : null),
+      findings: (r) => (r.kind === "cloud" && r.scan.status === "succeeded" ? r.scan.findings_open : null),
+    },
+    { key: "started", dir: "desc" },
+    { started: "desc", duration: "desc", found: "desc", findings: "desc" },
+  );
   const historyEmpty = scans.data?.length === 0 && (dirRuns.data?.length ?? 0) === 0;
 
   const loaded = connectors.data !== null;
@@ -618,8 +638,14 @@ export default function Connectors() {
         ) : history.length === 0 && !scans.loading && !dirRuns.loading ? (
           <p className="text-sm text-ink-3">Nothing matches this filter.</p>
         ) : (
-          <Table head={["Started", "Type", "Source", "Trigger", "Result", "Duration", "Found", "Findings"]} loading={scans.loading} rowCount={history.length}>
-            {history.map((r) => {
+          <Table
+            head={[{ label: "Started", sort: "started" }, { label: "Type", sort: "type" }, { label: "Source", sort: "source" }, { label: "Trigger", sort: "trigger" }, { label: "Result", sort: "result" }, { label: "Duration", sort: "duration" }, { label: "Found", sort: "found" }, { label: "Findings", sort: "findings" }]}
+            sort={sortedHistory.sort}
+            onSort={sortedHistory.onSort}
+            loading={scans.loading}
+            rowCount={history.length}
+          >
+            {sortedHistory.rows.map((r) => {
               const s = r.kind === "cloud" ? r.scan : null;
               const d = r.kind === "directory" ? r.run : null;
               const status = s ? s.status : d!.status;

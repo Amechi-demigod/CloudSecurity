@@ -6,6 +6,7 @@ import { Button, Card, Drawer, ErrorNote, Field, Modal, PageHeader, Table, Tag }
 import { fmtAgo, fmtTime } from "../../lib/format";
 import { MODULES, MODULE_KEYS } from "../../lib/modules";
 import { useApi } from "../../lib/useApi";
+import { ts, useSort } from "../../lib/useSort";
 import { orgApi, type IssuedInvitation, type PlatformOrg } from "../../orgApi";
 
 function errMsg(e: unknown) {
@@ -340,6 +341,21 @@ export default function Organizations() {
   const [creating, setCreating] = useState(false);
   const [issued, setIssued] = useState<IssuedInvitation | null>(null);
   const [open, setOpen] = useState<string | null>(null);
+  const sorted = useSort(
+    orgs,
+    {
+      organisation: (o) => o.name,
+      status: (o) => (o.status === "active" ? 0 : 1),
+      modules: (o) => o.modules.length,
+      users: (o) => o.usage.users,
+      devices: (o) => o.usage.devices,
+      assets: (o) => o.usage.assets,
+      invitations: (o) => o.pending_invitations,
+      created: (o) => ts(o.created_at),
+    },
+    { key: "organisation", dir: "asc" },
+    { modules: "desc", users: "desc", devices: "desc", assets: "desc", invitations: "desc", created: "desc" },
+  );
 
   return (
     <div>
@@ -360,8 +376,12 @@ export default function Organizations() {
       )}
       {issued && <InviteResult issued={issued} onDismiss={() => setIssued(null)} />}
       <Card>
-        <Table head={["Organisation", "Status", "Modules", "Users", "Devices", "Assets", "Pending invitations", "Created"]}>
-          {orgs?.map((o: PlatformOrg) => (
+        <Table
+          head={[{ label: "Organisation", sort: "organisation" }, { label: "Status", sort: "status" }, { label: "Modules", sort: "modules" }, { label: "Users", sort: "users" }, { label: "Devices", sort: "devices" }, { label: "Assets", sort: "assets" }, { label: "Pending invitations", sort: "invitations" }, { label: "Created", sort: "created" }]}
+          sort={sorted.sort}
+          onSort={sorted.onSort}
+        >
+          {sorted.rows.map((o: PlatformOrg) => (
             <tr key={o.id} className="cursor-pointer hover:bg-surface-2" onClick={() => setOpen(o.id)}>
               <td className="px-3 py-2">
                 <button className="text-left font-medium text-ink hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
