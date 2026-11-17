@@ -35,6 +35,21 @@ All `/api/external/*` routes answer 403 `module_disabled` without it; the platfo
 5. **Findings** (EXT-0001, ...) with CVSS 3.1, CWE, evidence, steps, per-server fixes, references, compliance mapping,
    first / last seen and a fix-by date (`services/vuln_sla.py`: critical 7 days, high 14, medium 30, low 90).
    A finding is resolved automatically when a later scan of an alive host no longer sees it, and re-opens if it returns.
+
+### Findings page: by finding and all findings
+
+The Findings page has two views (`?view=grouped|all`, default grouped). **By finding** shows one row per check
+(for example "HSTS missing") with the number of affected host:ports and hosts, the worst severity, highest CVSS, worst
+pre-ASV state, a status summary and the earliest or most overdue fix-by date; expand a row for its host:ports, each
+linking to the finding page. **All findings** lists every finding and expands inline (what we saw, how to fix,
+evidence, why it fails pre-ASV, re-test / dispute / accept risk for analysts; the detail is fetched when a row opens).
+Filters, kept in the URL: severity, status, pre-ASV (`fail|pass|exception`), target, host and a text search.
+
+* `GET /api/external/findings` takes `status, severity, host, pre_asv, target, q, sort, dir`.
+* `GET /api/external/findings/grouped` takes the same filters and `sort` = `severity|title|affected|hosts|cvss|pre_asv|fix_by`.
+  Groups are built over the whole filtered result. `target` is a target id: the hosts discovered under it, its own
+  value and, for a domain, its subdomains. An invalid `pre_asv` or `sort` is a 422, an unknown target a 404.
+* Fix by is shown as "In N days", "Due today" or "Overdue N d" (from `days_left` / `overdue_days`).
 6. **Report**: pre-ASV PDF and console view.
 
 Scans run weekly by default (configurable from daily to 90 days) and on demand ("Scan all", a **Scan** button per verified target, and per-finding "Re-test now"

@@ -107,10 +107,61 @@ export interface ExtFinding {
   dos_only: boolean;
   fails: boolean;
   exempt?: boolean;
+  service?: string | null;
   special_note: string | null;
   fix_due: string | null;
   overdue_days: number | null;
   days_left: number | null;
+}
+
+export type ExtFindingFilter = {
+  status?: string;
+  severity?: string;
+  host?: string;
+  pre_asv?: string;
+  target?: string;
+  q?: string;
+  sort?: string;
+  dir?: string;
+};
+
+export type ExtPreAsv = "fail" | "pass" | "exception" | null;
+
+/** One affected finding inside a group (host:port). */
+export interface ExtGroupMember {
+  id: string;
+  ref: string;
+  host: string;
+  port: number | null;
+  status: ExtStatus;
+  severity: ExtSeverity;
+  cvss: number;
+  fails: boolean;
+  auto_fail: boolean;
+  exempt: boolean;
+  pre_asv: ExtPreAsv;
+  fix_due: string | null;
+  overdue_days: number | null;
+  days_left: number | null;
+}
+
+/** One row per check over the whole filtered result. */
+export interface ExtFindingGroup {
+  check_id: string;
+  title: string;
+  severity: ExtSeverity;
+  cvss: number;
+  affected: number;
+  hosts: number;
+  pre_asv: ExtPreAsv;
+  auto_fail: boolean;
+  status_counts: Record<"open" | "disputed" | "accepted" | "resolved", number>;
+  fix_due: string | null;
+  overdue_days: number | null;
+  days_left: number | null;
+  first_seen: string;
+  last_seen: string;
+  findings: ExtGroupMember[];
 }
 
 export interface ExtDispute {
@@ -209,7 +260,8 @@ export const externalApi = {
   scanNow: () => request<ExtScan>("/api/external/scans", { method: "POST" }),
   scanTarget: (id: string) => request<ExtScan>(`/api/external/targets/${id}/scan`, { method: "POST" }),
   hosts: () => request<ExtHost[]>("/api/external/hosts"),
-  findings: (p: { status?: string; severity?: string; host?: string; sort?: string; dir?: string } = {}) => request<ExtFinding[]>(`/api/external/findings${qs(p)}`),
+  findings: (p: ExtFindingFilter = {}) => request<ExtFinding[]>(`/api/external/findings${qs(p)}`),
+  findingsGrouped: (p: ExtFindingFilter = {}) => request<ExtFindingGroup[]>(`/api/external/findings/grouped${qs(p)}`),
   finding: (id: string) => request<ExtFindingDetail>(`/api/external/findings/${id}`),
   acceptRisk: (id: string, reason: string) => request<ExtFindingDetail>(`/api/external/findings/${id}/accept-risk`, { method: "POST", ...j({ reason }) }),
   reopen: (id: string) => request<ExtFindingDetail>(`/api/external/findings/${id}/reopen`, { method: "POST" }),
