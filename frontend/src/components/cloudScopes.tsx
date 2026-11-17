@@ -3,6 +3,7 @@ import { ApiError } from "../api";
 import { CLOUD_NAME, CLOUD_ROLE, CLOUD_SCOPE } from "../lib/cloudSetup";
 import { fmtAgo, fmtTime } from "../lib/format";
 import { useApi } from "../lib/useApi";
+import { ts, useSort } from "../lib/useSort";
 import { orgApi, type CloudScope, type Provider } from "../orgApi";
 import { Button, ErrorNote, Field, Modal, Table, Tag } from "./ui";
 
@@ -37,6 +38,18 @@ export function ScopeList({ provider, onChanged }: { provider: Provider; onChang
   const [removing, setRemoving] = useState<CloudScope | null>(null);
   const [one] = CLOUD_SCOPE[provider];
   const noun = one.charAt(0).toUpperCase() + one.slice(1);
+  const sorted = useSort(
+    data,
+    {
+      id: (s) => s.id,
+      status: (s) => (s.configured ? 1 : 0) + (s.last_scan_status === "failed" ? -0.5 : 0),
+      resources: (s) => s.resources,
+      last_scanned: (s) => ts(s.last_scanned),
+    },
+    { key: "id", dir: "asc" },
+    { resources: "desc", last_scanned: "desc" },
+    `${provider}sort`,
+  );
 
   return (
     <div className="mt-4 border-t border-line px-1 pt-4" data-testid={`scopes-${provider}`}>
@@ -46,12 +59,14 @@ export function ScopeList({ provider, onChanged }: { provider: Provider; onChang
       </p>
       <ErrorNote error={error} />
       <Table
-        head={[noun, "Status", "Resources", "Last scanned", { label: "Remove", srOnly: true }]}
+        head={[{ label: noun, sort: "id" }, { label: "Status", sort: "status" }, { label: "Resources", sort: "resources" }, { label: "Last scanned", sort: "last_scanned" }, { label: "Remove", srOnly: true }]}
+        sort={sorted.sort}
+        onSort={sorted.onSort}
         loading={loading}
         rowCount={data?.length ?? 0}
         empty={<p className="py-3 text-center text-sm text-ink-3">No {one}s yet.</p>}
       >
-        {(data ?? []).map((s) => (
+        {sorted.rows.map((s) => (
           <tr key={s.id}>
             <td className="px-3 py-2 font-mono text-xs" title={s.id}>
               {s.id.length > 40 ? shortId(s.id) : s.id}

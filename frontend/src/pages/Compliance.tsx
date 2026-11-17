@@ -18,10 +18,12 @@ import {
   type Scope,
 } from "../complianceApi";
 import { ChartEmpty, ChartTip, LegendKeys } from "../components/dash";
+import SortHeader from "../components/SortHeader";
 import { Button, Card, Empty, ErrorNote, Field, Modal, PageHeader, Select, Stat, Tag } from "../components/ui";
 import { AXIS, GRID } from "../lib/dash";
 import { fmtAgo, fmtTime } from "../lib/format";
 import { useApi } from "../lib/useApi";
+import { rankOf, useSortState } from "../lib/useSort";
 import { useUrlState } from "../lib/useUrlState";
 
 const errMsg = (e: unknown) => (e instanceof ApiError ? e.message : String(e));
@@ -364,17 +366,27 @@ export default function Compliance() {
 
   useEffect(() => setOpen(new Set()), [fw, account, group]);
 
+  // Controls sort within their group (the groups keep the framework's order).
+  const ctlSort = useSortState(["control", "title", "status", "evidence"], { key: "control", dir: "asc" });
   const groups = useMemo(() => {
     const needle = q.trim().toLowerCase();
+    const statusRank = rankOf(["fail", "partial", "pass", "no_data", "manual"]);
+    const text = (c: Control) =>
+      ctlSort.sort.key === "title" ? c.title : ctlSort.sort.key === "evidence" ? evidenceText(c) : c.id;
+    const sign = ctlSort.sort.dir === "asc" ? 1 : -1;
+    const cmp = (a: Control, b: Control) =>
+      ctlSort.sort.key === "status"
+        ? sign * (statusRank(a.status) - statusRank(b.status))
+        : sign * text(a).localeCompare(text(b), undefined, { numeric: true, sensitivity: "base" });
     return (p?.groups ?? [])
       .map((g) => ({
         ...g,
-        controls: g.controls.filter(
-          (c) => (!statusFilter || c.status === statusFilter) && (!needle || c.id.toLowerCase().includes(needle) || c.title.toLowerCase().includes(needle)),
-        ),
+        controls: g.controls
+          .filter((c) => (!statusFilter || c.status === statusFilter) && (!needle || c.id.toLowerCase().includes(needle) || c.title.toLowerCase().includes(needle)))
+          .sort(cmp),
       }))
       .filter((g) => g.controls.length > 0);
-  }, [p, statusFilter, q]);
+  }, [p, statusFilter, q, ctlSort.sort.key, ctlSort.sort.dir]);
 
   const points = (trend.data?.points ?? []).map((pt) => ({ ...pt, label: pt.day.slice(5) }));
   const scopes = overview.data?.scopes;
@@ -473,9 +485,24 @@ export default function Compliance() {
         <Stat label="Score" value={pct(s?.score)} hint="Controls without failing automated evidence / controls assessed automatically" />
         <Stat label="Automated coverage" value={pct(s?.coverage)} sub={s ? `${s.assessed} of ${s.total} controls` : undefined} hint="Controls assessed automatically / all controls" />
         {(["fail", "pass", "partial", "no_data", "manual"] as ControlStatus[]).map((k) => (
-          <Stat key={k} label={STATUS_LABEL[k]} value={s ? s[k].toLocaleString() : "—"} hint={STATUS_HINT[k]} />
+          <Stat
+            key={k}
+            label={STATUS_LABEL[k]}
+            value={s ? s[k].toLocaleString() : "—"}
+            hint={`${STATUS_HINT[k]} Click to show only these controls.`}
+            selected={statusFilter === k}
+            onSelect={() => setStatusFilter(statusFilter === k ? "" : k)}
+          />
         ))}
       </div>
+      {statusFilter && s && (
+        <div className="mb-3 flex items-center gap-2 text-sm" data-print="hide">
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-accent/40 bg-accent/10 px-2.5 py-0.5">
+            Showing: {STATUS_LABEL[statusFilter as ControlStatus] ?? statusFilter} ({(s[statusFilter as ControlStatus] ?? 0).toLocaleString()})
+            <button type="button" onClick={() => setStatusFilter("")} aria-label="Clear the status filter" className="text-ink-3 hover:text-ink">✕</button>
+          </span>
+        </div>
+      )}
 
       <Card title="Trend" className="mb-4" actions={<LegendKeys items={[{ label: "Score", color: SCORE_COLOR }, { label: "Automated coverage", color: COVERAGE_COLOR, dashed: true }]} />}>
         {points.length < 2 ? (
@@ -524,10 +551,10 @@ export default function Compliance() {
               <thead>
                 <tr className="text-xs uppercase tracking-wide text-ink-3">
                   <th className="w-8 px-2 py-2" />
-                  <th className="px-2 py-2">Control</th>
-                  <th className="px-2 py-2">Title (paraphrased)</th>
-                  <th className="px-2 py-2">Status</th>
-                  <th className="px-2 py-2">Evidence</th>
+                  <SortHeader sortKey="control" label="Control" sort={ctlSort.sort} onSort={ctlSort.onSort} className="px-2 py-2" />
+                  <SortHeader sortKey="title" label="Title (paraphrased)" sort={ctlSort.sort} onSort={ctlSort.onSort} className="px-2 py-2" />
+                  <SortHeader sortKey="status" label="Status" sort={ctlSort.sort} onSort={ctlSort.onSort} className="px-2 py-2" />
+                  <SortHeader sortKey="evidence" label="Evidence" sort={ctlSort.sort} onSort={ctlSort.onSort} className="px-2 py-2" />
                 </tr>
               </thead>
               <tbody>

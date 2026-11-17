@@ -169,8 +169,8 @@ export default function Exposure() {
       <ErrorNote error={error} />
       {s && (
         <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-5">
-          <Stat label="Open to the Internet" value={s.open} sub={`${s.attack_path_entries} attack-path entry points`} />
-          <Stat label="Restricted" value={s.restricted} sub="reachable from listed public ranges only" />
+          <Stat label="Open to the Internet" selected={f.level === "open"} onSelect={() => set("level")(f.level === "open" ? "" : "open")} value={s.open} sub={`${s.attack_path_entries} attack-path entry points`} />
+          <Stat label="Restricted" selected={f.level === "restricted"} onSelect={() => set("level")(f.level === "restricted" ? "" : "restricted")} value={s.restricted} sub="reachable from listed public ranges only" />
           <Stat label="Risky ports open" value={s.risky_ports_open} sub="admin or database ports" />
           <Stat label="Sensitive data" value={s.sensitive} sub="exposed data stores" />
           <Stat label="With private endpoint" value={s.with_private_endpoint} sub="but still publicly reachable" />

@@ -7,29 +7,52 @@ import { Button, Card, Empty, ErrorNote, PageHeader, Table, Tag } from "../../co
 import { externalApi, type ExtReportData } from "../../externalApi";
 import { fmtTime } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
+import { SEV_RANK, rankOf, ts, useSort } from "../../lib/useSort";
+
+const RESULT_RANK = rankOf(["fail", "pass"]); // failing first
 
 function ReportView({ r }: { r: ExtReportData }) {
+  const comps = useSort(
+    r.components,
+    { host: (c) => c.host, findings: (c) => c.findings, status: (c) => RESULT_RANK(c.result) },
+    { key: "status", dir: "asc" },
+    { findings: "desc" },
+    "csort",
+  );
+  const vulns = useSort(
+    r.vulnerabilities,
+    {
+      component: (v) => `${v.host}${v.port ? `:${v.port}` : ""}`,
+      vulnerability: (v) => `${v.ref} ${v.title}`,
+      severity: (v) => SEV_RANK[v.severity] ?? 0,
+      cvss: (v) => v.cvss,
+      status: (v) => RESULT_RANK(v.result),
+      exceptions: (v) => (v.exception ? `${v.exception.kind}: ${v.exception.reason}` : v.reason),
+    },
+    { key: "severity", dir: "desc" },
+    { severity: "desc", cvss: "desc" },
+    "vsort",
+  );
   return (
     <div className="space-y-4">
       <Card title="Part 1. Scan information">
         <dl className="grid gap-2 p-4 text-sm sm:grid-cols-2">
           <div><dt className="text-xs uppercase text-ink-3">Customer</dt><dd>{r.customer.name}</dd></div>
           <div><dt className="text-xs uppercase text-ink-3">Scan</dt><dd>{r.scan ? fmtTime(r.scan.started_at) : "-"}</dd></div>
-          <div><dt className="text-xs uppercase text-ink-3">Scanner IP address</dt><dd>{r.scanner_ip ?? "-"}</dd></div>
           <div><dt className="text-xs uppercase text-ink-3">Targets</dt><dd>{r.scan?.targets.join(", ") || "-"}</dd></div>
         </dl>
       </Card>
       <Card title="Part 2. Component compliance summary">
-        <Table head={["Host / IP", "Vulnerabilities", "Status"]} rowCount={r.components.length} empty={<Empty title="No components" />}>
-          {r.components.map((c) => (
+        <Table head={[{ label: "Host / IP", sort: "host" }, { label: "Vulnerabilities", sort: "findings" }, { label: "Status", sort: "status" }]} sort={comps.sort} onSort={comps.onSort} rowCount={r.components.length} empty={<Empty title="No components" />}>
+          {comps.rows.map((c) => (
             <tr key={c.host}><td className="px-3 py-2 font-mono text-xs">{c.host}</td><td className="px-3 py-2 text-sm">{c.findings}</td>
               <td className="px-3 py-2"><Tag tone={c.result === "Pass" ? "good" : "critical"}>{c.result}</Tag></td></tr>
           ))}
         </Table>
       </Card>
       <Card title="Part 3a. Vulnerabilities noted for each component">
-        <Table head={["Component", "Vulnerability", "Severity", "CVSS", "Status", "Exceptions / compensating controls"]} rowCount={r.vulnerabilities.length} empty={<Empty title="None noted" />}>
-          {r.vulnerabilities.map((v) => (
+        <Table head={[{ label: "Component", sort: "component" }, { label: "Vulnerability", sort: "vulnerability" }, { label: "Severity", sort: "severity" }, { label: "CVSS", sort: "cvss" }, { label: "Status", sort: "status" }, { label: "Exceptions / compensating controls", sort: "exceptions" }]} sort={vulns.sort} onSort={vulns.onSort} rowCount={r.vulnerabilities.length} empty={<Empty title="None noted" />}>
+          {vulns.rows.map((v) => (
             <tr key={v.ref}><td className="px-3 py-2 font-mono text-xs">{v.host}{v.port ? `:${v.port}` : ""}</td><td className="px-3 py-2 text-sm">{v.ref} {v.title}</td>
               <td className="px-3 py-2 text-xs capitalize">{v.severity}</td><td className="px-3 py-2 text-xs">{v.cvss.toFixed(1)}</td>
               <td className="px-3 py-2"><Tag tone={v.result === "Pass" ? "good" : "critical"}>{v.result}</Tag></td>
@@ -61,6 +84,13 @@ export default function ExternalReports() {
   const [err, setErr] = useState<string | null>(null);
   const [viewing, setViewing] = useState<ExtReportData | null>(null);
   const p = preview.data;
+  const history = useSort(
+    reports.data,
+    { generated: (r) => ts(r.generated_at), by: (r) => r.generated_by, result: (r) => RESULT_RANK(r.result) },
+    { key: "generated", dir: "desc" },
+    { generated: "desc" },
+    "hsort",
+  );
 
   async function generate() {
     setErr(null);
@@ -84,8 +114,8 @@ export default function ExternalReports() {
         </div>
       </Card>
       <Card title="History">
-        <Table head={["Generated", "By", "Result", "Download"]} loading={reports.loading} rowCount={reports.data?.length ?? 0} empty={<Empty icon={FileText} title="No reports yet">Generate the first pre-ASV report above.</Empty>}>
-          {reports.data?.map((r) => (
+        <Table head={[{ label: "Generated", sort: "generated" }, { label: "By", sort: "by" }, { label: "Result", sort: "result" }, "Download"]} sort={history.sort} onSort={history.onSort} loading={reports.loading} rowCount={reports.data?.length ?? 0} empty={<Empty icon={FileText} title="No reports yet">Generate the first pre-ASV report above.</Empty>}>
+          {history.rows.map((r) => (
             <tr key={r.id}>
               <td className="px-3 py-2 text-sm">{fmtTime(r.generated_at)}</td><td className="px-3 py-2 text-sm">{r.generated_by}</td>
               <td className="px-3 py-2"><ResultBadge result={r.result} label={r.result_label} /></td>

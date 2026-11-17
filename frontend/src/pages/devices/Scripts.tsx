@@ -8,6 +8,7 @@ import { OS_LABEL } from "../../lib/devices";
 import { fmtAgo, fmtTime } from "../../lib/format";
 import { describeParam } from "../../lib/scripts";
 import { useApi } from "../../lib/useApi";
+import { rankOf, ts, useSort } from "../../lib/useSort";
 
 const RUN_TONE: Record<ScriptRun["status"], "default" | "warn" | "good" | "accent"> = {
   pending: "accent",
@@ -110,10 +111,26 @@ function ImportBundle({ onDone }: { onDone: () => void }) {
 }
 
 function RunsTable({ runs }: { runs: ScriptRun[] }) {
+  const status = rankOf(["pending", "delivered", "succeeded", "failed", "rejected", "expired", "cancelled"]);
+  const sorted = useSort(
+    runs,
+    {
+      requested: (r) => ts(r.created_at), device: (r) => r.hostname, script: (r) => r.script,
+      parameters: (r) => Object.entries(r.parameters).map(([k, v]) => `${k}=${String(v)}`).join(" "),
+      status: (r) => status(r.status), exit: (r) => r.exit_code,
+    },
+    { key: "requested", dir: "desc" },
+    { requested: "desc" },
+    "runs_sort",
+  );
   if (runs.length === 0) return <Empty>No scripts have been run yet.</Empty>;
   return (
-    <Table head={["Requested", "Device", "Script", "Parameters", "Status", "Exit", "Output"]}>
-      {runs.map((r) => (
+    <Table
+      head={[{ label: "Requested", sort: "requested" }, { label: "Device", sort: "device" }, { label: "Script", sort: "script" }, { label: "Parameters", sort: "parameters" }, { label: "Status", sort: "status" }, { label: "Exit", sort: "exit" }, "Output"]}
+      sort={sorted.sort}
+      onSort={sorted.onSort}
+    >
+      {sorted.rows.map((r) => (
         <tr key={r.id} className="align-top">
           <td className="px-3 py-2 text-xs">
             <span title={fmtTime(r.created_at)}>{fmtAgo(r.created_at)}</span>
@@ -160,6 +177,14 @@ export default function Scripts() {
   const lib = useApi(api.scripts, []);
   const pending = useApi(api.scriptPendingApprovals, [], 30000);
   const runs = useApi(() => api.scriptRuns({ limit: 100 }), [], 30000);
+  const risk = rankOf(["low", "medium", "high"]);
+  const libSort = useSort(
+    lib.data?.scripts,
+    { script: (s) => s.name, platform: (s) => OS_LABEL[s.platform] ?? s.platform, risk: (s) => risk(s.risk), parameters: (s) => s.parameters.length, timeout: (s) => s.timeout_seconds },
+    { key: "script", dir: "asc" },
+    { risk: "desc", parameters: "desc", timeout: "desc" },
+    "lib_sort",
+  );
 
   return (
     <div>
@@ -184,8 +209,12 @@ export default function Scripts() {
         {lib.data && <BundleInfo bundle={lib.data.bundle} trustedKeys={lib.data.trusted_keys} />}
         {lib.data && lib.data.scripts.length > 0 && (
           <div className="mt-4">
-            <Table head={["Script", "Platform", "Risk", "Parameters", "Timeout"]}>
-              {lib.data.scripts.map((s) => (
+            <Table
+              head={[{ label: "Script", sort: "script" }, { label: "Platform", sort: "platform" }, { label: "Risk", sort: "risk" }, { label: "Parameters", sort: "parameters" }, { label: "Timeout", sort: "timeout" }]}
+              sort={libSort.sort}
+              onSort={libSort.onSort}
+            >
+              {libSort.rows.map((s) => (
                 <tr key={`${s.platform}-${s.name}`} className="align-top">
                   <td className="px-3 py-2">
                     <div className="font-mono text-sm">{s.name}</div>
@@ -213,7 +242,7 @@ export default function Scripts() {
 
       <Card title="Script runs waiting for approval" className="mb-4">
         <ErrorNote error={pending.error} />
-        <ApprovalList items={pending.data} onChanged={() => { pending.reload(); runs.reload(); }} empty="No script runs are waiting for approval." />
+        <ApprovalList items={pending.data} onChanged={() => { pending.reload(); runs.reload(); }} empty="No script runs are waiting for approval." sortParam="asort" />
       </Card>
 
       <Card title="Run history">

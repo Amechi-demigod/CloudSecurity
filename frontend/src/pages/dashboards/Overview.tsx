@@ -2,6 +2,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { api, type DashOverview, type EndpointStats } from "../../api";
 import { BarRows, ChangeChip, ChartEmpty, ChartTip, DashCard, KpiTile, LegendKeys, ViewLink } from "../../components/dash";
+import SortHeader from "../../components/SortHeader";
 import { ErrorNote } from "../../components/ui";
 import {
   AXIS,
@@ -18,6 +19,7 @@ import {
 } from "../../lib/dash";
 import { SEV_COLOR, SEVERITIES } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
+import { useSort } from "../../lib/useSort";
 import type { TabProps } from "../Dashboard";
 import { TabSkeleton } from "./Skeleton";
 
@@ -122,6 +124,13 @@ export function EndpointStrip({ e }: { e: EndpointStats }) {
 export default function OverviewTab({ range, account }: TabProps) {
   const navigate = useNavigate();
   const { data: d, error } = useApi(() => api.dashOverview({ range, account: account || undefined }), [range, account], 60000);
+  // "default" keeps the server's order (highest risk first)
+  const sortedAssets = useSort(
+    d?.top_assets,
+    { default: (a) => d?.top_assets.indexOf(a), asset: (a) => a.name, type: (a) => a.type_label, risk: (a) => a.risk },
+    { key: "default", dir: "asc" },
+    { risk: "desc" },
+  );
   if (!d) return error ? <ErrorNote error={error} /> : <TabSkeleton />;
   const k = d.kpis;
   const days = d.days;
@@ -296,13 +305,13 @@ export default function OverviewTab({ range, account }: TabProps) {
           <table className="w-full table-fixed text-[13px]">
             <thead>
               <tr className="border-b border-line text-left text-[11px] uppercase tracking-[0.06em] text-ink-3">
-                <th className="py-1.5 pr-2 font-semibold">Asset</th>
-                <th className="w-[28%] py-1.5 pr-2 font-semibold">Type</th>
-                <th className="w-12 py-1.5 text-right font-semibold">Risk</th>
+                <SortHeader sortKey="asset" label="Asset" sort={sortedAssets.sort} onSort={sortedAssets.onSort} className="py-1.5 pr-2 font-semibold" />
+                <SortHeader sortKey="type" label="Type" sort={sortedAssets.sort} onSort={sortedAssets.onSort} className="w-[28%] py-1.5 pr-2 font-semibold" />
+                <SortHeader sortKey="risk" label="Risk" sort={sortedAssets.sort} onSort={sortedAssets.onSort} className="w-12 py-1.5 text-right font-semibold" />
               </tr>
             </thead>
             <tbody className="divide-y divide-line">
-              {d.top_assets.map((a) => (
+              {sortedAssets.rows.map((a) => (
                 <tr key={a.id}>
                   <td className="py-1.5 pr-2 align-top">
                     <Link to={href("/vulnerabilities", { asset: a.id })} className="block break-all font-medium text-ink hover:text-accent hover:underline" title={`${a.name}: ${a.findings} open findings, ${a.vulnerabilities} open vulnerabilities`}>

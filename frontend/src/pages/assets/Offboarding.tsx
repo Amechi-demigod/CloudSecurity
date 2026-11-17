@@ -4,8 +4,9 @@ import { assetsApi, type Offboarding as Ob } from "../../assetsApi";
 import { useAuth } from "../../auth/context";
 import { AssetStatusBadge, FormError, TextArea } from "../../components/assets";
 import { Button, Card, Empty, ErrorNote, Field, Modal, PageHeader, Select, Table, Tag } from "../../components/ui";
-import { errMsg, fmtDate } from "../../lib/assets";
+import { STATUS_ORDER, errMsg, fmtDate } from "../../lib/assets";
 import { useApi } from "../../lib/useApi";
+import { rankOf, ts, useSort } from "../../lib/useSort";
 
 function NewOffboarding({ open, onClose, onDone }: { open: boolean; onClose: () => void; onDone: (o: Ob) => void }) {
   const [f, setF] = useState({ person_email: "", person_username: "", person_name: "", department: "", leave_date: "", retrieval_due: "", notes: "" });
@@ -55,6 +56,17 @@ function NewOffboarding({ open, onClose, onDone }: { open: boolean; onClose: () 
 function Detail({ id, canEdit, onChange }: { id: string; canEdit: boolean; onChange: () => void }) {
   const { data, error, reload } = useApi(() => assetsApi.offboarding(id), [id]);
   const [err, setErr] = useState<string | null>(null);
+  const status = rankOf(STATUS_ORDER);
+  const sorted = useSort(
+    data?.assets,
+    {
+      asset: (a) => a.display_name, status: (a) => status(a.status),
+      due: (a) => ts(a.retrieval_due),
+    },
+    { key: "asset", dir: "asc" },
+    {},
+    "asset_sort",
+  );
   if (!data) return <ErrorNote error={error} />;
   async function cancel() {
     const notes = window.prompt("Cancel this offboarding? Assets go back to assigned. Notes:");
@@ -80,8 +92,12 @@ function Detail({ id, canEdit, onChange }: { id: string; canEdit: boolean; onCha
       {(data.assets ?? []).length === 0 ? (
         <Empty>No assets were assigned to this person.</Empty>
       ) : (
-        <Table head={["Asset", "Status", "Due"]}>
-          {(data.assets ?? []).map((a) => (
+        <Table
+          head={[{ label: "Asset", sort: "asset" }, { label: "Status", sort: "status" }, { label: "Due", sort: "due" }]}
+          sort={sorted.sort}
+          onSort={sorted.onSort}
+        >
+          {sorted.rows.map((a) => (
             <tr key={a.id}>
               <td className="px-3 py-2">
                 <Link to={`/it-assets/${a.id}`} className="font-medium hover:text-accent">
@@ -108,6 +124,17 @@ export default function Offboarding() {
   const [status, setStatus] = useState("open");
   const [creating, setCreating] = useState(false);
   const { data, error, reload } = useApi(() => assetsApi.offboardings(status || undefined), [status]);
+  const sorted = useSort(
+    data,
+    {
+      person: (o) => o.person_name || o.person_email || o.person_username, leave: (o) => ts(o.leave_date), due: (o) => ts(o.retrieval_due),
+      outstanding: (o) => (o.status === "open" ? o.assets_outstanding : null),
+    },
+    { key: "leave", dir: "asc" },
+    { outstanding: "desc" },
+  );
+  // Picking a leaver keeps the other query parameters (the sort).
+  const select = (id: string) => setParams((prev) => { const n = new URLSearchParams(prev); n.set("id", id); return n; });
   return (
     <div>
       <div className="mb-1 text-xs text-ink-3">
@@ -127,9 +154,13 @@ export default function Offboarding() {
           {data && data.length === 0 ? (
             <Empty>No offboardings.</Empty>
           ) : (
-            <Table head={["Person", "Leave date", "Due", "Outstanding"]}>
-              {(data ?? []).map((o) => (
-                <tr key={o.id} className={`cursor-pointer hover:bg-surface-2 ${selected === o.id ? "bg-surface-2" : ""}`} onClick={() => setParams({ id: o.id })}>
+            <Table
+              head={[{ label: "Person", sort: "person" }, { label: "Leave date", sort: "leave" }, { label: "Due", sort: "due" }, { label: "Outstanding", sort: "outstanding" }]}
+              sort={sorted.sort}
+              onSort={sorted.onSort}
+            >
+              {sorted.rows.map((o) => (
+                <tr key={o.id} className={`cursor-pointer hover:bg-surface-2 ${selected === o.id ? "bg-surface-2" : ""}`} onClick={() => select(o.id)}>
                   <td className="px-3 py-2">
                     <div className="font-medium">{o.person_name || o.person_email || o.person_username}</div>
                     <div className="text-[11px] text-ink-3">{[o.person_email, o.person_username].filter(Boolean).join(" · ")}</div>
@@ -155,7 +186,7 @@ export default function Offboarding() {
           onDone={(o) => {
             setStatus("");
             reload();
-            setParams({ id: o.id });
+            select(o.id);
           }}
         />
       )}

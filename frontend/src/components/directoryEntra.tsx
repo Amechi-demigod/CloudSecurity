@@ -5,7 +5,9 @@ import { useMemo, useState, type FormEvent } from "react";
 import { directoryApi, type DirectorySource, type EntraConfig, type EntraScope, type SyncRun } from "../directoryApi";
 import { entraCliScript, entraPowerShellScript, errMsg, neededPermissions } from "../lib/directory";
 import { useApi } from "../lib/useApi";
+import { useSort } from "../lib/useSort";
 import { CodeBox, RunResult } from "./directoryShared";
+import SortHeader from "./SortHeader";
 import { Button, ErrorNote, Field, Tag } from "./ui";
 
 type EntraSource = Extract<DirectorySource, { type: "entra" }>;
@@ -35,6 +37,7 @@ export function EntraForm({ source, onDone, onCancel }: { source: EntraSource | 
   const connectors = info.data?.connectors ?? [];
   const chosen = connectors.find((x) => x.id === (connectorId || (connectors.length === 1 ? connectors[0].id : "")));
   const perms = useMemo(() => neededPermissions(info.data?.permissions ?? [], scopes), [info.data, scopes]);
+  const permSort = useSort(perms, { permission: (p) => p.name, why: (p) => p.why }, { key: "permission", dir: "asc" }, {}, "permsort");
   const script = useMemo(() => {
     const o = { clientId: chosen?.client_id ?? "", tenantId: chosen?.tenant_id ?? "", perms };
     return shell === "cli" ? entraCliScript(o) : entraPowerShellScript(o);
@@ -189,12 +192,12 @@ export function EntraForm({ source, onDone, onCancel }: { source: EntraSource | 
           <caption className="sr-only">Microsoft Graph permissions</caption>
           <thead>
             <tr className="text-ink-3">
-              <th className="py-1 pr-3 font-semibold">Permission</th>
-              <th className="py-1 font-semibold">Why</th>
+              <SortHeader sortKey="permission" label="Permission" sort={permSort.sort} onSort={permSort.onSort} className="py-1 pr-3 text-left font-semibold" />
+              <SortHeader sortKey="why" label="Why" sort={permSort.sort} onSort={permSort.onSort} className="py-1 text-left font-semibold" />
             </tr>
           </thead>
           <tbody className="divide-y divide-line/60">
-            {perms.map((p) => (
+            {permSort.rows.map((p) => (
               <tr key={p.name}>
                 <td className="whitespace-nowrap py-1.5 pr-3 align-top font-mono text-[11px] text-ink">
                   {p.name} {!p.scope && <Tag>optional</Tag>}

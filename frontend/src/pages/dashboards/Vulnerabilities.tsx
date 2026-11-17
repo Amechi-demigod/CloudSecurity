@@ -2,10 +2,12 @@ import { Link } from "react-router-dom";
 import { Area, CartesianGrid, ComposedChart, Line, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { api, type DashCve } from "../../api";
 import { BarRows, ChartEmpty, ChartTip, DashCard, KpiTile, LegendKeys, ViewLink } from "../../components/dash";
+import SortHeader from "../../components/SortHeader";
 import { ErrorNote, SeverityBadge, Tag } from "../../components/ui";
 import { AXIS, bucketLabel, cap, CAT_COLORS, fmtNum, GRID, href, OTHER_COLOR, sevSegments } from "../../lib/dash";
 import { SEV_COLOR } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
+import { SEV_RANK, useSort } from "../../lib/useSort";
 import type { TabProps } from "../Dashboard";
 import { TabSkeleton } from "./Skeleton";
 
@@ -15,6 +17,21 @@ function signals(c: DashCve): string[] {
 
 export default function VulnsTab({ range, account }: TabProps) {
   const { data: d, error } = useApi(() => api.dashVulns({ range, account: account || undefined }), [range, account], 60000);
+  // "default" keeps the server's order (known exploited first, then loaded and exposed, then EPSS)
+  const sorted = useSort(
+    d?.top_cves,
+    {
+      default: (c) => d?.top_cves.indexOf(c),
+      cve: (c) => c.cve_id,
+      package: (c) => `${c.package} ${c.version}`,
+      severity: (c) => SEV_RANK[c.severity] ?? 0,
+      epss: (c) => c.epss,
+      signals: (c) => signals(c).join(", "),
+      assets: (c) => c.assets,
+    },
+    { key: "default", dir: "asc" },
+    { severity: "desc", epss: "desc", assets: "desc" },
+  );
   if (!d) return error ? <ErrorNote error={error} /> : <TabSkeleton />;
   const k = d.kpis;
   const days = d.days;
@@ -162,16 +179,16 @@ export default function VulnsTab({ range, account }: TabProps) {
             <table className="w-full min-w-[560px] text-[13px]">
               <thead>
                 <tr className="border-b border-line text-left text-[11px] uppercase tracking-[0.06em] text-ink-3">
-                  <th className="px-1 py-1.5 font-semibold">CVE</th>
-                  <th className="px-1 py-1.5 font-semibold">Package</th>
-                  <th className="px-1 py-1.5 font-semibold">Severity</th>
-                  <th className="px-1 py-1.5 text-right font-semibold">EPSS</th>
-                  <th className="px-1 py-1.5 font-semibold">Signals</th>
-                  <th className="px-1 py-1.5 text-right font-semibold">Assets</th>
+                  <SortHeader sortKey="cve" label="CVE" sort={sorted.sort} onSort={sorted.onSort} className="px-1 py-1.5 font-semibold" />
+                  <SortHeader sortKey="package" label="Package" sort={sorted.sort} onSort={sorted.onSort} className="px-1 py-1.5 font-semibold" />
+                  <SortHeader sortKey="severity" label="Severity" sort={sorted.sort} onSort={sorted.onSort} className="px-1 py-1.5 font-semibold" />
+                  <SortHeader sortKey="epss" label="EPSS" sort={sorted.sort} onSort={sorted.onSort} className="px-1 py-1.5 text-right font-semibold" />
+                  <SortHeader sortKey="signals" label="Signals" sort={sorted.sort} onSort={sorted.onSort} className="px-1 py-1.5 font-semibold" />
+                  <SortHeader sortKey="assets" label="Assets" sort={sorted.sort} onSort={sorted.onSort} className="px-1 py-1.5 text-right font-semibold" />
                 </tr>
               </thead>
               <tbody className="divide-y divide-line">
-                {d.top_cves.map((c) => (
+                {sorted.rows.map((c) => (
                   <tr key={c.cve_id}>
                     <td className="whitespace-nowrap px-1 py-2">
                       <Link to={vulns({ cve: c.cve_id })} className="font-semibold text-ink hover:text-accent hover:underline">

@@ -56,11 +56,11 @@ export default function Approvals() {
       {settings && <SettingsNote settings={settings} />}
       <Card title="Open requests" className="mb-4">
         <ErrorNote error={open.error} />
-        <ApprovalList items={open.data} settings={settings} onChanged={reload} empty="Nothing is waiting for approval." />
+        <ApprovalList items={open.data} settings={settings} onChanged={reload} empty="Nothing is waiting for approval." sortParam="osort" />
       </Card>
       <Card title="History">
         <ErrorNote error={history.error} />
-        <ApprovalList items={history.data} settings={settings} onChanged={reload} empty="No decided requests yet." />
+        <ApprovalList items={history.data} settings={settings} onChanged={reload} empty="No decided requests yet." sortParam="hsort" />
       </Card>
     </div>
   );

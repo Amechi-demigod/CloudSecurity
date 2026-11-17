@@ -1,15 +1,30 @@
 import { Link } from "react-router-dom";
 import { api } from "../../api";
 import { BarRows, ChartEmpty, DashCard, KpiTile, ViewLink } from "../../components/dash";
+import SortHeader from "../../components/SortHeader";
 import { ErrorNote, SeverityBadge, Tag } from "../../components/ui";
 import { catSegments, href, sevSegments } from "../../lib/dash";
 import { SEV_COLOR } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
+import { SEV_RANK, useSort } from "../../lib/useSort";
 import type { TabProps } from "../Dashboard";
 import { TabSkeleton } from "./Skeleton";
 
 export default function IdentitiesTab({ range, account }: TabProps) {
   const { data: d, error } = useApi(() => api.dashIdentities({ range, account: account || undefined }), [range, account], 60000);
+  // "default" keeps the server's order (on attack paths first, then privileged, then by findings)
+  const sorted = useSort(
+    d?.identities,
+    {
+      default: (i) => d?.identities.indexOf(i),
+      identity: (i) => i.name,
+      roles: (i) => i.roles.join(", "),
+      attack_path: (i) => (i.attack_path ? SEV_RANK[i.attack_path] ?? 0 : null),
+      findings: (i) => i.findings,
+    },
+    { key: "default", dir: "asc" },
+    { attack_path: "desc", findings: "desc" },
+  );
   if (!d) return error ? <ErrorNote error={error} /> : <TabSkeleton />;
   const k = d.kpis;
   const days = d.days;
@@ -90,14 +105,14 @@ export default function IdentitiesTab({ range, account }: TabProps) {
             <table className="w-full min-w-[560px] text-[13px]">
               <thead>
                 <tr className="border-b border-line text-left text-[11px] uppercase tracking-[0.06em] text-ink-3">
-                  <th className="px-1 py-1.5 font-semibold">Identity</th>
-                  <th className="px-1 py-1.5 font-semibold">Roles</th>
-                  <th className="px-1 py-1.5 font-semibold">Attack path</th>
-                  <th className="px-1 py-1.5 text-right font-semibold">Findings</th>
+                  <SortHeader sortKey="identity" label="Identity" sort={sorted.sort} onSort={sorted.onSort} className="px-1 py-1.5 font-semibold" />
+                  <SortHeader sortKey="roles" label="Roles" sort={sorted.sort} onSort={sorted.onSort} className="px-1 py-1.5 font-semibold" />
+                  <SortHeader sortKey="attack_path" label="Attack path" sort={sorted.sort} onSort={sorted.onSort} className="px-1 py-1.5 font-semibold" />
+                  <SortHeader sortKey="findings" label="Findings" sort={sorted.sort} onSort={sorted.onSort} className="px-1 py-1.5 text-right font-semibold" />
                 </tr>
               </thead>
               <tbody className="divide-y divide-line">
-                {d.identities.map((i) => (
+                {sorted.rows.map((i) => (
                   <tr key={i.id}>
                     <td className="max-w-[15rem] px-1 py-2">
                       <Link to={href("/vulnerabilities", { asset: i.id })} className="block truncate font-medium text-ink hover:text-accent hover:underline" title={i.name}>

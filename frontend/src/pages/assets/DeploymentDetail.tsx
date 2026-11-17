@@ -10,6 +10,7 @@ import { errMsg } from "../../lib/assets";
 import { DEP_STATE_TONE, EXCLUDED_HINT, EXCLUDED_LABEL } from "../../lib/deploy";
 import { fmtAgo, fmtTime } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
+import { rankOf, useSort } from "../../lib/useSort";
 import { ProgressBar } from "./Deployments";
 
 const STATUS: Record<DeploymentItem["status"], { label: string; tone: "good" | "default" | "warn" }> = {
@@ -69,6 +70,24 @@ export default function DeploymentDetail() {
   }
 
   const items = (d?.items ?? []).filter((i) => filter === "all" || i.status === filter || i.route === filter);
+  const itemStatus = rankOf(["pending", "enrolled", "gone"]);
+  const itemSort = useSort(
+    items,
+    {
+      machine: (i) => i.name, found: (i) => i.kinds.join(", "), os: (i) => i.os, route: (i) => ROUTE_LABEL[i.route], status: (i) => itemStatus(i.status),
+      device: (i) => i.device_hostname,
+    },
+    { key: "machine", dir: "asc" },
+    {},
+  );
+  const tokenState = rankOf(["active", "expired", "revoked"]);
+  const tokenSort = useSort(
+    d?.tokens,
+    { name: (t) => t.name, token: (t) => t.token_prefix, uses: (t) => t.use_count, state: (t) => tokenState(t.state) },
+    { key: "name", dir: "asc" },
+    { uses: "desc" },
+    "tok_sort",
+  );
   const names = (route: string) => (d?.items ?? []).filter((i) => i.route === route && i.status === "pending").map((i) => i.name);
   const available = Object.fromEntries(Object.entries(d?.installers ?? {}).map(([k, v]) => [k, v.available])) as Partial<Record<InstallerPlatform, boolean>>;
 
@@ -165,8 +184,13 @@ export default function DeploymentDetail() {
               />
             }
           >
-            <Table head={["Machine", "Found in", "OS", "Route", "Status", "Agent device"]} rowCount={items.length}>
-              {items.map((i) => (
+            <Table
+              head={[{ label: "Machine", sort: "machine" }, { label: "Found in", sort: "found" }, { label: "OS", sort: "os" }, { label: "Route", sort: "route" }, { label: "Status", sort: "status" }, { label: "Agent device", sort: "device" }]}
+              rowCount={items.length}
+              sort={itemSort.sort}
+              onSort={itemSort.onSort}
+            >
+              {itemSort.rows.map((i) => (
                 <tr key={i.computer_id}>
                   <td className="px-3 py-2">
                     <div className="font-medium text-ink">{i.name}</div>
@@ -208,8 +232,12 @@ export default function DeploymentDetail() {
               {(d.tokens ?? []).length === 0 ? (
                 <p className="text-sm text-ink-3">None yet: download an installer above{isAdmin ? "" : " (admins)"}.</p>
               ) : (
-                <Table head={["Name", "Token", "Uses", "State"]}>
-                  {(d.tokens ?? []).map((t) => (
+                <Table
+                  head={[{ label: "Name", sort: "name" }, { label: "Token", sort: "token" }, { label: "Uses", sort: "uses" }, { label: "State", sort: "state" }]}
+                  sort={tokenSort.sort}
+                  onSort={tokenSort.onSort}
+                >
+                  {tokenSort.rows.map((t) => (
                     <tr key={t.id}>
                       <td className="px-3 py-2 text-xs">
                         {t.name}

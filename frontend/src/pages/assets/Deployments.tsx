@@ -5,6 +5,7 @@ import { directoryApi, ROUTE_LABEL, type DeployRoute, type Deployment } from "..
 import { DEP_STATE_TONE } from "../../lib/deploy";
 import { fmtAgo, fmtTime } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
+import { rankOf, ts, useSort } from "../../lib/useSort";
 
 export function ProgressBar({ p }: { p: Deployment["progress"] }) {
   const pct = p.total ? (p.enrolled * 100) / p.total : 0;
@@ -26,7 +27,18 @@ export function ProgressBar({ p }: { p: Deployment["progress"] }) {
 export default function Deployments() {
   const navigate = useNavigate();
   const deps = useApi(directoryApi.deployments, [], 60000);
-  const rows = deps.data ?? [];
+  const state = rankOf(["active", "expired", "revoked"]);
+  const sorted = useSort(
+    deps.data,
+    {
+      deployment: (d) => d.name, routes: (d) => Object.values(d.route_counts).reduce<number>((a, n) => a + (n ?? 0), 0),
+      progress: (d) => (d.progress.total ? d.progress.enrolled / d.progress.total : 0), pending: (d) => d.progress.pending,
+      state: (d) => state(d.state), created: (d) => ts(d.created_at),
+    },
+    { key: "created", dir: "desc" },
+    { routes: "desc", progress: "desc", pending: "desc", created: "desc" },
+  );
+  const rows = sorted.rows;
   return (
     <div>
       <Breadcrumbs items={[{ label: "IT assets", to: "/it-assets" }, { label: "Discovery", to: "/it-assets/discovery" }, { label: "Deployments" }]} />
@@ -37,7 +49,9 @@ export default function Deployments() {
       <ErrorNote error={deps.error} />
       <Card>
         <Table
-          head={["Deployment", "Routes", "Progress", "Pending", "State", "Created"]}
+          head={[{ label: "Deployment", sort: "deployment" }, { label: "Routes", sort: "routes" }, { label: "Progress", sort: "progress" }, { label: "Pending", sort: "pending" }, { label: "State", sort: "state" }, { label: "Created", sort: "created" }]}
+          sort={sorted.sort}
+          onSort={sorted.onSort}
           loading={deps.loading}
           rowCount={rows.length}
           empty={

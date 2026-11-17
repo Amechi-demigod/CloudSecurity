@@ -23,6 +23,7 @@ import { errMsg } from "../../lib/assets";
 import { filterLabel } from "../../lib/deploy";
 import { fmtAgo, fmtTime } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
+import { useSortState } from "../../lib/useSort";
 import { useUrlState } from "../../lib/useUrlState";
 import { CLASS_FILTER_OPTIONS, CLASS_LABEL } from "../../lib/deviceClass";
 import type { DeployState } from "./DeployAgent";
@@ -178,16 +179,20 @@ export default function Discovery() {
     limit: PAGE,
     offset,
   };
+  // The lists are paged, so the server sorts the whole result and the sort goes to the API.
+  const issueSort = useSortState(["name", "sources", "os", "activity", "issue", "device", "asset"], { key: "name", dir: "asc" }, { activity: "desc" }, "isort");
+  const compSort = useSortState(["name", "sources", "os", "activity", "match", "asset"], { key: "name", dir: "asc" }, { activity: "desc" }, "csort");
+  const userSort = useSortState(["user", "department", "source", "activity", "status", "roles"], { key: "user", dir: "asc" }, { activity: "desc", roles: "desc" }, "usort");
   const issues = useApi(
-    () => (view === "computers" || view === "people" ? Promise.resolve(null) : directoryApi.issues(issueFilters)),
-    [view, issueType, dq, dDomain, sourceId, offset],
+    () => (view === "computers" || view === "people" ? Promise.resolve(null) : directoryApi.issues({ ...issueFilters, sort: issueSort.sort.key, dir: issueSort.sort.dir })),
+    [view, issueType, dq, dDomain, sourceId, offset, issueSort.sort.key, issueSort.sort.dir],
   );
   const computers = useApi(
     () =>
       view !== "computers"
         ? Promise.resolve(null)
-        : directoryApi.computers({ q: dq, domain: dDomain, source_id: sourceId, status: compStatus as ComputerStatus, device_class: compClass || undefined, limit: PAGE, offset }),
-    [view, dq, dDomain, sourceId, compStatus, compClass, offset],
+        : directoryApi.computers({ q: dq, domain: dDomain, source_id: sourceId, status: compStatus as ComputerStatus, device_class: compClass || undefined, limit: PAGE, offset, sort: compSort.sort.key, dir: compSort.sort.dir }),
+    [view, dq, dDomain, sourceId, compStatus, compClass, offset, compSort.sort.key, compSort.sort.dir],
   );
   const people = useApi(
     () =>
@@ -200,14 +205,16 @@ export default function Discovery() {
             enabled: userFilter === "disabled" ? false : undefined,
             limit: PAGE,
             offset,
+            sort: userSort.sort.key,
+            dir: userSort.sort.dir,
           }),
-    [view, dq, sourceId, userFilter, offset],
+    [view, dq, sourceId, userFilter, offset, userSort.sort.key, userSort.sort.dir],
   );
 
   useEffect(() => {
     setOffset(0);
     setSelected(new Set());
-  }, [view, issueType, dq, dDomain, sourceId, compStatus, compClass, userFilter]);
+  }, [view, issueType, dq, dDomain, sourceId, compStatus, compClass, userFilter, issueSort.sort.key, issueSort.sort.dir, compSort.sort.key, compSort.sort.dir, userSort.sort.key, userSort.sort.dir]);
 
   const s = summary.data;
   const counts = issues.data?.counts ?? s?.counts;
@@ -485,7 +492,16 @@ export default function Discovery() {
         {view === "people" ? (
           <>
             <Table
-              head={["User", "Department / domain", "Source", "Last sign-in", "Status", "Admin roles"]}
+              head={[
+                { label: "User", sort: "user" },
+                { label: "Department / domain", sort: "department" },
+                { label: "Source", sort: "source" },
+                { label: "Last sign-in", sort: "activity" },
+                { label: "Status", sort: "status" },
+                { label: "Admin roles", sort: "roles" },
+              ]}
+              sort={userSort.sort}
+              onSort={userSort.onSort}
               loading={people.loading}
               rowCount={peopleRows.length}
               empty={<Empty icon={Network} title="No directory users match">Change the filter, or run a sync from Connectors &amp; scans.</Empty>}
@@ -537,7 +553,17 @@ export default function Discovery() {
         ) : view === "computers" ? (
           <>
             <Table
-              head={[...(selectAllCell ? [{ label: selectAllCell }] : []), "Computer / device", "Sources", "OS", "Last activity", "Agent match", "IT asset"]}
+              head={[
+                ...(selectAllCell ? [{ label: selectAllCell }] : []),
+                { label: "Computer / device", sort: "name" },
+                { label: "Sources", sort: "sources" },
+                { label: "OS", sort: "os" },
+                { label: "Last activity", sort: "activity" },
+                { label: "Agent match", sort: "match" },
+                { label: "IT asset", sort: "asset" },
+              ]}
+              sort={compSort.sort}
+              onSort={compSort.onSort}
               loading={computers.loading}
               rowCount={compRows.length}
               empty={<Empty icon={Network} title="No directory computers match">Change the filter, or run a sync from Connectors &amp; scans.</Empty>}
@@ -614,14 +640,16 @@ export default function Discovery() {
             <Table
               head={[
                 ...(selectAllCell ? [{ label: selectAllCell }] : []),
-                view === "users" ? "User" : "Computer / device",
-                "Sources",
-                ...(view === "users" ? [] : ["OS"]),
-                "Last activity",
-                "Issue",
-                view === "users" ? "Device" : "Agent device",
-                ...(view === "users" ? [] : ["IT asset"]),
+                { label: view === "users" ? "User" : "Computer / device", sort: "name" },
+                { label: "Sources", sort: "sources" },
+                ...(view === "users" ? [] : [{ label: "OS", sort: "os" }]),
+                { label: "Last activity", sort: "activity" },
+                { label: "Issue", sort: "issue" },
+                { label: view === "users" ? "Device" : "Agent device", sort: "device" },
+                ...(view === "users" ? [] : [{ label: "IT asset", sort: "asset" }]),
               ]}
+              sort={issueSort.sort}
+              onSort={issueSort.onSort}
               loading={issues.loading}
               rowCount={issueRows.length}
               empty={

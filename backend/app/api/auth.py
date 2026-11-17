@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .. import config, tenancy
@@ -249,12 +249,26 @@ def delete_user(user_id: str, request: Request, admin: User = Depends(current_us
     db.commit()
 
 
+AUDIT_SORT = {"time": AuditLog.timestamp, "action": func.lower(AuditLog.action),
+              "actor": func.lower(AuditLog.actor_email), "target": func.lower(AuditLog.target),
+              "ip": func.lower(AuditLog.ip)}
+
+
 @admin_router.get("/audit-log", response_model=list[AuditLogOut])
 def audit_log(db: Session = Depends(get_db), action: str | None = None, actor: str | None = None,
-              limit: int = Query(200, ge=1, le=2000)):
+              limit: int = Query(200, ge=1, le=2000),
+              sort: str | None = Query(None, description="time|action|actor|target|ip"),
+              dir: str = Query("desc", pattern="^(asc|desc)$")):
     stmt = select(AuditLog)
     if action:
         stmt = stmt.where(AuditLog.action == action)
     if actor:
         stmt = stmt.where(AuditLog.actor_email == normalize_email(actor))
-    return list(db.scalars(stmt.order_by(AuditLog.id.desc()).limit(limit)))
+    if sort:  # a column picked from a fixed table, never from the request text; ties newest first
+        col = AUDIT_SORT.get(sort)
+        if col is None:
+            raise HTTPException(422, f"sort must be one of {', '.join(sorted(AUDIT_SORT))}")
+        stmt = stmt.order_by((col.asc() if dir == "asc" else col.desc()).nulls_last(), AuditLog.id.desc())
+    else:
+        stmt = stmt.order_by(AuditLog.id.desc())
+    return list(db.scalars(stmt.limit(limit)))

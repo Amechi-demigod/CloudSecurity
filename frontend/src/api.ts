@@ -1445,7 +1445,7 @@ export const api = {
   resetPassword: (id: string, password: string) =>
     request<User>(`/api/users/${id}/reset-password`, { method: "POST", body: JSON.stringify({ password }) }),
   deleteUser: (id: string) => request<void>(`/api/users/${id}`, { method: "DELETE" }),
-  auditLog: (f: { action?: string; limit?: number } = {}) => request<AuditEntry[]>(`/api/audit-log${qs(f)}`),
+  auditLog: (f: { action?: string; limit?: number; sort?: string; dir?: string } = {}) => request<AuditEntry[]>(`/api/audit-log${qs(f)}`),
   // --- devices ---
   devices: (f: Record<string, string | undefined> = {}) => request<DeviceSummary[]>(`/api/devices${qs(f)}`),
   deviceSummary: () => request<DeviceFleetSummary>("/api/devices/summary"),

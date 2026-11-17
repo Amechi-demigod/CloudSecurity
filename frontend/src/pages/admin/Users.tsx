@@ -4,6 +4,7 @@ import { ROLE_LABEL, useAuth } from "../../auth/context";
 import { Button, Card, ErrorNote, Field, Modal, PageHeader, Table, Tag } from "../../components/ui";
 import { fmtAgo, fmtTime } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
+import { rankOf, ts, useSort } from "../../lib/useSort";
 
 const ROLES: Role[] = ["viewer", "analyst", "admin"];
 const MIN_PASSWORD = 12;
@@ -234,6 +235,20 @@ export default function Users() {
   }
 
   const locked = (u: User) => !!u.locked_until && new Date(u.locked_until).getTime() > Date.now();
+  const roleRank = rankOf(["admin", "analyst", "viewer"]);
+  const sorted = useSort(
+    users,
+    {
+      user: (u) => u.name || u.email,
+      role: (u) => roleRank(u.role),
+      status: (u) => (!u.is_active ? 2 : locked(u) ? 1 : 0),
+      signin: (u) => [...u.auth_sources].sort().join(", ") + (u.mfa_enabled ? " MFA on" : " MFA off"),
+      last_login: (u) => ts(u.last_login_at),
+      created: (u) => ts(u.created_at),
+    },
+    { key: "user", dir: "asc" },
+    { last_login: "desc", created: "desc" },
+  );
 
   return (
     <div>
@@ -253,8 +268,12 @@ export default function Users() {
         </div>
       )}
       <Card>
-        <Table head={["User", "Role", "Status", "Sign-in", "Last sign-in", "Created", "Actions"]}>
-          {users?.map((u) => {
+        <Table
+          head={[{ label: "User", sort: "user" }, { label: "Role", sort: "role" }, { label: "Status", sort: "status" }, { label: "Sign-in", sort: "signin" }, { label: "Last sign-in", sort: "last_login" }, { label: "Created", sort: "created" }, "Actions"]}
+          sort={sorted.sort}
+          onSort={sorted.onSort}
+        >
+          {sorted.rows.map((u) => {
             const isMe = u.id === me?.id;
             return (
               <tr key={u.id}>

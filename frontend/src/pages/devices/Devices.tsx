@@ -10,7 +10,7 @@ import { Card, Empty, ErrorNote, PageHeader, Select, Stat, Table, Tag } from "..
 import { OS_LABEL, osLine } from "../../lib/devices";
 import { fmtAgo } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
-import { useSort } from "../../lib/useSort";
+import { useSortState } from "../../lib/useSort";
 import { useUrlState } from "../../lib/useUrlState";
 import { BulkActionsBar } from "./BulkActions";
 
@@ -69,34 +69,17 @@ export default function Devices() {
   // Missing OS updates (Windows Update report): security | any | none | unknown
   const [updates, setUpdates] = useUrlState("updates");
   const [selected, setSelected] = useState<string[]>([]);
-  const filters = { q: q.trim() || undefined, os, health, issue, connectivity, status, usb, updates, device_class: deviceClass || undefined, virtual: virtual || undefined };
-  const { data, error, loading, reload } = useApi(() => api.devices(filters), [q, os, health, issue, connectivity, status, usb, updates, deviceClass, virtual], 30000);
+  // The server sorts the whole result (the list is capped), so the sort goes to the API.
+  const sorted = useSortState(["name", "os", "class", "user", "health", "issues", "seen", "agent", "usb", "updates"], { key: "name", dir: "asc" }, { health: "desc", issues: "desc", seen: "desc", updates: "desc" });
+  const filters = { sort: sorted.sort.key, dir: sorted.sort.dir, q: q.trim() || undefined, os, health, issue, connectivity, status, usb, updates, device_class: deviceClass || undefined, virtual: virtual || undefined };
+  const { data, error, loading, reload } = useApi(() => api.devices(filters), [q, os, health, issue, connectivity, status, usb, updates, deviceClass, virtual, sorted.sort.key, sorted.sort.dir], 30000);
   const { data: summary } = useApi(api.deviceSummary, [], 30000);
   const filtered = !!(q || os || health || issue || connectivity || usb || updates || deviceClass || virtual) || status !== "active";
-  const CLASS_RANK: Record<string, number> = { domain_controller: 3, server: 2, workstation: 1 };
   // Bulk endpoint actions (admins): the selection is limited to the rows shown.
   const bulk = can("admin");
   const shown = new Set((data ?? []).map((d) => d.id));
   const picked = selected.filter((id) => shown.has(id));
   const toggle = (id: string) => setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
-  const HEALTH_RANK: Record<string, number> = { critical: 3, warning: 2, unknown: 1, healthy: 0 };
-  const sorted = useSort(
-    data,
-    {
-      name: (d) => d.hostname,
-      os: (d) => { const o = osLine(d); return `${o.main} ${o.sub}`; },
-      class: (d) => (CLASS_RANK[d.device_class ?? ""] ?? 0) * 2 + (d.is_virtual ? 1 : 0),
-      user: (d) => d.logged_in_users.join(", "),
-      health: (d) => (d.status === "revoked" ? -1 : HEALTH_RANK[d.health] ?? 0),
-      issues: (d) => d.issues.length,
-      seen: (d) => (d.last_seen_at ? Date.parse(d.last_seen_at) : null),
-      agent: (d) => d.agent_version,
-      usb: (d) => (d.usb_storage === "blocked" ? 2 : d.usb_storage === "allowed" ? 1 : 0),
-      updates: (d) => (d.os_updates ? d.os_updates.security * 10000 + d.os_updates.missing : null),
-    },
-    { key: "name", dir: "asc" },
-    { health: "desc", issues: "desc", seen: "desc", updates: "desc" },
-  );
   const { data: issueTypes } = useApi(api.deviceIssueTypes, []);
 
   return (
@@ -122,12 +105,12 @@ export default function Devices() {
       />
       {summary && (
         <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-          <Stat label="Devices" value={summary.total} sub={Object.entries(summary.by_os).map(([k, v]) => `${v} ${OS_LABEL[k] ?? k}`).join(" · ") || "none enrolled"} />
+          <Stat label="Devices" to="/devices" hint="Show all active devices" value={summary.total} sub={Object.entries(summary.by_os).map(([k, v]) => `${v} ${OS_LABEL[k] ?? k}`).join(" · ") || "none enrolled"} />
           {summary.by_class && (
             <Stat label="Workstations / servers" value={`${summary.by_class.workstation} / ${summary.by_class.server + summary.by_class.domain_controller}`}
               sub={`${summary.by_class.domain_controller} ${CLASS_LABEL.domain_controller.toLowerCase()}${summary.by_class.domain_controller === 1 ? "" : "s"} · ${summary.virtual ?? 0} virtual`} />
           )}
-          <Stat label="Healthy" value={summary.by_health.healthy} sub={`${summary.by_health.critical} at risk · ${summary.by_health.warning} warning`} />
+          <Stat label="Healthy" to="/devices?health=healthy" value={summary.by_health.healthy} sub={`${summary.by_health.critical} at risk · ${summary.by_health.warning} warning`} />
           <Stat label="Encrypted" value={summary.encrypted_percent === null ? "—" : `${summary.encrypted_percent}%`} sub={`of ${summary.encryption_known} reporting`} />
           <Stat label="Firewall on" value={summary.firewall_percent === null ? "—" : `${summary.firewall_percent}%`} sub={`of ${summary.firewall_known} reporting`} />
           <Stat label="Stale / inactive" value={summary.connectivity.stale + summary.connectivity.inactive} sub="no check-in for 24h+" />
@@ -267,7 +250,7 @@ export default function Devices() {
               </Empty>
             }
           >
-            {sorted.rows.map((d) => (
+            {data?.map((d) => (
               <tr
                 key={d.id}
                 className="cursor-pointer hover:bg-surface-2"

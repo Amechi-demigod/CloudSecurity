@@ -9,6 +9,7 @@ import { Button, Card, Empty, ErrorNote, Modal, PageHeader, Stat, Table, Tag } f
 import { externalApi, type ExtTarget } from "../../externalApi";
 import { fmtAgo, fmtTime } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
+import { useSort } from "../../lib/useSort";
 
 function TargetStatus({ t }: { t: ExtTarget }) {
   if (t.verified) return <Tag tone="good">Verified{t.verified_method ? ` (${t.verified_method})` : ""}</Tag>;
@@ -18,7 +19,7 @@ function TargetStatus({ t }: { t: ExtTarget }) {
   return <Tag tone="warn">Not verified: never scanned</Tag>;
 }
 
-function TargetRow({ t, admin, onChange }: { t: ExtTarget; admin: boolean; onChange: () => void }) {
+function TargetRow({ t, admin, analyst, anyRunning, scanning, onChange }: { t: ExtTarget; admin: boolean; analyst: boolean; anyRunning: boolean; scanning: boolean; onChange: () => void }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -53,7 +54,14 @@ function TargetRow({ t, admin, onChange }: { t: ExtTarget; admin: boolean; onCha
             const r = await externalApi.verify(t.id);
             if (!r.verified) throw new Error(r.error ?? "Not verified");
           }, "Verified.")}>
-            Verify now
+            Verify
+          </Button>
+        )}
+        {analyst && t.verified && (
+          <Button disabled={busy || anyRunning} title={anyRunning && !scanning ? "A scan is already running" : `Scan only ${t.value}`}
+            onClick={() => void run(async () => { await externalApi.scanTarget(t.id); })}>
+            <Play aria-hidden className="mr-1 inline h-3.5 w-3.5" />
+            {scanning ? "Scanning…" : "Scan"}
           </Button>
         )}
         <Button onClick={() => setOpen(!open)}>{open ? "Hide details" : "Details"}</Button>
@@ -69,7 +77,7 @@ function TargetRow({ t, admin, onChange }: { t: ExtTarget; admin: boolean; onCha
         <div className="mt-3 space-y-3 text-sm">
           {t.proof && (
             <div className="space-y-2">
-              <p className="text-ink-2">Prove you control this domain with either option, then choose Verify now. Subdomains of a verified domain are covered.</p>
+              <p className="text-ink-2">Prove you control this domain with either option, then choose Verify. Subdomains of a verified domain are covered.</p>
               <p className="font-medium text-ink">Option 1: DNS TXT record on <code>{t.proof.txt_name}</code> (or on <code>{t.proof.txt_name_alt}</code>)</p>
               <CodeBlock code={t.proof.txt_value} label="TXT record value" />
               <p className="font-medium text-ink">Option 2: a file at <code>{t.proof.file_url}</code> containing only</p>
@@ -139,10 +147,26 @@ export default function AttackSurface() {
   const targets = useApi(externalApi.targets, []);
   const hosts = useApi(externalApi.hosts, [], 20000);
   const scans = useApi(externalApi.scans, [], 20000);
+  const sortedHosts = useSort(
+    hosts.data,
+    {
+      host: (h) => h.host,
+      ip: (h) => (h.ip ?? "").split(".").map((n) => n.padStart(3, "0")).join("."),
+      ports: (h) => h.ports.length,
+      software: (h) => [...new Set(h.software.map((s) => `${s.product} ${s.version}`))].join(", "),
+      tls: (h) => h.tls_summary,
+      findings: (h) => h.findings,
+    },
+    { key: "host", dir: "asc" },
+    { ports: "desc", findings: "desc" },
+  );
   const [value, setValue] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const [scope, setScope] = useState<string | null>(null);
   const o = ov.data;
+  // a running scan of a single target names it (its record lists only that target)
+  const runningScan = scans.data?.find((x) => x.status === "running");
+  const runningTarget = o?.running && runningScan?.trigger === "target" ? (runningScan.targets[0] ?? null) : null;
 
   async function act(fn: () => Promise<unknown>) {
     setErr(null);
@@ -164,9 +188,9 @@ export default function AttackSurface() {
         subtitle="What an attacker sees of your internet-facing systems, scanned from outside without exploiting anything."
         actions={
           can("analyst") ? (
-            <Button variant="primary" disabled={o?.running} onClick={() => void act(externalApi.scanNow)}>
+            <Button variant="primary" disabled={o?.running} title={o?.running ? "A scan is already running" : "Scan every verified target"} onClick={() => void act(externalApi.scanNow)}>
               <Play aria-hidden className="mr-1 inline h-3.5 w-3.5" />
-              {o?.running ? "Scan running…" : "Scan now"}
+              {o?.running ? "Scan running…" : "Scan all"}
             </Button>
           ) : undefined
         }
@@ -180,13 +204,6 @@ export default function AttackSurface() {
         <Stat label="Open findings" value={o?.open_findings ?? "-"} sub={o ? `${o.failing_findings} would fail` : undefined} to="/attack-surface/findings" />
         <Stat label="Pre-ASV result" value={o ? <ResultBadge result={o.result} label={o.result_label} /> : "-"} to="/attack-surface/reports" />
       </div>
-      <Card title="Scanner address">
-        <p className="text-sm text-ink-2">
-          Scans come from{" "}
-          {o?.scanner_egress_ip ? <code className="text-ink">{o.scanner_egress_ip}</code> : <span className="text-ink-3">(not configured by the platform owner)</span>} with the
-          User-Agent <code>Sentrigis-AttackSurface/1.0 (+https://sentrigis.com/scanner)</code>. Allow this address in your firewall or WAF so results are accurate.
-        </p>
-      </Card>
       <Card
         title="Targets"
         actions={<span className="text-xs text-ink-3">Up to {o?.limits.max_targets ?? 25} targets; ranges up to a /24. Unverified targets are never scanned.</span>}
@@ -203,7 +220,7 @@ export default function AttackSurface() {
         {targets.data && targets.data.length === 0 ? (
           <Empty icon={Globe2} title="No targets yet">Add a domain you own, then verify it with a DNS record or a file.</Empty>
         ) : (
-          <ul>{targets.data?.map((t) => <TargetRow key={t.id} t={t} admin={admin} onChange={() => { targets.reload(); ov.reload(); }} />)}</ul>
+          <ul>{targets.data?.map((t) => <TargetRow key={t.id} t={t} admin={admin} analyst={can("analyst")} anyRunning={!!o?.running} scanning={runningTarget === t.value} onChange={() => { targets.reload(); ov.reload(); }} />)}</ul>
         )}
       </Card>
       <div className="grid gap-4 md:grid-cols-2">
@@ -239,12 +256,14 @@ export default function AttackSurface() {
       </div>
       <Card title="Hosts">
         <Table
-          head={["Host", "IP", "Open ports", "Detected software", "TLS", { label: "Findings", align: "right" }]}
+          head={[{ label: "Host", sort: "host" }, { label: "IP", sort: "ip" }, { label: "Open ports", sort: "ports" }, { label: "Detected software", sort: "software" }, { label: "TLS", sort: "tls" }, { label: "Findings", sort: "findings", align: "right" }]}
+          sort={sortedHosts.sort}
+          onSort={sortedHosts.onSort}
           loading={hosts.loading}
           rowCount={hosts.data?.length ?? 0}
           empty={<Empty icon={Globe2} title="No hosts discovered yet">Verify a target and run a scan.</Empty>}
         >
-          {hosts.data?.map((h) => (
+          {sortedHosts.rows.map((h) => (
             <tr key={h.id}>
               <td className="px-3 py-2 font-mono text-xs">{h.host}</td>
               <td className="px-3 py-2 font-mono text-xs">{h.ip}</td>

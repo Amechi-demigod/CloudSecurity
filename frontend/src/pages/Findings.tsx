@@ -7,7 +7,7 @@ import AssetDrawer from "../components/AssetDrawer";
 import { Button, Card, Empty, ErrorNote, PageHeader, Select, SeverityBadge, Table, Tag } from "../components/ui";
 import { PROVIDER_LABEL, TYPE_LABEL, fmtAgo } from "../lib/format";
 import { useApi } from "../lib/useApi";
-import { SEV_RANK, useSort } from "../lib/useSort";
+import { useSortState } from "../lib/useSort";
 import { useUrlState } from "../lib/useUrlState";
 
 export default function Findings() {
@@ -30,6 +30,8 @@ export default function Findings() {
   const [actionError, setActionError] = useState<string | null>(null);
   const canTriage = useAuth().can("analyst");
 
+  // The server sorts the whole result (the list is capped), so the sort goes to the API.
+  const sorted = useSortState(["severity", "title", "resource", "status", "first_seen"], { key: "severity", dir: "desc" }, { severity: "desc", first_seen: "desc" });
   const { data, error, reload, loading } = useApi(
     () =>
       api.findings({
@@ -42,22 +44,11 @@ export default function Findings() {
         subscription_id: subscription || undefined,
         rule_id: rule || undefined,
         close_reason: reason === "removed" ? "resource_removed" : undefined,
+        sort: sorted.sort.key,
+        dir: sorted.sort.dir,
       }),
-    [severity, status, source, provider, compliance, category, subscription, rule, reason],
+    [severity, status, source, provider, compliance, category, subscription, rule, reason, sorted.sort.key, sorted.sort.dir],
   );
-  const sorted = useSort(
-    data,
-    {
-      severity: (f) => SEV_RANK[f.severity] ?? 0,
-      title: (f) => f.title,
-      resource: (f) => f.asset_name,
-      status: (f) => f.status,
-      first_seen: (f) => Date.parse(f.first_seen),
-    },
-    { key: "severity", dir: "desc" },
-    { severity: "desc", first_seen: "desc" },
-  );
-
   async function setFindingStatus(f: Finding, s: Finding["status"]) {
     try {
       await api.updateFinding(f.id, s);
@@ -146,7 +137,7 @@ export default function Findings() {
               </Empty>
             }
           >
-            {sorted.rows.map((f) => (
+            {data?.map((f) => (
               <Fragment key={f.id}>
                 <tr className="cursor-pointer hover:bg-surface-2" onClick={() => setExpanded(expanded === f.id ? null : f.id)}>
                   <td className="px-3 py-2">

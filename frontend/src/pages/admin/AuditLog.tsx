@@ -3,6 +3,7 @@ import { api } from "../../api";
 import { Card, Empty, ErrorNote, PageHeader, Select, Table, Tag } from "../../components/ui";
 import { fmtTime } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
+import { useSortState } from "../../lib/useSort";
 
 const ACTIONS = [
   "",
@@ -45,7 +46,9 @@ function detailText(d: Record<string, unknown>): string {
 
 export default function AuditLog() {
   const [action, setAction] = useState("");
-  const { data, error } = useApi(() => api.auditLog({ action: action || undefined, limit: 500 }), [action], 15000);
+  // The server sorts the whole log (only the newest 500 are returned), so the sort goes to the API.
+  const sorted = useSortState(["time", "action", "actor", "target", "ip"], { key: "time", dir: "desc" }, { time: "desc" });
+  const { data, error } = useApi(() => api.auditLog({ action: action || undefined, limit: 500, sort: sorted.sort.key, dir: sorted.sort.dir }), [action, sorted.sort.key, sorted.sort.dir], 15000);
 
   return (
     <div>
@@ -58,7 +61,11 @@ export default function AuditLog() {
         {data && data.length === 0 ? (
           <Empty>No audit entries.</Empty>
         ) : (
-          <Table head={["Time", "Action", "Actor", "Target", "IP", "Details"]}>
+          <Table
+            head={[{ label: "Time", sort: "time" }, { label: "Action", sort: "action" }, { label: "Actor", sort: "actor" }, { label: "Target", sort: "target" }, { label: "IP", sort: "ip" }, "Details"]}
+            sort={sorted.sort}
+            onSort={sorted.onSort}
+          >
             {data?.map((e) => (
               <tr key={e.id}>
                 <td className="whitespace-nowrap px-3 py-2 text-xs text-ink-2">{fmtTime(e.timestamp)}</td>

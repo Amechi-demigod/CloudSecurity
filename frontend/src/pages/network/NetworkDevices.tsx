@@ -6,6 +6,7 @@ import { Breadcrumbs, Button, Card, Empty, ErrorNote, PageHeader, Stat, Table, T
 import { errMsg } from "../../lib/assets";
 import { fmtAgo, fmtTime } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
+import { useSort } from "../../lib/useSort";
 import { useUrlState } from "../../lib/useUrlState";
 import { networkApi, TRACK_TONE, TYPE_LABEL, type NetDeviceRow } from "../../networkApi";
 
@@ -56,7 +57,17 @@ export default function NetworkDevices() {
   const filters = { q: dq, type, status, subnet };
   const devices = useApi(() => networkApi.devices(filters), [dq, type, status, subnet]);
   const s = summary.data;
-  const rows = devices.data ?? [];
+  const sorted = useSort(
+    devices.data,
+    {
+      device: (d) => d.name, type: (d) => d.type_label, vendor: (d) => `${d.vendor} ${d.model}`.trim(), firmware: (d) => d.firmware,
+      ports: (d) => d.open_ports.length, issues: (d) => d.vulns.open * 1000 + d.findings.length, tracked: (d) => d.tracked_label,
+      seen: (d) => Date.parse(d.last_seen),
+    },
+    { key: "seen", dir: "desc" },
+    { ports: "desc", issues: "desc", seen: "desc" },
+  );
+  const rows = sorted.rows;
   const addable = rows.filter((r) => !r.it_asset_id);
 
   async function add() {
@@ -158,15 +169,17 @@ export default function NetworkDevices() {
                   },
                 ]
               : []),
-            "Device",
-            "Type",
-            "Vendor / model",
-            "Firmware",
-            "Open ports",
-            "Issues",
-            "Tracked",
-            "Last seen",
+            { label: "Device", sort: "device" },
+            { label: "Type", sort: "type" },
+            { label: "Vendor / model", sort: "vendor" },
+            { label: "Firmware", sort: "firmware" },
+            { label: "Open ports", sort: "ports" },
+            { label: "Issues", sort: "issues" },
+            { label: "Tracked", sort: "tracked" },
+            { label: "Last seen", sort: "seen" },
           ]}
+          sort={sorted.sort}
+          onSort={sorted.onSort}
           loading={devices.loading}
           rowCount={rows.length}
           empty={

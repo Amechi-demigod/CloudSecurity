@@ -486,6 +486,8 @@ export interface IssueFilters {
   domain?: string;
   limit?: number;
   offset?: number;
+  sort?: string;
+  dir?: string;
 }
 
 export type ComputerStatus = "all" | "not_in_assets" | "matched" | "unmatched" | "ambiguous" | "missing";
@@ -498,6 +500,8 @@ export interface ComputerFilters {
   device_class?: string;
   limit?: number;
   offset?: number;
+  sort?: string;
+  dir?: string;
 }
 
 export interface UserFilters {
@@ -507,6 +511,8 @@ export interface UserFilters {
   privileged?: boolean;
   limit?: number;
   offset?: number;
+  sort?: string;
+  dir?: string;
 }
 
 const J = (body: unknown): RequestInit => ({ method: "POST", body: JSON.stringify(body) });

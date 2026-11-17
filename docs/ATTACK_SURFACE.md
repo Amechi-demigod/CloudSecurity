@@ -37,8 +37,11 @@ All `/api/external/*` routes answer 403 `module_disabled` without it; the platfo
    A finding is resolved automatically when a later scan of an alive host no longer sees it, and re-opens if it returns.
 6. **Report**: pre-ASV PDF and console view.
 
-Scans run weekly by default (configurable from daily to 90 days) and on demand ("Scan now", per-finding "Re-test now",
-which scans only that finding's host). They run in a background thread started by the API or by the leader-elected
+Scans run weekly by default (configurable from daily to 90 days) and on demand ("Scan all", a **Scan** button per verified target, and per-finding "Re-test now"
+which scans only that finding's host). A single-target scan (`POST /api/external/targets/{id}/scan`, analysts and
+above, same module gate, ownership re-check and concurrency limits as Scan all) scans only that target's hosts; only
+findings of hosts it actually scanned can be auto-resolved. Its record has trigger `target`, lists just that target,
+and does not count as the organisation's last scan for the schedule or the report. They run in a background thread started by the API or by the leader-elected
 `ExternalScheduler` (like the cloud scan scheduler).
 
 ## Ownership proof
@@ -69,7 +72,7 @@ Unverified targets are **never scanned**.
 | Maximum duration | `EXTERNAL_MAX_SCAN_SECONDS` (3600): the scan stops, the result is marked partial and nothing is auto-resolved. Scans left "running" by a dead process are failed after the limit plus 10 minutes. |
 | Scan window | Optional per target (UTC hours, may wrap midnight, `PUT /api/external/targets/{id}/window`); targets outside it are skipped. (API only; no console control yet.) |
 | Limits | 25 targets per organisation, /24 per range, 512 hosts per scan, 200 subdomains per domain. |
-| Identification | HTTP User-Agent `Sentrigis-AttackSurface/1.0 (+https://sentrigis.com/scanner)`. The server's egress IP (`EXTERNAL_SCANNER_EGRESS_IP`) is shown on the Attack surface page and in the report so customers can allow-list it. |
+| Identification | HTTP User-Agent `Sentrigis-AttackSurface/1.0 (+https://sentrigis.com/scanner)`. The egress IP (`EXTERNAL_SCANNER_EGRESS_IP`) is not shown in the console or the report: it is only used by the address guard (the scanner never scans its own server) and is listed on the public sentrigis.com/scanner page for allow-listing. |
 | No contents stored | File probes are HEAD / `Range: bytes=0-255`; only status, size, type and "signature matched" are stored. Cookie values and credentials never are. |
 | Tests | Never touch the network: mocks, or local servers on 127.0.0.1 with `guard.allow_for_tests` (refused when `APP_ENV` is production). |
 

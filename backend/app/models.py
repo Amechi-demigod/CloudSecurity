@@ -1270,12 +1270,12 @@ class ExternalScan(TenantMixin, Base):
     __tablename__ = "external_scans"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
-    trigger: Mapped[str] = mapped_column(String(12), default="manual")  # manual | scheduled | retest
+    trigger: Mapped[str] = mapped_column(String(12), default="manual")  # manual | scheduled | retest | target
     status: Mapped[str] = mapped_column(String(12), default="running")  # running|succeeded|failed|partial
     started_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     started_by: Mapped[str | None] = mapped_column(String(320), nullable=True)
-    scanner_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    scanner_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)  # no longer recorded or shown
     hosts: Mapped[int] = mapped_column(Integer, default=0)
     open_ports: Mapped[int] = mapped_column(Integer, default=0)
     new_hosts: Mapped[int] = mapped_column(Integer, default=0)

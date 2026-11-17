@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { ApiError } from "../../api";
+import { useAuth } from "../../auth/context";
 import { Button, Card, ErrorNote, Tag } from "../../components/ui";
 import { fmtAgo, fmtTime } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
@@ -216,8 +217,9 @@ function AutoImport({ a, admin, onChanged }: { a: Automation; admin: boolean; on
   );
 }
 
-/** Update mode (automatic / manual), automatic rollout status, auto-import, fleet "update now". */
+/** Update mode (automatic / manual), automatic rollout status, auto-import (platform owners only), fleet "update now". */
 export default function UpdateAutomationCard({ admin, onChanged }: { admin: boolean; onChanged: () => void }) {
+  const { platformAdmin } = useAuth();
   const auto = useApi(updatesApi.automation, [], 30000);
   const [soak, setSoak] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -314,7 +316,7 @@ export default function UpdateAutomationCard({ admin, onChanged }: { admin: bool
             </div>
           )}
           <RolloutStatus a={a} admin={admin} onChanged={changed} />
-          <AutoImport key={`${a.auto_import.repo}-${a.auto_import.interval_minutes}`} a={a} admin={admin} onChanged={changed} />
+          {platformAdmin && <AutoImport key={`${a.auto_import.repo}-${a.auto_import.interval_minutes}`} a={a} admin={admin} onChanged={changed} />}
           <p className="text-xs text-ink-3">
             Agents get offers at their regular check-in (every 15 min by default) and start after a random delay of up to {a.jitter_seconds} s (grows with
             fleet size). <span className="font-medium">Update now</span> (here, per ring below, or on a device page) skips both.

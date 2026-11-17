@@ -53,7 +53,7 @@ export default function Notifications() {
           />
           <Stat label="Sent (24h)" value={s.sent_24h} />
           <Stat label="Queued" value={s.deliveries.pending + s.deliveries.sending} sub={`${s.event_backlog} events awaiting rule matching`} />
-          <Stat label="Dead-lettered" value={s.deliveries.dead} sub="see the delivery log" />
+          <Stat label="Dead-lettered" value={s.deliveries.dead} sub="see the delivery log" to="/notifications?tab=log&status=dead" />
         </div>
       )}
       <div role="tablist" aria-label="Notification settings" className="mb-4 flex gap-1 border-b border-line">
