@@ -55,7 +55,7 @@ def test_vulnerabilities_sort_keys_and_direction(client):
     base = client.get("/api/vulnerabilities", params={"status": "all", "limit": 5000}).json()
     if not base:
         pytest.skip("no vulnerabilities in the simulated environment")
-    for key, field in (("cve", "cve_id"), ("software", "package"), ("cvss", "cvss")):
+    for key, field in (("cve", "cve_id"), ("software", "package"), ("cvss", "cvss"), ("fixed", "fixed_version")):
         for d in ("asc", "desc"):
             r = client.get("/api/vulnerabilities", params={"status": "all", "sort": key, "dir": d, "limit": 5000})
             assert r.status_code == 200, r.text

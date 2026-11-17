@@ -6,6 +6,7 @@ import AssetDrawer from "../components/AssetDrawer";
 import { Button, Card, Empty, ErrorNote, PageHeader, RiskBar, Select, SeverityBadge, Stat, Table, Tag } from "../components/ui";
 import { FeedStatus, VulnTable } from "../components/vulns";
 import { useApi } from "../lib/useApi";
+import { useSort, useSortState } from "../lib/useSort";
 import { useUrlState } from "../lib/useUrlState";
 
 const VIEWS = ["Vulnerabilities", "By CVE", "By software", "Coverage"] as const;
@@ -26,7 +27,10 @@ export default function Vulnerabilities() {
   const [software, setSoftware] = useState("");
   const [status, setStatus] = useState("open");
   const [cve, setCve] = useState(params.get("cve") ?? "");
-  const [sort, setSort] = useState("risk");
+  // The API sorts the whole result of each view (the lists are capped), so the sort goes to it.
+  const listSort = useSortState(["risk", "cvss", "epss", "recent", "priority", "cve", "software", "affected", "fixed"], { key: "risk", dir: "desc" }, { risk: "desc", cvss: "desc", epss: "desc", recent: "desc", priority: "desc" });
+  const cveSort = useSortState(["severity", "cve", "software", "affected", "cvss", "fixed", "risk"], { key: "severity", dir: "desc" }, { severity: "desc", cvss: "desc", affected: "desc", risk: "desc" }, "csort");
+  const swSort = useSortState(["software", "severity", "cves", "kev", "affected", "versions", "fixed"], { key: "severity", dir: "desc" }, { severity: "desc", cves: "desc", kev: "desc", affected: "desc" }, "ssort");
   const [asset, setAsset] = useState<string | null>(params.get("asset"));
   const deviceId = params.get("device") ?? undefined;
   const analyst = useAuth().can("analyst");
@@ -46,9 +50,10 @@ export default function Vulnerabilities() {
   const key = JSON.stringify(filters);
   const { data: stats } = useApi(api.vulnStats, []);
   const { data: vstatus, reload: reloadStatus } = useApi(api.vulnStatus, [], 60000);
-  const list = useApi(() => (view === "Vulnerabilities" ? api.vulnerabilities({ ...filters, sort }) : Promise.resolve(null)), [key, sort, view]);
-  const byCve = useApi(() => (view === "By CVE" ? api.vulnByCve(filters) : Promise.resolve(null)), [key, view]);
-  const bySw = useApi(() => (view === "By software" ? api.vulnBySoftware(filters) : Promise.resolve(null)), [key, view]);
+  const list = useApi(() => (view === "Vulnerabilities" ? api.vulnerabilities({ ...filters, sort: listSort.sort.key, dir: listSort.sort.dir }) : Promise.resolve(null)), [key, listSort.sort.key, listSort.sort.dir, view]);
+  const byCve = useApi(() => (view === "By CVE" ? api.vulnByCve({ ...filters, sort: cveSort.sort.key, dir: cveSort.sort.dir }) : Promise.resolve(null)), [key, cveSort.sort.key, cveSort.sort.dir, view]);
+  const bySw = useApi(() => (view === "By software" ? api.vulnBySoftware({ ...filters, sort: swSort.sort.key, dir: swSort.sort.dir }) : Promise.resolve(null)), [key, swSort.sort.key, swSort.sort.dir, view]);
+  const ncSort = useSort(vstatus?.not_checked_top, { name: (n) => n.name, devices: (n) => n.devices, reason: (n) => n.reason }, { key: "devices", dir: "desc" }, { devices: "desc" }, "ncsort");
   const nr = stats?.noise_reduction;
   const error = list.error || byCve.error || bySw.error;
 
@@ -179,13 +184,14 @@ export default function Vulnerabilities() {
           {view === "Vulnerabilities" && (
             <Select
               label="Sort by"
-              value={sort}
-              onChange={setSort}
+              value={listSort.sort.key}
+              onChange={(k) => k !== listSort.sort.key && listSort.onSort(k)}
               options={[
                 { value: "risk", label: "Risk score" },
                 { value: "cvss", label: "CVSS only" },
                 { value: "epss", label: "EPSS" },
                 { value: "recent", label: "Newest" },
+                ...(["risk", "cvss", "epss", "recent"].includes(listSort.sort.key) ? [] : [{ value: listSort.sort.key, label: "Table column" }]),
               ]}
             />
           )}
@@ -200,7 +206,7 @@ export default function Vulnerabilities() {
       {view === "Vulnerabilities" && (
         <Card>
           <p className="mb-2 text-xs text-ink-3">{list.data ? `${list.data.length} vulnerabilities` : "Loading…"}</p>
-          {list.data && list.data.length === 0 ? <Empty>No vulnerabilities match these filters.</Empty> : <VulnTable rows={list.data ?? []} onAsset={setAsset} />}
+          {list.data && list.data.length === 0 ? <Empty>No vulnerabilities match these filters.</Empty> : <VulnTable rows={list.data ?? []} onAsset={setAsset} serverSort={listSort} />}
         </Card>
       )}
 
@@ -209,7 +215,19 @@ export default function Vulnerabilities() {
           {byCve.data && byCve.data.length === 0 ? (
             <Empty>No vulnerabilities match these filters.</Empty>
           ) : (
-            <Table head={["Severity", "CVE", "Software", "Affected", "CVSS / EPSS", "Fixed in", "Max risk"]}>
+            <Table
+              head={[
+                { label: "Severity", sort: "severity" },
+                { label: "CVE", sort: "cve" },
+                { label: "Software", sort: "software" },
+                { label: "Affected", sort: "affected" },
+                { label: "CVSS / EPSS", sort: "cvss" },
+                { label: "Fixed in", sort: "fixed" },
+                { label: "Max risk", sort: "risk" },
+              ]}
+              sort={cveSort.sort}
+              onSort={cveSort.onSort}
+            >
               {(byCve.data ?? []).map((g) => (
                 <tr key={g.cve_id} className="hover:bg-surface-2">
                   <td className="px-3 py-2">
@@ -244,7 +262,19 @@ export default function Vulnerabilities() {
           {bySw.data && bySw.data.length === 0 ? (
             <Empty>No vulnerabilities match these filters.</Empty>
           ) : (
-            <Table head={["Software / package", "Worst", "CVEs", "KEV", "Affected", "Installed versions", "Update to"]}>
+            <Table
+              head={[
+                { label: "Software / package", sort: "software" },
+                { label: "Worst", sort: "severity" },
+                { label: "CVEs", sort: "cves" },
+                { label: "KEV", sort: "kev" },
+                { label: "Affected", sort: "affected" },
+                { label: "Installed versions", sort: "versions" },
+                { label: "Update to", sort: "fixed" },
+              ]}
+              sort={swSort.sort}
+              onSort={swSort.onSort}
+            >
               {(bySw.data ?? []).map((g) => (
                 <tr key={g.package} className="hover:bg-surface-2">
                   <td className="px-3 py-2">
@@ -278,8 +308,12 @@ export default function Vulnerabilities() {
             {vstatus.not_checked_top.length === 0 ? (
               <Empty>Everything reported is checked.</Empty>
             ) : (
-              <Table head={["Software", "Devices", "Why"]}>
-                {vstatus.not_checked_top.map((n) => (
+              <Table
+                head={[{ label: "Software", sort: "name" }, { label: "Devices", sort: "devices" }, { label: "Why", sort: "reason" }]}
+                sort={ncSort.sort}
+                onSort={ncSort.onSort}
+              >
+                {ncSort.rows.map((n) => (
                   <tr key={n.name}>
                     <td className="px-3 py-1.5 text-sm">{n.name}</td>
                     <td className="px-3 py-1.5 text-xs">{n.devices}</td>

@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import type { Vulnerability, VulnStatus } from "../api";
 import { fmtAgo, fmtTime, TYPE_LABEL } from "../lib/format";
+import { SEV_RANK, useSort, type SortState } from "../lib/useSort";
 import { SOURCE_LABEL } from "../lib/vulns";
 import { Card, RiskBar, SeverityBadge, Table, Tag } from "./ui";
 
@@ -40,15 +41,43 @@ export function VulnTable({
   rows,
   onAsset,
   showTarget = true,
+  serverSort,
 }: {
   rows: Vulnerability[];
   onAsset?: (assetId: string) => void;
   showTarget?: boolean;
+  /** When the API sorts the whole result (the Vulnerabilities page) its sort state is passed in; otherwise the loaded rows sort here. */
+  serverSort?: { sort: SortState; onSort: (key: string) => void };
 }) {
-  const head = ["Priority", "CVE", "Software / package", ...(showTarget ? ["Affected"] : []), "CVSS / EPSS", "Context", "Risk score", "Fix"];
+  const local = useSort(
+    serverSort ? [] : rows,
+    {
+      priority: (v) => SEV_RANK[v.priority] ?? 0,
+      cve: (v) => v.cve_id,
+      software: (v) => v.package,
+      affected: (v) => v.device_name ?? v.asset_name ?? "",
+      cvss: (v) => v.cvss,
+      risk: (v) => v.risk_score,
+      fixed: (v) => v.fixed_version,
+    },
+    { key: "risk", dir: "desc" },
+    { priority: "desc", cvss: "desc", risk: "desc" },
+    "vuln_sort",
+  );
+  const sorted = serverSort ? { ...serverSort, rows } : local;
+  const head = [
+    { label: "Priority", sort: "priority" },
+    { label: "CVE", sort: "cve" },
+    { label: "Software / package", sort: "software" },
+    ...(showTarget ? [{ label: "Affected", sort: "affected" }] : []),
+    { label: "CVSS / EPSS", sort: "cvss" },
+    "Context",
+    { label: "Risk score", sort: "risk" },
+    { label: "Fix", sort: "fixed" },
+  ];
   return (
-    <Table head={head}>
-      {rows.map((v) => (
+    <Table head={head} sort={sorted.sort} onSort={sorted.onSort}>
+      {sorted.rows.map((v) => (
         <tr key={v.id} className={`hover:bg-surface-2 ${v.status === "resolved" ? "opacity-60" : ""}`}>
           <td className="px-3 py-2">
             <SeverityBadge severity={v.priority} />

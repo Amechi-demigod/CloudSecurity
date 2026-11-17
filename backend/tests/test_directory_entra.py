@@ -393,6 +393,16 @@ def test_sync_pages_throttling_grouping_and_issues(admin, fake):
     # One row per physical machine: LAPTOP1 is an Entra device + an Intune record, matched to its agent.
     comps = {c["name"]: c for c in admin.get("/api/directory/computers?status=all").json()["items"]}
     assert set(comps) == {"LAPTOP1", "LAPTOP-NOAGENT", "Erin's iPhone", "OLD-PC"}
+    # Sorting is applied by the server to the whole result (the lists are paged), from a whitelist of columns.
+    for d in ("asc", "desc"):
+        names = [c["name"] for c in admin.get(f"/api/directory/computers?status=all&sort=name&dir={d}").json()["items"]]
+        assert names == sorted(names, key=str.casefold, reverse=d == "desc")
+    assert admin.get("/api/directory/computers?sort=name&limit=1&dir=desc").json()["items"][0]["name"] == "OLD-PC"
+    assert admin.get("/api/directory/computers?sort=password").status_code == 422
+    assert admin.get("/api/directory/issues?sort=issue&dir=desc").status_code == 200
+    assert admin.get("/api/directory/issues?sort=x%3Bdrop").status_code == 422
+    assert admin.get("/api/directory/users?sort=activity&dir=desc").status_code == 200
+    assert admin.get("/api/directory/users?sort=nope").status_code == 422
     lap = comps["LAPTOP1"]
     assert lap["device_kind"] == "entra" and {x["kind"] for x in lap["sources"]} == {"entra", "intune"}
     assert (lap["device_id"], lap["match_method"], lap["match_confidence"]) == (laptop, "entra_device_id", 100)
@@ -424,6 +434,10 @@ def test_sync_pages_throttling_grouping_and_issues(admin, fake):
     assert next(i for i in items if i["type"] == "not_in_intune")["device_id"] == desk
     # Privileged users (filter + roles); the reader role is not privileged.
     priv = admin.get("/api/directory/users?privileged=true").json()
+    users = [u["user_principal_name"] for u in admin.get("/api/directory/users?sort=user&dir=asc").json()["items"]]
+    assert users == sorted(users, key=str.casefold)
+    assert [u["user_principal_name"] for u in admin.get("/api/directory/users?sort=user&dir=desc&limit=2").json()["items"]] \
+        == sorted(users, key=str.casefold, reverse=True)[:2]
     roles = {u["user_principal_name"]: u["privileged_roles"] for u in priv["items"]}
     assert roles == {"alice@contoso.com": ["Global Administrator"], "bob@contoso.com": ["Global Administrator"],
                      "carol@contoso.com": ["Security Administrator (via group)"],

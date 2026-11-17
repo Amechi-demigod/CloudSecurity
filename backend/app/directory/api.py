@@ -394,6 +394,42 @@ def _machine_sources(db: Session, machine_ids: list[str], types: dict[str, str])
     return out
 
 
+def _src_type(col):
+    """The type of the directory source a row belongs to (a correlated subquery, for sorting)."""
+    return select(DirectorySource.type).where(DirectorySource.id == col).scalar_subquery()
+
+
+def _ordered(stmt, keys: dict, sort: str | None, direction: str, default: tuple):
+    """ORDER BY a column picked from `keys` (user input only selects an entry, never reaches SQL); missing values
+    last; the endpoint's default order breaks ties."""
+    if not sort:
+        return stmt.order_by(*default)
+    col = keys.get(sort)
+    if col is None:
+        raise HTTPException(422, f"sort must be one of {', '.join(sorted(keys))}")
+    return stmt.order_by((col.asc() if direction == "asc" else col.desc()).nulls_last(), *default)
+
+
+ISSUE_SORT = {
+    "name": func.lower(DirectoryFinding.name), "sources": _src_type(DirectoryFinding.source_id),
+    "os": func.lower(DirectoryFinding.os), "activity": DirectoryFinding.last_logon_at,
+    "issue": DirectoryFinding.type, "device": DirectoryFinding.device_id,
+    "asset": select(DirectoryComputer.it_asset_id).where(DirectoryComputer.id == DirectoryFinding.computer_id)
+    .scalar_subquery(),
+}
+COMPUTER_SORT = {
+    "name": func.lower(DirectoryComputer.name), "sources": _src_type(DirectoryComputer.source_id),
+    "os": func.lower(DirectoryComputer.operating_system), "activity": DirectoryComputer.last_logon_at,
+    "match": DirectoryComputer.match_status, "asset": DirectoryComputer.it_asset_id,
+}
+USER_SORT = {
+    "user": func.lower(func.coalesce(DirectoryUser.display_name, DirectoryUser.user_principal_name,
+                                     DirectoryUser.sam_account_name)),
+    "department": func.lower(DirectoryUser.department), "source": _src_type(DirectoryUser.source_id),
+    "activity": DirectoryUser.last_logon_at, "status": DirectoryUser.enabled, "roles": DirectoryUser.privileged,
+}
+
+
 def _issue_rows(db: Session, findings: list[DirectoryFinding]) -> list[dict[str, Any]]:
     names = svc.hostnames_for(db, [f.device_id for f in findings])
     comp_ids = [f.computer_id for f in findings if f.computer_id]
@@ -431,11 +467,12 @@ def list_issues(type: str | None = IssueType, kind: str | None = Kind,
                 source_id: str | None = Query(None, pattern=r"^[0-9a-f]{32}$"),
                 q: str | None = Query(None, max_length=255), domain: str | None = Query(None, max_length=255),
                 limit: int = Query(100, ge=1, le=1000), offset: int = Query(0, ge=0),
-                db: Session = Depends(get_db)):
+                sort: str | None = Query(None, description="name|sources|os|activity|issue|device|asset"),
+                dir: str = Query("asc", pattern="^(asc|desc)$"), db: Session = Depends(get_db)):
     stmt = _issue_stmt(type, kind, source_id, q, domain)
     total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
-    rows = list(db.scalars(stmt.order_by(DirectoryFinding.type, DirectoryFinding.name, DirectoryFinding.id)
-                           .offset(offset).limit(limit)))
+    stmt = _ordered(stmt, ISSUE_SORT, sort, dir, (DirectoryFinding.type, DirectoryFinding.name, DirectoryFinding.id))
+    rows = list(db.scalars(stmt.offset(offset).limit(limit)))
     return {"items": _issue_rows(db, rows), "total": total, "counts": reconcile.finding_counts(db, source_id)}
 
 
@@ -475,7 +512,8 @@ def list_computers(q: str | None = Query(None, max_length=255),
                    domain: str | None = Query(None, max_length=255), status: str = ComputerStatus,
                    device_class: str | None = Query(None, pattern="^(workstation|server|domain_controller|unknown)$"),
                    limit: int = Query(100, ge=1, le=1000), offset: int = Query(0, ge=0),
-                   db: Session = Depends(get_db)):
+                   sort: str | None = Query(None, description="name|sources|os|activity|match|asset"),
+                   dir: str = Query("asc", pattern="^(asc|desc)$"), db: Session = Depends(get_db)):
     # One row per physical machine (its representative record; `sources` lists
     # every record), except for missing records, which are listed one by one.
     machine = func.coalesce(DirectoryComputer.machine_id, DirectoryComputer.id)
@@ -507,7 +545,8 @@ def list_computers(q: str | None = Query(None, max_length=255),
                               func.lower(DirectoryComputer.ou).like(like),
                               func.lower(DirectoryComputer.operating_system).like(like)))
     total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
-    rows = list(db.scalars(stmt.order_by(DirectoryComputer.name, DirectoryComputer.id).offset(offset).limit(limit)))
+    stmt = _ordered(stmt, COMPUTER_SORT, sort, dir, (DirectoryComputer.name, DirectoryComputer.id))
+    rows = list(db.scalars(stmt.offset(offset).limit(limit)))
     names = svc.hostnames_for(db, [r.device_id for r in rows])
     types = _source_types(db)
     members = _machine_sources(db, [r.id for r in rows if r.missing_since is None], types)
@@ -529,7 +568,8 @@ def list_users(q: str | None = Query(None, max_length=255),
                source_id: str | None = Query(None, pattern=r"^[0-9a-f]{32}$"),
                enabled: bool | None = None, privileged: bool | None = None,
                limit: int = Query(100, ge=1, le=1000), offset: int = Query(0, ge=0),
-               db: Session = Depends(get_db)):
+               sort: str | None = Query(None, description="user|department|source|activity|status|roles"),
+               dir: str = Query("asc", pattern="^(asc|desc)$"), db: Session = Depends(get_db)):
     stmt = select(DirectoryUser).where(DirectoryUser.missing_since.is_(None))
     if source_id:
         stmt = stmt.where(DirectoryUser.source_id == source_id)
@@ -543,8 +583,9 @@ def list_users(q: str | None = Query(None, max_length=255),
                               DirectoryUser.mail.like(like), func.lower(DirectoryUser.display_name).like(like),
                               func.lower(DirectoryUser.department).like(like)))
     total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
-    rows = db.scalars(stmt.order_by(DirectoryUser.privileged.desc(), DirectoryUser.sam_key,
-                                    DirectoryUser.user_principal_name, DirectoryUser.id).offset(offset).limit(limit))
+    stmt = _ordered(stmt, USER_SORT, sort, dir, (DirectoryUser.privileged.desc(), DirectoryUser.sam_key,
+                                                 DirectoryUser.user_principal_name, DirectoryUser.id))
+    rows = db.scalars(stmt.offset(offset).limit(limit))
     sources = {s.id: s for s in db.scalars(select(DirectorySource))}
 
     def sign_in_known(r: DirectoryUser) -> bool:

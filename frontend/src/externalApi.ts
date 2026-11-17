@@ -209,7 +209,7 @@ export const externalApi = {
   scanNow: () => request<ExtScan>("/api/external/scans", { method: "POST" }),
   scanTarget: (id: string) => request<ExtScan>(`/api/external/targets/${id}/scan`, { method: "POST" }),
   hosts: () => request<ExtHost[]>("/api/external/hosts"),
-  findings: (p: { status?: string; severity?: string; host?: string } = {}) => request<ExtFinding[]>(`/api/external/findings${qs(p)}`),
+  findings: (p: { status?: string; severity?: string; host?: string; sort?: string; dir?: string } = {}) => request<ExtFinding[]>(`/api/external/findings${qs(p)}`),
   finding: (id: string) => request<ExtFindingDetail>(`/api/external/findings/${id}`),
   acceptRisk: (id: string, reason: string) => request<ExtFindingDetail>(`/api/external/findings/${id}/accept-risk`, { method: "POST", ...j({ reason }) }),
   reopen: (id: string) => request<ExtFindingDetail>(`/api/external/findings/${id}/reopen`, { method: "POST" }),

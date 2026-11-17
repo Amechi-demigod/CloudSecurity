@@ -242,7 +242,7 @@ export default function Scripts() {
 
       <Card title="Script runs waiting for approval" className="mb-4">
         <ErrorNote error={pending.error} />
-        <ApprovalList items={pending.data} onChanged={() => { pending.reload(); runs.reload(); }} empty="No script runs are waiting for approval." />
+        <ApprovalList items={pending.data} onChanged={() => { pending.reload(); runs.reload(); }} empty="No script runs are waiting for approval." sortParam="asort" />
       </Card>
 
       <Card title="Run history">

@@ -5,15 +5,18 @@ import { Card, Empty, ErrorNote, PageHeader, Select, SeverityBadge, Table, Tag }
 import { externalApi } from "../../externalApi";
 import { fmtAgo } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
+import { useSortState } from "../../lib/useSort";
 import { useUrlState } from "../../lib/useUrlState";
 
 export default function ExternalFindings() {
   const [status, setStatus] = useUrlState("status", "open");
   const [severity, setSeverity] = useUrlState("severity");
   const [host] = useUrlState("host");
+  // The server sorts the whole result (the list is capped), so the sort goes to the API.
+  const sorted = useSortState(["ref", "severity", "title", "host", "cvss", "pre_asv", "status", "fix_by"], { key: "severity", dir: "desc" }, { severity: "desc", cvss: "desc", fix_by: "asc" });
   const { data, error, loading } = useApi(
-    () => externalApi.findings({ status: status || undefined, severity: severity || undefined, host: host || undefined }),
-    [status, severity, host],
+    () => externalApi.findings({ status: status || undefined, severity: severity || undefined, host: host || undefined, sort: sorted.sort.key, dir: sorted.sort.dir }),
+    [status, severity, host, sorted.sort.key, sorted.sort.dir],
   );
   return (
     <div className="space-y-4">
@@ -28,7 +31,18 @@ export default function ExternalFindings() {
       </div>
       <Card>
         <Table
-          head={["ID", "Severity", "Finding", "Host", "CVSS", "Pre-ASV", "Status", "Fix by"]}
+          head={[
+            { label: "ID", sort: "ref" },
+            { label: "Severity", sort: "severity" },
+            { label: "Finding", sort: "title" },
+            { label: "Host", sort: "host" },
+            { label: "CVSS", sort: "cvss" },
+            { label: "Pre-ASV", sort: "pre_asv" },
+            { label: "Status", sort: "status" },
+            { label: "Fix by", sort: "fix_by" },
+          ]}
+          sort={sorted.sort}
+          onSort={sorted.onSort}
           loading={loading}
           rowCount={data?.length ?? 0}
           empty={<Empty icon={ShieldCheck} title="No findings">Nothing matches. Run a scan from Attack surface to re-check.</Empty>}
