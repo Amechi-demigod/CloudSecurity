@@ -51,7 +51,24 @@ export function Card({ title, actions, children, className = "" }: { title?: Rea
  * A number with a label. With `to`, the whole tile links to the records behind the number
  * (usually a filtered list), with a hover state, a focus ring and a chevron as the cue.
  */
-export function Stat({ label, value, sub, to, hint }: { label: string; value: ReactNode; sub?: ReactNode; to?: string; hint?: string }) {
+export function Stat({
+  label,
+  value,
+  sub,
+  to,
+  hint,
+  onSelect,
+  selected,
+}: {
+  label: string;
+  value: ReactNode;
+  sub?: ReactNode;
+  to?: string;
+  hint?: string;
+  /** Makes the box a toggle that filters a list on the same page (`selected` highlights it). */
+  onSelect?: () => void;
+  selected?: boolean;
+}) {
   const body = (
     <>
       <div className="flex items-start justify-between gap-2">
@@ -65,6 +82,18 @@ export function Stat({ label, value, sub, to, hint }: { label: string; value: Re
     </>
   );
   const base = "block rounded-xl border border-line bg-surface-1 px-4 py-3";
+  if (onSelect)
+    return (
+      <button
+        type="button"
+        onClick={onSelect}
+        aria-pressed={!!selected}
+        title={hint ?? `Show only ${label.toLowerCase()}`}
+        className={`group w-full text-left ${base} transition focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${selected ? "border-accent bg-accent/10" : "hover:border-accent/60 hover:bg-surface-2"}`}
+      >
+        {body}
+      </button>
+    );
   if (!to) return <div className={base}>{body}</div>;
   return (
     <Link

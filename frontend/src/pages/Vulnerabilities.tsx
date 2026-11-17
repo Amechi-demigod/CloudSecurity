@@ -78,14 +78,42 @@ export default function Vulnerabilities() {
             value={`${nr.percent}%`}
             sub={`${nr.dormant} of ${nr.total} workload vulns are in packages never loaded at runtime`}
           />
-          <Stat label="Loaded at runtime" value={nr.in_use} sub={`${stats.in_use_and_exposed} also internet-exposed`} />
+          <Stat
+            label="Loaded at runtime"
+            value={nr.in_use}
+            sub={`${stats.in_use_and_exposed} also internet-exposed`}
+            selected={runtime === "in_use" && target !== "device"}
+            onSelect={() => {
+              setView("Vulnerabilities");
+              setTarget("");
+              setRuntime(runtime === "in_use" ? "all" : "in_use");
+            }}
+          />
           <Stat
             label="Critical CVSS actually in use"
             value={`${stats.critical_cvss_in_use} / ${stats.critical_cvss_total}`}
             sub="critical-severity CVEs whose package is loaded"
           />
-          <Stat label="On laptops" value={stats.devices?.open ?? 0} sub={`${stats.devices?.affected ?? 0} devices affected`} />
-          <Stat label="Known exploited (KEV)" value={stats.kev?.cves ?? 0} sub={`${stats.kev?.open ?? 0} open findings`} />
+          <Stat
+            label="On laptops"
+            value={stats.devices?.open ?? 0}
+            sub={`${stats.devices?.affected ?? 0} devices affected`}
+            selected={target === "device"}
+            onSelect={() => {
+              setView("Vulnerabilities");
+              setTarget(target === "device" ? "" : "device");
+            }}
+          />
+          <Stat
+            label="Known exploited (KEV)"
+            value={stats.kev?.cves ?? 0}
+            sub={`${stats.kev?.open ?? 0} open findings`}
+            selected={kevOnly}
+            onSelect={() => {
+              setView("Vulnerabilities");
+              setKevOnly(!kevOnly);
+            }}
+          />
         </div>
       )}
 

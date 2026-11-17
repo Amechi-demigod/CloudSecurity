@@ -122,12 +122,12 @@ export default function Devices() {
       />
       {summary && (
         <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-          <Stat label="Devices" value={summary.total} sub={Object.entries(summary.by_os).map(([k, v]) => `${v} ${OS_LABEL[k] ?? k}`).join(" · ") || "none enrolled"} />
+          <Stat label="Devices" to="/devices" hint="Show all active devices" value={summary.total} sub={Object.entries(summary.by_os).map(([k, v]) => `${v} ${OS_LABEL[k] ?? k}`).join(" · ") || "none enrolled"} />
           {summary.by_class && (
             <Stat label="Workstations / servers" value={`${summary.by_class.workstation} / ${summary.by_class.server + summary.by_class.domain_controller}`}
               sub={`${summary.by_class.domain_controller} ${CLASS_LABEL.domain_controller.toLowerCase()}${summary.by_class.domain_controller === 1 ? "" : "s"} · ${summary.virtual ?? 0} virtual`} />
           )}
-          <Stat label="Healthy" value={summary.by_health.healthy} sub={`${summary.by_health.critical} at risk · ${summary.by_health.warning} warning`} />
+          <Stat label="Healthy" to="/devices?health=healthy" value={summary.by_health.healthy} sub={`${summary.by_health.critical} at risk · ${summary.by_health.warning} warning`} />
           <Stat label="Encrypted" value={summary.encrypted_percent === null ? "—" : `${summary.encrypted_percent}%`} sub={`of ${summary.encryption_known} reporting`} />
           <Stat label="Firewall on" value={summary.firewall_percent === null ? "—" : `${summary.firewall_percent}%`} sub={`of ${summary.firewall_known} reporting`} />
           <Stat label="Stale / inactive" value={summary.connectivity.stale + summary.connectivity.inactive} sub="no check-in for 24h+" />

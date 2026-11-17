@@ -473,9 +473,24 @@ export default function Compliance() {
         <Stat label="Score" value={pct(s?.score)} hint="Controls without failing automated evidence / controls assessed automatically" />
         <Stat label="Automated coverage" value={pct(s?.coverage)} sub={s ? `${s.assessed} of ${s.total} controls` : undefined} hint="Controls assessed automatically / all controls" />
         {(["fail", "pass", "partial", "no_data", "manual"] as ControlStatus[]).map((k) => (
-          <Stat key={k} label={STATUS_LABEL[k]} value={s ? s[k].toLocaleString() : "—"} hint={STATUS_HINT[k]} />
+          <Stat
+            key={k}
+            label={STATUS_LABEL[k]}
+            value={s ? s[k].toLocaleString() : "—"}
+            hint={`${STATUS_HINT[k]} Click to show only these controls.`}
+            selected={statusFilter === k}
+            onSelect={() => setStatusFilter(statusFilter === k ? "" : k)}
+          />
         ))}
       </div>
+      {statusFilter && s && (
+        <div className="mb-3 flex items-center gap-2 text-sm" data-print="hide">
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-accent/40 bg-accent/10 px-2.5 py-0.5">
+            Showing: {STATUS_LABEL[statusFilter as ControlStatus] ?? statusFilter} ({(s[statusFilter as ControlStatus] ?? 0).toLocaleString()})
+            <button type="button" onClick={() => setStatusFilter("")} aria-label="Clear the status filter" className="text-ink-3 hover:text-ink">✕</button>
+          </span>
+        </div>
+      )}
 
       <Card title="Trend" className="mb-4" actions={<LegendKeys items={[{ label: "Score", color: SCORE_COLOR }, { label: "Automated coverage", color: COVERAGE_COLOR, dashed: true }]} />}>
         {points.length < 2 ? (

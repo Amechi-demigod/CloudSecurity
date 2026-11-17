@@ -3,6 +3,7 @@ import { ApiError } from "../api";
 import { Button, Card, Empty, ErrorNote, Select, SeverityBadge, Table, Tag } from "../components/ui";
 import { fmtAgo, fmtTime } from "../lib/format";
 import { useApi } from "../lib/useApi";
+import { useUrlState } from "../lib/useUrlState";
 import { notificationsApi, type Delivery } from "../notificationsApi";
 
 const STATUS_TONE: Record<Delivery["status"], "default" | "warn" | "good" | "accent"> = {
@@ -13,7 +14,7 @@ const STATUS_TONE: Record<Delivery["status"], "default" | "warn" | "good" | "acc
 };
 
 export default function NotificationsLog({ isAdmin, onChange }: { isAdmin: boolean; onChange: () => void }) {
-  const [status, setStatus] = useState("");
+  const [status, setStatus] = useUrlState("status");
   const [kind, setKind] = useState("");
   const [actionError, setActionError] = useState<string | null>(null);
   const { data, error, reload } = useApi(

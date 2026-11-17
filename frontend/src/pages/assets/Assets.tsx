@@ -179,16 +179,16 @@ export default function Assets() {
       {s && (
         <>
           <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-            <Stat label="Assets in use" value={s.active} sub={`${s.total} total · ${s.with_agent} with agent`} />
-            <Stat label="Assigned" value={s.by_status.assigned} sub={`${s.by_status.in_stock} in stock · ${s.by_status.in_repair} in repair`} />
+            <Stat label="Assets in use" selected={status === "active" && !flag} onSelect={() => { setStatus("active"); setFlag(""); }} value={s.active} sub={`${s.total} total · ${s.with_agent} with agent`} />
+            <Stat label="Assigned" selected={status === "assigned" && !flag} onSelect={() => { setStatus("assigned"); setFlag(""); }} value={s.by_status.assigned} sub={`${s.by_status.in_stock} in stock · ${s.by_status.in_repair} in repair`} />
             <Stat
               label="Total value"
               value={Object.keys(s.value_by_currency).length ? fmtMoney(s.value_by_currency[s.default_currency] ?? 0, s.default_currency) : "—"}
               sub={Object.entries(s.value_by_currency).filter(([c]) => c !== s.default_currency).map(([c, v]) => fmtMoney(v, c)).join(" · ") || "excl. disposed, lost, stolen"}
             />
-            <Stat label="Overdue retrievals" value={s.retrieval_overdue} sub={`${s.by_status.retrieval_pending} pending`} />
-            <Stat label="Warranty expiring" value={s.warranty_expiring} sub={`within ${s.warranty_warning_days} days`} />
-            <Stat label="Idle devices" value={s.idle} sub={`agent not seen ${s.idle_days}+ days`} />
+            <Stat label="Overdue retrievals" selected={flag === "retrieval_overdue"} onSelect={() => { setStatus(""); setFlag(flag === "retrieval_overdue" ? "" : "retrieval_overdue"); }} value={s.retrieval_overdue} sub={`${s.by_status.retrieval_pending} pending`} />
+            <Stat label="Warranty expiring" selected={flag === "warranty_expiring"} onSelect={() => { setStatus("active"); setFlag(flag === "warranty_expiring" ? "" : "warranty_expiring"); }} value={s.warranty_expiring} sub={`within ${s.warranty_warning_days} days`} />
+            <Stat label="Idle devices" selected={flag === "idle"} onSelect={() => { setStatus("active"); setFlag(flag === "idle" ? "" : "idle"); }} value={s.idle} sub={`agent not seen ${s.idle_days}+ days`} />
           </div>
           <div className="mb-4 grid grid-cols-1 gap-4 lg:grid-cols-3">
             <Card title="By status">
