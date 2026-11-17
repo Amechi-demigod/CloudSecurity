@@ -27,12 +27,20 @@ from ..schemas import (
     VulnerabilityOut,
 )
 from ..services import dashboards, finding_detail
+from ..sorting import sort_rows
 
 router = APIRouter(prefix="/api", tags=["inventory"])  # Cloud security module (app/main.py)
 # Opened from several modules' pages (asset drawer, detection rules): gated per route.
 shared_router = APIRouter(prefix="/api", tags=["inventory"])
 pdf_limiter = RateLimiter()
 SEV_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+
+
+FINDING_SORT = {
+    "severity": lambda f: 4 - SEV_RANK.get(f.severity, 5),  # critical highest
+    "title": lambda f: f.title, "resource": lambda f: f.asset.name, "status": lambda f: f.status,
+    "first_seen": lambda f: f.first_seen, "last_seen": lambda f: f.last_seen,
+}
 
 
 def finding_out(f: Finding) -> FindingOut:
@@ -159,6 +167,8 @@ def list_findings(
     category: str | None = Query(None, description="Dashboard category: Network, Storage, Identity, Databases, "
                                                    "Kubernetes, Secrets, Compute or Other"),
     limit: int = Query(500, le=5000),
+    sort: str | None = Query(None, description="severity|title|resource|status|first_seen|last_seen"),
+    dir: str = Query("asc", pattern="^(asc|desc)$"),
 ):
     stmt = select(Finding)
     if category:
@@ -187,6 +197,7 @@ def list_findings(
     if compliance:
         rows = [f for f in rows if any(compliance.lower() in c.lower() for c in f.compliance or [])]
     rows.sort(key=lambda f: (SEV_RANK.get(f.severity, 9), f.rule_id, f.asset_id))
+    rows = sort_rows(rows, FINDING_SORT, sort, dir)  # the whole result, before the limit
     return [finding_out(f) for f in rows[:limit]]
 
 

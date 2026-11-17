@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Request
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, StringConstraints
 from sqlalchemy import select
@@ -25,6 +25,7 @@ from ..models import (
     User,
     utcnow,
 )
+from ..sorting import sort_rows
 from . import report, rules, service
 from .service import ExternalError
 
@@ -221,9 +222,28 @@ def get_hosts(db: Session = Depends(get_db)):
 
 
 # ----------------------------------------------------------------------------- findings
+_STATUS_ORDER = {"open": 0, "disputed": 1, "accepted": 2, "resolved": 3}
+
+
+def _pre_asv(f: dict) -> int | None:
+    """Pass / Exception / Fail / Automatic fail as 0..3 (resolved findings have none: they sort last)."""
+    if f["status"] == "resolved":
+        return None
+    return 0 if not f["fails"] else (3 if f["auto_fail"] else 2) if not f["exempt"] else 1
+
+
+FINDING_SORT = {
+    "ref": lambda f: f["ref"], "severity": lambda f: 4 - service.SEVERITY_ORDER.get(f["severity"], 5),
+    "title": lambda f: f["title"], "host": lambda f: f["host"], "cvss": lambda f: f["cvss"] or None,
+    "pre_asv": _pre_asv, "status": lambda f: _STATUS_ORDER.get(f["status"], 9),
+    "fix_by": lambda f: f["fix_due"],
+}
+
+
 @router.get("/findings")
 def get_findings(status: str | None = None, severity: str | None = None, host: str | None = None,
-                 db: Session = Depends(get_db)):
+                 sort: str | None = Query(None, description="ref|severity|title|host|cvss|pre_asv|status|fix_by"),
+                 dir: str = Query("asc", pattern="^(asc|desc)$"), db: Session = Depends(get_db)):
     q = select(ExternalFinding)
     if status:
         q = q.where(ExternalFinding.status == status)
@@ -235,7 +255,8 @@ def get_findings(status: str | None = None, severity: str | None = None, host: s
                                                 -f.cvss, f.host))
     exempt = service.exempt_ids(db)
     now = utcnow()
-    return [{**service.finding_out(f, now=now), "exempt": f.id in exempt} for f in rows[:2000]]
+    out = [{**service.finding_out(f, now=now), "exempt": f.id in exempt} for f in rows]
+    return sort_rows(out, FINDING_SORT, sort, dir)[:2000]  # the whole result, then the cap
 
 
 def _detail(db: Session, f: ExternalFinding) -> dict:

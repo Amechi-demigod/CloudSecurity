@@ -57,6 +57,7 @@ from ..schemas_devices import (
 )
 from ..services import agent_updates, approvals, endpoint_actions, installers, os_updates, remote_sessions
 from ..services import devices as svc
+from ..sorting import sort_rows
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/devices", tags=["devices"])
@@ -82,6 +83,19 @@ def _token_out(t: EnrollmentToken, cls=EnrollmentTokenOut, **extra):
 
 
 # ----------------------------------------------------------------------------- fleet
+_HEALTH_RANK = {"critical": 3, "warning": 2, "unknown": 1, "healthy": 0}
+_CLASS_RANK = {"domain_controller": 3, "server": 2, "workstation": 1}
+DEVICE_SORT = {
+    "name": lambda d: d["hostname"], "os": lambda d: f"{d['os_name'] or ''} {d['os_version'] or ''}".strip(),
+    "class": lambda d: _CLASS_RANK.get(d.get("device_class") or "", 0) * 2 + (1 if d.get("is_virtual") else 0),
+    "user": lambda d: ", ".join(d["logged_in_users"]),
+    "health": lambda d: -1 if d["status"] == "revoked" else _HEALTH_RANK.get(d["health"], 0),
+    "issues": lambda d: len(d["issues"]), "seen": lambda d: d["last_seen_at"], "agent": lambda d: d["agent_version"],
+    "usb": lambda d: {"blocked": 2, "allowed": 1}.get(d["usb_storage"], 0),
+    "updates": lambda d: d["os_updates"]["security"] * 10000 + d["os_updates"]["missing"] if d["os_updates"] else None,
+}
+
+
 @router.get("", response_model=list[DeviceSummaryOut])
 def list_devices(db: Session = Depends(get_db),
                  q: str | None = Query(None, max_length=255),
@@ -98,7 +112,9 @@ def list_devices(db: Session = Depends(get_db),
                                          description="USB mass storage as last reported (Windows, agent 1.4.0+)"),
                  updates: str | None = Query(None, pattern="^(security|any|none|unknown)$",
                                              description="missing OS updates (Windows Update report)"),
-                 limit: int = Query(500, ge=1, le=5000)):
+                 limit: int = Query(500, ge=1, le=5000),
+                 sort: str | None = Query(None, description="name|os|class|user|health|issues|seen|agent|usb|updates"),
+                 dir: str = Query("asc", pattern="^(asc|desc)$")):
     stmt = select(Device)
     if device_class == "unknown":
         stmt = stmt.where(Device.device_class.is_(None))
@@ -133,9 +149,9 @@ def list_devices(db: Session = Depends(get_db),
         if updates and not os_updates.matches_filter(d, updates):
             continue
         out.append(sm)
-        if len(out) >= limit:
+        if len(out) >= limit and not sort:
             break
-    return out
+    return sort_rows(out, DEVICE_SORT, sort, dir)[:limit]  # sorted over every match, then limited
 
 
 @router.get("/summary")

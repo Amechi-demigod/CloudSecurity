@@ -4,7 +4,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import func, or_, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session
 
 from .. import config
@@ -13,6 +13,7 @@ from ..db import get_db
 from ..engine.risk import noise_reduction
 from ..models import Device, User, Vulnerability, VulnFeedStatus, VulnMatchState, utcnow
 from ..schemas import VulnerabilityOut
+from ..sorting import sort_rows
 from ..vulnmatch import worker as vuln_worker
 from ..vulnmatch.mapping import RULES
 from ..vulnmatch.state import ASSET, DEVICE
@@ -115,15 +116,46 @@ class Filters:
                        kev=kev, package=package, source=source, network_device_id=network_device_id)
 
 
+# ORDER BY expressions picked by key (user input never reaches SQL). Text is compared case-insensitively.
+_SEV_RANK_SQL = case({"critical": 4, "high": 3, "medium": 2, "low": 1}, value=Vulnerability.severity, else_=0)
+VULN_SORT = {
+    "risk": Vulnerability.risk_score, "cvss": Vulnerability.cvss, "epss": Vulnerability.epss,
+    "recent": Vulnerability.first_seen, "severity": _SEV_RANK_SQL, "cve": func.lower(Vulnerability.cve_id),
+    "software": func.lower(Vulnerability.package), "fixed": func.lower(Vulnerability.fixed_version),
+    "affected": func.lower(func.coalesce(Vulnerability.asset_id, Vulnerability.device_id,
+                                         Vulnerability.network_device_id)),
+}
+_DESC_FIRST = {"risk", "cvss", "epss", "recent", "severity"}
+
+
 @router.get("", response_model=list[VulnerabilityOut])
 def list_vulns(db: Session = Depends(get_db), f: Filters = Depends(),
-               sort: str = Query("risk", pattern="^(risk|cvss|epss|recent)$"), limit: int = Query(500, le=5000)):
+               sort: str = Query("risk", pattern="^(risk|cvss|epss|recent|severity|cve|software|fixed|affected)$"),
+               dir: str | None = Query(None, pattern="^(asc|desc)$"), limit: int = Query(500, le=5000)):
     stmt = _filtered(select(Vulnerability), **f.kw)
-    order = {"risk": Vulnerability.risk_score.desc(), "cvss": Vulnerability.cvss.desc(),
-             "epss": func.coalesce(Vulnerability.epss, -1.0).desc(), "recent": Vulnerability.first_seen.desc()}[sort]
+    col = VULN_SORT[sort]
+    desc = (dir or ("desc" if sort in _DESC_FIRST else "asc")) == "desc"
+    order = (col.desc() if desc else col.asc()).nulls_last()
     vulns = list(db.scalars(stmt.order_by(order, Vulnerability.cvss.desc(), Vulnerability.id).limit(limit)))
     names = {**device_names(db, (v.device_id for v in vulns)), **network_names(db, (v.network_device_id for v in vulns))}
     return [vuln_out(v, names) for v in vulns]
+
+
+def _sev_n(g: dict) -> int:
+    return 4 - SEV_ORDER.index(g["severity"]) if g["severity"] in SEV_ORDER else 0
+
+
+def _affected(g: dict) -> int:
+    return g["device_count"] + g["asset_count"] + g["network_device_count"]
+
+
+CVE_SORT = {"cve": lambda g: g["cve_id"], "title": lambda g: g["title"], "severity": _sev_n,
+            "cvss": lambda g: g["cvss"], "epss": lambda g: g["epss"], "affected": _affected,
+            "fixed": lambda g: ", ".join(g["fixed_versions"]), "risk": lambda g: g["max_risk"]}
+SOFTWARE_SORT = {"software": lambda g: g["package"], "severity": _sev_n, "cves": lambda g: g["cve_count"],
+                 "kev": lambda g: g["kev_count"], "affected": _affected,
+                 "versions": lambda g: ", ".join(g["versions"]), "fixed": lambda g: ", ".join(g["fixed_versions"]),
+                 "risk": lambda g: g["max_risk"]}
 
 
 def _sev_max(sevs) -> str:
@@ -132,7 +164,9 @@ def _sev_max(sevs) -> str:
 
 
 @router.get("/by-cve")
-def vulns_by_cve(db: Session = Depends(get_db), f: Filters = Depends(), limit: int = Query(500, le=5000)):
+def vulns_by_cve(db: Session = Depends(get_db), f: Filters = Depends(), limit: int = Query(500, le=5000),
+                 sort: str | None = Query(None, description="cve|title|severity|cvss|epss|affected|fixed|risk"),
+                 dir: str = Query("asc", pattern="^(asc|desc)$")):
     """Fleet view: one row per CVE with the devices / assets it affects."""
     vulns = list(db.scalars(_filtered(select(Vulnerability), **f.kw)))
     names = device_names(db, (v.device_id for v in vulns))
@@ -159,11 +193,13 @@ def vulns_by_cve(db: Session = Depends(get_db), f: Filters = Depends(), limit: i
         })
     out.sort(key=lambda g: (not g["kev"], SEV_ORDER.index(g["severity"]) if g["severity"] in SEV_ORDER else 9,
                             -(g["device_count"] + g["asset_count"] + g["network_device_count"]), -g["cvss"]))
-    return out[:limit]
+    return sort_rows(out, CVE_SORT, sort, dir)[:limit]
 
 
 @router.get("/by-software")
-def vulns_by_software(db: Session = Depends(get_db), f: Filters = Depends(), limit: int = Query(500, le=5000)):
+def vulns_by_software(db: Session = Depends(get_db), f: Filters = Depends(), limit: int = Query(500, le=5000),
+                      sort: str | None = Query(None, description="software|severity|cves|kev|affected|versions|fixed"),
+                      dir: str = Query("asc", pattern="^(asc|desc)$")):
     """Fleet view: one row per software / package (what to update first)."""
     vulns = list(db.scalars(_filtered(select(Vulnerability), **f.kw)))
     groups: dict[str, list[Vulnerability]] = defaultdict(list)
@@ -185,7 +221,7 @@ def vulns_by_software(db: Session = Depends(get_db), f: Filters = Depends(), lim
         })
     out.sort(key=lambda g: (-g["kev_count"], SEV_ORDER.index(g["severity"]) if g["severity"] in SEV_ORDER else 9,
                             -g["cve_count"]))
-    return out[:limit]
+    return sort_rows(out, SOFTWARE_SORT, sort, dir)[:limit]
 
 
 @router.get("/stats")
