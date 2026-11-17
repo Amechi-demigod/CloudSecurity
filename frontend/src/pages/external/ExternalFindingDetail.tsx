@@ -1,11 +1,10 @@
-import { useState } from "react";
 import { useParams } from "react-router-dom";
 import { useAuth } from "../../auth/context";
 import { CodeBlock, Tabs } from "../../components/FixTabs";
 import { NotAsvBanner, StatusTag } from "../../components/external";
-import { errMsg, inputCls } from "../../lib/externalUi";
-import { Breadcrumbs, Button, Card, ErrorNote, Modal, PageHeader, SeverityBadge, Tag } from "../../components/ui";
-import { externalApi, type ExtDispute } from "../../externalApi";
+import { useFindingActions } from "../../components/ExternalFindingActions";
+import { Breadcrumbs, Button, Card, ErrorNote, PageHeader, SeverityBadge, Tag } from "../../components/ui";
+import { externalApi } from "../../externalApi";
 import { fmtTime } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
 
@@ -13,28 +12,7 @@ export default function ExternalFindingDetail() {
   const { id = "" } = useParams();
   const { can } = useAuth();
   const { data: f, error, reload } = useApi(() => externalApi.finding(id), [id]);
-  const [err, setErr] = useState<string | null>(null);
-  const [modal, setModal] = useState<"dispute" | "accept" | null>(null);
-  const [reason, setReason] = useState("");
-  const [kind, setKind] = useState<ExtDispute["kind"]>("false_positive");
-  const [busy, setBusy] = useState(false);
-  const [note, setNote] = useState<string | null>(null);
-
-  async function run(fn: () => Promise<unknown>, done?: string) {
-    setBusy(true);
-    setErr(null);
-    try {
-      await fn();
-      if (done) setNote(done);
-      setModal(null);
-      setReason("");
-      reload();
-    } catch (e) {
-      setErr(errMsg(e));
-    } finally {
-      setBusy(false);
-    }
-  }
+  const { run, busy, err, note, modals, openFor } = useFindingActions(reload);
 
   if (!f) return <ErrorNote error={error} />;
   const analyst = can("analyst");
@@ -91,33 +69,15 @@ export default function ExternalFindingDetail() {
           ))}
           {analyst && f.status !== "resolved" && (
             <div className="flex flex-wrap gap-2">
-              <Button onClick={() => setModal("dispute")}>Dispute (false positive / compensating control)</Button>
-              {f.status !== "accepted" && <Button onClick={() => setModal("accept")}>Accept risk</Button>}
+              <Button onClick={() => openFor(f.id, "dispute")}>Dispute (false positive / compensating control)</Button>
+              {f.status !== "accepted" && <Button onClick={() => openFor(f.id, "accept")}>Accept risk</Button>}
               {(f.status === "accepted") && <Button onClick={() => void run(() => externalApi.reopen(f.id))}>Re-open</Button>}
             </div>
           )}
           <p className="text-xs text-ink-3">Accepting a risk records your decision but still counts in the pre-ASV result. A dispute that a platform owner accepts is listed as an exception and does not fail the report.</p>
         </div>
       </Card>
-      <Modal open={modal === "dispute"} onClose={() => setModal(null)} title="Dispute this finding">
-        <div className="space-y-3 text-sm">
-          <label className="block">Type
-            <select className={inputCls} value={kind} onChange={(e) => setKind(e.target.value as ExtDispute["kind"])}>
-              <option value="false_positive">False positive</option><option value="compensating_control">Compensating control</option>
-            </select>
-          </label>
-          <label className="block">Reason<textarea rows={4} className={inputCls} value={reason} onChange={(e) => setReason(e.target.value)} /></label>
-          <div className="flex justify-end gap-2"><Button onClick={() => setModal(null)}>Cancel</Button>
-            <Button variant="primary" disabled={busy || reason.trim().length < 10} onClick={() => void run(() => externalApi.dispute(f.id, kind, reason), "Dispute submitted for review.")}>Submit</Button></div>
-        </div>
-      </Modal>
-      <Modal open={modal === "accept"} onClose={() => setModal(null)} title="Accept this risk">
-        <div className="space-y-3 text-sm">
-          <label className="block">Reason<textarea rows={3} className={inputCls} value={reason} onChange={(e) => setReason(e.target.value)} /></label>
-          <div className="flex justify-end gap-2"><Button onClick={() => setModal(null)}>Cancel</Button>
-            <Button variant="primary" disabled={busy || !reason.trim()} onClick={() => void run(() => externalApi.acceptRisk(f.id, reason))}>Accept risk</Button></div>
-        </div>
-      </Modal>
+      {modals}
     </div>
   );
 }

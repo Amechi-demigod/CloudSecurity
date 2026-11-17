@@ -26,6 +26,7 @@ from app.external.scheduler import ExternalScheduler
 from app.models import (
     Asset,
     AuditLog,
+    ExternalDispute,
     ExternalFinding,
     ExternalHost,
     ExternalScan,
@@ -1123,3 +1124,129 @@ def test_migration_gives_a_brand_new_install_every_module(tmp_path):
         assert mods == list(ALL_MODULES)
     finally:
         eng.dispose()
+
+
+# ----------------------------------------------------------------------------- grouped findings
+def _seed_groups():
+    """Two targets; hsts-missing on 6 ports of a.example.com and one on b.example.com; one TLS auto-fail."""
+    with db.get_session("default") as s:
+        s.add(ExternalTarget(id="tgtA", kind="domain", value="example.com", token="t", verified_at=utcnow(),
+                             verified_method="dns"))
+        s.add(ExternalTarget(id="tgtB", kind="ip", value="203.0.113.9", token="t", verified_at=utcnow(),
+                             verified_method="platform"))
+        s.add(ExternalHost(host="a.example.com", target_id="tgtA", active=True))
+        s.add(ExternalHost(host="b.example.com", target_id="tgtA", active=True))
+        s.add(ExternalHost(host="203.0.113.9", target_id="tgtB", active=True))
+        n = 0
+
+        def add(check, title, sev, cvss, host, port, status="open", **kw):
+            nonlocal n
+            n += 1
+            s.add(ExternalFinding(seq=n, key=f"{check}|{host}|{port}|", check_id=check, title=title, severity=sev,
+                                  cvss=cvss, host=host, port=port, status=status, detail={}, evidence={}, **kw))
+            return n
+
+        for port in range(8000, 8006):
+            add("hdr-hsts", "HSTS missing", "low", 2.0 if port < 8005 else 4.3, "a.example.com", port,
+                status="resolved" if port == 8000 else "open")
+        add("hdr-hsts", "HSTS missing", "low", 2.0, "b.example.com", 443)
+        add("tls-tls10", "TLS 1.0 is enabled", "medium", 5.9, "203.0.113.9", 443, auto_fail=True)
+        add("banner", "Server banner", "info", 0.0, "203.0.113.9", 80)
+        s.commit()
+
+
+def _grouped(client, **p):
+    r = client.get("/api/external/findings/grouped", params=p)
+    assert r.status_code == 200, r.text
+    return {g["check_id"]: g for g in r.json()}, r.json()
+
+
+def test_grouped_findings_group_over_many_ports_and_compute_worst_values(client):
+    _seed_groups()
+    by, rows = _grouped(client)
+    assert set(by) == {"hdr-hsts", "tls-tls10", "banner"}
+    g = by["hdr-hsts"]
+    assert g["affected"] == 7 and g["hosts"] == 2 and len(g["findings"]) == 7
+    assert g["cvss"] == 4.3 and g["severity"] == "low"
+    assert g["status_counts"] == {"open": 6, "disputed": 0, "accepted": 0, "resolved": 1}
+    assert g["pre_asv"] == "fail" and g["auto_fail"] is False  # the 4.3 one fails, the rest pass
+    assert g["fix_due"] and g["first_seen"] <= g["last_seen"]
+    assert {f["port"] for f in g["findings"] if f["host"] == "a.example.com"} == set(range(8000, 8006))
+    assert by["tls-tls10"]["pre_asv"] == "fail" and by["tls-tls10"]["auto_fail"] is True
+    assert [r["check_id"] for r in rows][0] == "tls-tls10"  # worst severity first
+
+
+def test_grouped_pre_asv_exempt_and_resolved(client):
+    _seed_groups()
+    with db.get_session("default") as s:
+        tls = s.scalar(select(ExternalFinding).where(ExternalFinding.check_id == "tls-tls10"))
+        s.add(ExternalDispute(finding_id=tls.id, kind="false_positive", reason="r" * 12, submitted_by="x",
+                              status="accepted"))
+        for f in s.scalars(select(ExternalFinding).where(ExternalFinding.check_id == "hdr-hsts")):
+            f.status = "resolved"
+        s.commit()
+    by, _ = _grouped(client)
+    assert by["tls-tls10"]["pre_asv"] == "exception"
+    assert by["hdr-hsts"]["pre_asv"] is None and by["hdr-hsts"]["fix_due"] is None
+    assert by["hdr-hsts"]["status_counts"]["resolved"] == 7
+    by, _ = _grouped(client, pre_asv="exception")
+    assert set(by) == {"tls-tls10"}
+
+
+def test_grouped_filters_match_the_list_filters(client):
+    _seed_groups()
+    assert set(_grouped(client, host="b.example.com")[0]) == {"hdr-hsts"}
+    assert _grouped(client, host="b.example.com")[0]["hdr-hsts"]["affected"] == 1
+    assert set(_grouped(client, target="tgtB")[0]) == {"tls-tls10", "banner"}  # by the target's hosts
+    assert _grouped(client, target="tgtA")[0]["hdr-hsts"]["hosts"] == 2
+    assert set(_grouped(client, severity="medium")[0]) == {"tls-tls10"}
+    assert _grouped(client, status="resolved")[0]["hdr-hsts"]["affected"] == 1
+    assert set(_grouped(client, q="TLS 1.0")[0]) == {"tls-tls10"}
+    assert set(_grouped(client, q="8003")[0]) == {"hdr-hsts"}
+    assert set(_grouped(client, pre_asv="fail")[0]) == {"hdr-hsts", "tls-tls10"}
+    assert set(_grouped(client, pre_asv="pass")[0]) == {"hdr-hsts", "banner"}
+    assert client.get("/api/external/findings/grouped", params={"pre_asv": "maybe"}).status_code == 422
+    assert client.get("/api/external/findings/grouped", params={"target": "nope"}).status_code == 404
+    # the list takes the same filters
+    lst = client.get("/api/external/findings", params={"target": "tgtB", "pre_asv": "fail"}).json()
+    assert [f["check_id"] for f in lst] == ["tls-tls10"]
+    assert len(client.get("/api/external/findings", params={"q": "ref-none"}).json()) == 0
+    assert len(client.get("/api/external/findings", params={"q": "EXT-0001"}).json()) == 1
+    assert client.get("/api/external/findings", params={"pre_asv": "maybe"}).status_code == 422
+
+
+def test_grouped_sort_whitelist_and_orders(client):
+    _seed_groups()
+    keys = ["severity", "title", "affected", "hosts", "cvss", "pre_asv", "fix_by"]
+    for k in keys:
+        for d in ("asc", "desc"):
+            assert client.get("/api/external/findings/grouped", params={"sort": k, "dir": d}).status_code == 200
+    assert client.get("/api/external/findings/grouped", params={"sort": "ref"}).status_code == 422
+    assert client.get("/api/external/findings/grouped", params={"sort": "affected", "dir": "sideways"}).status_code == 422
+    rows = client.get("/api/external/findings/grouped", params={"sort": "affected", "dir": "desc"}).json()
+    assert rows[0]["check_id"] == "hdr-hsts"
+    rows = client.get("/api/external/findings/grouped", params={"sort": "title"}).json()
+    assert [r["title"] for r in rows] == sorted(r["title"] for r in rows)
+
+
+def test_grouped_findings_org_isolation_and_viewer_access(client):
+    _seed_groups()
+    from fastapi.testclient import TestClient
+
+    from tests.conftest import make_user
+
+    make_user(client, "viewer")
+    v = TestClient(client.app, base_url=BASE_URL)
+    login(v, "viewer@example.com", "a-long-test-password")
+    assert len(v.get("/api/external/findings/grouped").json()) == 3
+    oid = create_org("acme4", "boss@acme4.test", "a-long-test-password")
+    with db.get_session(oid) as s:
+        s.add(ExternalFinding(seq=1, key="other|x|1|", check_id="other-check", title="Other org", severity="high",
+                              cvss=7.0, host="x.acme4.test", port=1, detail={}, evidence={}))
+        s.commit()
+    c = org_client(client.app, "boss@acme4.test", "a-long-test-password")
+    mine = c.get("/api/external/findings/grouped").json()
+    assert [g["check_id"] for g in mine] == ["other-check"]
+    assert "other-check" not in {g["check_id"] for g in client.get("/api/external/findings/grouped").json()}
+    assert c.get("/api/external/findings", params={"target": "tgtA"}).status_code == 404  # not their target
+    assert c.get("/api/external/findings/grouped", params={"target": "tgtA"}).status_code == 404

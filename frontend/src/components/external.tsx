@@ -24,3 +24,11 @@ export function StatusTag({ status }: { status: string }) {
   return <Tag tone={tone as "warn" | "good" | "accent" | "default"}>{status === "accepted" ? "accepted risk" : status}</Tag>;
 }
 
+
+/** Fix-by text from the API's days_left / overdue_days (never from the due date: it lies in the future). */
+export function FixBy({ due, daysLeft, overdueDays }: { due: string | null; daysLeft: number | null; overdueDays: number | null }) {
+  if (!due) return <span className="text-ink-3">-</span>;
+  if (overdueDays) return <span className="font-medium text-sev-critical">Overdue {overdueDays} d</span>;
+  if (!daysLeft) return <span className="text-ink-2">Due today</span>;
+  return <span className="text-ink-2">In {daysLeft} {daysLeft === 1 ? "day" : "days"}</span>;
+}

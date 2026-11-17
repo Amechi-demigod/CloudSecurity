@@ -236,14 +236,40 @@ FINDING_SORT = {
     "ref": lambda f: f["ref"], "severity": lambda f: 4 - service.SEVERITY_ORDER.get(f["severity"], 5),
     "title": lambda f: f["title"], "host": lambda f: f["host"], "cvss": lambda f: f["cvss"] or None,
     "pre_asv": _pre_asv, "status": lambda f: _STATUS_ORDER.get(f["status"], 9),
-    "fix_by": lambda f: f["fix_due"],
+    "fix_by": lambda f: f["fix_due"], "first_seen": lambda f: f["first_seen"],
 }
 
 
-@router.get("/findings")
-def get_findings(status: str | None = None, severity: str | None = None, host: str | None = None,
-                 sort: str | None = Query(None, description="ref|severity|title|host|cvss|pre_asv|status|fix_by"),
-                 dir: str = Query("asc", pattern="^(asc|desc)$"), db: Session = Depends(get_db)):
+PRE_ASV_VALUES = {"fail", "pass", "exception"}
+GROUP_SORT = {
+    "severity": lambda g: 4 - service.SEVERITY_ORDER.get(g["severity"], 5), "title": lambda g: g["title"],
+    "affected": lambda g: g["affected"], "hosts": lambda g: g["hosts"], "cvss": lambda g: g["cvss"] or None,
+    "pre_asv": lambda g: g["pre_asv_rank"], "fix_by": lambda g: g["fix_due"],
+}
+
+
+def _pre_asv_name(rank: int | None) -> str | None:
+    return None if rank is None else ("pass", "exception", "fail", "fail")[rank]
+
+
+def _target_hosts(db: Session, target: str) -> set[str]:
+    """Hosts that belong to a target: the hosts discovered under it, plus the target's own value and (for a domain)
+    its subdomains."""
+    t = db.get(ExternalTarget, target)
+    if t is None:
+        raise HTTPException(404, "target not found")
+    hosts = set(db.scalars(select(ExternalHost.host).where(ExternalHost.target_id == t.id)))
+    hosts.add(t.value)
+    if t.kind == "domain":
+        hosts |= {h for h in db.scalars(select(ExternalFinding.host).distinct()) if h.endswith("." + t.value)}
+    return hosts
+
+
+def _filtered(db: Session, status: str | None, severity: str | None, host: str | None, pre_asv: str | None,
+              target: str | None, text: str | None) -> list[dict]:
+    """Findings (as list rows) matching the filters, in the default order. The same for the list and the groups."""
+    if pre_asv and pre_asv not in PRE_ASV_VALUES:
+        raise HTTPException(422, f"pre_asv must be one of {', '.join(sorted(PRE_ASV_VALUES))}")
     q = select(ExternalFinding)
     if status:
         q = q.where(ExternalFinding.status == status)
@@ -251,12 +277,74 @@ def get_findings(status: str | None = None, severity: str | None = None, host: s
         q = q.where(ExternalFinding.severity == severity)
     if host:
         q = q.where(ExternalFinding.host == host)
+    if target:
+        q = q.where(ExternalFinding.host.in_(_target_hosts(db, target)))
     rows = sorted(db.scalars(q), key=lambda f: (f.status == "resolved", service.SEVERITY_ORDER.get(f.severity, 9),
                                                 -f.cvss, f.host))
     exempt = service.exempt_ids(db)
     now = utcnow()
-    out = [{**service.finding_out(f, now=now), "exempt": f.id in exempt} for f in rows]
+    services = {(h.host, p.get("port")): p.get("service") for h in db.scalars(select(ExternalHost))
+                for p in h.ports or [] if isinstance(p, dict)}
+    out = [{**service.finding_out(f, now=now), "exempt": f.id in exempt, "service": services.get((f.host, f.port))}
+           for f in rows]
+    if pre_asv:  # resolved findings have no pre-ASV state
+        out = [f for f in out if _pre_asv_name(_pre_asv(f)) == pre_asv]
+    needle = (text or "").strip().casefold()
+    if needle:
+        out = [f for f in out if needle in " ".join(
+            str(x) for x in (f["title"], f["ref"], f["check_id"], f["host"], f["port"] or "")).casefold()]
+    return out
+
+
+@router.get("/findings")
+def get_findings(status: str | None = None, severity: str | None = None, host: str | None = None,
+                 pre_asv: str | None = Query(None, description="fail|pass|exception"),
+                 target: str | None = Query(None, pattern=r"^[A-Za-z0-9_-]{1,32}$", description="target id"),
+                 q: str | None = Query(None, max_length=200, description="title, ref, check, host or port"),
+                 sort: str | None = Query(None, description="ref|severity|title|host|cvss|pre_asv|status|first_seen|fix_by"),
+                 dir: str = Query("asc", pattern="^(asc|desc)$"), db: Session = Depends(get_db)):
+    out = _filtered(db, status, severity, host, pre_asv, target, q)
     return sort_rows(out, FINDING_SORT, sort, dir)[:2000]  # the whole result, then the cap
+
+
+@router.get("/findings/grouped")
+def get_findings_grouped(status: str | None = None, severity: str | None = None, host: str | None = None,
+                         pre_asv: str | None = Query(None, description="fail|pass|exception"),
+                         target: str | None = Query(None, pattern=r"^[A-Za-z0-9_-]{1,32}$", description="target id"),
+                         q: str | None = Query(None, max_length=200),
+                         sort: str | None = Query(None, description="severity|title|affected|hosts|cvss|pre_asv|fix_by"),
+                         dir: str = Query("asc", pattern="^(asc|desc)$"), db: Session = Depends(get_db)):
+    """One row per check over the whole filtered result, each with its affected findings."""
+    groups: dict[str, dict] = {}
+    for f in _filtered(db, status, severity, host, pre_asv, target, q):  # worst findings first
+        rank = _pre_asv(f)
+        g = groups.get(f["check_id"])
+        if g is None:
+            g = groups[f["check_id"]] = {
+                "check_id": f["check_id"], "title": f["title"], "severity": f["severity"], "cvss": f["cvss"] or 0.0,
+                "affected": 0, "hosts": 0, "pre_asv_rank": None, "pre_asv": None, "fix_due": None,
+                "overdue_days": None, "days_left": None, "first_seen": f["first_seen"], "last_seen": f["last_seen"],
+                "status_counts": {"open": 0, "disputed": 0, "accepted": 0, "resolved": 0}, "findings": []}
+        g["affected"] += 1
+        g["status_counts"][f["status"]] = g["status_counts"].get(f["status"], 0) + 1
+        g["cvss"] = max(g["cvss"], f["cvss"] or 0.0)
+        g["first_seen"], g["last_seen"] = min(g["first_seen"], f["first_seen"]), max(g["last_seen"], f["last_seen"])
+        if rank is not None and (g["pre_asv_rank"] is None or rank > g["pre_asv_rank"]):
+            g["pre_asv_rank"] = rank
+        if f["fix_due"] and (g["fix_due"] is None or f["fix_due"] < g["fix_due"]):
+            g["fix_due"], g["days_left"] = f["fix_due"], f["days_left"]
+        if f["overdue_days"]:
+            g["overdue_days"] = max(g["overdue_days"] or 0, f["overdue_days"])
+        g["findings"].append({k: f[k] for k in ("id", "ref", "host", "port", "status", "severity", "cvss", "fails",
+                                                "auto_fail", "exempt", "fix_due", "overdue_days", "days_left")}
+                            | {"pre_asv": _pre_asv_name(rank)})
+    out = list(groups.values())
+    for g in out:
+        g["hosts"] = len({x["host"] for x in g["findings"]})
+        g["pre_asv"] = _pre_asv_name(g["pre_asv_rank"])
+        g["auto_fail"] = g["pre_asv_rank"] == 3
+    out.sort(key=lambda g: (service.SEVERITY_ORDER.get(g["severity"], 9), -g["affected"], g["check_id"]))
+    return sort_rows(out, GROUP_SORT, sort, dir)
 
 
 def _detail(db: Session, f: ExternalFinding) -> dict:
