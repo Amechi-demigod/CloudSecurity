@@ -54,6 +54,7 @@ class Plan:
     dns_query: Callable[[str, str], list[str]] | None = None
     max_hosts: int = 512
     only_host: str | None = None  # re-test of one host
+    only_target: str | None = None  # scan of one target (an IP target still needs the domains to prove its addresses)
 
 
 @dataclass
@@ -279,7 +280,10 @@ async def run(plan: Plan, *, net: Net | None = None) -> ScanOut:
     domain_ips: set[str] = set()
     try:
         # 1. verified domains
+        only_domain = bool(plan.only_target) and any(d.target_id == plan.only_target for d in plan.domains)
         for d in plan.domains:
+            if only_domain and d.target_id != plan.only_target:
+                continue
             names, dns, errs = await loop.run_in_executor(None, _discover_domain, plan, d)
             out.errors.extend(errs)
             for name in names:
@@ -315,6 +319,8 @@ async def run(plan: Plan, *, net: Net | None = None) -> ScanOut:
                     entries.append(HostOut(host=a, ip=a, target_id=t.target_id, method=method, dns={"A": [a]}))
         if plan.only_host:
             entries = [e for e in entries if e.host == plan.only_host]
+        if plan.only_target:
+            entries = [e for e in entries if e.target_id == plan.only_target]
         if len(entries) > plan.max_hosts:
             for e in entries[plan.max_hosts:]:
                 out.skipped.append({"value": e.host, "reason": f"over the {plan.max_hosts} hosts per scan limit"})

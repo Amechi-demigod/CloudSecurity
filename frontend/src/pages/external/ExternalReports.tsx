@@ -15,7 +15,6 @@ function ReportView({ r }: { r: ExtReportData }) {
         <dl className="grid gap-2 p-4 text-sm sm:grid-cols-2">
           <div><dt className="text-xs uppercase text-ink-3">Customer</dt><dd>{r.customer.name}</dd></div>
           <div><dt className="text-xs uppercase text-ink-3">Scan</dt><dd>{r.scan ? fmtTime(r.scan.started_at) : "-"}</dd></div>
-          <div><dt className="text-xs uppercase text-ink-3">Scanner IP address</dt><dd>{r.scanner_ip ?? "-"}</dd></div>
           <div><dt className="text-xs uppercase text-ink-3">Targets</dt><dd>{r.scan?.targets.join(", ") || "-"}</dd></div>
         </dl>
       </Card>

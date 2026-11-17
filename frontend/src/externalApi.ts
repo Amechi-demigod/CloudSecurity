@@ -44,7 +44,6 @@ export interface ExtScan {
   started_at: string;
   finished_at: string | null;
   started_by: string | null;
-  scanner_ip: string | null;
   hosts: number;
   open_ports: number;
   new_hosts: number;
@@ -66,7 +65,6 @@ export interface ExtOverview {
   result_label: string;
   last_scan: ExtScan | null;
   running: boolean;
-  scanner_egress_ip: string | null;
   schedule: { enabled: boolean; interval_hours: number; next_scan_at: string | null };
   scope: { text: string; confirmed_by: string | null; confirmed_at: string | null };
   limits: { max_targets: number; max_cidr_addresses: number };
@@ -155,8 +153,7 @@ export interface ExtReportData {
   disclaimer: string;
   generated_at: string;
   customer: { name: string };
-  scan: { id: string; started_at: string; finished_at: string | null; trigger: string; scanner_ip: string | null; targets: string[]; skipped: unknown[] } | null;
-  scanner_ip: string | null;
+  scan: { id: string; started_at: string; finished_at: string | null; trigger: string; targets: string[]; skipped: unknown[] } | null;
   result: ExtResult;
   result_label: string;
   rules: { rule: string; result: string }[];
@@ -210,6 +207,7 @@ export const externalApi = {
     request<ExtOverview["schedule"]>("/api/external/schedule", { method: "PUT", ...j({ enabled, interval_hours }) }),
   scans: () => request<ExtScan[]>("/api/external/scans"),
   scanNow: () => request<ExtScan>("/api/external/scans", { method: "POST" }),
+  scanTarget: (id: string) => request<ExtScan>(`/api/external/targets/${id}/scan`, { method: "POST" }),
   hosts: () => request<ExtHost[]>("/api/external/hosts"),
   findings: (p: { status?: string; severity?: string; host?: string } = {}) => request<ExtFinding[]>(`/api/external/findings${qs(p)}`),
   finding: (id: string) => request<ExtFindingDetail>(`/api/external/findings/${id}`),

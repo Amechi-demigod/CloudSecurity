@@ -58,7 +58,7 @@ class ExternalScheduler:
                 if not st.schedule_enabled or not db.scalar(select(ExternalTarget.id).limit(1)):
                     db.commit()
                     continue
-                last = db.scalar(select(ExternalScan).where(ExternalScan.trigger != "retest")
+                last = db.scalar(select(ExternalScan).where(ExternalScan.trigger.notin_(service.PARTIAL_TRIGGERS))
                                  .order_by(ExternalScan.started_at.desc()).limit(1))
                 if last is not None and now - last.started_at < timedelta(hours=st.interval_hours):
                     db.commit()

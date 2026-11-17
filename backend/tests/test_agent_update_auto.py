@@ -36,6 +36,16 @@ def key(monkeypatch):
 def admin(empty_client, key):
     return empty_client
 
+@pytest.fixture()
+def platform(admin, monkeypatch):
+    """`admin` (the bootstrap admin) as a platform owner too: only owners manage the GitHub auto-import."""
+    monkeypatch.setenv("PLATFORM_ADMIN_EMAILS", "admin@example.com")
+    config.reload_settings()
+    yield admin
+    monkeypatch.delenv("PLATFORM_ADMIN_EMAILS")
+    config.reload_settings()
+
+
 CI_VERSION = "0.1.132+1c918b1"  # what ci.yml builds into the MSI / PKG
 
 
@@ -388,7 +398,7 @@ def test_find_new_release_filters():
     assert auto.find_new_release({"message": "rate limited"}, set(), 10**8) is None
 
 
-def test_auto_import_from_github(admin, key, tmp_path, monkeypatch):
+def test_auto_import_from_github(admin, platform, key, tmp_path, monkeypatch):
     bundles = {"agent-v1.0.0": make_bundle(tmp_path, "1.0.0", [key]),
                "agent-v1.1.0": make_bundle(tmp_path, "1.1.0", [Ed25519PrivateKey.generate()])}  # untrusted key
     listing = [gh_release("agent-v1.0.0", size=len(bundles["agent-v1.0.0"]))]
@@ -436,7 +446,27 @@ def test_auto_import_from_github(admin, key, tmp_path, monkeypatch):
     assert st["status"] == "error" and st["failed_version"] == "1.1.0"
 
 
-def test_auto_import_offline_only_logs(admin, monkeypatch):
+def test_github_auto_import_is_for_platform_owners_only(admin, monkeypatch):
+    """An organisation admin (even of the default organisation) cannot change the shared auto-import setting or
+    run the check; mode and soak period stay with admins; a platform owner can do all of it."""
+    monkeypatch.setattr(auto, "http_get_json", lambda url: [])
+    for body in ({"auto_import_enabled": True}, {"auto_import_repo": "acme/agent"},
+                 {"auto_import_interval_minutes": 60}):
+        r = admin.put("/api/updates/automation", json=body)
+        assert r.status_code == 403 and "platform owner" in r.json()["detail"], body
+    assert admin.post("/api/updates/automation/check-github").status_code == 403
+    assert admin.put("/api/updates/automation", json={"mode": "manual", "soak_hours": 12}).status_code == 200
+    monkeypatch.setenv("PLATFORM_ADMIN_EMAILS", "admin@example.com")
+    config.reload_settings()
+    try:
+        assert admin.put("/api/updates/automation", json={"auto_import_interval_minutes": 60}).status_code == 200
+        assert admin.post("/api/updates/automation/check-github").status_code == 200
+    finally:
+        monkeypatch.delenv("PLATFORM_ADMIN_EMAILS")
+        config.reload_settings()
+
+
+def test_auto_import_offline_only_logs(admin, platform, monkeypatch):
     def offline(url):
         raise auto.ImportCheckError("cannot reach https://api.github.com: ConnectError: no route to host")
 
@@ -459,7 +489,7 @@ def test_auto_import_real_network_errors_are_offline(admin, monkeypatch):
         assert auto.check_github(s)["status"] == "error"
 
 
-def test_automation_settings_validation(admin):
+def test_automation_settings_validation(admin, platform):
     assert admin.put("/api/updates/automation", json={"mode": "yolo"}).status_code == 422
     assert admin.put("/api/updates/automation", json={"auto_import_repo": "https://evil/x"}).status_code == 422
     assert admin.put("/api/updates/automation", json={"auto_import_interval_minutes": 1}).status_code == 422

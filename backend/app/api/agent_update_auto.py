@@ -1,9 +1,9 @@
 """Agent update automation API (/api/updates/automation, /api/updates/update-now).
 
   viewer : GET  /api/updates/automation                 mode, rollout state, auto-import status
-  admin  : PUT  /api/updates/automation                 mode, soak period, auto-import settings
+  admin  : PUT  /api/updates/automation                 mode, soak period (the auto-import settings: platform owners only)
            POST /api/updates/automation/promote          automatic mode: give the current release to everyone now
-           POST /api/updates/automation/check-github     run the GitHub Releases auto-import check now
+           POST /api/updates/automation/check-github     platform owners: run the GitHub Releases auto-import check now
   analyst: POST /api/updates/update-now  {device_id}     one device: check in and start its target now
   admin  : POST /api/updates/update-now  {ring_id | all} a ring / every device with a pending update
 
@@ -20,8 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import tenancy
-from ..auth import ROLE_RANK, audit, client_ip, current_user, require_admin, require_viewer
+from ..auth import ROLE_RANK, audit, client_ip, current_user, is_platform_admin, require_admin, require_viewer
 from ..db import get_db
 from ..models import AgentRelease, AgentUpdateRing, Device, User, utcnow
 from ..services import agent_update_auto as auto
@@ -71,9 +70,9 @@ def set_automation(body: AutomationIn, request: Request, admin: User = Depends(r
     st = auto.get_settings(db)
     changes = {}
     import_fields = ("auto_import_enabled", "auto_import_repo", "auto_import_interval_minutes")
-    if any(getattr(body, f) is not None for f in import_fields) and not tenancy.is_default(admin.organization_id):
+    if any(getattr(body, f) is not None for f in import_fields) and not is_platform_admin(admin):
         raise HTTPException(403, "the GitHub auto-import is shared by every organisation: it is managed by the "
-                                 "platform operator")
+                                 "platform owner")
     for f in ("mode", "soak_hours", *import_fields):
         v = getattr(body, f)
         if v is not None and v != getattr(st, f):
@@ -114,8 +113,8 @@ def promote_now(body: ReasonIn, request: Request, admin: User = Depends(require_
 @router.post("/automation/check-github")
 def check_github_now(request: Request, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     """Run the auto-import check now (also when the periodic check is disabled)."""
-    if not tenancy.is_default(admin.organization_id):
-        raise HTTPException(403, "the GitHub auto-import is managed by the platform operator")
+    if not is_platform_admin(admin):
+        raise HTTPException(403, "the GitHub auto-import is managed by the platform owner")
     res = auto.check_github(db, actor=f"auto-import (requested by {admin.email})")
     audit(db, "agent_release_check_requested", actor=admin, ip=client_ip(request), status=res["status"],
           message=res["message"][:500])

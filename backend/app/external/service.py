@@ -44,6 +44,7 @@ DOMAIN_RE = re.compile(r"^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a
 PROOF_PATH = "/.well-known/sentrigis-verification.txt"
 MAX_CIDR_ADDRESSES = 256  # a /24
 SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+PARTIAL_TRIGGERS = ("retest", "target")  # scans of one host or one target: not "the" scan of the organisation
 ENGINE_RUN = engine.run  # tests replace it
 CVE_LOOKUP = cve.lookup  # tests replace it
 
@@ -296,11 +297,16 @@ class Busy(ExternalError):
     pass
 
 
-def build_plan(db: Session, now: datetime, only_host: str | None = None) -> tuple[engine.Plan, list[dict]]:
+def build_plan(db: Session, now: datetime, only_host: str | None = None, only_target: str | None = None
+               ) -> tuple[engine.Plan, list[dict]]:
     plan = engine.Plan(cloud_ips=set(cloud_ip_map(db)), max_hosts=config.settings.external_max_hosts_per_scan,
-                       only_host=only_host)
+                       only_host=only_host, only_target=only_target)
     skipped: list[dict] = []
     for t in list_targets(db):
+        if only_target and t.kind != "domain" and t.id != only_target:
+            continue  # a single-target scan never plans other IP targets
+        if only_target and t.kind == "domain" and t.id != only_target and not _only_is_ip(db, only_target):
+            continue  # ... nor other domains (an IP target still needs the domains to prove its addresses)
         if not in_window(t, now):
             skipped.append({"value": t.value, "reason": "outside the target's scan window"})
             continue
@@ -323,6 +329,11 @@ def build_plan(db: Session, now: datetime, only_host: str | None = None) -> tupl
     return plan, skipped
 
 
+def _only_is_ip(db: Session, target_id: str) -> bool:
+    t = db.get(ExternalTarget, target_id)
+    return t is not None and t.kind != "domain"
+
+
 def running_scans(db: Session) -> list[ExternalScan]:
     return list(db.scalars(select(ExternalScan).where(ExternalScan.status == "running")))
 
@@ -338,14 +349,21 @@ def recover_orphans(db: Session, now: datetime) -> int:
 
 
 def create_scan(db: Session, trigger: str, actor: User | None, ip: str | None = None, only_host: str | None = None,
-                now: datetime | None = None) -> ExternalScan:
+                now: datetime | None = None, only_target: str | None = None) -> ExternalScan:
     """Create the scan record (status running) after checking limits; start it with `launch`. Raises Busy when a
-    concurrency limit is reached and ExternalError when nothing can be scanned."""
+    concurrency limit is reached and ExternalError when nothing can be scanned. `only_target` (a target id) scans
+    just that target: its record has trigger "target" and lists only that target's value."""
     now = now or utcnow()
     s = config.settings
     org = tenancy.require_org(db)
-    plan, skipped = build_plan(db, now, only_host)
+    scope = db.get(ExternalTarget, only_target) if only_target else None
+    if only_target and scope is None:
+        raise ExternalError("target not found", 404)
+    if scope is not None and not scope.verified_at:
+        raise ExternalError("this target is not verified: verify it before scanning", 409)
+    plan, skipped = build_plan(db, now, only_host, only_target)
     if not plan.domains and not plan.ip_targets:
+        skipped = [x for x in skipped if not scope or x["value"] == scope.value]
         why = "; ".join(f"{x['value']}: {x['reason']}" for x in skipped[:5]) or "no targets yet"
         raise ExternalError(f"nothing can be scanned ({why})", 409)
     with advisory_lock("external_scan_start"):
@@ -358,20 +376,19 @@ def create_scan(db: Session, trigger: str, actor: User | None, ip: str | None = 
         if (total or 0) >= s.external_max_concurrent_scans:
             raise Busy("the scanner is busy with other scans; try again in a few minutes", 429)
         scan = ExternalScan(trigger=trigger, started_at=now, started_by=actor.email if actor else None,
-                            scanner_ip=s.external_scanner_egress_ip or None, skipped=skipped,
-                            targets=[t.value for t in list_targets(db)])
+                            skipped=skipped, targets=[scope.value] if scope else [t.value for t in list_targets(db)])
         db.add(scan)
         db.flush()
         audit(db, "external_scan_started", actor=actor, target=f"external_scan:{scan.id}", ip=ip, trigger=trigger,
-              only_host=only_host, organization_id=org)
+              only_host=only_host, only_target=scope.value if scope else None, organization_id=org)
         db.commit()
     return scan
 
 
-def _launch_thread(org_id: str, scan_id: str, only_host: str | None) -> None:
+def _launch_thread(org_id: str, scan_id: str, only_host: str | None, only_target: str | None = None) -> None:
     def main() -> None:
         try:
-            run_scan(org_id, scan_id, only_host)
+            run_scan(org_id, scan_id, only_host, only_target)
         except Exception:
             log.exception("external scan %s crashed", scan_id)
 
@@ -381,18 +398,21 @@ def _launch_thread(org_id: str, scan_id: str, only_host: str | None) -> None:
 LAUNCHER = _launch_thread  # tests replace it to run scans inline
 
 
-def launch(db: Session, scan: ExternalScan, only_host: str | None = None) -> None:
-    LAUNCHER(tenancy.require_org(db), scan.id, only_host)
+def launch(db: Session, scan: ExternalScan, only_host: str | None = None, only_target: str | None = None) -> None:
+    if only_target:
+        LAUNCHER(tenancy.require_org(db), scan.id, only_host, only_target)
+    else:
+        LAUNCHER(tenancy.require_org(db), scan.id, only_host)
 
 
-def run_scan(org_id: str, scan_id: str, only_host: str | None = None) -> None:
+def run_scan(org_id: str, scan_id: str, only_host: str | None = None, only_target: str | None = None) -> None:
     with dbmod.get_session(org_id) as db:
         scan = db.get(ExternalScan, scan_id)
         if scan is None:
             return
         now = utcnow()
         try:
-            plan, skipped = build_plan(db, now, only_host)
+            plan, skipped = build_plan(db, now, only_host, only_target)
             db.commit()
             out = asyncio.run(ENGINE_RUN(plan))
             out.skipped = skipped + out.skipped
@@ -735,7 +755,7 @@ def target_out(t: ExternalTarget) -> dict[str, Any]:
 
 def scan_out(s: ExternalScan) -> dict[str, Any]:
     return {"id": s.id, "trigger": s.trigger, "status": s.status, "started_at": s.started_at,
-            "finished_at": s.finished_at, "started_by": s.started_by, "scanner_ip": s.scanner_ip, "hosts": s.hosts,
+            "finished_at": s.finished_at, "started_by": s.started_by, "hosts": s.hosts,
             "open_ports": s.open_ports, "new_hosts": s.new_hosts, "findings_open": s.findings_open,
             "result": s.result, "targets": s.targets, "skipped": s.skipped, "message": s.message}
 
@@ -761,7 +781,7 @@ def host_out(h: ExternalHost, counts: dict[str, int]) -> dict[str, Any]:
 def overview(db: Session, now: datetime | None = None) -> dict[str, Any]:
     now = now or utcnow()
     st = get_settings(db)
-    scans = list(db.scalars(select(ExternalScan).where(ExternalScan.trigger != "retest")
+    scans = list(db.scalars(select(ExternalScan).where(ExternalScan.trigger.notin_(PARTIAL_TRIGGERS))
                             .order_by(ExternalScan.started_at.desc()).limit(1)))
     last = scans[0] if scans else None
     hosts = list(db.scalars(select(ExternalHost).where(ExternalHost.active.is_(True))))
@@ -780,7 +800,6 @@ def overview(db: Session, now: datetime | None = None) -> dict[str, Any]:
         "result": rules.overall(failing) if last_done else None, "result_label": rules.label(
             rules.overall(failing) if last_done else None),
         "last_scan": scan_out(last) if last else None, "running": bool(running_scans(db)),
-        "scanner_egress_ip": config.settings.external_scanner_egress_ip or None,
         "schedule": {"enabled": st.schedule_enabled, "interval_hours": st.interval_hours, "next_scan_at": next_due},
         "scope": {"text": st.scope_text, "confirmed_by": st.scope_confirmed_by, "confirmed_at": st.scope_confirmed_at},
         "limits": {"max_targets": config.settings.external_max_targets, "max_cidr_addresses": MAX_CIDR_ADDRESSES},
@@ -807,7 +826,7 @@ def report_data(db: Session, now: datetime | None = None) -> dict[str, Any]:
     org = db.get(Organization, tenancy.require_org(db))
     st = get_settings(db)
     scan = db.scalar(select(ExternalScan).where(ExternalScan.status.in_(("succeeded", "partial")),
-                                                ExternalScan.trigger != "retest")
+                                                ExternalScan.trigger.notin_(PARTIAL_TRIGGERS))
                      .order_by(ExternalScan.started_at.desc()).limit(1))
     findings = list(db.scalars(select(ExternalFinding).where(ExternalFinding.status != "resolved")))
     findings.sort(key=lambda f: (SEVERITY_ORDER.get(f.severity, 9), -f.cvss, f.host))
@@ -848,9 +867,8 @@ def report_data(db: Session, now: datetime | None = None) -> dict[str, Any]:
         "customer": {"name": org.name if org else "", "contact": org.contact_email if org else None},
         "scan": ({"id": scan.id, "started_at": scan.started_at.isoformat(),
                   "finished_at": scan.finished_at.isoformat() if scan.finished_at else None, "trigger": scan.trigger,
-                  "status": scan.status, "scanner_ip": scan.scanner_ip, "hosts": scan.hosts,
+                  "status": scan.status, "hosts": scan.hosts,
                   "targets": scan.targets, "skipped": scan.skipped} if scan else None),
-        "scanner_ip": (scan.scanner_ip if scan else None) or config.settings.external_scanner_egress_ip or None,
         "result": result if scan else None, "result_label": rules.label(result if scan else None),
         "rules": rules.RULE_TABLE,
         "components": sorted(components.values(), key=lambda c: (c["result"] != "Fail", c["host"])),

@@ -84,8 +84,6 @@ def render_report(data: dict[str, Any]) -> bytes:
         c.text(MARGIN, 90 + i * 15, ln, 12, bold=True, color=(1.0, 0.85, 0.5))
     c.text(MARGIN, 120, f"{cust}  |  scan {_dt(scan.get('started_at'))}  |  generated {gen:%Y-%m-%d %H:%M} UTC", 9,
            color=(0.80, 0.84, 0.92))
-    c.text(MARGIN, 136, f"Scanner IP address: {data.get('scanner_ip') or 'not configured'}", 9,
-           color=(0.80, 0.84, 0.92))
     lay = _Layout(c, f"{brand}  |  Pre-ASV scan  |  {cust}")
     lay.y = 168
     ok = data["result"] == "pass"
@@ -101,7 +99,6 @@ def render_report(data: dict[str, Any]) -> bytes:
     _table(lay, [("Item", 1.2), ("Value", 3)], [
         ["Scan customer", cust], ["Scan started", _dt(scan.get("started_at"))],
         ["Scan finished", _dt(scan.get("finished_at"))], ["Scan type", str(scan.get("trigger") or "-")],
-        ["Scanner IP address", str(data.get("scanner_ip") or "-")],
         ["Targets", ", ".join(scan.get("targets") or []) or "-"],
         ["Components scanned", str(len(data["components"]))],
         ["Not scanned (not verified, refused or out of window)",

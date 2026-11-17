@@ -200,6 +200,17 @@ def post_scan(request: Request, analyst: User = Depends(require_analyst), db: Se
     return service.scan_out(scan)
 
 
+@router.post("/targets/{tid}/scan", status_code=202)
+def post_target_scan(tid: Id, request: Request, analyst: User = Depends(require_analyst),
+                     db: Session = Depends(get_db)):
+    """Scan one target (a domain with its subdomains, an IP or a range); the same rules and limits as Scan now.
+    Only the hosts of this target are scanned and only their findings can be resolved."""
+    t = _target(db, tid)
+    scan = _guard(lambda: service.create_scan(db, "target", analyst, client_ip(request), only_target=t.id))
+    service.launch(db, scan, only_target=t.id)
+    return service.scan_out(scan)
+
+
 @router.get("/hosts")
 def get_hosts(db: Session = Depends(get_db)):
     counts: dict[str, int] = {}

@@ -670,6 +670,106 @@ def test_retest_scans_only_that_host_and_resolves(http_server, local_ok, client)
     assert client.get(f"/api/external/findings/{fid}").json()["status"] == "resolved"
 
 
+def _target_scan_via_api(client, monkeypatch, port, tid):
+    """POST /targets/{id}/scan with the scan run inline against the local test server."""
+    async def runner(plan):
+        plan.ports = (port,)
+        return await engine.run(plan, net=fast_net())
+
+    monkeypatch.setattr(service, "ENGINE_RUN", runner)
+    monkeypatch.setattr(service, "CVE_LOOKUP", lambda *a, **k: [])
+    monkeypatch.setattr(service, "LAUNCHER", lambda org, sid, host=None, target=None: service.run_scan(org, sid, host, target))
+    return client.post(f"/api/external/targets/{tid}/scan")
+
+
+def test_scan_one_target_is_limited_to_it_and_never_resolves_other_findings(http_server, local_ok, client, monkeypatch):
+    site = vulnerable_site()
+    srv = http_server(site)
+    _setup_org_target()
+    _seed_other_target()  # 8.8.8.8: a verified target with an open finding that this scan cannot see
+    _run_scan(srv.port)
+    with db.get_session("default") as s:
+        tid = s.scalar(select(ExternalTarget.id).where(ExternalTarget.value == "127.0.0.1"))
+        git = s.scalar(select(ExternalFinding).where(ExternalFinding.check_id == "file-exposed"))
+        gid = git.id
+    site.pop("/.git/HEAD")  # fixed
+    r = _target_scan_via_api(client, monkeypatch, srv.port, tid)
+    assert r.status_code == 202 and r.json()["trigger"] == "target" and r.json()["targets"] == ["127.0.0.1"]
+    assert "scanner_ip" not in r.json()
+    with db.get_session("default") as s:
+        scan = s.scalar(select(ExternalScan).where(ExternalScan.trigger == "target"))
+        assert scan.status in ("succeeded", "partial") and scan.targets == ["127.0.0.1"] and scan.hosts == 1
+        assert s.get(ExternalFinding, gid).status == "resolved"  # its own host was scanned
+        other = s.scalar(select(ExternalFinding).where(ExternalFinding.host == "8.8.8.8"))
+        assert other.status == "open" and other.last_scan_id != scan.id  # the other target's finding is untouched
+        assert s.scalar(select(ExternalHost).where(ExternalHost.host == "8.8.8.8")).active
+        audit = [a for a in s.scalars(select(AuditLog)) if a.action == "external_scan_started"
+                 and a.detail.get("trigger") == "target"]
+        assert len(audit) == 1 and audit[0].detail["only_target"] == "127.0.0.1" and audit[0].actor_id
+    # a single-target scan is not "the" scan: the overview and the schedule ignore it
+    assert client.get("/api/external/overview").json()["last_scan"]["trigger"] == "manual"
+
+
+def _seed_other_target():
+    with db.get_session("default") as s:
+        s.add(ExternalTarget(kind="ip", value="8.8.8.8", token="x", verified_at=utcnow(), verified_method="platform",
+                             approval_status="approved"))
+        s.add(ExternalHost(host="8.8.8.8", ip="8.8.8.8", ports=[{"port": 443}], active=True))
+        s.add(ExternalFinding(seq=900, key="dir-listing|8.8.8.8|443|/", check_id="dir-listing", title="Directory listing",
+                              severity="low", cvss=3.7, host="8.8.8.8", ip="8.8.8.8", port=443, detail={}, evidence={}))
+        s.commit()
+
+
+def test_scan_one_target_refuses_unverified_unknown_busy_and_wrong_roles(client, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from tests.conftest import make_user
+
+    with db.get_session("default") as s:
+        s.add(ExternalTarget(kind="domain", value="unproven.example.com", token="tok"))
+        s.add(ExternalTarget(kind="ip", value="8.8.8.8", token="x", verified_at=utcnow(), verified_method="platform",
+                             approval_status="approved"))
+        s.commit()
+        unproven = s.scalar(select(ExternalTarget.id).where(ExternalTarget.kind == "domain"))
+        ok = s.scalar(select(ExternalTarget.id).where(ExternalTarget.kind == "ip"))
+    r = client.post(f"/api/external/targets/{unproven}/scan")
+    assert r.status_code == 409 and "not verified" in r.json()["detail"]
+    assert client.post("/api/external/targets/nope/scan").status_code == 404
+    assert client.get("/api/external/scans").json() == []  # nothing was recorded
+    # a viewer may not scan; an analyst may
+    make_user(client, "viewer")
+    make_user(client, "analyst")
+    v = TestClient(client.app, base_url=BASE_URL)
+    login(v, "viewer@example.com", "a-long-test-password")
+    assert v.post(f"/api/external/targets/{ok}/scan").status_code == 403
+    monkeypatch.setattr(service, "LAUNCHER", lambda *a: None)
+    a = TestClient(client.app, base_url=BASE_URL)
+    login(a, "analyst@example.com", "a-long-test-password")
+    assert a.post(f"/api/external/targets/{ok}/scan").status_code == 202
+    # per-organisation and server-wide limits
+    assert client.post(f"/api/external/targets/{ok}/scan").status_code == 409
+    monkeypatch.setenv("EXTERNAL_MAX_CONCURRENT_SCANS", "1")
+    monkeypatch.setenv("EXTERNAL_MAX_SCANS_PER_ORG", "5")
+    config.reload_settings()
+    try:
+        assert client.post(f"/api/external/targets/{ok}/scan").status_code == 429
+    finally:
+        monkeypatch.delenv("EXTERNAL_MAX_CONCURRENT_SCANS")
+        monkeypatch.delenv("EXTERNAL_MAX_SCANS_PER_ORG")
+        config.reload_settings()
+
+
+def test_scan_one_target_rechecks_domain_ownership_at_scan_start(client, monkeypatch):
+    with db.get_session("default") as s:
+        s.add(ExternalTarget(kind="domain", value="example.com", token="tok", verified_method="dns",
+                             verified_at=utcnow()))
+        s.commit()
+        tid = s.scalar(select(ExternalTarget.id))
+    monkeypatch.setattr(service, "check_domain_proof", lambda d, t: (None, "gone"))
+    r = client.post(f"/api/external/targets/{tid}/scan")
+    assert r.status_code == 409 and "ownership proof is no longer found" in r.json()["detail"]
+
+
 def test_findings_and_cve_link_into_vulnerabilities_for_cloud_assets(http_server, local_ok, client):
     srv = http_server(vulnerable_site())
     with db.get_session("default") as s:
@@ -784,7 +884,8 @@ def test_every_external_api_is_module_gated_and_role_checked(client):
         s.commit()
     for method, url, body in [("get", "/api/external/overview", None), ("get", "/api/external/targets", None),
                               ("post", "/api/external/targets", {"value": "a.example.com"}),
-                              ("post", "/api/external/scans", None), ("get", "/api/external/findings", None),
+                              ("post", "/api/external/scans", None), ("post", "/api/external/targets/abc/scan", None),
+                              ("get", "/api/external/findings", None),
                               ("get", "/api/external/hosts", None), ("post", "/api/external/reports", None),
                               ("put", "/api/external/scope", {"text": "x" * 20, "confirm": True}),
                               ("get", "/api/external/report/preview", None)]:
@@ -882,7 +983,7 @@ def _seed_findings():
                                   special_note=note, auto_fail=(check == "tls-tls10"), detail={
                                       "description": "d", "impact": "i", "steps": ["s"], "fix": {"General": "fix it"},
                                       "references": [], "compliance": {}}, evidence={"status": 200}))
-        s.add(ExternalScan(status="succeeded", finished_at=utcnow(), hosts=1, scanner_ip="198.51.100.9",
+        s.add(ExternalScan(status="succeeded", finished_at=utcnow(), hosts=1,
                            targets=["8.8.8.8"], result="fail"))
         s.commit()
 
@@ -958,12 +1059,14 @@ def test_report_requires_scope_then_renders_pdf_in_the_asv_layout(client):
     assert pdf.status_code == 200 and pdf.headers["content-type"] == "application/pdf" and pdf.content[:5] == b"%PDF-"
     txt = _pdf_text(pdf.content)
     for needle in ("not an ASV scan report", "Part 1. Scan information", "Part 2. Component compliance summary",
-                   "Part 3a", "Part 3b", "Part 3c", "Public website", "198.51.100.9", "LIKELY FAIL",
+                   "Part 3a", "Part 3b", "Part 3c", "Public website", "LIKELY FAIL",
                    "Browsable directories"):
         assert needle in txt, needle
     assert len(client.get("/api/external/reports").json()) == 1
     data = client.get(f"/api/external/reports/{rid}").json()
-    assert data["components"][0]["result"] == "Fail" and data["scanner_ip"] == "198.51.100.9"
+    assert data["components"][0]["result"] == "Fail" and "scanner_ip" not in data
+    assert "Scanner IP" not in txt and "scanner_ip" not in (data["scan"] or {})
+    assert "scanner_egress_ip" not in client.get("/api/external/overview").json()
     # editing the scope declaration withdraws its confirmation
     client.put("/api/external/scope", json={"text": "Something else entirely, edited.", "confirm": False})
     assert client.get("/api/external/overview").json()["scope"]["confirmed_at"] is None
