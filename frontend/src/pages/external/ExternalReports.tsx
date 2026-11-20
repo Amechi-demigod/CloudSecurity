@@ -1,7 +1,7 @@
 import { FileText } from "lucide-react";
 import { useState } from "react";
 import { useAuth } from "../../auth/context";
-import { NotAsvBanner, ResultBadge } from "../../components/external";
+import { NotAsvBanner, ResultBadge, ScopeModal } from "../../components/external";
 import { errMsg } from "../../lib/externalUi";
 import { Button, Card, Empty, ErrorNote, PageHeader, Table, Tag } from "../../components/ui";
 import { externalApi, type ExtReportData } from "../../externalApi";
@@ -82,6 +82,7 @@ export default function ExternalReports() {
   const preview = useApi(externalApi.preview, []);
   const reports = useApi(externalApi.reports, []);
   const [err, setErr] = useState<string | null>(null);
+  const [scoping, setScoping] = useState(false);
   const [viewing, setViewing] = useState<ExtReportData | null>(null);
   const p = preview.data;
   const history = useSort(
@@ -103,22 +104,27 @@ export default function ExternalReports() {
   }
   return (
     <div className="space-y-4">
-      <PageHeader title="Pre-ASV reports" subtitle="Your scan results in the layout of the PCI ASV scan report. Indicative only." actions={can("analyst") ? <Button variant="primary" onClick={() => void generate()}>Generate pre-ASV report</Button> : undefined} />
+      <PageHeader title="Reports" subtitle="Your scan results in the layout of a PCI ASV scan report, to prepare for the real one." actions={can("analyst") ? <Button variant="primary" onClick={() => void generate()}>Create report</Button> : undefined} />
       <NotAsvBanner />
       <ErrorNote error={err ?? preview.error} />
       <Card title="Latest result">
         <div className="flex flex-wrap items-center gap-3 p-4">
-          <ResultBadge result={p?.result ?? null} label={p?.result_label} />
+          <ResultBadge result={p?.result ?? null} />
           <span className="text-sm text-ink-2">{p?.scan ? `Based on the scan of ${fmtTime(p.scan.started_at)}.` : "Run a scan first."}</span>
-          {!p?.scope.confirmed_by && <span className="text-sm text-sev-high">Confirm the scope declaration on Attack surface before generating a report.</span>}
+          {p && !p.scope.confirmed_by && (
+            <span className="text-sm text-sev-high">
+              Confirm what's in scope before your first report.{" "}
+              <button type="button" className="text-accent underline" onClick={() => setScoping(true)}>Confirm</button>
+            </span>
+          )}
         </div>
       </Card>
       <Card title="History">
-        <Table head={[{ label: "Generated", sort: "generated" }, { label: "By", sort: "by" }, { label: "Result", sort: "result" }, "Download"]} sort={history.sort} onSort={history.onSort} loading={reports.loading} rowCount={reports.data?.length ?? 0} empty={<Empty icon={FileText} title="No reports yet">Generate the first pre-ASV report above.</Empty>}>
+        <Table head={[{ label: "Generated", sort: "generated" }, { label: "By", sort: "by" }, { label: "Result", sort: "result" }, "Download"]} sort={history.sort} onSort={history.onSort} loading={reports.loading} rowCount={reports.data?.length ?? 0} empty={<Empty icon={FileText} title="No reports yet">Create the first report above.</Empty>}>
           {history.rows.map((r) => (
             <tr key={r.id}>
               <td className="px-3 py-2 text-sm">{fmtTime(r.generated_at)}</td><td className="px-3 py-2 text-sm">{r.generated_by}</td>
-              <td className="px-3 py-2"><ResultBadge result={r.result} label={r.result_label} /></td>
+              <td className="px-3 py-2"><ResultBadge result={r.result} /></td>
               <td className="space-x-3 px-3 py-2 text-sm">
                 <a className="text-accent hover:underline" href={externalApi.reportPdfUrl(r.id)}>PDF</a>
                 <button type="button" className="text-accent hover:underline" onClick={() => void externalApi.report(r.id).then(setViewing)}>View</button>
@@ -127,6 +133,7 @@ export default function ExternalReports() {
           ))}
         </Table>
       </Card>
+      {p && <ScopeModal open={scoping} onClose={() => setScoping(false)} scope={p.scope} canEdit={can("admin")} onSaved={preview.reload} />}
       {viewing && <div><div className="mb-2 flex items-center justify-between"><h2 className="text-lg font-semibold">Report of {fmtTime(viewing.generated_at)}</h2><Button onClick={() => setViewing(null)}>Close</Button></div><ReportView r={viewing} /></div>}
       {!viewing && p && p.scan && <div><h2 className="mb-2 text-lg font-semibold">Current view</h2><ReportView r={p} /></div>}
     </div>

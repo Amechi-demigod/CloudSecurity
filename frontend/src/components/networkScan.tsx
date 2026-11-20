@@ -9,6 +9,7 @@ import { contains, countAddresses, parseTarget, size, splitList } from "../lib/n
 import { useApi } from "../lib/useApi";
 import { useSort } from "../lib/useSort";
 import { networkApi, PORT_CHIPS, type CredentialIn, type NetCredential, type NetRun, type NetScan, type Suggestion } from "../networkApi";
+import { CollectorUpdateNotice } from "./collectors";
 import SortHeader from "./SortHeader";
 import { Button, ErrorNote, Field, Tag } from "./ui";
 
@@ -333,7 +334,7 @@ export default function NetworkScanWizard({ scan, onCancel, onDone }: { scan?: N
         {collectors.data && active.length === 0 ? (
           <Notice tone="warn">No collector is enrolled. Add one under Connectors &amp; scans, then come back.</Notice>
         ) : collectors.data && capable.length === 0 ? (
-          <Notice tone="warn">None of your collectors supports network scans yet: update the collector to 1.6.0 or later.</Notice>
+          <CollectorUpdateNotice collectors={active} why="network scans need collector version 1.6.0 or later" />
         ) : (
           <div className="space-y-3">
             <div className="max-w-xl">

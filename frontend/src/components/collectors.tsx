@@ -11,7 +11,8 @@ import {
   type DiagStep,
   type GmsaScripts,
 } from "../directoryApi";
-import { useDiagnostics } from "../lib/collectors";
+import { Link } from "react-router-dom";
+import { collectorHost, downloadCollectorMsi, isReleaseVersion, isTestBuild, olderThan, useDiagnostics } from "../lib/collectors";
 import { errMsg } from "../lib/directory";
 import { fmtAgo, fmtTime } from "../lib/format";
 import { useApi } from "../lib/useApi";
@@ -31,6 +32,62 @@ const STEP_STYLE: Record<DiagStep["status"], { cls: string; label: string }> = {
   fail: { cls: "border-sev-critical/60 text-sev-critical", label: "FAIL" },
   skip: { cls: "border-line text-ink-3", label: "SKIP" },
 };
+
+/**
+ * "This collector must be updated once by hand": names the collector(s) and version(s), offers the
+ * pre-configured MSI. One collector is named in full with its download; several show a count, the
+ * first three names and a link to the list (each row there has its own download).
+ */
+export function CollectorUpdateNotice({ collectors, why, showList = true }: { collectors: DedicatedCollector[]; why?: string; showList?: boolean }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [done, setDone] = useState(false);
+  if (collectors.length === 0) return null;
+  const one = collectors.length === 1 ? collectors[0] : null;
+  async function download(c: DedicatedCollector) {
+    setBusy(true);
+    setErr(null);
+    try {
+      await downloadCollectorMsi(c.name);
+      setDone(true);
+    } catch (e) {
+      setErr(errMsg(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  const ver = (c: DedicatedCollector) => (c.version ? `version ${c.version}` : "unknown version");
+  return (
+    <div role="alert" className="space-y-2 rounded border border-sev-medium/60 bg-sev-medium/10 px-3 py-2 text-sm text-ink">
+      {one ? (
+        <p>
+          <strong>{one.name}</strong> ({ver(one)}) needs a one-time update{why ? `: ${why}` : ""}. A collector this old must be updated once by hand; after that it updates itself.
+          {isTestBuild(one) && " It is a test build and can't update itself, so it needs the installer each time."}
+        </p>
+      ) : (
+        <p>
+          <strong>{collectors.length} collectors</strong> need a one-time update{why ? `: ${why}` : ""}:{" "}
+          {collectors.slice(0, 3).map((c) => `${c.name} (${c.version || "unknown version"})`).join(", ")}
+          {collectors.length > 3 ? ` and ${collectors.length - 3} more` : ""}. Each must be updated once by hand; after that they update themselves.
+        </p>
+      )}
+      <div className="flex flex-wrap items-center gap-3">
+        {one && (
+          <>
+            <Button variant="primary" disabled={busy} onClick={() => void download(one)}>
+              <Download aria-hidden className="mr-1 inline h-4 w-4" />
+              {busy ? "Preparing…" : "Download installer (MSI)"}
+            </Button>
+            <span className="text-xs text-ink-2">Run it on {collectorHost(one)}; it upgrades in place.</span>
+          </>
+        )}
+        {!one && showList && <Link to="/connectors#collectors" className="text-sm font-medium text-accent hover:underline">View collectors</Link>}
+      </div>
+      {done && <p className="text-xs text-good" role="status">Installer downloaded. It contains a single-use enrollment token valid for 24 hours: delete it after installing.</p>}
+      <ErrorNote error={err} />
+    </div>
+  );
+}
 
 export function DcWarning({ name, compact = false }: { name?: string; compact?: boolean }) {
   return (
@@ -297,7 +354,8 @@ function AddCollector({ open, onClose, domain }: { open: boolean; onClose: () =>
   );
 }
 
-function CollectorRow({ c, isAdmin, onChanged }: { c: DedicatedCollector; isAdmin: boolean; onChanged: () => void }) {
+function CollectorRow({ c, isAdmin, onChanged, newest }: { c: DedicatedCollector; isAdmin: boolean; onChanged: () => void; newest?: string }) {
+  const outdated = c.status === "active" && isReleaseVersion(c.version) && !!newest && olderThan(c.version, newest);
   const [cmd, setCmd] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const live = useDiagnostics(c.id, cmd);
@@ -323,6 +381,8 @@ function CollectorRow({ c, isAdmin, onChanged }: { c: DedicatedCollector; isAdmi
             <Tag tone={c.state === "online" ? "good" : c.state === "revoked" ? "critical" : "warn"}>{c.state}</Tag>
             {c.is_domain_controller && <Tag tone="warn">domain controller</Tag>}
             {c.version && <span className="text-xs text-ink-3">v{c.version}</span>}
+            {isTestBuild(c) && <Tag tone="warn">Test build: can&apos;t update itself</Tag>}
+            {outdated && <Tag tone="warn">Needs a one-time update</Tag>}
           </div>
           <div className="mt-0.5 text-xs text-ink-3">
             {c.dns_hostname || c.hostname || "not enrolled yet"} {c.domain && `· ${c.domain}`} · runs as{" "}
@@ -360,6 +420,7 @@ function CollectorRow({ c, isAdmin, onChanged }: { c: DedicatedCollector; isAdmi
         )}
       </div>
       {c.is_domain_controller && <DcWarning name={c.name} />}
+      {isAdmin && (outdated || (c.status === "active" && isTestBuild(c))) && <CollectorUpdateNotice collectors={[c]} why={outdated ? `the newest version is ${newest}` : undefined} />}
       <ErrorNote error={err} />
       {"status" in (diag ?? {}) && (
         <div>
@@ -379,6 +440,8 @@ function CollectorRow({ c, isAdmin, onChanged }: { c: DedicatedCollector; isAdmi
 
 export function CollectorsSection({ isAdmin, domain = "" }: { isAdmin: boolean; domain?: string }) {
   const list = useApi(collectorApi.list, [], 30000);
+  const installer = useApi(collectorApi.installerInfo, []);
+  const newest = installer.data?.msi.available ? installer.data.msi.version : undefined;
   const [adding, setAdding] = useState(false);
   return (
     <Card
@@ -401,7 +464,7 @@ export function CollectorsSection({ isAdmin, domain = "" }: { isAdmin: boolean; 
       )}
       <ul className="space-y-2">
         {(list.data ?? []).map((c) => (
-          <CollectorRow key={c.id} c={c} isAdmin={isAdmin} onChanged={list.reload} />
+          <CollectorRow key={c.id} c={c} isAdmin={isAdmin} onChanged={list.reload} newest={newest} />
         ))}
       </ul>
       <AddCollector open={adding} onClose={() => { setAdding(false); list.reload(); }} domain={domain} />

@@ -16,7 +16,8 @@ import { PAGE_INFO } from "../../lib/pageInfo";
 const hostPort = (host: string, port: number | null) => `${host}${port ? `:${port}` : ""}`;
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
-export default function ExternalFindings() {
+/** The one findings list: the Scan results tab of Attack surface and the Issues > Internet-facing page both show this. */
+export function FindingsPanel() {
   const [view, setView] = useUrlState("view", "grouped");
   const [status, setStatus] = useUrlState("status", "open");
   const [severity, setSeverity] = useUrlState("severity");
@@ -41,8 +42,6 @@ export default function ExternalFindings() {
 
   return (
     <div className="space-y-4">
-      <PageHeader title="Internet-facing issues" info={PAGE_INFO.internetFacing} subtitle="Weaknesses an attacker could see from the internet. Findings close by themselves when a later scan no longer sees them." />
-      <NotAsvBanner />
       <div className="flex flex-wrap items-center gap-3">
         <div role="group" aria-label="View" className="inline-flex overflow-hidden rounded border border-line text-sm">
           {[
@@ -62,7 +61,7 @@ export default function ExternalFindings() {
         </div>
         <Select label="Severity" value={severity} onChange={setSeverity} options={["", "critical", "high", "medium", "low", "info"]} />
         <Select label="Status" value={status} onChange={setStatus} options={[{ value: "", label: "All" }, "open", "disputed", "accepted", "resolved"]} />
-        <Select label="Pre-ASV" value={preAsv} onChange={setPreAsv} options={[{ value: "", label: "Any" }, { value: "fail", label: "Fail" }, { value: "pass", label: "Pass" }, { value: "exception", label: "Exception" }]} />
+        <Select label="PCI scan" value={preAsv} onChange={setPreAsv} options={[{ value: "", label: "Any" }, { value: "fail", label: "Would fail" }, { value: "pass", label: "Would pass" }, { value: "exception", label: "Exception" }]} />
         <Select label="Target" value={target} onChange={setTarget} options={[{ value: "", label: "All" }, ...verified.map((t) => ({ value: t.id, label: t.value }))]} />
         <input
           type="search"
@@ -97,6 +96,16 @@ export default function ExternalFindings() {
   );
 }
 
+export default function ExternalFindings() {
+  return (
+    <div className="space-y-4">
+      <PageHeader title="Internet-facing issues" info={PAGE_INFO.internetFacing} subtitle="Weaknesses an attacker could see from the internet. Findings close by themselves when a later scan no longer sees them." />
+      <NotAsvBanner />
+      <FindingsPanel />
+    </div>
+  );
+}
+
 interface ViewProps {
   filter: ExtFindingFilter;
   filtered: boolean;
@@ -106,7 +115,7 @@ interface ViewProps {
 
 const emptyState = (filtered: boolean) => (
   <Empty icon={ShieldCheck} title={filtered ? "No findings match these filters" : "No findings"}>
-    {filtered ? "Try another status or clear a filter." : "Nothing matches. Run a scan from Attack surface to re-check."}
+    {filtered ? "Try another status or clear a filter." : "Nothing matches. Run a scan to re-check."}
   </Empty>
 );
 
@@ -158,7 +167,7 @@ function AllView({ filter, filtered, setCount, setHost }: ViewProps) {
             { label: "Finding", sort: "title" },
             { label: "Host", sort: "host" },
             { label: "CVSS", sort: "cvss" },
-            { label: "Pre-ASV", sort: "pre_asv" },
+            { label: "PCI scan", sort: "pre_asv" },
             { label: "Status", sort: "status" },
             { label: "First seen", sort: "first_seen" },
             { label: "Fix by", sort: "fix_by" },
@@ -299,7 +308,7 @@ function GroupedView({ filter, filtered, setCount, setHost }: ViewProps) {
             { label: "Finding", sort: "title" },
             { label: "Affected", sort: "affected" },
             { label: "CVSS", sort: "cvss" },
-            { label: "Pre-ASV", sort: "pre_asv" },
+            { label: "PCI scan", sort: "pre_asv" },
             "Status",
             { label: "Fix by", sort: "fix_by" },
             { label: "Details", srOnly: true },
@@ -336,7 +345,7 @@ function GroupedView({ filter, filtered, setCount, setHost }: ViewProps) {
                           <th scope="col" className="px-2 py-1 font-medium">ID</th>
                           <th scope="col" className="px-2 py-1 font-medium">Host:port</th>
                           <th scope="col" className="px-2 py-1 font-medium">Status</th>
-                          <th scope="col" className="px-2 py-1 font-medium">Pre-ASV</th>
+                          <th scope="col" className="px-2 py-1 font-medium">PCI scan</th>
                           <th scope="col" className="px-2 py-1 font-medium">Fix by</th>
                         </tr>
                       </thead>
