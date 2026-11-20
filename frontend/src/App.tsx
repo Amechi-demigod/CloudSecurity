@@ -1,33 +1,6 @@
-import {
-  Bell,
-  Boxes,
-  Bug,
-  Building2,
-  CheckCheck,
-  ClipboardCheck,
-  Globe,
-  Laptop,
-  LayoutDashboard,
-  Lock,
-  Menu,
-  Moon,
-  Network,
-  Network as NetworkIcon,
-  Package,
-  Radar,
-  ScanSearch,
-  FileText,
-  PlugZap,
-  Route as RouteIcon,
-  ScrollText,
-  ShieldCheck,
-  Siren,
-  Sun,
-  Users2,
-  type LucideIcon,
-} from "lucide-react";
-import { Fragment, useState, type ReactNode } from "react";
-import { NavLink, Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { AlertTriangle, Building2, ChevronDown, LayoutDashboard, Lock, Menu, Monitor, Moon, Radar, Settings, ShieldCheck, Sun, type LucideIcon } from "lucide-react";
+import { useEffect, useState, type ReactNode } from "react";
+import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { api, type ModuleKey, type Role } from "./api";
 import { useAuth } from "./auth/context";
 import { RequireModule } from "./components/ModuleLocked";
@@ -80,68 +53,209 @@ import ExternalFindings from "./pages/external/ExternalFindings";
 import ExternalFindingDetail from "./pages/external/ExternalFindingDetail";
 import ExternalReports from "./pages/external/ExternalReports";
 
-type NavItem = { to: string; label: string; icon: LucideIcon; role?: Role; badge?: "approvals"; module?: ModuleKey };
+type NavChild = {
+  to: string;
+  label: string;
+  /** Other paths that belong to this item (detail pages and pages reached from it); they highlight it. */
+  also?: string[];
+  role?: Role;
+  /** Needed module: without it the item is shown locked and opens the "not in your subscription" page. */
+  module?: ModuleKey;
+  /** The item is shown only when the organisation has at least one of these modules. */
+  showWith?: ModuleKey[];
+  admin?: boolean;
+  badge?: "approvals";
+};
+type NavTop = { key: string; label: string; icon: LucideIcon; to?: string; also?: string[]; module?: ModuleKey; children?: NavChild[]; platform?: boolean };
 
-// Grouped by what the user is looking after; the order inside a group follows a typical triage.
-const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
+// The menu: six places, grouped by the question the user is asking. Pages that stay reachable but are not menu
+// items (Attack paths, Exposure, Approvals, Organisation, ...) are listed in `also` so their parent stays highlighted.
+const NAV: NavTop[] = [
+  { key: "overview", label: "Overview", icon: LayoutDashboard, to: "/" },
   {
-    title: "",
-    items: [
-      { to: "/", label: "Dashboards", icon: LayoutDashboard },
-      { to: "/compliance", label: "Compliance", icon: ShieldCheck },
+    key: "issues",
+    label: "Issues",
+    icon: AlertTriangle,
+    children: [
+      { to: "/findings", label: "Cloud", also: ["/attack-paths"], module: "cloud" },
+      { to: "/vulnerabilities", label: "Vulnerabilities", module: "vulnerabilities" },
+      { to: "/attack-surface/findings", label: "Internet-facing", module: "external" },
+      { to: "/threats", label: "Threats", module: "endpoints" },
     ],
   },
   {
-    title: "Cloud security",
-    items: [
-      { to: "/inventory", label: "Inventory", icon: Boxes, module: "cloud" },
-      { to: "/exposure", label: "Exposure", icon: Globe, module: "cloud" },
-      { to: "/findings", label: "Posture findings", icon: ClipboardCheck, module: "cloud" },
-      { to: "/vulnerabilities", label: "Vulnerabilities", icon: Bug, module: "vulnerabilities" },
-      { to: "/attack-paths", label: "Attack paths", icon: RouteIcon, module: "cloud" },
-      { to: "/threats", label: "Runtime threats", icon: Siren, module: "endpoints" },
+    key: "assets",
+    label: "Assets",
+    icon: Monitor,
+    children: [
+      { to: "/inventory", label: "Cloud resources", also: ["/exposure"], module: "cloud" },
+      { to: "/devices", label: "Computers & servers", also: ["/devices/enrollment", "/devices/scripts"], module: "endpoints" },
+      { to: "/it-assets", label: "Hardware register", module: "assets" },
+      { to: "/network-devices", label: "Network", also: ["/network-scans"], module: "assets" },
+    ],
+  },
+  { key: "surface", label: "Attack surface", icon: Radar, to: "/attack-surface", module: "external" },
+  { key: "compliance", label: "Compliance & reports", icon: ShieldCheck, to: "/compliance" },
+  {
+    key: "settings",
+    label: "Settings",
+    icon: Settings,
+    children: [
+      { to: "/connectors", label: "Connections" },
+      { to: "/devices/updates", label: "Agents & updates", module: "endpoints", showWith: ["endpoints", "assets"] },
+      { to: "/notifications", label: "Notifications", role: "analyst" },
+      { to: "/admin/users", label: "People & approvals", also: ["/approvals", "/admin/organization"], admin: true, badge: "approvals" },
+      { to: "/admin/audit-log", label: "Audit log", admin: true },
     ],
   },
   {
-    title: "Endpoints & assets",
-    items: [
-      { to: "/devices", label: "Devices", icon: Laptop, module: "endpoints" },
-      { to: "/it-assets", label: "IT assets", icon: Package, module: "assets" },
-      { to: "/network-devices", label: "Network devices", icon: NetworkIcon, module: "assets" },
-    ],
-  },
-  {
-    title: "Attack surface & pre-ASV",
-    items: [
-      { to: "/attack-surface", label: "Attack surface", icon: Radar, module: "external" },
-      { to: "/attack-surface/findings", label: "Findings", icon: ScanSearch, module: "external" },
-      { to: "/attack-surface/reports", label: "Reports", icon: FileText, module: "external" },
-    ],
-  },
-  {
-    title: "Configuration",
-    items: [
-      { to: "/connectors", label: "Connectors & scans", icon: PlugZap },
-      { to: "/notifications", label: "Notifications", icon: Bell, role: "analyst" },
+    key: "platform",
+    label: "Platform",
+    icon: Building2,
+    platform: true,
+    children: [
+      { to: "/platform/organizations", label: "Organisations" },
+      { to: "/platform/attack-surface", label: "Attack surface review" },
     ],
   },
 ];
 
-const ADMIN_NAV: NavItem[] = [
-  { to: "/approvals", label: "Approvals", icon: CheckCheck, badge: "approvals" },
-  { to: "/admin/organization", label: "Organisation", icon: Building2 },
-  { to: "/admin/users", label: "Users", icon: Users2 },
-  { to: "/admin/audit-log", label: "Audit log", icon: ScrollText },
-];
-
-function navClass({ isActive }: { isActive: boolean }) {
-  return `flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
-    isActive ? "bg-accent/15 font-medium text-ink" : "text-ink-2 hover:bg-surface-2 hover:text-ink"
-  }`;
+/** How well a path matches an item (0: not at all); the longest match wins, so /devices/updates beats /devices. */
+function matchLen(path: string, item: { to?: string; also?: string[] }): number {
+  let best = 0;
+  for (const base of [item.to, ...(item.also ?? [])]) {
+    if (!base) continue;
+    const hit = base === "/" ? path === "/" : path === base || path.startsWith(`${base}/`);
+    if (hit) best = Math.max(best, base.length);
+  }
+  return best;
 }
 
-function NavSection({ title }: { title: string }) {
-  return <li className="px-3 pb-1 pt-4 text-[11px] font-semibold uppercase tracking-wider text-ink-3">{title}</li>;
+const itemCls = (active: boolean) =>
+  `flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+    active ? "bg-accent/15 font-medium text-ink" : "text-ink-2 hover:bg-surface-2 hover:text-ink"
+  }`;
+
+function LockMark() {
+  return (
+    <>
+      <Lock aria-hidden className="h-3.5 w-3.5 shrink-0 text-ink-3" />
+      <span className="sr-only">(not in your subscription)</span>
+    </>
+  );
+}
+
+function SideNav({ approvals, onNavigate }: { approvals?: number; onNavigate: () => void }) {
+  const { can, platformAdmin } = useAuth();
+  const { has } = useModules();
+  const { pathname } = useLocation();
+  const navigate = useNavigate();
+  const admin = can("admin");
+
+  // What this user sees; locked children sink to the bottom of their group.
+  const tops = NAV.filter((t) => !t.platform || platformAdmin)
+    .map((t) => {
+      const children = t.children
+        ?.filter((c) => (!c.role || can(c.role)) && (!c.admin || admin) && (!c.showWith || has(...c.showWith)))
+        .map((c) => ({ ...c, locked: !!c.module && !has(c.module) }))
+        .sort((x, y) => Number(x.locked) - Number(y.locked));
+      return { ...t, children, locked: !!t.module && !has(t.module) };
+    })
+    .filter((t) => !t.children || t.children.length > 0);
+
+  // The single best-matching leaf is the current page (aria-current); its group is the active group.
+  let current = "";
+  let currentLen = 0;
+  for (const t of tops) {
+    for (const leaf of t.children ?? [t]) {
+      const n = matchLen(pathname, leaf);
+      if (n > currentLen) {
+        currentLen = n;
+        current = leaf.to ?? "";
+      }
+    }
+  }
+  const activeGroup = tops.find((t) => t.children?.some((c) => c.to === current))?.key ?? "";
+
+  // Groups the user opened by hand; the group holding the current page is always open.
+  const [opened, setOpened] = useState<Record<string, boolean>>({});
+  useEffect(() => {
+    if (activeGroup) setOpened((o) => (o[activeGroup] ? o : { ...o, [activeGroup]: true }));
+  }, [activeGroup]);
+
+  const badge = (c: NavChild) =>
+    c.badge === "approvals" && !!approvals ? (
+      <span className="rounded-full bg-sev-high px-1.5 text-[11px] font-semibold leading-5 text-black" aria-label={`${approvals} waiting for your approval`}>
+        {approvals}
+      </span>
+    ) : null;
+
+  return (
+    <ul className="flex-1 space-y-0.5 overflow-y-auto px-2 pb-3">
+      {tops.map((t) => {
+        const Icon = t.icon;
+        if (!t.children) {
+          const on = t.to === current;
+          return (
+            <li key={t.key}>
+              <Link to={t.to!} aria-current={on ? "page" : undefined} className={itemCls(on)}>
+                <Icon aria-hidden className={`h-4 w-4 shrink-0 ${t.locked ? "opacity-60" : ""}`} />
+                <span className={`flex-1 ${t.locked ? "text-ink-3" : ""}`}>{t.label}</span>
+                {t.locked && <LockMark />}
+              </Link>
+            </li>
+          );
+        }
+        const isActive = t.key === activeGroup;
+        const isOpen = isActive || !!opened[t.key];
+        const panel = `nav-${t.key}`;
+        const first = t.children.find((c) => !c.locked) ?? t.children[0];
+        return (
+          <li key={t.key}>
+            <button
+              type="button"
+              aria-expanded={isOpen}
+              aria-controls={panel}
+              onClick={() => {
+                if (isActive) {
+                  setOpened((o) => ({ ...o, [t.key]: !isOpen }));
+                } else if (isOpen) {
+                  setOpened((o) => ({ ...o, [t.key]: false }));
+                } else {
+                  setOpened((o) => ({ ...o, [t.key]: true }));
+                  navigate(first.to);
+                  onNavigate();
+                }
+              }}
+              className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm transition focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+                isActive ? "font-medium text-ink" : "text-ink-2 hover:bg-surface-2 hover:text-ink"
+              }`}
+            >
+              <Icon aria-hidden className="h-4 w-4 shrink-0" />
+              <span className="flex-1">{t.label}</span>
+              <ChevronDown aria-hidden className={`h-3.5 w-3.5 shrink-0 text-ink-3 transition-transform ${isOpen ? "" : "-rotate-90"}`} />
+            </button>
+            {isOpen && (
+              <ul id={panel} className="ml-[22px] mt-0.5 space-y-0.5 border-l border-line pl-2">
+                {t.children.map((c) => {
+                  const on = c.to === current;
+                  return (
+                    <li key={c.to}>
+                      <Link to={c.to} aria-current={on ? "page" : undefined} className={itemCls(on)}>
+                        <span className={`flex-1 ${c.locked ? "text-ink-3" : ""}`}>{c.label}</span>
+                        {badge(c)}
+                        {c.locked && <LockMark />}
+                      </Link>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </li>
+        );
+      })}
+    </ul>
+  );
 }
 
 function ThemeToggle() {
@@ -216,11 +330,10 @@ function OrgIndicator() {
 function Shell() {
   const { can, forbidden, dismissForbidden, platformAdmin } = useAuth();
   const brand = useBrand();
-  const { has } = useModules();
   const { data: health, error } = useApi(api.health, [], 15000);
   // This organisation's connectors (console settings, or the environment for the default one).
-  const hasCloud = has("cloud");
-  const { data: connectors } = useApi(() => (hasCloud ? api.connectors() : Promise.resolve(null)), [hasCloud], 60000);
+  const showStatus = platformAdmin;
+  const { data: connectors } = useApi(() => (showStatus ? api.connectors() : Promise.resolve(null)), [showStatus], 60000);
   const admin = can("admin");
   const { data: approvals } = useApi(() => (admin ? api.approvalSummary() : Promise.resolve(null)), [admin], admin ? 30000 : undefined);
   // Below the md breakpoint the sidebar is an overlay opened from the header's menu button.
@@ -238,86 +351,19 @@ function Shell() {
           <img src="/shield.svg" alt="" className="h-8 w-auto" />
           <div>
             <div className="text-sm font-bold leading-tight tracking-tight">{brand.name}</div>
-            <div className="text-[11px] text-ink-3">{brand.tagline}</div>
+            
           </div>
         </div>
-        <ul className="flex-1 space-y-0.5 overflow-y-auto px-2 pb-3">
-          {NAV_GROUPS.map((g) => {
-            const items = g.items.filter((n) => !n.role || can(n.role));
-            if (items.length === 0) return null;
-            return (
-              <Fragment key={g.title || "home"}>
-                {g.title && <NavSection title={g.title} />}
-                {items.map((n) => {
-                  const locked = !!n.module && !has(n.module);
-                  return (
-                    <li key={n.to}>
-                      <NavLink to={n.to} end={n.to === "/"} className={navClass}>
-                        <n.icon aria-hidden className={`h-4 w-4 shrink-0 ${locked ? "opacity-60" : ""}`} />
-                        <span className={`flex-1 ${locked ? "text-ink-3" : ""}`}>{n.label}</span>
-                        {locked && (
-                          <>
-                            <Lock aria-hidden className="h-3.5 w-3.5 shrink-0 text-ink-3" />
-                            <span className="sr-only">(not in your subscription)</span>
-                          </>
-                        )}
-                      </NavLink>
-                    </li>
-                  );
-                })}
-              </Fragment>
-            );
-          })}
-          {admin && (
-            <>
-              <NavSection title="Administration" />
-              {ADMIN_NAV.map((n) => (
-                <li key={n.to}>
-                  <NavLink to={n.to} className={navClass}>
-                    <n.icon aria-hidden className="h-4 w-4 shrink-0" />
-                    <span className="flex-1">{n.label}</span>
-                    {n.badge === "approvals" && !!approvals?.actionable && (
-                      <span
-                        className="rounded-full bg-sev-high px-1.5 text-[11px] font-semibold leading-5 text-black"
-                        aria-label={`${approvals.actionable} waiting for your approval`}
-                      >
-                        {approvals.actionable}
-                      </span>
-                    )}
-                  </NavLink>
-                </li>
-              ))}
-            </>
-          )}
-          {platformAdmin && (
-            <>
-              <NavSection title="Platform" />
-              <li>
-                <NavLink to="/platform/organizations" className={navClass}>
-                  <Network aria-hidden className="h-4 w-4 shrink-0" />
-                  Organisations
-                </NavLink>
-              </li>
-              <li>
-                <NavLink to="/platform/attack-surface" className={navClass}>
-                  <ScanSearch aria-hidden className="h-4 w-4 shrink-0" />
-                  Attack surface review
-                </NavLink>
-              </li>
-            </>
-          )}
-        </ul>
+        <SideNav approvals={approvals?.actionable} onNavigate={() => setNavOpen(false)} />
         <div className="space-y-1 border-t border-line px-4 py-3 text-[11px] text-ink-3">
           {error && <div className="text-sev-critical">API unreachable</div>}
-          {health && (
-            <>
+          {platformAdmin && health && (
+            <div className="space-y-0.5 text-[10px]">
               <div>
                 Mode: <span className="text-ink-2">{health.simulation_mode ? "Simulated data" : "Live"}</span>
               </div>
               <div className="flex items-center gap-1.5">
-                <span
-                  className={`inline-block h-2 w-2 rounded-full ${health.simulator_running ? "animate-pulse bg-good" : "bg-ink-3"}`}
-                />
+                <span className={`inline-block h-1.5 w-1.5 rounded-full ${health.simulator_running ? "animate-pulse bg-good" : "bg-ink-3"}`} />
                 Runtime feed {health.simulator_running ? "live" : "idle"}
               </div>
               <div>
@@ -329,7 +375,7 @@ function Shell() {
                   ).join(", ") || "none configured"}
                 </span>
               </div>
-            </>
+            </div>
           )}
         </div>
       </nav>

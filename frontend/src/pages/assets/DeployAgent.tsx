@@ -133,7 +133,7 @@ export default function DeployAgent() {
   }
 
   const crumbs = (
-    <Breadcrumbs items={[{ label: "IT assets", to: "/it-assets" }, { label: "Discovery", to: "/it-assets/discovery" }, { label: "Deploy agent" }]} />
+    <Breadcrumbs items={[{ label: "Hardware register", to: "/it-assets" }, { label: "Discovery", to: "/it-assets/discovery" }, { label: "Deploy agent" }]} />
   );
   if (!state) {
     return (

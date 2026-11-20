@@ -38,7 +38,7 @@ export default function NetworkScans() {
 
   return (
     <div>
-      <Breadcrumbs items={[{ label: "Network devices", to: "/network-devices" }, { label: "Network scans" }]} />
+      <Breadcrumbs items={[{ label: "Network", to: "/network-devices" }, { label: "Network scans" }]} />
       <PageHeader
         title="Network scans"
         subtitle="Scans that find and identify the devices on your networks, run by a dedicated collector. Read-only."

@@ -161,7 +161,7 @@ export default function FindingDetail() {
 
   return (
     <div>
-      <Breadcrumbs items={[{ label: "Posture findings", to: "/findings" }, { label: f.title }]} />
+      <Breadcrumbs items={[{ label: "Cloud issues", to: "/findings" }, { label: f.title }]} />
 
       <header className="mb-5">
         <div className="flex flex-wrap items-center gap-2">

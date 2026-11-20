@@ -7,6 +7,7 @@ import { notificationsApi } from "../notificationsApi";
 import NotificationsChannels from "./NotificationsChannels";
 import NotificationsLog from "./NotificationsLog";
 import NotificationsRules from "./NotificationsRules";
+import { PAGE_INFO } from "../lib/pageInfo";
 
 const TABS = [
   { id: "channels", label: "Channels" },
@@ -27,7 +28,8 @@ export default function Notifications() {
   return (
     <div>
       <PageHeader
-        title="Notifications & integrations"
+        title="Notifications"
+        info={PAGE_INFO.notifications}
         subtitle={
           isAdmin
             ? "Send runtime alerts, posture findings, vulnerabilities, attack paths and scan results to Teams, Slack, email or signed webhooks."

@@ -13,6 +13,7 @@ import { useApi } from "../../lib/useApi";
 import { useSortState } from "../../lib/useSort";
 import { useUrlState } from "../../lib/useUrlState";
 import { BulkActionsBar } from "./BulkActions";
+import { PAGE_INFO } from "../../lib/pageInfo";
 
 /** Missing OS updates on a Devices row (Windows Update report, docs/PATCHING.md). */
 function OsUpdatesCell({ d }: { d: DeviceSummary }) {
@@ -85,7 +86,8 @@ export default function Devices() {
   return (
     <div>
       <PageHeader
-        title="Devices"
+        title="Computers & servers"
+        info={PAGE_INFO.computers}
         subtitle="Workstations, servers and domain controllers running the CNAPP endpoint agent: inventory, security posture and remote actions."
         actions={
           <div className="flex items-center gap-2">

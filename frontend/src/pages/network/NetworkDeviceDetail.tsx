@@ -164,7 +164,7 @@ export default function NetworkDeviceDetail() {
 
   return (
     <div>
-      <Breadcrumbs items={[{ label: "Network devices", to: "/network-devices" }, { label: d.name }]} />
+      <Breadcrumbs items={[{ label: "Network", to: "/network-devices" }, { label: d.name }]} />
       <header className="mb-5">
         <div className="flex flex-wrap items-center gap-2">
           <Tag>{d.type_label}</Tag>

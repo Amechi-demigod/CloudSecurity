@@ -8,6 +8,7 @@ import { FeedStatus, VulnTable } from "../components/vulns";
 import { useApi } from "../lib/useApi";
 import { useSort, useSortState } from "../lib/useSort";
 import { useUrlState } from "../lib/useUrlState";
+import { PAGE_INFO } from "../lib/pageInfo";
 
 const VIEWS = ["Vulnerabilities", "By CVE", "By software", "Coverage"] as const;
 type View = (typeof VIEWS)[number];
@@ -71,6 +72,7 @@ export default function Vulnerabilities() {
     <div>
       <PageHeader
         title="Vulnerabilities"
+        info={PAGE_INFO.vulnerabilities}
         subtitle="CVEs on cloud workloads, Linux servers (runtime sensor, matched with OSV.dev) and laptops (installed software matched with NVD by CPE). Workload CVEs are ranked by runtime context; CISA KEV marks vulnerabilities known to be exploited."
         actions={analyst ? <Button onClick={rematch}>Re-match now</Button> : undefined}
       />

@@ -8,6 +8,7 @@ import { useApi } from "../../lib/useApi";
 import { ts, useSort } from "../../lib/useSort";
 import { summarizeUpdateNow, updatesApi } from "../../updatesApi";
 import UpdateAutomationCard from "./UpdateAutomation";
+import { PAGE_INFO } from "../../lib/pageInfo";
 
 function errMsg(e: unknown) {
   return e instanceof ApiError ? e.message : String(e);
@@ -255,11 +256,12 @@ export default function AgentUpdates() {
   return (
     <div>
       <PageHeader
-        title="Agent updates"
+        title="Agents & updates"
+        info={PAGE_INFO.agents}
         subtitle="Signed endpoint-agent releases and their rollout. Agents only install releases signed by a release key compiled into them; this server just chooses which one."
         actions={
           <Link to="/devices" className="text-sm text-accent hover:underline">
-            Back to devices
+            Back to Computers & servers
           </Link>
         }
       />

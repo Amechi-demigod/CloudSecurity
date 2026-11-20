@@ -9,6 +9,7 @@ import { STATUS_LABEL, STATUS_ORDER, TYPE_LABEL, errMsg, fmtDate, fmtMoney, name
 import { fmtAgo } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
 import { rankOf, useSort } from "../../lib/useSort";
+import { PAGE_INFO } from "../../lib/pageInfo";
 
 function BriefList({ items, render, empty }: { items: AssetBrief[]; render: (a: AssetBrief) => string; empty: string }) {
   if (items.length === 0) return <p className="text-sm text-ink-3">{empty}</p>;
@@ -148,7 +149,8 @@ export default function Assets() {
   return (
     <div>
       <PageHeader
-        title="IT assets"
+        title="Hardware register"
+        info={PAGE_INFO.hardware}
         subtitle="Hardware lifecycle: who has what, custody history, leavers' retrievals, warranties and disposal. Agent devices get a record automatically."
         actions={
           <div className="flex flex-wrap items-center gap-2">

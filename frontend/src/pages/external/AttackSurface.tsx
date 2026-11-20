@@ -10,6 +10,7 @@ import { externalApi, type ExtTarget } from "../../externalApi";
 import { fmtAgo, fmtTime } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
 import { useSort } from "../../lib/useSort";
+import { PAGE_INFO } from "../../lib/pageInfo";
 
 function TargetStatus({ t }: { t: ExtTarget }) {
   if (t.verified) return <Tag tone="good">Verified{t.verified_method ? ` (${t.verified_method})` : ""}</Tag>;
@@ -185,14 +186,18 @@ export default function AttackSurface() {
     <div className="space-y-4">
       <PageHeader
         title="Attack surface"
+        info={PAGE_INFO.attackSurface}
         subtitle="What an attacker sees of your internet-facing systems, scanned from outside without exploiting anything."
         actions={
-          can("analyst") ? (
+          <>
+            <Link to="/attack-surface/reports" className="rounded border border-line bg-surface-2 px-3 py-1.5 text-sm font-medium text-ink hover:bg-line">Reports</Link>
+            {can("analyst") && (
             <Button variant="primary" disabled={o?.running} title={o?.running ? "A scan is already running" : "Scan every verified target"} onClick={() => void act(externalApi.scanNow)}>
               <Play aria-hidden className="mr-1 inline h-3.5 w-3.5" />
               {o?.running ? "Scan running…" : "Scan all"}
             </Button>
-          ) : undefined
+            )}
+          </>
         }
       />
       <NotAsvBanner />

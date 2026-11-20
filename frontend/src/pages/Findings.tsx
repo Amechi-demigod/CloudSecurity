@@ -9,6 +9,7 @@ import { PROVIDER_LABEL, TYPE_LABEL, fmtAgo } from "../lib/format";
 import { useApi } from "../lib/useApi";
 import { useSortState } from "../lib/useSort";
 import { useUrlState } from "../lib/useUrlState";
+import { PAGE_INFO } from "../lib/pageInfo";
 
 export default function Findings() {
   // Deep links: ?severity=, ?status=, ?provider=, ?compliance=, ?category=, ?subscription= (dashboards); ?rule= (compliance); ?finding=<id> redirects below
@@ -65,7 +66,13 @@ export default function Findings() {
   return (
     <div>
       <PageHeader
-        title="Posture findings (CSPM)"
+        title="Cloud issues"
+        info={PAGE_INFO.cloudIssues}
+        actions={
+          <Link to="/attack-paths" className="rounded border border-line bg-surface-2 px-3 py-1.5 text-sm font-medium text-ink hover:bg-line">
+            Attack paths
+          </Link>
+        }
         subtitle="Misconfigurations detected by the declarative rules engine, mapped to CIS benchmarks."
       />
       <ErrorNote error={error ?? actionError} />
@@ -133,7 +140,7 @@ export default function Findings() {
             rowCount={data?.length ?? 0}
             empty={
               <Empty icon={ShieldCheck} title={status === "open" && !severity && !provider && !source && !compliance && !category && !subscription && !rule && !reason ? "No open findings" : "No findings match these filters"}>
-                {status === "open" ? "Nothing to fix here right now. Run a scan under Connectors & scans to re-check." : "Try another status or clear a filter."}
+                {status === "open" ? "Nothing to fix here right now. Run a scan under Settings > Connections to re-check." : "Try another status or clear a filter."}
               </Empty>
             }
           >

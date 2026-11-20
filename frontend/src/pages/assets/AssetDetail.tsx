@@ -290,7 +290,7 @@ export default function AssetDetail() {
     <div>
       <div className="mb-1 text-xs text-ink-3">
         <Link to="/it-assets" className="hover:text-ink">
-          IT assets
+          Hardware register
         </Link>{" "}
         / {asset.display_name}
       </div>

@@ -1,5 +1,6 @@
 import { SearchX } from "lucide-react";
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { api } from "../api";
 import AssetDrawer from "../components/AssetDrawer";
 import { Card, Empty, ErrorNote, PageHeader, RiskBar, Select, Table, Tag } from "../components/ui";
@@ -7,6 +8,7 @@ import { PROVIDER_LABEL, SCOPE_LABEL, TYPE_LABEL, fmtAgo, fmtTime } from "../lib
 import { useApi } from "../lib/useApi";
 import { useSort } from "../lib/useSort";
 import { useUrlState } from "../lib/useUrlState";
+import { PAGE_INFO } from "../lib/pageInfo";
 
 export default function Inventory() {
   // Filters live in the URL (?type=, ?provider=, ?exposed=yes ...) so the dashboard can link to them.
@@ -64,7 +66,7 @@ export default function Inventory() {
 
   return (
     <div>
-      <PageHeader title="Asset inventory" subtitle="Every discovered cloud resource with exposure, data sensitivity and risk context." />
+      <PageHeader title="Cloud resources" info={PAGE_INFO.cloudResources} actions={<Link to="/exposure" className="rounded border border-line bg-surface-2 px-3 py-1.5 text-sm font-medium text-ink hover:bg-line">Internet exposure</Link>} subtitle="Every discovered cloud resource with exposure, data sensitivity and risk context." />
       <ErrorNote error={error} />
       <div role="tablist" aria-label="Inventory" className="mb-3 flex gap-1 border-b border-line">
         <button role="tab" aria-selected={!removed} className={tabCls(!removed)} onClick={() => setTab("")}>
@@ -156,7 +158,7 @@ export default function Inventory() {
                 </Empty>
               ) : (
                 <Empty icon={SearchX} title="No assets match these filters">
-                  Clear a filter, or connect a cloud account under Connectors & scans.
+                  Clear a filter, or connect a cloud account under Connections.
                 </Empty>
               )
             }
