@@ -31,7 +31,7 @@ export function parseTarget(item: string): Interval | string {
     const [a, b] = s.split("/");
     const base = ip2n(a);
     const bits = Number(b);
-    if (base === null || !/^\d{1,2}$/.test(b) || bits > 32) return `${s} is not a valid CIDR`;
+    if (base === null || !/^\d{1,2}$/.test(b) || bits > 32) return `${s} is not a valid IP address or range`;
     const size = 2 ** (32 - bits);
     lo = Math.floor(base / size) * size;
     hi = lo + size - 1;

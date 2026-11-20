@@ -54,8 +54,8 @@ function InstallerButtons({ facts, onDownload, downloading, available }: Guidanc
           {downloading === p ? "Building…" : p === "windows-msi" ? `Windows installer (${MSI})` : `macOS installer (${PKG})`}
         </Button>
       ))}
-      {plats.some((p) => available?.[p] === false) && <Tag tone="warn">not bundled with this server</Tag>}
-      <span className="text-xs text-ink-3">Each download mints a new package-bound token; keep the file like a password.</span>
+      {plats.some((p) => available?.[p] === false) && <Tag tone="warn">Not available yet</Tag>}
+      <span className="text-xs text-ink-3">Each download is unique. Keep the file private, like a password.</span>
     </div>
   );
 }
@@ -134,7 +134,7 @@ function Gpo(p: GuidanceProps) {
         <li>
           Pick the MSI through its <b>UNC path</b> (not a local drive), choose <Path>Assigned</Path>. It installs at the next restart, before sign-in.
         </li>
-        <li>The agent updates itself afterwards (Devices → Agent updates); no need to re-assign new versions.</li>
+        <li>The agent updates itself afterwards (Settings → Agents & updates); no need to re-assign new versions.</li>
       </Steps>
       <MachineNames names={p.names} />
     </div>

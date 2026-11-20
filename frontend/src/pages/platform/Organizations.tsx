@@ -2,6 +2,8 @@ import { useState, type FormEvent } from "react";
 import { ApiError, type ModuleKey, type Role } from "../../api";
 import { ROLE_LABEL, useAuth } from "../../auth/context";
 import { InvitationStateTag, InviteResult } from "../../components/org";
+import { Switch } from "../../components/Switch";
+import { SaveBar } from "../../components/SaveBar";
 import { Button, Card, Drawer, ErrorNote, Field, Modal, PageHeader, Table, Tag } from "../../components/ui";
 import { fmtAgo, fmtTime } from "../../lib/format";
 import { MODULES, MODULE_KEYS } from "../../lib/modules";
@@ -27,28 +29,12 @@ function ModuleChips({ modules }: { modules: ModuleKey[] }) {
   );
 }
 
-function ModuleSwitch({ on, label, disabled, onChange }: { on: boolean; label: string; disabled?: boolean; onChange: (next: boolean) => void }) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={on}
-      aria-label={label}
-      disabled={disabled}
-      onClick={() => onChange(!on)}
-      className={`relative h-5 w-9 shrink-0 rounded-full transition focus:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-50 ${
-        on ? "bg-accent" : "bg-line"
-      }`}
-    >
-      <span aria-hidden className={`absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${on ? "translate-x-4" : ""}`} />
-    </button>
-  );
-}
-
-/** The product modules of an organisation. Turning one on applies at once; turning one off asks first. */
-function ModulesSection({ orgId, modules, busy, onSet }: { orgId: string; modules: ModuleKey[]; busy: boolean; onSet: (m: ModuleKey, enabled: boolean) => void }) {
-  const [confirming, setConfirming] = useState<ModuleKey | null>(null);
-  const has = (m: ModuleKey) => modules.includes(m);
+/** The product modules of an organisation. Switches are pending until "Save changes". */
+function ModulesSection({ orgId, modules, busy, onSave }: { orgId: string; modules: ModuleKey[]; busy: boolean; onSave: (changes: [ModuleKey, boolean][]) => Promise<void> }) {
+  const [pending, setPending] = useState<Partial<Record<ModuleKey, boolean>>>({});
+  const has = (m: ModuleKey) => (m in pending ? pending[m]! : modules.includes(m));
+  const changes = (Object.entries(pending) as [ModuleKey, boolean][]).filter(([m, v]) => v !== modules.includes(m));
+  const turningOff = changes.filter(([, v]) => !v).map(([m]) => m);
   const noData = has("vulnerabilities") && !has("cloud") && !has("endpoints");
   return (
     <section key={orgId}>
@@ -63,44 +49,23 @@ function ModulesSection({ orgId, modules, busy, onSet }: { orgId: string; module
                 {m === "vulnerabilities" && noData && (
                   <p className="mt-1 text-xs text-sev-high">Needs Cloud security or Endpoints &amp; servers to have data.</p>
                 )}
+                {turningOff.includes(m) && (
+                  <p role="alert" className="mt-1 text-xs text-sev-high">
+                    Turning off {MODULES[m].label} hides those pages and their data for that customer. Nothing is deleted.
+                  </p>
+                )}
               </div>
-              <ModuleSwitch
-                on={has(m)}
-                label={MODULES[m].label}
-                disabled={busy}
-                onChange={(next) => {
-                  if (next) {
-                    setConfirming(null);
-                    onSet(m, true);
-                  } else {
-                    setConfirming(m);
-                  }
-                }}
-              />
+              <Switch on={has(m)} label={MODULES[m].label} disabled={busy} onChange={(next) => setPending({ ...pending, [m]: next })} />
             </div>
-            {confirming === m && (
-              <div role="alert" className="mt-2 rounded border border-sev-high/60 bg-sev-high/10 p-3 text-xs">
-                <p className="font-medium text-ink">Turn off {MODULES[m].label}?</p>
-                <p className="mt-1 text-ink-2">{MODULES[m].stops}</p>
-                <p className="mt-1 text-ink-2">Their data is kept. Turning the module back on shows it again.</p>
-                <div className="mt-2 flex gap-2">
-                  <Button
-                    variant="danger"
-                    disabled={busy}
-                    onClick={() => {
-                      setConfirming(null);
-                      onSet(m, false);
-                    }}
-                  >
-                    Turn off
-                  </Button>
-                  <Button onClick={() => setConfirming(null)}>Keep on</Button>
-                </div>
-              </div>
-            )}
           </li>
         ))}
       </ul>
+      <SaveBar
+        count={changes.length}
+        saving={busy}
+        onDiscard={() => setPending({})}
+        onSave={() => void onSave(changes).then(() => setPending({}))}
+      />
     </section>
   );
 }
@@ -265,7 +230,8 @@ function OrgDrawer({ orgId, onClose, onChanged }: { orgId: string | null; onClos
               )}
             </div>
           )}
-          <ModulesSection orgId={org.id} modules={org.modules} busy={busy} onSet={(m, enabled) => void act(() => orgApi.setOrgModule(org.id, m, enabled))} />
+          <ModulesSection key={org.id} orgId={org.id} modules={org.modules} busy={busy}
+            onSave={async (changes) => { await act(async () => { for (const [m, enabled] of changes) await orgApi.setOrgModule(org.id, m, enabled); }); }} />
           <section>
             <h3 className="mb-2 font-semibold">Members</h3>
             {org.members.length ? (
@@ -361,7 +327,7 @@ export default function Organizations() {
     <div>
       <PageHeader
         title="Organisations"
-        subtitle="Platform console: every organisation on this platform. Each one only ever sees its own data."
+        subtitle="Every customer on the platform. Each only sees its own data."
         actions={
           <Button variant="primary" onClick={() => setCreating(true)}>
             New organisation
@@ -371,7 +337,7 @@ export default function Organizations() {
       <ErrorNote error={error} />
       {mail && !mail.configured && (
         <p className="mb-3 text-xs text-ink-3">
-          Platform email is not configured (PLATFORM_SMTP_*): invitation links are shown here for you to send.
+          Platform email isn't set up yet, so invitation links are shown here for you to send.
         </p>
       )}
       {issued && <InviteResult issued={issued} onDismiss={() => setIssued(null)} />}

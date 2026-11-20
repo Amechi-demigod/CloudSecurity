@@ -1,4 +1,5 @@
 import { Link } from "react-router-dom";
+import { statusLabel } from "../lib/labels";
 import type { Vulnerability, VulnStatus } from "../api";
 import { fmtAgo, fmtTime, TYPE_LABEL } from "../lib/format";
 import { SEV_RANK, useSort, type SortState } from "../lib/useSort";
@@ -9,10 +10,10 @@ function RuntimeContext({ v }: { v: Vulnerability }) {
   if (v.device_id) {
     return (
       <span className="space-x-1 whitespace-nowrap">
-        <span title="Endpoint software: no runtime sensor on laptops, installed apps are treated as in use for scoring">
-          <Tag>Endpoint</Tag>
+        <span title="Installed apps on laptops are treated as in use">
+          <Tag>Computer</Tag>
         </span>
-        {v.kev && <Tag tone="critical">KEV</Tag>}
+        {v.kev && <span title="CISA KEV: on the list of flaws known to be exploited"><Tag tone="critical">Being exploited now</Tag></span>}
       </span>
     );
   }
@@ -21,17 +22,17 @@ function RuntimeContext({ v }: { v: Vulnerability }) {
       {v.in_use ? (
         v.in_use_source === "sensor" ? (
           <span title={v.in_use_last_seen ? `Seen by runtime sensor ${new Date(v.in_use_last_seen).toLocaleString()}` : "Seen by runtime sensor"}>
-            <Tag tone="warn">In use (sensor)</Tag>
+            <Tag tone="warn">In use</Tag>
           </span>
         ) : (
           <Tag tone="warn">In use</Tag>
         )
       ) : (
-        <Tag>Not loaded</Tag>
+        <Tag>Not in use</Tag>
       )}
-      {v.internet_exposed && <Tag tone="warn">Exposed</Tag>}
-      {v.sensitive_data_access && <Tag tone="warn">Data access</Tag>}
-      {v.kev ? <Tag tone="critical">KEV</Tag> : v.exploit_available && <Tag tone="warn">Exploit</Tag>}
+      {v.internet_exposed && <Tag tone="warn">On the internet</Tag>}
+      {v.sensitive_data_access && <Tag tone="warn">Reaches data</Tag>}
+      {v.kev ? <span title="CISA KEV: on the list of flaws known to be exploited"><Tag tone="critical">Being exploited now</Tag></span> : v.exploit_available && <Tag tone="warn">Exploit exists</Tag>}
     </span>
   );
 }
@@ -68,11 +69,11 @@ export function VulnTable({
   const head = [
     { label: "Priority", sort: "priority" },
     { label: "CVE", sort: "cve" },
-    { label: "Software / package", sort: "software" },
+    { label: "Software", sort: "software" },
     ...(showTarget ? [{ label: "Affected", sort: "affected" }] : []),
-    { label: "CVSS / EPSS", sort: "cvss" },
+    { label: "How serious", sort: "cvss" },
     "Context",
-    { label: "Risk score", sort: "risk" },
+    { label: "Risk", sort: "risk" },
     { label: "Fix", sort: "fixed" },
   ];
   return (
@@ -83,7 +84,7 @@ export function VulnTable({
             <SeverityBadge severity={v.priority} />
             {v.status === "resolved" && (
               <div className="mt-1 text-[11px] text-ink-3" title={v.resolved_at ? fmtTime(v.resolved_at) : undefined}>
-                resolved{v.resolved_at ? ` ${fmtAgo(v.resolved_at)}` : ""}
+                {statusLabel("resolved")}{v.resolved_at ? ` ${fmtAgo(v.resolved_at)}` : ""}
               </div>
             )}
           </td>
@@ -108,7 +109,7 @@ export function VulnTable({
                   <Link className="hover:text-accent" to={`/devices/${encodeURIComponent(v.device_id)}`}>
                     {v.device_name ?? v.device_id}
                   </Link>
-                  <div className="text-[11px] text-ink-3">Device</div>
+                  <div className="text-[11px] text-ink-3">Computer</div>
                 </>
               ) : (
                 <>
@@ -122,7 +123,7 @@ export function VulnTable({
           )}
           <td className="whitespace-nowrap px-3 py-2 text-xs">
             {v.cvss.toFixed(1)} <span className="text-ink-3">({v.severity})</span>
-            {v.epss != null && <div className="text-[11px] text-ink-3" title="FIRST EPSS: probability of exploitation in the next 30 days">EPSS {(v.epss * 100).toFixed(1)}%</div>}
+            {v.epss != null && <div className="text-[11px] text-ink-3" title="EPSS: the chance this is exploited in the next 30 days">{(v.epss * 100).toFixed(0)}% likely to be exploited</div>}
           </td>
           <td className="px-3 py-2">
             <RuntimeContext v={v} />

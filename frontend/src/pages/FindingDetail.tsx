@@ -1,4 +1,5 @@
 import { FileDown } from "lucide-react";
+import { statusLabel } from "../lib/labels";
 import { useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, type Finding } from "../api";
@@ -115,7 +116,7 @@ export default function FindingDetail() {
 
   let due: ReactNode = "No SLA";
   let dueTone: string | undefined;
-  if (f.status === "resolved") due = "Resolved";
+  if (f.status === "resolved") due = "Fixed";
   else if (f.sla_due) {
     if (f.overdue_days != null) {
       due = `Overdue by ${f.overdue_days} day${f.overdue_days === 1 ? "" : "s"}`;
@@ -166,7 +167,7 @@ export default function FindingDetail() {
       <header className="mb-5">
         <div className="flex flex-wrap items-center gap-2">
           <SeverityBadge severity={f.severity} />
-          <Tag tone={STATUS_TONE[f.status]}>{f.status}</Tag>
+          <Tag tone={STATUS_TONE[f.status]}>{statusLabel(f.status)}</Tag>
           {ctx.internet_exposed && <Chip tone="critical">Internet exposed</Chip>}
           {ctx.sensitive_data && <Chip tone="warn">Holds sensitive data</Chip>}
         </div>
@@ -196,10 +197,10 @@ export default function FindingDetail() {
             )}
             {canTriage && f.status !== "resolved" && (
               <Button variant="primary" onClick={() => setStatus("resolved")}>
-                Resolve
+                Mark as fixed
               </Button>
             )}
-            {canTriage && f.status !== "suppressed" && <Button onClick={() => setStatus("suppressed")}>Suppress</Button>}
+            {canTriage && f.status !== "suppressed" && <Button onClick={() => setStatus("suppressed")}>Snooze</Button>}
             {canTriage && f.status !== "open" && <Button onClick={() => setStatus("open")}>Reopen</Button>}
           </div>
         </div>
@@ -382,18 +383,18 @@ export default function FindingDetail() {
               </li>
               {f.resolved_at && (
                 <li>
-                  <div className="text-ink">Resolved</div>
+                  <div className="text-ink">Fixed</div>
                   <div className="text-xs text-ink-3">{fmtTime(f.resolved_at)}</div>
                 </li>
               )}
               {f.status === "suppressed" && (
                 <li>
-                  <div className="text-ink">Suppressed</div>
+                  <div className="text-ink">Snoozed</div>
                   <div className="text-xs text-ink-3">The time of suppression is not recorded.</div>
                 </li>
               )}
             </ol>
-            <p className="mt-3 text-xs text-ink-3">A resolved finding reopens on the next scan if the misconfiguration is still there. Suppress it to accept the risk.</p>
+            <p className="mt-3 text-xs text-ink-3">A fixed issue reopens on the next scan if the problem is still there. Snooze it to accept the risk.</p>
           </Card>
         </div>
       </div>

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { statusLabel } from "../lib/labels";
 import { useSearchParams } from "react-router-dom";
 import { api, type Alert } from "../api";
 import { useAuth } from "../auth/context";
@@ -18,7 +19,9 @@ const EVENT_LABEL: Record<string, string> = {
 };
 
 function SourceTag({ source }: { source: string }) {
-  return source === "sensor" ? <Tag tone="accent">sensor</Tag> : <Tag>sim</Tag>;
+  const { platformAdmin } = useAuth();
+  if (!platformAdmin) return null;
+  return source === "sensor" ? <Tag tone="accent">sensor</Tag> : <Tag>demo</Tag>;
 }
 
 function AlertDetailPanel({ id, onChanged, onAsset }: { id: string; onChanged: () => void; onAsset: (id: string) => void }) {
@@ -41,7 +44,7 @@ function AlertDetailPanel({ id, onChanged, onAsset }: { id: string; onChanged: (
       <div className="flex flex-wrap items-center gap-2">
         <SeverityBadge severity={a.severity} />
         <h3 className="text-base font-semibold">{a.title}</h3>
-        <Tag>{a.status}</Tag>
+        <Tag>{statusLabel(a.status)}</Tag>
       </div>
       <p className="mt-2 text-sm text-ink-2">{a.description}</p>
       <dl className="mt-3 grid grid-cols-[9rem_1fr] gap-y-1 text-sm">
@@ -79,7 +82,7 @@ function AlertDetailPanel({ id, onChanged, onAsset }: { id: string; onChanged: (
       {canTriage ? (
         <div className="mt-3 flex gap-2">
           {a.status === "open" && <Button onClick={() => set("acknowledged")}>Acknowledge</Button>}
-          {a.status !== "resolved" && <Button onClick={() => set("resolved")}>Resolve</Button>}
+          {a.status !== "resolved" && <Button onClick={() => set("resolved")}>Mark as fixed</Button>}
           {a.status === "resolved" && <Button onClick={() => set("open")}>Reopen</Button>}
         </div>
       ) : (
@@ -109,6 +112,7 @@ function AlertDetailPanel({ id, onChanged, onAsset }: { id: string; onChanged: (
 }
 
 export default function Threats() {
+  const { platformAdmin } = useAuth();
   // Deep link from notifications: /threats?alert=<id>
   const [params] = useSearchParams();
   const linked = params.get("alert");
@@ -126,7 +130,7 @@ export default function Threats() {
       <PageHeader
         title="Threats"
         info={PAGE_INFO.threats}
-        subtitle="Detections from runtime events: process execution, network, file access and privilege changes."
+        subtitle="Suspicious activity seen on your devices and servers."
       />
       <ErrorNote error={alerts.error} />
       <div className="mb-3 flex flex-wrap items-center gap-3">
@@ -138,16 +142,16 @@ export default function Threats() {
             { value: "", label: "Active" },
             { value: "open", label: "Open" },
             { value: "acknowledged", label: "Acknowledged" },
-            { value: "resolved", label: "Resolved" },
+            { value: "resolved", label: "Fixed" },
             { value: "all", label: "All" },
           ]}
         />
         <Select label="Severity" value={severity} onChange={setSeverity} options={["", "critical", "high", "medium", "low"]} />
-        <span className="text-xs text-ink-3">{alerts.data ? `${alerts.data.length} alerts` : ""}</span>
+        <span className="text-xs text-ink-3">{alerts.data ? `${alerts.data.length} threats` : ""}</span>
       </div>
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.3fr)]">
-        <Card title="Alerts">
-          {alerts.data && alerts.data.length === 0 && <Empty>No alerts.</Empty>}
+        <Card title="Threats">
+          {alerts.data && alerts.data.length === 0 && <Empty>No threats right now.</Empty>}
           <ul className="max-h-[34rem] divide-y divide-line/60 overflow-y-auto">
             {alerts.data?.map((a) => (
               <li
@@ -163,14 +167,13 @@ export default function Threats() {
                 </div>
                 <div className="mt-0.5 flex gap-2 text-xs text-ink-3">
                   <span className="truncate">{a.asset_name}</span>
-                  <span className="font-mono">{a.mitre_technique_id}</span>
-                  {a.status !== "open" && <span>· {a.status}</span>}
+                                    {a.status !== "open" && <span>· {statusLabel(a.status)}</span>}
                 </div>
               </li>
             ))}
           </ul>
         </Card>
-        <Card title="Alert detail">
+        <Card title="Details">
           {current ? (
             <AlertDetailPanel id={current} onChanged={alerts.reload} onAsset={setAsset} />
           ) : (
@@ -190,8 +193,8 @@ export default function Threats() {
               onChange={(ev) => setEventSource(ev.target.value)}
             >
               <option value="">All sources</option>
-              <option value="sensor">Runtime sensor</option>
-              <option value="simulated">Simulated</option>
+              <option value="sensor">Sentrigis agent</option>
+              {platformAdmin && <option value="simulated">Demo data</option>}
             </select>
           </span>
         }

@@ -1,4 +1,5 @@
 import { Network } from "lucide-react";
+import { statusLabel } from "../../lib/labels";
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useAuth } from "../../auth/context";
@@ -13,7 +14,7 @@ import { PAGE_INFO } from "../../lib/pageInfo";
 
 const STATUS = [
   { value: "", label: "All" },
-  { value: "not_in_it_assets", label: "Not in IT assets" },
+  { value: "not_in_it_assets", label: "Not in hardware register" },
   { value: "has_vulns", label: "Has vulnerabilities" },
   { value: "has_findings", label: "Has findings" },
   { value: "new_this_week", label: "New this week" },
@@ -93,8 +94,8 @@ export default function NetworkDevices() {
         info={PAGE_INFO.network}
         subtitle={
           last
-            ? `Last scan ${fmtAgo(last.finished_at ?? last.queued_at)}: ${last.status}${last.summary.addresses ? `, ${last.summary.addresses.toLocaleString()} addresses` : ""}${last.summary.duration_s ? ` in ${Math.round(last.summary.duration_s / 60)} min` : ""}.`
-            : "Devices found by network scans. Add a network scan under Hardware register > Discovery."
+            ? `Last scan ${fmtAgo(last.finished_at ?? last.queued_at)}: ${statusLabel(last.status)}${last.summary.addresses ? `, ${last.summary.addresses.toLocaleString()} addresses` : ""}${last.summary.duration_s ? ` in ${Math.round(last.summary.duration_s / 60)} min` : ""}.`
+            : "Devices found by network scans. Add a network scan to find them."
         }
         actions={
           <div className="flex flex-wrap items-center gap-2">
@@ -106,10 +107,10 @@ export default function NetworkDevices() {
         }
       />
       <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Stat label="Devices found" value={s?.devices ?? "-"} sub={s ? `${s.with_snmp} via SNMP, ${s.ping_arp_only} by ping / ARP` : undefined} />
+        <Stat label="Devices found" value={s?.devices ?? "-"} sub={s ? `${s.with_snmp} identified in detail, ${s.ping_arp_only} only seen on the network` : undefined} />
         <Stat label="Network infrastructure" value={s?.infrastructure ?? "-"} sub="switches, routers, firewalls, access points" to="/network-devices?type=infrastructure" />
-        <Stat label="Not in IT assets" value={s?.not_in_it_assets ?? "-"} sub="no asset record yet" to="/network-devices?status=not_in_it_assets" />
-        <Stat label="With vulnerabilities" value={s?.with_vulns ?? "-"} sub={s ? `${s.kev} known exploited (KEV)` : undefined} to="/network-devices?status=has_vulns" />
+        <Stat label="Not in hardware register" value={s?.not_in_it_assets ?? "-"} sub="no asset record yet" to="/network-devices?status=not_in_it_assets" />
+        <Stat label="With security flaws" value={s?.with_vulns ?? "-"} sub={s ? `${s.kev} being exploited now` : undefined} to="/network-devices?status=has_vulns" />
       </div>
       <Card>
         <div className="mb-3 flex flex-wrap items-center gap-2">
@@ -148,7 +149,7 @@ export default function NetworkDevices() {
           {isAdmin && (
             <div className="ml-auto">
               <Button variant="primary" disabled={selected.size === 0} onClick={() => void add()}>
-                Add selected to IT assets{selected.size ? ` (${selected.size})` : ""}
+                Add selected to hardware register{selected.size ? ` (${selected.size})` : ""}
               </Button>
             </div>
           )}
@@ -186,7 +187,7 @@ export default function NetworkDevices() {
           rowCount={rows.length}
           empty={
             <Empty icon={Network} title="No network devices">
-              Nothing matches, or no network scan has run yet. Add a network scan under IT assets &gt; Discovery.
+              Nothing matches, or no network scan has run yet. Add a network scan to find your devices.
             </Empty>
           }
         >
@@ -228,7 +229,7 @@ export default function NetworkDevices() {
                   {d.vulns.open > 0 && (
                     <Tag tone="critical">
                       {d.vulns.open} CVE{d.vulns.open === 1 ? "" : "s"}
-                      {d.vulns.kev ? ` · ${d.vulns.kev} KEV` : ""}
+                      {d.vulns.kev ? ` · ${d.vulns.kev} being exploited now` : ""}
                     </Tag>
                   )}
                   {d.findings.slice(0, 3).map((f) => (

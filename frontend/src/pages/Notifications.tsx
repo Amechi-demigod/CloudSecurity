@@ -20,7 +20,8 @@ type TabId = (typeof TABS)[number]["id"];
 export default function Notifications() {
   const [params, setParams] = useSearchParams();
   const tab: TabId = (TABS.find((t) => t.id === params.get("tab"))?.id ?? "channels") as TabId;
-  const isAdmin = useAuth().can("admin");
+  const { can, platformAdmin } = useAuth();
+  const isAdmin = can("admin");
   const meta = useApi(notificationsApi.meta, []);
   const status = useApi(notificationsApi.status, [], 10000);
   const s = status.data;
@@ -32,30 +33,41 @@ export default function Notifications() {
         info={PAGE_INFO.notifications}
         subtitle={
           isAdmin
-            ? "Send runtime alerts, posture findings, vulnerabilities, attack paths and scan results to Teams, Slack, email or signed webhooks."
-            : "Read-only: an administrator manages channels and rules."
+            ? "Choose who hears about what, and how."
+            : "Read-only. An administrator manages these."
         }
       />
-      {meta.data && !meta.data.public_base_url && (
-        <div role="status" className="mb-3 rounded border border-sev-medium/60 bg-sev-medium/10 px-3 py-2 text-sm">
-          PUBLIC_BASE_URL is not set on the backend, so messages will not contain links back to this app.
-        </div>
-      )}
-      {meta.data && !meta.data.encryption_configured && (
-        <div role="status" className="mb-3 rounded border border-sev-medium/60 bg-sev-medium/10 px-3 py-2 text-sm">
-          NOTIFICATIONS_ENCRYPTION_KEY is not set: development uses a derived key; production refuses to save channel secrets.
-        </div>
-      )}
+      {meta.data && (!meta.data.public_base_url || !meta.data.encryption_configured) &&
+        (platformAdmin ? (
+          <>
+            {!meta.data.public_base_url && (
+              <div role="status" className="mb-3 rounded border border-sev-medium/60 bg-sev-medium/10 px-3 py-2 text-sm">
+                PUBLIC_BASE_URL is not set on the backend, so messages will not contain links back to this app.
+              </div>
+            )}
+            {!meta.data.encryption_configured && (
+              <div role="status" className="mb-3 rounded border border-sev-medium/60 bg-sev-medium/10 px-3 py-2 text-sm">
+                NOTIFICATIONS_ENCRYPTION_KEY is not set: development uses a derived key; production refuses to save channel secrets.
+              </div>
+            )}
+          </>
+        ) : (
+          <div role="status" className="mb-3 rounded border border-sev-medium/60 bg-sev-medium/10 px-3 py-2 text-sm">
+            Email notifications aren&apos;t set up yet. Contact Sentrigis.
+          </div>
+        ))}
       {s && (
         <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
-          <Stat
-            label="Dispatcher"
-            value={s.worker_running ? (s.worker_leader ? "Leader" : "Standby") : "Stopped"}
-            sub={s.last_tick_at ? `last run ${fmtAgo(s.last_tick_at)} (this replica)` : "only the leader replica sends"}
-          />
+          {platformAdmin && (
+            <Stat
+              label="Dispatcher"
+              value={s.worker_running ? (s.worker_leader ? "Leader" : "Standby") : "Stopped"}
+              sub={s.last_tick_at ? `last run ${fmtAgo(s.last_tick_at)} (this replica)` : "only the leader replica sends"}
+            />
+          )}
           <Stat label="Sent (24h)" value={s.sent_24h} />
-          <Stat label="Queued" value={s.deliveries.pending + s.deliveries.sending} sub={`${s.event_backlog} events awaiting rule matching`} />
-          <Stat label="Dead-lettered" value={s.deliveries.dead} sub="see the delivery log" to="/notifications?tab=log&status=dead" />
+          <Stat label="Waiting" value={s.deliveries.pending + s.deliveries.sending} sub={platformAdmin ? `${s.event_backlog} events awaiting rule matching` : undefined} />
+          <Stat label="Couldn't be delivered" value={s.deliveries.dead} sub="see the delivery log" to="/notifications?tab=log&status=dead" />
         </div>
       )}
       <div role="tablist" aria-label="Notification settings" className="mb-4 flex gap-1 border-b border-line">

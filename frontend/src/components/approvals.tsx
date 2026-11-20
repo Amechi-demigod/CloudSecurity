@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from "react";
+import { statusLabel } from "../lib/labels";
 import { Link } from "react-router-dom";
 import { ApiError, api, type Approval, type ApprovalSettings, type RiskLevel } from "../api";
 import { useAuth } from "../auth/context";
@@ -26,9 +27,9 @@ const STATUS_TONE: Record<Approval["status"], "default" | "warn" | "good" | "acc
 export function ApprovalStatus({ approval: a }: { approval: Approval }) {
   return (
     <div>
-      <Tag tone={STATUS_TONE[a.status] ?? "default"}>{a.status === "approved" ? "cooling off" : a.status}</Tag>
+      <Tag tone={STATUS_TONE[a.status] ?? "default"}>{a.status === "approved" ? "Waiting to run" : a.status === "pending" ? "Needs approval" : a.status === "executed" ? "Done" : statusLabel(a.status)}</Tag>
       <div className="mt-0.5 text-[11px] text-ink-3">
-        {a.status === "approved" && a.execute_after && <>self-approved – runs at {fmtTime(a.execute_after)} unless cancelled</>}
+        {a.status === "approved" && a.execute_after && <>approved by the requester; runs at {fmtTime(a.execute_after)} unless cancelled</>}
         {a.status === "pending" && <>expires {fmtTime(a.expires_at)}</>}
         {a.status !== "pending" && a.status !== "approved" && a.decided_by_email && (
           <>

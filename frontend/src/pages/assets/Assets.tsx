@@ -151,7 +151,7 @@ export default function Assets() {
       <PageHeader
         title="Hardware register"
         info={PAGE_INFO.hardware}
-        subtitle="Hardware lifecycle: who has what, custody history, leavers' retrievals, warranties and disposal. Agent devices get a record automatically."
+        subtitle="Everything your company owns: who has it and when the warranty ends."
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <Link to="/it-assets/discovery" className="rounded border border-line bg-surface-2 px-3 py-1.5 text-sm font-medium text-ink hover:bg-line">

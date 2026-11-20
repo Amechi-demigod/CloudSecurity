@@ -1,5 +1,7 @@
 import { useState, type FormEvent, type ReactNode } from "react";
 import { ApiError, type Severity } from "../api";
+import { SaveBar } from "../components/SaveBar";
+import { Switch } from "../components/Switch";
 import { Button, Card, Empty, ErrorNote, Field, Modal, SeverityBadge, Table, Tag } from "../components/ui";
 import { useApi } from "../lib/useApi";
 import { SEV_RANK, useSort } from "../lib/useSort";
@@ -146,7 +148,7 @@ function RuleDialog({
         )}
         <Field label="Name" id="rule-name" required maxLength={128} value={r.name} onChange={(e) => set("name", e.target.value)} />
         <label className="flex items-center gap-2 text-sm">
-          <input type="checkbox" checked={r.enabled} onChange={(e) => set("enabled", e.target.checked)} /> Enabled
+          <input type="checkbox" checked={r.enabled} onChange={(e) => set("enabled", e.target.checked)} /> On
         </label>
         <Group title="When">
           <div className="text-sm text-ink-2">Sources (none selected = all)</div>
@@ -270,8 +272,7 @@ function describe(r: Rule, meta: NotificationMeta): string {
   if (r.subscription_ids.length) parts.push(`${r.subscription_ids.length} subscription(s)`);
   if (r.asset_types.length) parts.push(r.asset_types.join("/"));
   if (Object.keys(r.tags).length) parts.push(`tags ${tagsToText(r.tags)}`);
-  if (r.rule_ids.length) parts.push(`rules ${r.rule_ids.join(", ")}`);
-  if (r.mitre_techniques.length) parts.push(r.mitre_techniques.join(", "));
+  if (r.rule_ids.length || r.mitre_techniques.length) parts.push("specific detections");
   if (r.include_status_changes) parts.push("+ status changes");
   return parts.join(" · ");
 }
@@ -282,6 +283,24 @@ export default function NotificationsRules({ meta, isAdmin }: { meta: Notificati
   const [editing, setEditing] = useState<Rule | "new" | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [pending, setPending] = useState<Record<string, boolean>>({});
+  const [saving, setSaving] = useState(false);
+  const isOn = (r: Rule) => (r.id in pending ? pending[r.id] : r.enabled);
+  const changed = (rules.data ?? []).filter((r) => r.id in pending && pending[r.id] !== r.enabled);
+  async function saveSwitches() {
+    setSaving(true);
+    setActionError(null);
+    try {
+      for (const r of changed) await notificationsApi.updateRule(r.id, { ...r, enabled: pending[r.id] });
+      setNotice(`${changed.length} ${changed.length === 1 ? "rule" : "rules"} updated.`);
+      setPending({});
+      rules.reload();
+    } catch (e) {
+      setActionError(errMsg(e));
+    } finally {
+      setSaving(false);
+    }
+  }
   const chName = (id: string) => channels.data?.find((c) => c.id === id)?.name ?? "(deleted)";
   const sorted = useSort(
     rules.data,
@@ -317,7 +336,7 @@ export default function NotificationsRules({ meta, isAdmin }: { meta: Notificati
         </div>
       )}
       <Card
-        title="Routing rules"
+        title="Rules"
         actions={
           isAdmin && (
             <Button variant="primary" onClick={() => setEditing("new")} disabled={!channels.data?.length}>
@@ -327,10 +346,10 @@ export default function NotificationsRules({ meta, isAdmin }: { meta: Notificati
         }
       >
         {rules.data && rules.data.length === 0 ? (
-          <Empty>No rules: nothing is sent until a rule routes events to a channel.</Empty>
+          <Empty>No rules yet. Nothing is sent until you add one.</Empty>
         ) : (
           <Table
-            head={[{ label: "Rule", sort: "rule" }, { label: "Matches", sort: "matches" }, { label: "Min. severity", sort: "severity" }, { label: "Channels", sort: "channels" }, { label: "Delivery", sort: "delivery" }, { label: "Status", sort: "status" }, ...(isAdmin ? [""] : [])]}
+            head={[{ label: "Rule", sort: "rule" }, { label: "Matches", sort: "matches" }, { label: "From severity", sort: "severity" }, { label: "Channels", sort: "channels" }, { label: "Delivery", sort: "delivery" }, { label: "On", sort: "status" }, ...(isAdmin ? [""] : [])]}
             sort={sorted.sort}
             onSort={sorted.onSort}
           >
@@ -347,7 +366,15 @@ export default function NotificationsRules({ meta, isAdmin }: { meta: Notificati
                   {r.throttle_minutes > 0 && r.mode !== "digest" && <div>≤ 1 per group / {r.throttle_minutes} min</div>}
                   {r.quiet_start && <div>Quiet {r.quiet_start}–{r.quiet_end} {r.timezone}</div>}
                 </td>
-                <td className="px-3 py-2">{r.enabled ? <Tag tone="good">Enabled</Tag> : <Tag>Disabled</Tag>}</td>
+                <td className="px-3 py-2">
+                  {isAdmin ? (
+                    <Switch on={isOn(r)} label={`${r.name} on or off`} disabled={saving} onChange={(v) => setPending({ ...pending, [r.id]: v })} />
+                  ) : r.enabled ? (
+                    <Tag tone="good">On</Tag>
+                  ) : (
+                    <Tag>Off</Tag>
+                  )}
+                </td>
                 {isAdmin && (
                   <td className="px-3 py-2">
                     <div className="flex gap-2">
@@ -368,6 +395,7 @@ export default function NotificationsRules({ meta, isAdmin }: { meta: Notificati
           </Table>
         )}
       </Card>
+      <SaveBar count={changed.length} saving={saving} onDiscard={() => setPending({})} onSave={() => void saveSwitches()} />
       {editing && channels.data && (
         <RuleDialog
           meta={meta}

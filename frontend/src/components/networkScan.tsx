@@ -423,7 +423,7 @@ export default function NetworkScanWizard({ scan, onCancel, onDone }: { scan?: N
           </label>
           <textarea id="ns-exclude" rows={2} value={exclude} onChange={(e) => setExclude(e.target.value)} placeholder="10.10.1.40, 10.10.20.200-10.10.20.220" className={inputCls} />
           <p className="mt-1 text-xs text-ink-3">
-            Add fragile equipment here (old PLCs, medical devices, lab gear): addresses, CIDRs or ranges, separated by commas or new lines. A single subnet or range can be at most /16 (65,536 addresses); one
+            Add fragile equipment here (old PLCs, medical devices, lab gear): IP addresses or ranges (for example 10.0.0.0/24 or 10.0.0.5-10.0.0.20), separated by commas or new lines. A single subnet or range can be at most /16 (65,536 addresses); one
             scan at most 262,144.
           </p>
         </div>
@@ -432,7 +432,7 @@ export default function NetworkScanWizard({ scan, onCancel, onDone }: { scan?: N
         </p>
       </Section>
 
-      <Section n={3} title="SNMP credentials" hint="Used to read the device name, model, firmware and interfaces. They are stored encrypted and are never shown again.">
+      <Section n={3} title="Device logins (SNMP)" hint="Lets Sentrigis read each device's name, model, software version and ports. They are stored encrypted and are never shown again.">
         <div className="mb-3">
           <Segmented label="SNMP version" value={tab} onChange={setTab} options={[{ value: "v3", label: "SNMPv3 (recommended)" }, { value: "v2c", label: "SNMPv2c" }]} />
         </div>

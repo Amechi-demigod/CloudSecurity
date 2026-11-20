@@ -44,7 +44,7 @@ export default function Deployments() {
       <Breadcrumbs items={[{ label: "Hardware register", to: "/it-assets" }, { label: "Discovery", to: "/it-assets/discovery" }, { label: "Deployments" }]} />
       <PageHeader
         title="Agent deployments"
-        subtitle="Rollouts started from Discovery with Deploy agent: which selected machines have enrolled since (through directory matching, refreshed after every sync and every 30 minutes) and which are still missing."
+        subtitle="Which machines have the agent now, and which are still missing."
       />
       <ErrorNote error={deps.error} />
       <Card>

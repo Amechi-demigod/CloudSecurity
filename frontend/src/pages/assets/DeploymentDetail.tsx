@@ -14,9 +14,9 @@ import { rankOf, useSort } from "../../lib/useSort";
 import { ProgressBar } from "./Deployments";
 
 const STATUS: Record<DeploymentItem["status"], { label: string; tone: "good" | "default" | "warn" }> = {
-  enrolled: { label: "enrolled", tone: "good" },
-  pending: { label: "no agent yet", tone: "warn" },
-  gone: { label: "left the directory", tone: "default" },
+  enrolled: { label: "Agent installed", tone: "good" },
+  pending: { label: "Waiting for agent", tone: "warn" },
+  gone: { label: "No longer in directory", tone: "default" },
 };
 
 export default function DeploymentDetail() {
@@ -105,7 +105,7 @@ export default function DeploymentDetail() {
         title={d?.name ?? "Deployment"}
         subtitle={
           d
-            ? `Created ${fmtTime(d.created_at)} by ${d.created_by ?? "unknown"}. ${active ? `Installers and tokens enroll until ${fmtTime(d.expires_at)}.` : d.state === "revoked" ? `Revoked ${d.revoked_at ? fmtTime(d.revoked_at) : ""} by ${d.revoked_by ?? "unknown"}.` : "Expired: start a new deployment for the remaining machines."}`
+            ? `Created ${fmtTime(d.created_at)} by ${d.created_by ?? "unknown"}. ${active ? `Installers work until ${fmtTime(d.expires_at)}.` : d.state === "revoked" ? `Stopped ${d.revoked_at ? fmtTime(d.revoked_at) : ""} by ${d.revoked_by ?? "unknown"}.` : "Expired. Start a new rollout for the remaining machines."}`
             : undefined
         }
         actions={

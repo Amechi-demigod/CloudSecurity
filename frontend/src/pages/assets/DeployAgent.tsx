@@ -154,7 +154,7 @@ export default function DeployAgent() {
       {crumbs}
       <PageHeader
         title="Deploy agent"
-        subtitle={`${state.label}. Grouped by the best route for where each machine was found and its OS. Nothing is changed in your directories: you follow the steps in your own tools, and the deployment tracks which machines enroll.`}
+        subtitle={`${state.label}. Nothing is changed in your directories. You follow the steps.`}
       />
       <ErrorNote error={plan.error} />
       {p && (
@@ -192,7 +192,7 @@ export default function DeployAgent() {
               >
                 <p className="mb-3 text-sm text-ink-2">{ROUTE_HINT[g.route]}</p>
                 <details className="mb-4">
-                  <summary className="cursor-pointer text-sm font-medium text-accent">Machines ({g.items.length}) and route per machine</summary>
+                  <summary className="cursor-pointer text-sm font-medium text-accent">Machines ({g.items.length}) and how each is reached</summary>
                   <div className="mt-2">
                     <MachineTable
                       route={g.route}
@@ -210,7 +210,12 @@ export default function DeployAgent() {
                     />
                   </div>
                 </details>
-                <RouteGuidance facts={facts} names={g.items.map((m) => m.name)} serverUrl={p.server_url} />
+                <details>
+                  <summary className="cursor-pointer text-sm font-medium text-accent">How to roll out the agent to these machines</summary>
+                  <div className="mt-3">
+                    <RouteGuidance facts={facts} names={g.items.map((m) => m.name)} serverUrl={p.server_url} />
+                  </div>
+                </details>
               </Card>
             );
           })}
@@ -266,7 +271,7 @@ export default function DeployAgent() {
                   <span>
                     Also create a token for command-line installs
                     <span className="block text-xs text-ink-3">
-                      Shown once after creation, for the generic installer + <code>CNAPP_TOKEN</code> or <code>cnapp-agent configure</code>. Not needed when you use the
+                      Shown once after creation. Copy it now if you need it for a manual install. Not needed when you use the
                       pre-configured installers.
                     </span>
                   </span>

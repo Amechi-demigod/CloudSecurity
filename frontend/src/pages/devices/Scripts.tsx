@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from "react";
+import { statusLabel } from "../../lib/labels";
 import { Link } from "react-router-dom";
 import { ApiError, api, uploadScriptBundle, type ScriptBundle, type ScriptRun } from "../../api";
 import { useAuth } from "../../auth/context";
@@ -20,33 +21,37 @@ const RUN_TONE: Record<ScriptRun["status"], "default" | "warn" | "good" | "accen
   cancelled: "default",
 };
 
-function BundleInfo({ bundle, trustedKeys }: { bundle: ScriptBundle | null; trustedKeys: string[] }) {
+function BundleInfo({ bundle, trustedKeys, platformAdmin }: { bundle: ScriptBundle | null; trustedKeys: string[]; platformAdmin: boolean }) {
   return (
     <dl className="grid grid-cols-1 gap-x-6 gap-y-2 text-sm md:grid-cols-2">
       {bundle ? (
         <>
           <div>
-            <dt className="text-ink-3">Library version</dt>
-            <dd className="font-mono">
-              {bundle.version} {bundle.expired && <Tag tone="warn">expired</Tag>}
+            <dt className="text-ink-3">Script list version</dt>
+            <dd>
+              {bundle.version} {bundle.expired && <Tag tone="warn">Out of date</Tag>}
             </dd>
           </div>
+          {platformAdmin && (
+            <div>
+              <dt className="text-ink-3">Signed by</dt>
+              <dd className="break-all font-mono text-xs">{bundle.key_id}</dd>
+            </div>
+          )}
           <div>
-            <dt className="text-ink-3">Signed by</dt>
-            <dd className="break-all font-mono text-xs">{bundle.key_id}</dd>
-          </div>
-          <div>
-            <dt className="text-ink-3">Released / expires</dt>
+            <dt className="text-ink-3">Valid from / until</dt>
             <dd className="text-xs">
               {fmtTime(bundle.released_at)} → {fmtTime(bundle.expires_at)}
             </dd>
           </div>
-          <div>
-            <dt className="text-ink-3">Imported</dt>
-            <dd className="text-xs">
-              {fmtAgo(bundle.imported_at)} by {bundle.imported_by}
-            </dd>
-          </div>
+          {platformAdmin && (
+            <div>
+              <dt className="text-ink-3">Imported</dt>
+              <dd className="text-xs">
+                {fmtAgo(bundle.imported_at)} by {bundle.imported_by}
+              </dd>
+            </div>
+          )}
           {bundle.notes && (
             <div className="md:col-span-2">
               <dt className="text-ink-3">Notes</dt>
@@ -55,14 +60,14 @@ function BundleInfo({ bundle, trustedKeys }: { bundle: ScriptBundle | null; trus
           )}
         </>
       ) : (
-        <div className="md:col-span-2 text-ink-2">No script library imported yet.</div>
+        <div className="md:col-span-2 text-ink-2">No scripts are available yet. Contact Sentrigis.</div>
       )}
-      <div className="md:col-span-2">
+      {platformAdmin && <div className="md:col-span-2">
         <dt className="text-ink-3">Trusted signing keys</dt>
         <dd className="font-mono text-xs">
           {trustedKeys.length ? trustedKeys.map((k) => <div key={k} className="break-all">{k}</div>) : <span className="text-sev-high">none configured: imports are refused</span>}
         </dd>
-      </div>
+      </div>}
     </dl>
   );
 }
@@ -151,7 +156,7 @@ function RunsTable({ runs }: { runs: ScriptRun[] }) {
             {Object.entries(r.parameters).map(([k, v]) => `${k}=${String(v)}`).join(" ") || "—"}
           </td>
           <td className="px-3 py-2">
-            <Tag tone={RUN_TONE[r.status] ?? "default"}>{r.status}</Tag>
+            <Tag tone={RUN_TONE[r.status] ?? "default"}>{statusLabel(r.status)}</Tag>
             {r.completed_at && <div className="mt-0.5 text-[11px] text-ink-3">{fmtAgo(r.completed_at)}</div>}
           </td>
           <td className="px-3 py-2 font-mono text-xs">{r.exit_code ?? "—"}</td>
@@ -172,7 +177,7 @@ function RunsTable({ runs }: { runs: ScriptRun[] }) {
 }
 
 export default function Scripts() {
-  const { can } = useAuth();
+  const { can, platformAdmin } = useAuth();
   const admin = can("admin");
   const lib = useApi(api.scripts, []);
   const pending = useApi(api.scriptPendingApprovals, [], 30000);
@@ -190,7 +195,7 @@ export default function Scripts() {
     <div>
       <PageHeader
         title="Scripts"
-        subtitle="Reviewed maintenance scripts that admins can run on devices."
+        subtitle="Approved scripts admins can run on devices."
         actions={
           <Link to="/devices" className="text-sm text-accent hover:underline">
             Back to devices
@@ -198,15 +203,13 @@ export default function Scripts() {
         }
       />
       <p className="mb-4 rounded border border-line bg-surface-1 px-3 py-2 text-sm text-ink-2">
-        Scripts come only from the signed library built from the repository (<code>device-scripts/</code>, changed through reviewed pull requests and
-        released with a <code>scripts-vX.Y.Z</code> tag). There are no free-form commands: the agent refuses anything that is not in a library signed by a
-        trusted key. Low-risk scripts run straight away; medium and high-risk scripts need a second admin on the{" "}
+        Only scripts Sentrigis has approved can run. There are no free-form commands. Low-risk scripts run straight away; risky ones need a second admin on the{" "}
         {admin ? <Link to="/approvals" className="text-accent hover:underline">Approvals</Link> : "Approvals"} page. Run a script from a device&apos;s page.
       </p>
 
       <Card title="Library" className="mb-4">
         <ErrorNote error={lib.error} />
-        {lib.data && <BundleInfo bundle={lib.data.bundle} trustedKeys={lib.data.trusted_keys} />}
+        {lib.data && <BundleInfo bundle={lib.data.bundle} trustedKeys={lib.data.trusted_keys} platformAdmin={platformAdmin} />}
         {lib.data && lib.data.scripts.length > 0 && (
           <div className="mt-4">
             <Table
@@ -217,16 +220,16 @@ export default function Scripts() {
               {libSort.rows.map((s) => (
                 <tr key={`${s.platform}-${s.name}`} className="align-top">
                   <td className="px-3 py-2">
-                    <div className="font-mono text-sm">{s.name}</div>
+                    <div className="text-sm font-medium">{s.name}</div>
                     <div className="text-xs text-ink-3">{s.description}</div>
                   </td>
                   <td className="px-3 py-2 text-xs">
                     {OS_LABEL[s.platform] ?? s.platform}
-                    <div className="text-ink-3">{s.interpreter}</div>
+                    {platformAdmin && <div className="text-ink-3">{s.interpreter}</div>}
                   </td>
                   <td className="px-3 py-2">
                     <RiskTag risk={s.risk} />
-                    {s.requires_approval && <div className="mt-1 text-[11px] text-ink-3">needs 2nd admin</div>}
+                    {s.requires_approval && <div className="mt-1 text-[11px] text-ink-3">needs a second admin</div>}
                   </td>
                   <td className="px-3 py-2 font-mono text-[11px] text-ink-2">
                     {s.parameters.length ? s.parameters.map((p) => <div key={p.name}>{describeParam(p)}</div>) : "—"}
@@ -237,7 +240,7 @@ export default function Scripts() {
             </Table>
           </div>
         )}
-        {admin && <ImportBundle onDone={lib.reload} />}
+        {platformAdmin && <ImportBundle onDone={lib.reload} />}
       </Card>
 
       <Card title="Script runs waiting for approval" className="mb-4">

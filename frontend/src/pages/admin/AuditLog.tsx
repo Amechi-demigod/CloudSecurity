@@ -53,7 +53,7 @@ export default function AuditLog() {
 
   return (
     <div>
-      <PageHeader title="Audit log" info={PAGE_INFO.audit} subtitle="Sign-ins, sign-outs, user changes and analyst actions (most recent first)." />
+      <PageHeader title="Audit log" info={PAGE_INFO.audit} subtitle="Who did what, newest first." />
       <ErrorNote error={error} />
       <div className="mb-3">
         <Select label="Action" value={action} onChange={setAction} options={ACTIONS} />

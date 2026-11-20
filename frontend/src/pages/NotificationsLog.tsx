@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { ApiError } from "../api";
+import { statusLabel } from "../lib/labels";
 import { Button, Card, Empty, ErrorNote, Select, SeverityBadge, Table, Tag } from "../components/ui";
 import { fmtAgo, fmtTime } from "../lib/format";
 import { useApi } from "../lib/useApi";
@@ -58,9 +59,9 @@ export default function NotificationsLog({ isAdmin, onChange }: { isAdmin: boole
           onChange={setStatus}
           options={[
             { value: "", label: "All" },
-            { value: "pending", label: "Pending / retrying" },
+            { value: "pending", label: "Waiting / trying again" },
             { value: "sent", label: "Sent" },
-            { value: "dead", label: "Dead-lettered" },
+            { value: "dead", label: "Couldn't be delivered" },
           ]}
         />
         <Select
@@ -74,7 +75,7 @@ export default function NotificationsLog({ isAdmin, onChange }: { isAdmin: boole
             { value: "test", label: "Tests" },
           ]}
         />
-        <span className="text-xs text-ink-3">Secrets are redacted from errors. Entries are kept for NOTIFICATIONS_RETENTION_DAYS.</span>
+        <span className="text-xs text-ink-3">Passwords are hidden from errors.</span>
       </div>
       <Card>
         {data && data.length === 0 ? (
@@ -113,11 +114,11 @@ export default function NotificationsLog({ isAdmin, onChange }: { isAdmin: boole
                   </div>
                 </td>
                 <td className="px-3 py-2">
-                  <Tag tone={STATUS_TONE[d.status]}>{d.status === "dead" ? "dead-lettered" : d.status}</Tag>
+                  <Tag tone={STATUS_TONE[d.status]}>{d.status === "dead" ? statusLabel("dead_lettered") : d.status === "pending" ? statusLabel("queued") : statusLabel(d.status)}</Tag>
                 </td>
                 <td className="px-3 py-2 text-xs text-ink-2">{d.attempts}</td>
                 <td className="max-w-[20rem] px-3 py-2 text-xs text-ink-3">
-                  {d.status === "sent" && d.sent_at && <span>Delivered {fmtAgo(d.sent_at)}{d.response_status ? ` (HTTP ${d.response_status})` : ""}</span>}
+                  {d.status === "sent" && d.sent_at && <span>Delivered {fmtAgo(d.sent_at)}</span>}
                   {d.status === "pending" && <div>Next attempt {fmtTime(d.next_attempt_at)}</div>}
                   {d.last_error && <div className="break-words text-sev-high">{d.last_error}</div>}
                 </td>

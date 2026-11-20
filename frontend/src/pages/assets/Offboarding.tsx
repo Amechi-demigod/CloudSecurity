@@ -145,7 +145,7 @@ export default function Offboarding() {
       </div>
       <PageHeader
         title="Offboarding & retrieval"
-        subtitle="Mark a person as leaving: their assets go to retrieval pending; overdue retrievals are flagged and notified (source asset_lifecycle)."
+        subtitle="Mark a person as leaving and get their equipment back."
         actions={can("analyst") && <Button variant="primary" onClick={() => setCreating(true)}>Person leaving</Button>}
       />
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">

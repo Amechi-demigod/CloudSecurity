@@ -23,7 +23,7 @@ import { orgApi, type ConnectorConfig, type Provider } from "../orgApi";
 import { PAGE_INFO } from "../lib/pageInfo";
 
 const isCloud = (name: string): name is Provider => (CLOUD_PROVIDERS as string[]).includes(name);
-const cloudName = (name: string) => (isCloud(name) ? CLOUD_NAME[name] : name === "simulated" ? "Simulated" : name);
+const cloudName = (name: string) => (isCloud(name) ? CLOUD_NAME[name] : name === "simulated" ? "Demo data" : name);
 
 const STATUS_TEXT: Record<ScanRun["status"], string> = {
   succeeded: "Succeeded",
@@ -362,7 +362,7 @@ function NetworkScansCard({ isAdmin }: { isAdmin: boolean }) {
       <ErrorNote error={scans.error} />
       {scans.data && list.length === 0 ? (
         <p className="text-sm text-ink-3">
-          No network scans yet. A collector inside your network can sweep address ranges and read switches, routers and printers over SNMP.
+          No network scans yet. A small program inside your network can find and identify your switches, routers and printers.
           {isAdmin && (
             <>
               {" "}
@@ -495,7 +495,7 @@ export default function Connectors() {
 
   return (
     <div>
-      <PageHeader title="Connections" info={PAGE_INFO.connections} subtitle="Cloud connectors and directories are strictly read-only. Scan results merge into the same inventory and findings." />
+      <PageHeader title="Connections" info={PAGE_INFO.connections} subtitle="Where Sentrigis gets its information from. It only reads; it never changes anything." />
       <ErrorNote error={connectors.error ?? scanError} />
       {notice && (
         <div role="status" className="mb-4 flex items-start justify-between gap-3 rounded border border-good/60 bg-good/10 px-3 py-2 text-sm text-ink">

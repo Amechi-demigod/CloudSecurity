@@ -140,7 +140,7 @@ export function GoogleForm({ source, onDone, onCancel }: { source: GoogleSource 
               <span className="text-xs text-ink-3">The file from step 1</span>
             )}
           </div>
-          <p className="mt-1 text-xs text-ink-3">Stored encrypted on the server and never shown again; only the client email and key id are displayed.</p>
+          <p className="mt-1 text-xs text-ink-3">Stored encrypted on the server and never shown again; only the client email is displayed.</p>
         </div>
         <fieldset>
           <legend className={label}>Read</legend>

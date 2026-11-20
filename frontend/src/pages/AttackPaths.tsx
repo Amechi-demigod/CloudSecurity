@@ -376,7 +376,7 @@ export default function AttackPaths() {
     <div>
       <PageHeader
         title="Attack paths"
-        subtitle="Chains from the Internet to sensitive data: exposure → workload → identity → data. Confirmed paths have an exploitable weakness on the way; exposure paths do not (yet)."
+        subtitle="Routes an attacker could take from the internet to your data."
         actions={toggle}
       />
       <ErrorNote error={error} />
