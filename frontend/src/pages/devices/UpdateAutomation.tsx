@@ -11,7 +11,7 @@ function errMsg(e: unknown) {
 }
 
 const STAGE: Record<string, { label: string; tone: "default" | "warn" | "good" | "accent" }> = {
-  pilot: { label: "Pilot soaking", tone: "accent" },
+  pilot: { label: "Testing first", tone: "accent" },
   all: { label: "all devices", tone: "good" },
   paused: { label: "paused", tone: "warn" },
 };
@@ -89,7 +89,7 @@ function RolloutStatus({ a, admin, onChanged }: { a: Automation; admin: boolean;
   const [error, setError] = useState<string | null>(null);
   const r = a.rollout;
   if (a.mode !== "automatic") return null;
-  if (!r.version) return <p className="text-sm text-ink-3">No release imported yet: the next imported release goes to the Pilot ring right away.</p>;
+  if (!r.version) return <p className="text-sm text-ink-3">No release imported yet: the next imported release goes to the first update group right away.</p>;
   async function promote() {
     const reason = window.prompt(`Give ${r.version} to all devices now? Reason:`, r.stage === "paused" ? "failure understood, safe to continue" : "pilot looks good");
     if (!reason || reason.trim().length < 3) return;
@@ -113,14 +113,14 @@ function RolloutStatus({ a, admin, onChanged }: { a: Automation; admin: boolean;
       </div>
       {r.stage === "pilot" && (
         <p className="mt-1 text-xs text-ink-2">
-          {r.pilot_ring ?? "Pilot"} ring ({r.pilot_devices} device{r.pilot_devices === 1 ? "" : "s"}) has it now; everyone else{" "}
-          {r.promote_at ? <>gets it {fmtIn(r.promote_at)} ({fmtTime(r.promote_at)})</> : "after the soak period"} unless a {r.pilot_ring ?? "Pilot"} device
+          {r.pilot_ring ?? "Pilot"} group ({r.pilot_devices} device{r.pilot_devices === 1 ? "" : "s"}) has it now; everyone else{" "}
+          {r.promote_at ? <>gets it {fmtIn(r.promote_at)} ({fmtTime(r.promote_at)})</> : "after the waiting period"} unless a {r.pilot_ring ?? "Pilot"} device
           fails to update.
-          {r.pilot_devices === 0 && " Tip: assign one or two devices to the Pilot ring on their device page (Updates tab)."}
+          {r.pilot_devices === 0 && " Tip: assign one or two devices to the Pilot group on their device page (Updates tab)."}
         </p>
       )}
       {r.stage === "paused" && <p className="mt-1 text-xs text-sev-high">Paused: {r.paused_reason}. Publish a fixed release, or promote anyway.</p>}
-      {r.stage === "all" && <p className="mt-1 text-xs text-ink-2">Every ring targets {r.version}; devices pick it up at their next check-in.</p>}
+      {r.stage === "all" && <p className="mt-1 text-xs text-ink-2">Every update group targets {r.version}; devices pick it up at their next check-in.</p>}
       {admin && (r.stage === "pilot" || r.stage === "paused") && (
         <div className="mt-2">
           <Button onClick={promote}>{r.stage === "paused" ? "Promote anyway" : "Promote to all devices now"}</Button>
@@ -249,7 +249,7 @@ export default function UpdateAutomationCard({ admin, onChanged }: { admin: bool
     setBusy(true);
     setError(null);
     try {
-      await updatesApi.setAutomation({ soak_hours: Math.max(0, Math.round(Number(soak))), reason: "soak period changed from the console" });
+      await updatesApi.setAutomation({ soak_hours: Math.max(0, Math.round(Number(soak))), reason: "waiting period changed from the console" });
       setSoak(null);
       changed();
     } catch (e) {
@@ -296,8 +296,8 @@ export default function UpdateAutomationCard({ admin, onChanged }: { admin: bool
                   <span className="font-medium">{m === "automatic" ? "Automatic (recommended)" : "Manual"}</span>
                   <span className="block text-xs text-ink-3">
                     {m === "automatic"
-                      ? `Each new release goes to the Pilot ring at once and to all other devices after ${a.soak_hours} h, unless a Pilot device fails to update (then the rollout pauses and you are notified).`
-                      : "You choose each ring's target release, percentage and pause below (advanced)."}
+                      ? `Each new release goes to the Pilot group at once and to all other devices after ${a.soak_hours} h, unless a Pilot device fails to update (then the rollout pauses and you are notified).`
+                      : "You choose each update group's version, share of devices and pause below (advanced)."}
                   </span>
                 </span>
               </label>
@@ -306,8 +306,8 @@ export default function UpdateAutomationCard({ admin, onChanged }: { admin: bool
           {a.mode === "automatic" && admin && (
             <div className="flex flex-wrap items-end gap-2 text-xs">
               <label>
-                <span className="mb-1 block text-ink-3">Soak period before everyone gets it (hours)</span>
-                <input aria-label="Soak period in hours" type="number" min={0} max={720} value={soak ?? String(a.soak_hours)}
+                <span className="mb-1 block text-ink-3">Wait before everyone gets it (hours)</span>
+                <input aria-label="Wait before everyone gets it, in hours" type="number" min={0} max={720} value={soak ?? String(a.soak_hours)}
                   onChange={(e) => setSoak(e.target.value)} className="w-24 rounded border border-line bg-surface-2 px-2 py-1 text-sm" />
               </label>
               <Button disabled={busy || soak === null || soak === String(a.soak_hours)} onClick={saveSoak}>
@@ -319,7 +319,7 @@ export default function UpdateAutomationCard({ admin, onChanged }: { admin: bool
           {platformAdmin && <AutoImport key={`${a.auto_import.repo}-${a.auto_import.interval_minutes}`} a={a} admin={admin} onChanged={changed} />}
           <p className="text-xs text-ink-3">
             Agents get offers at their regular check-in (every 15 min by default) and start after a random delay of up to {a.jitter_seconds} s (grows with
-            fleet size). <span className="font-medium">Update now</span> (here, per ring below, or on a device page) skips both.
+            fleet size). <span className="font-medium">Update now</span> (here, per group below, or on a device page) skips both.
           </p>
           {msg && <p className="text-sm text-good" role="status">{msg}</p>}
           <ErrorNote error={error} />

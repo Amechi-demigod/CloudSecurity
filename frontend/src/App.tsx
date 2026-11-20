@@ -102,7 +102,7 @@ const NAV: NavTop[] = [
     icon: Settings,
     children: [
       { to: "/connectors", label: "Connections" },
-      { to: "/devices/updates", label: "Agents & updates", module: "endpoints", showWith: ["endpoints", "assets"] },
+      { to: "/devices/updates", label: "Agents & updates", module: "endpoints" },
       { to: "/notifications", label: "Notifications", role: "analyst" },
       { to: "/admin/users", label: "People & approvals", also: ["/approvals", "/admin/organization"], admin: true, badge: "approvals" },
       { to: "/admin/audit-log", label: "Audit log", admin: true },
