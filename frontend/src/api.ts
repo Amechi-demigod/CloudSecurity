@@ -1299,6 +1299,10 @@ export interface DashOverview extends DashFrame {
     internet_exposed: boolean;
     sensitive_data: boolean;
   }[];
+  /** The open cloud issues that matter most (one row per rule): highest severity first, then most assets affected. */
+  top_issues: { rule_id: string; title: string; severity: Severity; assets: number }[];
+  /** Cloud assets with / without an open finding or vulnerability. */
+  assets: { total: number; with_issues: number };
   endpoints: EndpointStats;
 }
 export interface DashCve {

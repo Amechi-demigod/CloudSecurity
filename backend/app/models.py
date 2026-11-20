@@ -1266,6 +1266,19 @@ class ExternalSettings(TenantMixin, Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class DashboardLayout(TenantMixin, Base):
+    """Per organisation: the Overview dashboard's widget layout (order, hidden widgets, widths),
+    chosen by an admin and shown to everyone in the organisation (app/services/dashboard_layout.py)."""
+
+    __tablename__ = "dashboard_layouts"
+
+    organization_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("organizations.id", name="fk_dashboard_layouts_organization_id"), primary_key=True)
+    layout: Mapped[dict] = mapped_column(JSON)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_by: Mapped[str | None] = mapped_column(String(320), nullable=True)
+
+
 class ExternalScan(TenantMixin, Base):
     __tablename__ = "external_scans"
 

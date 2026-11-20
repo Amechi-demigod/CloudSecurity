@@ -1,5 +1,7 @@
-import { Download } from "lucide-react";
+import { Download, LayoutDashboard } from "lucide-react";
+import { useState } from "react";
 import { api, type DashMeta, type DashRange } from "../api";
+import { useAuth } from "../auth/context";
 import { GettingStarted } from "../components/org";
 import { ErrorNote } from "../components/ui";
 import { TABS, type TabKey } from "../lib/dash";
@@ -56,6 +58,10 @@ export default function DashboardPage() {
   const [tabParam, setTab] = useUrlState("tab", "overview");
   const [rangeParam, setRange] = useUrlState("range", "30d");
   const [account, setAccount] = useUrlState("account", "");
+  // Customize mode of the Overview (admins): the header button opens it, leaving the tab with unsaved changes asks first.
+  const { can } = useAuth();
+  const [editing, setEditing] = useState(false);
+  const [dirty, setDirty] = useState(false);
   // Tabs of a product module the organisation does not have are left out (the overview still shows everything).
   const { has } = useModules();
   const tabs = TABS.filter((t) => !("module" in t) || has(t.module));
@@ -100,6 +106,17 @@ export default function DashboardPage() {
             ))}
             {account && meta && !meta.accounts.some((a) => a.id === account) && <option value={account}>{account}</option>}
           </select>
+          {tab === "overview" && can("admin") && !editing && (
+            <button
+              type="button"
+              onClick={() => setEditing(true)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-surface-1 px-3 py-1.5 text-[12.5px] text-ink-2 transition hover:bg-surface-2 hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              title="Choose and arrange what the Overview shows (for everyone in your organisation)"
+            >
+              <LayoutDashboard aria-hidden className="h-3.5 w-3.5" />
+              Customize
+            </button>
+          )}
           <button
             type="button"
             onClick={() => window.print()}
@@ -123,7 +140,10 @@ export default function DashboardPage() {
                   type="button"
                   role="tab"
                   aria-selected={on}
-                  onClick={() => setTab(t.key)}
+                  onClick={() => {
+                    if (t.key !== tab && dirty && !window.confirm("You have unsaved changes to the Overview. Leave without saving?")) return;
+                    setTab(t.key);
+                  }}
                   className={`-mb-px flex items-center gap-1.5 border-b-2 px-3.5 py-2.5 text-sm transition focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent ${
                     on ? "border-accent font-semibold text-accent" : "border-transparent font-medium text-ink-3 hover:text-ink"
                   }`}
@@ -141,7 +161,7 @@ export default function DashboardPage() {
 
       <ErrorNote error={error} />
       <div role="tabpanel" aria-label={TABS.find((t) => t.key === tab)?.label}>
-        {tab === "overview" && <OverviewTab {...props} />}
+        {tab === "overview" && <OverviewTab {...props} editing={editing} onEditingChange={setEditing} onDirtyChange={setDirty} />}
         {tab === "vulns" && <VulnsTab {...props} />}
         {tab === "exposure" && <ExposureTab {...props} />}
         {tab === "identities" && <IdentitiesTab {...props} />}

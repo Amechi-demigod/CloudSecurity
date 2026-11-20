@@ -718,6 +718,28 @@ def _categories(db: Session, w: Window) -> list[dict[str, Any]]:
     return sorted([c for c in out if c["total"]], key=lambda c: (-c["total"], CATEGORIES.index(c["category"])))
 
 
+def _top_issues(db: Session, w: Window, limit: int = 3) -> list[dict[str, Any]]:
+    """The open cloud issues (one row per rule) that matter most: highest severity, then most assets affected."""
+    rows = db.execute(_f(select(Finding.rule_id, Finding.title, Finding.severity,
+                                func.count(func.distinct(Finding.asset_id)))
+                         .where(Finding.status == "open")
+                         .group_by(Finding.rule_id, Finding.title, Finding.severity), w)).all()
+    rank = {s: i for i, s in enumerate(SEVERITIES)}
+    rows = sorted((r for r in rows if r[2] in rank), key=lambda r: (rank[r[2]], -r[3], r[1]))
+    return [{"rule_id": r[0], "title": r[1], "severity": r[2], "assets": int(r[3])} for r in rows[:limit]]
+
+
+def _asset_health(db: Session, w: Window) -> dict[str, int]:
+    """Cloud assets with and without an open finding or vulnerability."""
+    total = db.scalar(_a(select(func.count()).select_from(Asset), w)) or 0
+    with_f = _f(select(Finding.asset_id).where(Finding.status == "open"), w)
+    with_v = _v(select(Vulnerability.asset_id).where(Vulnerability.status == "open",
+                                                      Vulnerability.asset_id.is_not(None)), w)
+    ids = set(db.scalars(with_f)) | set(db.scalars(with_v))
+    live = set(db.scalars(_a(select(Asset.id), w))) if ids else set()
+    return {"total": int(total), "with_issues": len(ids & live)}
+
+
 def _top_assets(db: Session, w: Window, limit: int = 5) -> list[dict[str, Any]]:
     frows = db.execute(_f(select(Finding.asset_id, Finding.severity, func.count()).where(Finding.status == "open")
                           .group_by(Finding.asset_id, Finding.severity), w)).all()
@@ -807,6 +829,8 @@ def overview(db: Session, w: Window) -> dict[str, Any]:
         "age": _age(db, w),
         "categories": _categories(db, w),
         "top_assets": _top_assets(db, w),
+        "top_issues": _top_issues(db, w),
+        "assets": _asset_health(db, w),
         "endpoints": endpoint_stats(db),
     }
     return out
