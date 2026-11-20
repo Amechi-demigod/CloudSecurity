@@ -267,7 +267,7 @@ export default function NotificationsChannels({ meta, isAdmin, onChange }: { met
                 <td className="max-w-[18rem] truncate px-3 py-2 font-mono text-xs text-ink-2" title={destination(c)}>
                   {destination(c)}
                 </td>
-                <td className="px-3 py-2">{c.enabled ? <Tag tone="good">Enabled</Tag> : <Tag>Disabled</Tag>}</td>
+                <td className="px-3 py-2">{c.enabled ? <Tag tone="good">On</Tag> : <Tag>Off</Tag>}</td>
                 <td className="px-3 py-2 text-xs">
                   {c.last_test_at ? (
                     <Tag tone={c.last_test_status === "ok" ? "good" : "warn"}>

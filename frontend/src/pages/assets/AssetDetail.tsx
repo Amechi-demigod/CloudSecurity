@@ -104,7 +104,7 @@ function ActionDialog({ asset, action, onClose, onDone }: { asset: ItAsset; acti
                 ))}
             </SelectField>
             {f.status === "retrieval_pending" && <Field label="Retrieval due" id="ad-due" type="date" {...inp("retrieval_due")} hint="Default: today + the configured number of days." />}
-            {(f.status === "lost" || f.status === "stolen") && <p className="text-xs text-sev-high">Raises a high-severity notification (source asset_lifecycle).</p>}
+            {(f.status === "lost" || f.status === "stolen") && <p className="text-xs text-sev-high">Sends a high-priority alert to your team.</p>}
           </>
         )}
         {action === "dispose" && (
@@ -244,7 +244,7 @@ function Certificates({ asset, canUpload, canDownload, canDelete, onChange }: { 
                   <span className="font-medium">{c.filename}</span>
                 )}
                 <div className="truncate text-[11px] text-ink-3" title={c.sha256}>
-                  {fmtBytes(c.size_bytes)} · {c.uploaded_by} · {fmtTime(c.uploaded_at)} · sha256 {c.sha256.slice(0, 12)}…
+                  {fmtBytes(c.size_bytes)} · {c.uploaded_by} · {fmtTime(c.uploaded_at)} 
                 </div>
               </div>
               {canDelete && (

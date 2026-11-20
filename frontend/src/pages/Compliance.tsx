@@ -402,7 +402,7 @@ export default function Compliance() {
     <div className="mx-auto max-w-[1400px]">
       <PageHeader
         title="Compliance"
-        subtitle="Framework controls mapped to the platform's own checks: cloud posture, endpoint agents, vulnerabilities and directories."
+        subtitle="How you measure up, and reports to share with auditors."
         actions={
           <div data-print="hide" className="flex flex-wrap items-center gap-2">
             <a href={complianceApi.csvUrl(fw, scope)} className="inline-flex items-center gap-1.5 rounded border border-line bg-surface-2 px-3 py-1.5 text-sm font-medium text-ink hover:bg-line">

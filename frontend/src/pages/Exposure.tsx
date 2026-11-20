@@ -163,15 +163,15 @@ export default function Exposure() {
   return (
     <div>
       <PageHeader
-        title="Cloud exposure"
-        subtitle="Every internet-reachable asset across Azure, AWS and GCP: how it is reached, on which ports, what protects it and the risk linked to it."
+        title="Exposed to the internet"
+        subtitle="Cloud resources anyone on the internet can reach."
       />
       <ErrorNote error={error} />
       {s && (
         <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-5">
-          <Stat label="Open to the Internet" selected={f.level === "open"} onSelect={() => set("level")(f.level === "open" ? "" : "open")} value={s.open} sub={`${s.attack_path_entries} attack-path entry points`} />
-          <Stat label="Restricted" selected={f.level === "restricted"} onSelect={() => set("level")(f.level === "restricted" ? "" : "restricted")} value={s.restricted} sub="reachable from listed public ranges only" />
-          <Stat label="Risky ports open" value={s.risky_ports_open} sub="admin or database ports" />
+          <Stat label="Open to everyone" selected={f.level === "open"} onSelect={() => set("level")(f.level === "open" ? "" : "open")} value={s.open} sub={`${s.attack_path_entries} start an attack path`} />
+          <Stat label="Restricted" selected={f.level === "restricted"} onSelect={() => set("level")(f.level === "restricted" ? "" : "restricted")} value={s.restricted} sub="Reachable only from addresses you allowed" />
+          <Stat label="Risky doors open" value={s.risky_ports_open} sub="Remote access or databases" />
           <Stat label="Sensitive data" value={s.sensitive} sub="exposed data stores" />
           <Stat label="With private endpoint" value={s.with_private_endpoint} sub="but still publicly reachable" />
         </div>
@@ -211,8 +211,8 @@ export default function Exposure() {
           onChange={set("level")}
           options={[
             { value: "", label: "All" },
-            { value: "open", label: "Open" },
-            { value: "restricted", label: "Restricted" },
+            { value: "open", label: "Everyone" },
+            { value: "restricted", label: "Some addresses" },
           ]}
         />
         <span className="text-xs text-ink-3">{data ? `${data.items.length} assets` : ""}</span>
@@ -220,10 +220,10 @@ export default function Exposure() {
       <Card>
           <Table
             head={[
-              { label: "Exposure", sort: "level" },
+              { label: "Who can reach it", sort: "level" },
               { label: "Asset", sort: "name" },
               "How",
-              { label: "Ports", sort: "ports" },
+              { label: "Open doors", sort: "ports" },
               "Controls",
               { label: "Risk", sort: "risk" },
               { label: "Details", srOnly: true },
@@ -242,10 +242,10 @@ export default function Exposure() {
               <Fragment key={i.id}>
                 <tr className="cursor-pointer align-top hover:bg-surface-2" onClick={() => setExpanded(expanded === i.id ? null : i.id)}>
                   <td className="px-3 py-2">
-                    <Tag tone={i.level === "open" ? "critical" : "warn"}>{i.level}</Tag>
+                    <Tag tone={i.level === "open" ? "critical" : "warn"}>{i.level === "open" ? "Everyone" : "Some addresses"}</Tag>
                     {i.sensitive_data && (
                       <div className="mt-1">
-                        <Tag tone="accent">sensitive</Tag>
+                        <Tag tone="accent">Sensitive data</Tag>
                       </div>
                     )}
                   </td>

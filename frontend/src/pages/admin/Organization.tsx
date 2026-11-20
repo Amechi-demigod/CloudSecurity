@@ -212,7 +212,7 @@ export default function OrganizationPage() {
     <div className="space-y-4">
       <PageHeader
         title="Organisation"
-        subtitle={`Settings of ${organization?.name ?? "your organisation"}. Everything here applies to this organisation only. Cloud accounts are connected on Connections.`}
+        subtitle={`Settings for ${organization?.name ?? "your organisation"}.`}
         actions={
           <>
             <Link to="/admin/users" className="rounded border border-line bg-surface-2 px-3 py-1.5 text-sm font-medium text-ink hover:bg-line">People</Link>

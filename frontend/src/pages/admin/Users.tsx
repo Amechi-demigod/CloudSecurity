@@ -257,7 +257,7 @@ export default function Users() {
       <PageHeader
         title="People & approvals"
         info={PAGE_INFO.people}
-        subtitle="Manage who can sign in and what they can do. All changes are recorded in the audit log."
+        subtitle="Who can sign in, and what they can do."
         actions={
           <>
             <Link to="/approvals" className="rounded border border-line bg-surface-2 px-3 py-1.5 text-sm font-medium text-ink hover:bg-line">Approvals</Link>

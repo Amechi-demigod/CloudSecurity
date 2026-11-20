@@ -35,7 +35,7 @@ const COMPUTER_ISSUES = ISSUE_TYPES.filter((t) => !USER_ISSUES.includes(t));
 
 const COMPUTER_STATUS: { value: ComputerStatus; label: string }[] = [
   { value: "all", label: "All present" },
-  { value: "not_in_assets", label: "Not in IT assets" },
+  { value: "not_in_assets", label: "Not in hardware register" },
   { value: "matched", label: "Matched to an agent" },
   { value: "unmatched", label: "No agent match" },
   { value: "ambiguous", label: "Ambiguous match" },
@@ -119,7 +119,7 @@ function AssetCell({ assetId, canAdd, busy, onAdd }: { assetId: string | null; c
   if (!canAdd) return <span className="text-ink-3">—</span>;
   return (
     <button type="button" disabled={busy} onClick={onAdd} className="whitespace-nowrap text-accent hover:underline disabled:opacity-50">
-      Add to IT assets
+      Add to hardware register
     </button>
   );
 }
@@ -228,7 +228,7 @@ export default function Discovery() {
       const r = await directoryApi.addToAssets(ids);
       setNotice(
         `${r.created} IT asset${r.created === 1 ? "" : "s"} created (in stock, source: directory)` +
-          (r.skipped ? `; ${r.skipped} already in IT assets` : "") +
+          (r.skipped ? `; ${r.skipped} already in the hardware register` : "") +
           ".",
       );
       setSelected(new Set());
@@ -264,7 +264,7 @@ export default function Discovery() {
       <Breadcrumbs items={[{ label: "Hardware register", to: "/it-assets" }, { label: "Discovery" }]} />
       <PageHeader
         title="Discovery"
-        subtitle="Computers, devices and users from your directories, matched against agent devices and IT assets. Each physical machine is one row, whichever directories know it. Directory computers become IT assets only when you add them."
+        subtitle="Computers and users found in your directories, one row per machine."
         actions={
           s ? (
             <div className="flex flex-wrap items-center gap-2">
@@ -314,8 +314,7 @@ export default function Discovery() {
               </Link>
             }
           >
-            Discovery compares the computers and users in Active Directory, Microsoft Entra ID + Intune or Google Workspace with your agents: machines without an
-            agent, stale and disabled accounts, non-compliant devices, admins at risk.
+            Discovery compares the computers and users in Active Directory, Microsoft Entra ID + Intune or Google Workspace with your agents, and shows machines without an agent and accounts that need attention.
           </Empty>
         </Card>
       </div>
@@ -438,7 +437,7 @@ export default function Discovery() {
             </Button>
           )}
           <Button variant="primary" disabled={busy || selAdd.length === 0} onClick={() => void add(selAdd)}>
-            Add {selAdd.length > 0 ? selAdd.length : ""} to IT assets
+            Add {selAdd.length > 0 ? selAdd.length : ""} to hardware register
           </Button>
         </div>
       )}

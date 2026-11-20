@@ -1,10 +1,12 @@
 import { Link } from "react-router-dom";
+import { useAuth } from "../auth/context";
 import { api, type ApprovalSettings } from "../api";
 import { ApprovalList } from "../components/approvals";
 import { Card, ErrorNote, PageHeader, Stat } from "../components/ui";
 import { useApi } from "../lib/useApi";
 
 function SettingsNote({ settings: s }: { settings: ApprovalSettings }) {
+  const { platformAdmin } = useAuth();
   return (
     <Card title="How approvals work" className="mb-4">
       <ul className="list-inside list-disc space-y-1 text-sm text-ink-2">
@@ -20,9 +22,9 @@ function SettingsNote({ settings: s }: { settings: ApprovalSettings }) {
             <strong>disabled</strong>
           )}
           {s.allow_self_approval
-            ? `: an admin may approve their own request, which then waits ${s.self_approval_cooldown_minutes} minutes (cooling-off) before it runs and can be cancelled meanwhile.`
+            ? `: an admin may approve their own request, which then waits ${s.self_approval_cooldown_minutes} minutes before it runs and can be cancelled meanwhile.`
             : ": a different admin must approve every request."}{" "}
-          It is off by default and can only be changed on the server, e.g. <code>cnapp-ctl approvals self-approval enable</code>.
+          It is off by default and is changed by Sentrigis.{platformAdmin && <> Operator note: <code>cnapp-ctl approvals self-approval enable</code>.</>}
         </li>
         <li>
           An approved wipe is valid for <strong>{s.wipe_command_ttl_minutes} minutes</strong>; if the device does not pick it up in time it expires
@@ -47,7 +49,7 @@ export default function Approvals() {
     <div>
       <PageHeader
         title="Approvals"
-        subtitle="Two-person approval for remote wipes and higher-risk scripts."
+        subtitle="Risky actions that need a second person to approve."
         actions={
           <>
             <Link to="/admin/users" className="rounded border border-line bg-surface-2 px-3 py-1.5 text-sm font-medium text-ink hover:bg-line">People</Link>

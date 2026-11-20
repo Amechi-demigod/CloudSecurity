@@ -64,7 +64,7 @@ function FixFirst({ d }: { d: NetDeviceDetail }) {
                   {c.cve_id}
                 </Link>
                 <SeverityBadge severity={c.severity} />
-                {c.kev && <Tag tone="critical">KEV</Tag>}
+                {c.kev && <Tag tone="critical">Being exploited now</Tag>}
                 <span className="text-xs text-ink-3">CVSS {c.cvss.toFixed(1)}</span>
               </li>
             ))}
@@ -202,7 +202,7 @@ export default function NetworkDeviceDetail() {
             ) : (
               can("analyst") && (
                 <Button variant="primary" onClick={() => void addAsset()}>
-                  Add to IT assets
+                  Add to hardware register
                 </Button>
               )
             )}
@@ -219,7 +219,7 @@ export default function NetworkDeviceDetail() {
         </Cell>
         <Cell label="Serial">{d.serial || "-"}</Cell>
         <Cell label="Uptime">{uptime(d.uptime_s)}</Cell>
-        <Cell label="SNMP location">{d.sys_location || "-"}</Cell>
+        <Cell label="Location (as reported by the device)">{d.sys_location || "-"}</Cell>
         <Cell label="Interfaces">
           {d.interfaces.length ? `${d.interfaces_up} up / ${d.interfaces_down} down` : "-"}
         </Cell>
@@ -304,7 +304,7 @@ export default function NetworkDeviceDetail() {
             </Card>
             <Card title={`Connected unmanaged devices (${unmanaged.length})`}>
               {unmanaged.length === 0 ? (
-                <p className="text-sm text-ink-3">{d.connected.rows.length ? "Everything behind this switch is known." : "No forwarding table (needs a switch read over SNMP)."}</p>
+                <p className="text-sm text-ink-3">{d.connected.rows.length ? "Everything behind this switch is known." : "No forwarding table (the switch needs to be read with its management login)."}</p>
               ) : (
                 <ul className="divide-y divide-line text-sm">
                   {unmanaged.slice(0, 8).map((r) => (
@@ -330,7 +330,7 @@ export default function NetworkDeviceDetail() {
       {tab === "vulnerabilities" && (
         <Card>
           <Table
-            head={[{ label: "CVE", sort: "cve" }, { label: "Severity", sort: "severity" }, { label: "CVSS", sort: "cvss" }, { label: "KEV", sort: "kev" }, { label: "Firmware", sort: "firmware" }, { label: "Fixed in", sort: "fixed" }]}
+            head={[{ label: "CVE", sort: "cve" }, { label: "Severity", sort: "severity" }, { label: "CVSS", sort: "cvss" }, { label: "Being exploited", sort: "kev" }, { label: "Firmware", sort: "firmware" }, { label: "Fixed in", sort: "fixed" }]}
             sort={vulnSort.sort}
             onSort={vulnSort.onSort}
             rowCount={d.vulnerabilities.length}
@@ -350,7 +350,7 @@ export default function NetworkDeviceDetail() {
                   <SeverityBadge severity={v.severity} />
                 </td>
                 <td className="px-3 py-2 text-xs">{v.cvss.toFixed(1)}</td>
-                <td className="px-3 py-2">{v.kev ? <Tag tone="critical">KEV</Tag> : <span className="text-ink-3">-</span>}</td>
+                <td className="px-3 py-2">{v.kev ? <Tag tone="critical">Being exploited now</Tag> : <span className="text-ink-3">-</span>}</td>
                 <td className="px-3 py-2 text-xs">{v.version}</td>
                 <td className="px-3 py-2 text-xs">{v.fixed_version ?? <span className="text-ink-3">not named</span>}</td>
               </tr>
@@ -391,7 +391,7 @@ export default function NetworkDeviceDetail() {
             sort={ifaceSort.sort}
             onSort={ifaceSort.onSort}
             rowCount={d.interfaces.length}
-            empty={<Empty>No interface data: it needs SNMP.</Empty>}
+            empty={<Empty>No port details yet. The device needs to be read with its management login.</Empty>}
           >
             {ifaceSort.rows.map((i) => (
               <tr key={i.index}>
@@ -415,7 +415,7 @@ export default function NetworkDeviceDetail() {
             sort={connSort.sort}
             onSort={connSort.onSort}
             rowCount={d.connected.rows.length}
-            empty={<Empty>No forwarding table: it needs a switch read over SNMP.</Empty>}
+            empty={<Empty>No list of connected devices yet. The switch needs to be read with its management login.</Empty>}
           >
             {connSort.rows.map((r) => (
               <tr key={r.mac + r.port}>

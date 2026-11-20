@@ -1,4 +1,5 @@
 import { useState, type FormEvent, type ReactNode } from "react";
+import { statusLabel } from "../../lib/labels";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ApiError, api, type CommandType, type DeviceCommand, type DeviceDetail as Device, type Role } from "../../api";
 import { useAuth } from "../../auth/context";
@@ -546,7 +547,7 @@ function VulnerabilitiesTab({ id, os }: { id: string; os: string }) {
             {data.matched_at ? `Matched ${fmtAgo(data.matched_at)}` : "Not matched yet"}
             {data.pending ? " · re-match queued (inventory changed)" : ""}
             {data.os?.label ? ` · OS checked as ${data.os.label} ${data.os.version ?? ""}` : ""}
-            {kev > 0 ? ` · ${kev} known exploited (CISA KEV)` : ""}
+            {kev > 0 ? ` · ${kev} being exploited now` : ""}
             {data.error ? <span className="ml-1 text-sev-high" title={data.error}>· some data could not be refreshed</span> : null}
           </p>
         )}
@@ -710,7 +711,7 @@ function CommandsTab({ device, commands, error, reload }: { device: Device; comm
                 )}
               </td>
               <td className="px-3 py-2">
-                <Tag tone={STATUS_TONE[c.status]}>{c.status}</Tag>
+                <Tag tone={STATUS_TONE[c.status]}>{statusLabel(c.status)}</Tag>
                 <div className="mt-0.5 text-[11px] text-ink-3">
                   {c.completed_at ? fmtAgo(c.completed_at) : c.delivered_at ? `delivered ${fmtAgo(c.delivered_at)}` : `expires ${fmtTime(c.expires_at)}`}
                 </div>
@@ -718,7 +719,7 @@ function CommandsTab({ device, commands, error, reload }: { device: Device; comm
               <td className="max-w-[16rem] px-3 py-2 text-xs text-ink-2">{c.reason}</td>
               <td className="max-w-[24rem] px-3 py-2">
                 {c.exit_code !== null && c.exit_code !== undefined && (
-                  <div className={`text-xs ${c.exit_code === 0 ? "text-ink-3" : "text-sev-high"}`}>exit code {c.exit_code}</div>
+                  <div className={`text-xs ${c.exit_code === 0 ? "text-ink-3" : "text-sev-high"}`}>result code {c.exit_code}</div>
                 )}
                 {c.output && <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-words text-[11px] text-ink-2">{c.output}</pre>}
                 {c.log_bundle_id && can("analyst") && (
@@ -949,7 +950,7 @@ export default function DeviceDetail() {
           : `${OS_LABEL[device.os_family] ?? device.os_family} · ${[device.manufacturer, device.model].filter(Boolean).join(" ")}${device.serial_number ? ` · S/N ${device.serial_number}` : ""}`}
         actions={
           <div className="flex flex-wrap items-center gap-2">
-            {active ? <HealthBadge health={device.health} /> : <Tag tone="warn">Revoked</Tag>}
+            {active ? <HealthBadge health={device.health} /> : <Tag tone="warn">Removed</Tag>}
             {device.device_state === "lost" && <Tag tone="warn">Lost</Tag>}
             {device.device_class && device.device_class !== "workstation" && <DeviceClassTag device={device} />}
             {device.device_state === "wipe_pending" && <Tag tone="critical">Wipe pending</Tag>}

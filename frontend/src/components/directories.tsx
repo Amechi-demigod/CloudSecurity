@@ -594,7 +594,7 @@ function SourceCard({ src, isAdmin, onChanged }: { src: DirectorySource; isAdmin
               variant="danger"
               disabled={busy}
               onClick={() => {
-                if (window.confirm(`Delete ${src.name}? Its synced computers, users and discovery issues are removed. IT assets already added stay.`))
+                if (window.confirm(`Delete ${src.name}? Its synced computers, users and discovery issues are removed. Hardware register items already added stay.`))
                   void act(() => directoryApi.deleteSource(src.id));
               }}
             >

@@ -1,4 +1,5 @@
 import { SearchX } from "lucide-react";
+import { useAuth } from "../auth/context";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api";
@@ -11,6 +12,7 @@ import { useUrlState } from "../lib/useUrlState";
 import { PAGE_INFO } from "../lib/pageInfo";
 
 export default function Inventory() {
+  const { platformAdmin } = useAuth();
   // Filters live in the URL (?type=, ?provider=, ?exposed=yes ...) so the dashboard can link to them.
   const [type, setType] = useUrlState("type");
   const [provider, setProvider] = useUrlState("provider");
@@ -66,7 +68,7 @@ export default function Inventory() {
 
   return (
     <div>
-      <PageHeader title="Cloud resources" info={PAGE_INFO.cloudResources} actions={<Link to="/exposure" className="rounded border border-line bg-surface-2 px-3 py-1.5 text-sm font-medium text-ink hover:bg-line">Internet exposure</Link>} subtitle="Every discovered cloud resource with exposure, data sensitivity and risk context." />
+      <PageHeader title="Cloud resources" info={PAGE_INFO.cloudResources} actions={<Link to="/exposure" className="rounded border border-line bg-surface-2 px-3 py-1.5 text-sm font-medium text-ink hover:bg-line">On the internet</Link>} subtitle="Everything found in your connected cloud accounts." />
       <ErrorNote error={error} />
       <div role="tablist" aria-label="Inventory" className="mb-3 flex gap-1 border-b border-line">
         <button role="tab" aria-selected={!removed} className={tabCls(!removed)} onClick={() => setTab("")}>
@@ -187,9 +189,9 @@ export default function Inventory() {
                 </td>
                 <td className="px-3 py-2 text-ink-2">{a.region}</td>
                 <td className="space-x-1 px-3 py-2">
-                  {a.internet_exposed && <Tag tone="warn">Exposed</Tag>}
-                  {a.sensitive_data && <Tag tone="warn">Sensitive</Tag>}
-                  {a.source !== "simulated" && <Tag tone="accent">{a.source}</Tag>}
+                  {a.internet_exposed && <Tag tone="warn">On the internet</Tag>}
+                  {a.sensitive_data && <Tag tone="warn">Holds sensitive data</Tag>}
+                  {platformAdmin && a.source !== "simulated" && <Tag tone="accent">{a.source}</Tag>}
                 </td>
                 <td className="px-3 py-2">{a.open_findings || <span className="text-ink-3">0</span>}</td>
                 <td className="px-3 py-2">{a.vulnerabilities || <span className="text-ink-3">0</span>}</td>

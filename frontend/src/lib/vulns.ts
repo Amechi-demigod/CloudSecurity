@@ -4,7 +4,7 @@ export const SOURCE_LABEL: Record<string, string> = {
   nvd: "NVD (CPE)",
   osv: "OSV.dev",
   eol: "End of life (endoflife.date)",
-  simulated: "Simulated",
+  simulated: "Demo data",
 };
 
 export function cveUrl(v: Pick<Vulnerability, "cve_id" | "evidence">): string {

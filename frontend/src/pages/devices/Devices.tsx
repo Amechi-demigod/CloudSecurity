@@ -88,7 +88,7 @@ export default function Devices() {
       <PageHeader
         title="Computers & servers"
         info={PAGE_INFO.computers}
-        subtitle="Workstations, servers and domain controllers running the CNAPP endpoint agent: inventory, security posture and remote actions."
+        subtitle="Are your laptops, desktops and servers updated and protected?"
         actions={
           <div className="flex items-center gap-2">
             <Link to="/devices/updates" className="rounded border border-line bg-surface-2 px-3 py-1.5 text-sm font-medium text-ink hover:bg-line">
@@ -107,7 +107,7 @@ export default function Devices() {
       />
       {summary && (
         <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-          <Stat label="Devices" to="/devices" hint="Show all active devices" value={summary.total} sub={Object.entries(summary.by_os).map(([k, v]) => `${v} ${OS_LABEL[k] ?? k}`).join(" · ") || "none enrolled"} />
+          <Stat label="Computers & servers" to="/devices" hint="Show all active computers and servers" value={summary.total} sub={Object.entries(summary.by_os).map(([k, v]) => `${v} ${OS_LABEL[k] ?? k}`).join(" · ") || "none enrolled"} />
           {summary.by_class && (
             <Stat label="Workstations / servers" value={`${summary.by_class.workstation} / ${summary.by_class.server + summary.by_class.domain_controller}`}
               sub={`${summary.by_class.domain_controller} ${CLASS_LABEL.domain_controller.toLowerCase()}${summary.by_class.domain_controller === 1 ? "" : "s"} · ${summary.virtual ?? 0} virtual`} />
@@ -201,7 +201,7 @@ export default function Devices() {
             onChange={setStatus}
             options={[
               { value: "active", label: "Enrolled" },
-              { value: "revoked", label: "Revoked" },
+              { value: "revoked", label: "Removed" },
               { value: "all", label: "All" },
             ]}
           />
@@ -288,7 +288,7 @@ export default function Devices() {
                 </td>
                 <td className="px-3 py-2 text-xs text-ink-2">{d.logged_in_users.join(", ") || "—"}</td>
                 <td className="px-3 py-2">
-                  {d.status === "revoked" ? <span className="text-xs text-ink-3">Revoked</span> : <HealthBadge health={d.health} />}
+                  {d.status === "revoked" ? <span className="text-xs text-ink-3">Removed</span> : <HealthBadge health={d.health} />}
                 </td>
                 <td className="px-3 py-2">
                   <IssueList issues={d.issues} compact />

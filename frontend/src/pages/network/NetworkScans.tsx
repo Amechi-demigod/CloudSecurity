@@ -1,4 +1,5 @@
 import { Network } from "lucide-react";
+import { statusLabel } from "../../lib/labels";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useAuth } from "../../auth/context";
@@ -41,7 +42,7 @@ export default function NetworkScans() {
       <Breadcrumbs items={[{ label: "Network", to: "/network-devices" }, { label: "Network scans" }]} />
       <PageHeader
         title="Network scans"
-        subtitle="Scans that find and identify the devices on your networks, run by a dedicated collector. Read-only."
+        subtitle="Scans that find the devices on your networks."
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <NetworkNav active="scans" />
@@ -81,8 +82,8 @@ export default function NetworkScans() {
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
                   <h2 className="text-base font-semibold text-ink">{s.name}</h2>
-                  {!s.enabled && <Tag>paused</Tag>}
-                  {s.last_status && <Tag tone={TONE[s.last_status as keyof typeof TONE] ?? "default"}>{s.last_status}</Tag>}
+                  {!s.enabled && <Tag>Paused</Tag>}
+                  {s.last_status && <Tag tone={TONE[s.last_status as keyof typeof TONE] ?? "default"}>{statusLabel(s.last_status)}</Tag>}
                 </div>
                 <p className="mt-1 text-sm text-ink-2">
                   {s.targets.length} subnet{s.targets.length === 1 ? "" : "s"} · {s.address_count.toLocaleString()} addresses · {scheduleText(s)} · {s.pace === "gentle" ? "Gentle" : "Normal"} pace
@@ -96,7 +97,7 @@ export default function NetworkScans() {
                       {" · "}
                       last run <span title={fmtTime(s.last_run_at)}>{fmtAgo(s.last_run_at)}</span>
                       {s.last_summary.devices != null && `: ${s.last_summary.devices} devices`}
-                      {s.last_summary.snmp != null && `, ${s.last_summary.snmp} via SNMP`}
+                      {s.last_summary.snmp != null && `, ${s.last_summary.snmp} identified in detail`}
                       {s.last_summary.duration_s ? `, ${Math.round(s.last_summary.duration_s / 60)} min` : ""}
                     </>
                   )}

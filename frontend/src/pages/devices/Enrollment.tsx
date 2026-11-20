@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from "react";
+import { useAuth } from "../../auth/context";
 import { Link } from "react-router-dom";
 import { ApiError, api, type EnrollmentToken, type InstallerPlatform } from "../../api";
 import { Button, Card, Empty, ErrorNote, Field, Modal, PageHeader, Table, Tag } from "../../components/ui";
@@ -105,6 +106,7 @@ function CreateTokenDialog({ open, onClose, onCreated }: { open: boolean; onClos
 }
 
 function InstallerDownload({ onCreated }: { onCreated: () => void }) {
+  const { platformAdmin } = useAuth();
   const { data: info, error: infoError } = useApi(api.installerInfo, []);
   const [platform, setPlatform] = useState<InstallerPlatform>("windows-msi");
   const [days, setDays] = useState("30");
@@ -227,40 +229,49 @@ function InstallerDownload({ onCreated }: { onCreated: () => void }) {
               </Button>
               {linuxPkg?.available ? (
                 <span className="text-xs text-ink-3">
-                  Signed release {linuxPkg.version} · SHA-256 <code className="break-all">{linuxPkg.sha256}</code>
+                  Version {linuxPkg.version}{platformAdmin && <> · SHA-256 <code className="break-all">{linuxPkg.sha256}</code></>}
                 </span>
               ) : (
                 <span className="text-xs text-ink-3">
-                  No imported agent release carries this package yet. Import a signed release built with Linux packages:{" "}
-                  <code>sudo cnapp-ctl agent-release fetch --tag agent-vX.Y.Z</code>
+                  {platformAdmin ? (
+                    <>
+                      No imported agent release carries this package yet. Import a signed release built with Linux packages:{" "}
+                      <code>sudo cnapp-ctl agent-release fetch --tag agent-vX.Y.Z</code>
+                    </>
+                  ) : (
+                    "This installer isn't available yet. Contact Sentrigis."
+                  )}
                 </span>
               )}
             </div>
             <ErrorNote error={pkgError} />
-            <p className="text-xs text-ink-3">
+            <details className="text-xs text-ink-3">
+              <summary className="cursor-pointer text-ink-2">How to install on Linux</summary>
+              <p className="mt-1">
               The package is generic and carries no token. The enrolment file below (server address, token, CA) is what makes it
               enrol: put it at <code>/etc/cnapp-agent/enroll.json</code> before installing the package, or hand it to
               <code> cnapp-agent configure --from-file</code> afterwards. The package deletes the file once the agent has read it.
-            </p>
+              </p>
+            </details>
           </div>
         )}
         <Field label="Expires after (days)" id="inst-days" type="number" min={1} max={365} required value={days}
           onChange={(e) => setDays(e.target.value)} hint="The installer stops enrolling new devices after this." />
         <Field label="Maximum devices" id="inst-max" type="number" min={1} max={100000} required value={maxDevices}
-          onChange={(e) => setMaxDevices(e.target.value)} hint="Each device uses one enrollment; re-installs do not." />
+          onChange={(e) => setMaxDevices(e.target.value)} hint="Each device counts once; re-installs do not." />
         <Field label="Device group (optional)" id="inst-group" maxLength={64} placeholder="e.g. Lagos office" value={group}
           onChange={(e) => setGroup(e.target.value)} hint="Label applied to every device enrolled with this installer." />
-        <Field label="Name (optional)" id="inst-name" maxLength={128} placeholder="shown under Enrollment tokens" value={name}
+        <Field label="Name (optional)" id="inst-name" maxLength={128} placeholder="e.g. Lagos office laptops" value={name}
           onChange={(e) => setName(e.target.value)} />
         <label className="flex items-start gap-2 text-sm md:col-span-2">
           <input type="checkbox" className="mt-1" checked={ca} disabled={!info?.ca_configured && !ca}
             onChange={(e) => setIncludeCa(e.target.checked)} />
           <span>
-            Include the server&apos;s CA certificate
+            Include the security certificate
             <span className="block text-xs text-ink-3">
               {info?.ca_configured
-                ? "Needed while the server uses its built-in/internal CA. Untick once it has a publicly trusted certificate (or your CA is deployed by GPO/MDM)."
-                : "No private CA is configured on the server: the certificate must be publicly trusted (or already trusted by the devices)."}
+                ? "Leave this ticked unless Sentrigis tells you otherwise."
+                : "Not needed on this setup."}
             </span>
           </span>
         </label>
@@ -270,8 +281,7 @@ function InstallerDownload({ onCreated }: { onCreated: () => void }) {
           <span>
             Allow remote wipe on devices installed with this package (Windows only)
             <span className={`block text-xs ${allowWipe && platform === "windows-msi" ? "text-sev-high" : "text-ink-3"}`}>
-              Lets admins erase these devices after a two-person approval. It cannot be turned on later from the server, only by reinstalling
-              with this option or the MSI property <code>CNAPP_ALLOW_WIPE=1</code>.
+              Lets admins erase these devices after a second person approves. It can only be turned on by reinstalling the agent with this option.
             </span>
           </span>
         </label>
@@ -279,8 +289,7 @@ function InstallerDownload({ onCreated }: { onCreated: () => void }) {
           <Button type="submit" variant="primary" disabled={busy || !plat?.available || !!info?.server_error}>
             {busy ? "Building…" : `Download ${plat?.filename ?? "installer"}`}
           </Button>
-          {info?.server_url && <span className="text-xs text-ink-3">Agents will connect to <code>{info.server_url}</code>
-            {plat?.version && <> · agent {plat.version}</>}</span>}
+          {plat?.version && <span className="text-xs text-ink-3">Agent version {plat.version}</span>}
         </div>
         {plat && !plat.available && <p className="text-xs text-ink-3 md:col-span-2">{plat.reason}</p>}
       </form>
@@ -289,7 +298,7 @@ function InstallerDownload({ onCreated }: { onCreated: () => void }) {
         <div className="mt-3 rounded border border-accent/60 p-3 text-sm">
           <p className="mb-2">
             Saved <code>{done.filename}</code>
-            {done.sha256 && <> (SHA-256 <code className="break-all">{done.sha256}</code>)</>}. The token inside it is not shown
+            {done.sha256 && platformAdmin && <> (SHA-256 <code className="break-all">{done.sha256}</code>)</>}. The token inside it is not shown
             again: keep the file like a password and revoke it below when the rollout is finished.
           </p>
           {platform === "linux-enroll" ? (
@@ -330,7 +339,7 @@ function InstallerDownload({ onCreated }: { onCreated: () => void }) {
   );
 }
 
-const PLATFORM_LABEL: Record<InstallerPlatform, string> = { "windows-msi": "Windows MSI", "macos-pkg": "macOS pkg", "linux-enroll": "Linux enrolment file" };
+const PLATFORM_LABEL: Record<InstallerPlatform, string> = { "windows-msi": "Windows", "macos-pkg": "Mac", "linux-enroll": "Linux" };
 
 const STATE_TONE: Record<EnrollmentToken["state"], "good" | "default" | "warn"> = {
   active: "good",
@@ -375,7 +384,7 @@ export default function Enrollment() {
       </div>
       <PageHeader
         title="Enroll devices"
-        subtitle="Download one pre-configured installer for all your devices. Tokens for manual (command-line) installs are managed below."
+        subtitle="Download one installer and run it on the computers you want to protect."
         actions={<Button onClick={() => setCreateOpen(true)}>Create token</Button>}
       />
       <ErrorNote error={error ?? actionError} />
@@ -410,7 +419,7 @@ export default function Enrollment() {
                   {t.name}
                   {t.package_platform && (
                     <div className="mt-0.5">
-                      <Tag tone="accent">installer · {PLATFORM_LABEL[t.package_platform]}</Tag>
+                      <Tag tone="accent">Installer · {PLATFORM_LABEL[t.package_platform]}</Tag>
                     </div>
                   )}
                   {t.device_group && <div className="text-[11px] text-ink-3">group: {t.device_group}</div>}

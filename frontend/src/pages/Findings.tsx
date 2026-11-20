@@ -1,4 +1,5 @@
 import { ChevronRight, ShieldCheck } from "lucide-react";
+import { statusLabel } from "../lib/labels";
 import { Fragment, useState } from "react";
 import { Link, Navigate, useSearchParams } from "react-router-dom";
 import { api, type Finding } from "../api";
@@ -29,7 +30,8 @@ export default function Findings() {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [asset, setAsset] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const canTriage = useAuth().can("analyst");
+  const { can, platformAdmin } = useAuth();
+  const canTriage = can("analyst");
 
   // The server sorts the whole result (the list is capped), so the sort goes to the API.
   const sorted = useSortState(["severity", "title", "resource", "status", "first_seen"], { key: "severity", dir: "desc" }, { severity: "desc", first_seen: "desc" });
@@ -73,12 +75,12 @@ export default function Findings() {
             Attack paths
           </Link>
         }
-        subtitle="Misconfigurations detected by the declarative rules engine, mapped to CIS benchmarks."
+        subtitle="Settings in your cloud accounts that put you at risk."
       />
       <ErrorNote error={error ?? actionError} />
       <div className="mb-3 flex flex-wrap items-center gap-3">
         <Select label="Severity" value={severity} onChange={setSeverity} options={["", "critical", "high", "medium", "low"]} />
-        <Select label="Status" value={status} onChange={setStatus} options={["open", "suppressed", "resolved", "all"]} />
+        <Select label="Status" value={status} onChange={setStatus} options={[{ value: "open", label: "Open" }, { value: "suppressed", label: "Snoozed" }, { value: "resolved", label: "Fixed" }, { value: "all", label: "All" }]} />
         <Select
           label="Reason"
           value={reason}
@@ -94,7 +96,7 @@ export default function Findings() {
           onChange={setProvider}
           options={[{ value: "", label: "All" }, ...["azure", "aws", "gcp"].map((p) => ({ value: p, label: PROVIDER_LABEL[p] }))]}
         />
-        <Select label="Source" value={source} onChange={setSource} options={["", "simulated", "azure", "aws", "gcp"]} />
+        <Select label="Source" value={source} onChange={setSource} options={[{ value: "", label: "All" }, ...(platformAdmin ? [{ value: "simulated", label: "Demo data" }] : []), { value: "azure", label: "Azure" }, { value: "aws", label: "AWS" }, { value: "gcp", label: "Google Cloud" }]} />
         <input
           className="w-48 rounded border border-line bg-surface-2 px-2 py-1 text-sm"
           placeholder="Compliance, e.g. CIS AWS 2.1"
@@ -177,7 +179,7 @@ export default function Findings() {
                     {f.status === "resolved" && f.close_reason === "resource_removed" ? (
                       <Tag>Closed · resource removed</Tag>
                     ) : (
-                      <Tag tone={f.status === "open" ? "warn" : f.status === "resolved" ? "good" : "default"}>{f.status}</Tag>
+                      <Tag tone={f.status === "open" ? "warn" : f.status === "resolved" ? "good" : "default"}>{statusLabel(f.status)}</Tag>
                     )}
                   </td>
                   <td className="px-3 py-2 text-xs text-ink-2">{fmtAgo(f.first_seen)}</td>
@@ -198,8 +200,8 @@ export default function Findings() {
                       </Link>
                       {canTriage ? (
                       <div className="mt-3 flex gap-2">
-                        {f.status !== "suppressed" && <Button onClick={() => setFindingStatus(f, "suppressed")}>Suppress</Button>}
-                        {f.status !== "resolved" && <Button onClick={() => setFindingStatus(f, "resolved")}>Mark resolved</Button>}
+                        {f.status !== "suppressed" && <Button onClick={() => setFindingStatus(f, "suppressed")}>Snooze</Button>}
+                        {f.status !== "resolved" && <Button onClick={() => setFindingStatus(f, "resolved")}>Mark as fixed</Button>}
                         {f.status !== "open" && <Button onClick={() => setFindingStatus(f, "open")}>Reopen</Button>}
                       </div>
                       ) : (

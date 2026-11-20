@@ -3,6 +3,7 @@
 // and the uninstall button of the Software tab. Every action opens a
 // confirmation that says exactly what will happen and how to undo it
 // (docs/DEVICE_MANAGEMENT.md#endpoint-actions).
+import { statusLabel } from "../../lib/labels";
 import { Lock, Usb } from "lucide-react";
 import { useState, type FormEvent, type ReactNode } from "react";
 import { ApiError, api, type CommandType, type DeviceCommand, type DeviceDetail as Device, type DeviceSoftware } from "../../api";
@@ -306,11 +307,10 @@ export function ActionsTab({ device, commands, reload, error }: {
                   <div className="max-w-[16rem] text-xs text-ink-3">{c.reason}</div>
                 </td>
                 <td className="px-3 py-2">
-                  <Tag tone={STATUS_TONE[c.status]}>{c.status}</Tag>
-                  <div className="mt-0.5 text-[11px] text-ink-3">{c.completed_at ? fmtAgo(c.completed_at) : c.delivered_at ? "running" : "queued"}</div>
+                  <Tag tone={STATUS_TONE[c.status]}>{statusLabel(c.status)}</Tag>
+                  <div className="mt-0.5 text-[11px] text-ink-3">{c.completed_at ? fmtAgo(c.completed_at) : c.delivered_at ? "running" : "waiting"}</div>
                 </td>
                 <td className="max-w-[28rem] px-3 py-2">
-                  {c.exit_code !== null && c.exit_code !== undefined && <div className="text-xs text-ink-3">exit code {c.exit_code}</div>}
                   {c.result_data?.reboot_required === true && <Tag tone="warn">Restart required</Tag>}
                   {c.output && <pre className="max-h-24 overflow-auto whitespace-pre-wrap break-words text-[11px] text-ink-2">{c.output}</pre>}
                 </td>

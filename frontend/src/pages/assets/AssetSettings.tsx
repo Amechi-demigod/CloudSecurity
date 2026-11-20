@@ -97,7 +97,7 @@ export default function AssetSettings() {
         </Link>{" "}
         / Settings
       </div>
-      <PageHeader title="IT asset settings" subtitle="Admin only. Every change is recorded in the audit log." />
+      <PageHeader title="IT asset settings" subtitle="Admins only." />
       <ErrorNote error={error} />
       {data && <Form initial={data} onSaved={reload} />}
     </div>

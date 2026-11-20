@@ -73,7 +73,7 @@ export default function Vulnerabilities() {
       <PageHeader
         title="Vulnerabilities"
         info={PAGE_INFO.vulnerabilities}
-        subtitle="CVEs on cloud workloads, Linux servers (runtime sensor, matched with OSV.dev) and laptops (installed software matched with NVD by CPE). Workload CVEs are ranked by runtime context; CISA KEV marks vulnerabilities known to be exploited."
+        subtitle="Known security flaws in the software you run, worst first."
         actions={analyst ? <Button onClick={rematch}>Re-match now</Button> : undefined}
       />
       {rematchMsg && <p className="mb-3 text-sm text-ink-2">{rematchMsg}</p>}
@@ -81,14 +81,14 @@ export default function Vulnerabilities() {
       {stats && nr && (
         <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-5">
           <Stat
-            label="Noise reduction (workloads)"
+            label="Flaws you can ignore for now"
             value={`${nr.percent}%`}
-            sub={`${nr.dormant} of ${nr.total} workload vulns are in packages never loaded at runtime`}
+            sub={`${nr.dormant} of ${nr.total} are in software that is never run`}
           />
           <Stat
-            label="Loaded at runtime"
+            label="In use right now"
             value={nr.in_use}
-            sub={`${stats.in_use_and_exposed} also internet-exposed`}
+            sub={`${stats.in_use_and_exposed} also reachable from the internet`}
             selected={runtime === "in_use" && target !== "device"}
             onSelect={() => {
               setView("Vulnerabilities");
@@ -97,14 +97,14 @@ export default function Vulnerabilities() {
             }}
           />
           <Stat
-            label="Critical CVSS actually in use"
+            label="Critical and in use"
             value={`${stats.critical_cvss_in_use} / ${stats.critical_cvss_total}`}
-            sub="critical-severity CVEs whose package is loaded"
+            sub="Critical flaws in software that is running"
           />
           <Stat
-            label="On laptops"
+            label="On computers"
             value={stats.devices?.open ?? 0}
-            sub={`${stats.devices?.affected ?? 0} devices affected`}
+            sub={`${stats.devices?.affected ?? 0} computers affected`}
             selected={target === "device"}
             onSelect={() => {
               setView("Vulnerabilities");
@@ -112,9 +112,9 @@ export default function Vulnerabilities() {
             }}
           />
           <Stat
-            label="Known exploited (KEV)"
+            label="Being exploited now"
             value={stats.kev?.cves ?? 0}
-            sub={`${stats.kev?.open ?? 0} open findings`}
+            sub={`${stats.kev?.open ?? 0} open. Fix these first`}
             selected={kevOnly}
             onSelect={() => {
               setView("Vulnerabilities");
@@ -158,16 +158,16 @@ export default function Vulnerabilities() {
               onChange={setRuntime}
               options={[
                 { value: "all", label: "All" },
-                { value: "in_use", label: "Loaded at runtime" },
-                { value: "dormant", label: "Not loaded (deprioritized)" },
+                { value: "in_use", label: "In use" },
+                { value: "dormant", label: "Not in use (lower priority)" },
               ]}
             />
           )}
           <Select label="Severity" value={severity} onChange={setSeverity} options={["", "critical", "high", "medium", "low"]} />
           {view === "Vulnerabilities" && <Select label="Priority" value={priority} onChange={setPriority} options={["", "critical", "high", "medium", "low"]} />}
-          <Select label="Status" value={status} onChange={setStatus} options={["open", "resolved", "all"]} />
+          <Select label="Status" value={status} onChange={setStatus} options={[{ value: "open", label: "Open" }, { value: "resolved", label: "Fixed" }, { value: "all", label: "All" }]} />
           <label className="flex items-center gap-1.5 text-sm text-ink-2">
-            <input type="checkbox" checked={kevOnly} onChange={(e) => setKevOnly(e.target.checked)} /> KEV only
+            <input type="checkbox" checked={kevOnly} onChange={(e) => setKevOnly(e.target.checked)} /> Being exploited now only
           </label>
           <input
             value={software}
@@ -189,9 +189,9 @@ export default function Vulnerabilities() {
               value={listSort.sort.key}
               onChange={(k) => k !== listSort.sort.key && listSort.onSort(k)}
               options={[
-                { value: "risk", label: "Risk score" },
-                { value: "cvss", label: "CVSS only" },
-                { value: "epss", label: "EPSS" },
+                { value: "risk", label: "Risk" },
+                { value: "cvss", label: "Severity score only" },
+                { value: "epss", label: "Likely to be exploited" },
                 { value: "recent", label: "Newest" },
                 ...(["risk", "cvss", "epss", "recent"].includes(listSort.sort.key) ? [] : [{ value: listSort.sort.key, label: "Table column" }]),
               ]}
@@ -223,9 +223,9 @@ export default function Vulnerabilities() {
                 { label: "CVE", sort: "cve" },
                 { label: "Software", sort: "software" },
                 { label: "Affected", sort: "affected" },
-                { label: "CVSS / EPSS", sort: "cvss" },
+                { label: "How serious", sort: "cvss" },
                 { label: "Fixed in", sort: "fixed" },
-                { label: "Max risk", sort: "risk" },
+                { label: "Risk", sort: "risk" },
               ]}
               sort={cveSort.sort}
               onSort={cveSort.onSort}
@@ -233,7 +233,7 @@ export default function Vulnerabilities() {
               {(byCve.data ?? []).map((g) => (
                 <tr key={g.cve_id} className="hover:bg-surface-2">
                   <td className="px-3 py-2">
-                    <SeverityBadge severity={g.severity} /> {g.kev && <Tag tone="critical">KEV</Tag>}
+                    <SeverityBadge severity={g.severity} /> {g.kev && <Tag tone="critical">Being exploited now</Tag>}
                   </td>
                   <td className="px-3 py-2">
                     <Link className="font-mono text-xs hover:text-accent" to={`/vulnerabilities/${encodeURIComponent(g.cve_id)}`}>
@@ -248,7 +248,7 @@ export default function Vulnerabilities() {
                   </td>
                   <td className="whitespace-nowrap px-3 py-2 text-xs">
                     {g.cvss.toFixed(1)}
-                    {g.epss != null && <span className="text-ink-3"> · {(g.epss * 100).toFixed(1)}%</span>}
+                    {g.epss != null && <span className="text-ink-3" title="Chance of being exploited in the next 30 days"> · {(g.epss * 100).toFixed(0)}% likely to be exploited</span>}
                   </td>
                   <td className="px-3 py-2 font-mono text-xs text-ink-2">{g.fixed_versions.slice(-2).join(", ") || "—"}</td>
                   <td className="px-3 py-2"><RiskBar value={g.max_risk} /></td>
@@ -266,10 +266,10 @@ export default function Vulnerabilities() {
           ) : (
             <Table
               head={[
-                { label: "Software / package", sort: "software" },
+                { label: "Software", sort: "software" },
                 { label: "Worst", sort: "severity" },
-                { label: "CVEs", sort: "cves" },
-                { label: "KEV", sort: "kev" },
+                { label: "Flaws", sort: "cves" },
+                { label: "Being exploited", sort: "kev" },
                 { label: "Affected", sort: "affected" },
                 { label: "Installed versions", sort: "versions" },
                 { label: "Update to", sort: "fixed" },

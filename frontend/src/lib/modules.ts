@@ -17,30 +17,30 @@ export interface ModuleInfo {
 export const MODULES: Record<ModuleKey, ModuleInfo> = {
   cloud: {
     label: "Cloud security",
-    description: "Cloud security finds misconfigurations, internet exposure and attack paths across your Azure, AWS and Google Cloud accounts.",
-    stops: "Inventory, Exposure, Posture findings and Attack paths are locked, cloud connectors and scans stop, and scheduled cloud scans are skipped.",
+    description: "Cloud security finds risky settings, internet exposure and attack paths in your Azure, AWS and Google Cloud accounts.",
+    stops: "Cloud resources, Exposure, Cloud issues and Attack paths are locked, cloud connections and scans stop, and scheduled cloud scans are skipped.",
   },
   endpoints: {
     label: "Endpoints & servers",
-    description: "Endpoints & servers manages your Windows, macOS and Linux devices: their health, remote actions and runtime threats.",
+    description: "Endpoints & servers keeps your Windows, Mac and Linux computers and servers updated and protected, and shows threats on them.",
     stops:
-      "Devices and Runtime threats are locked, remote actions, scripts and remote support stop, runtime sensors are refused and new agents cannot enrol (unless Assets & identity is on).",
+      "Computers & servers and Threats are locked, remote actions, scripts and remote support stop, and new agents cannot be added (unless Assets & identity is on).",
   },
   vulnerabilities: {
     label: "Vulnerabilities",
-    description: "Vulnerabilities matches the software on your devices and cloud workloads against known CVEs and shows what to fix first.",
-    stops: "The Vulnerabilities page, vulnerability details and fix guidance are locked.",
+    description: "Vulnerabilities shows known security flaws in the software you run and what to fix first.",
+    stops: "The Vulnerabilities page, its details and fix guidance are locked.",
   },
   assets: {
     label: "Assets & identity",
-    description: "Assets & identity keeps your IT asset register, directories (Active Directory, Entra ID, Google) and network devices in one place.",
-    stops: "IT assets and Network devices are locked, directory and network-scan settings stop, and scheduled directory syncs and network scans are skipped.",
+    description: "Assets & identity keeps your hardware register, directories (Active Directory, Entra ID, Google) and network devices in one place.",
+    stops: "Hardware register and Network are locked, directory and network-scan settings stop, and scheduled directory syncs and network scans are skipped.",
   },
   external: {
     label: "Attack surface & pre-ASV",
     description:
-      "Attack surface & pre-ASV scans your internet-facing domains and addresses from outside, lists what an attacker can see and produces a pre-ASV report (not an ASV scan report or attestation).",
-    stops: "Attack surface, Findings and Reports are locked and scheduled external scans stop. Targets, findings and reports are kept.",
+      "Attack surface scans your internet-facing domains and addresses from outside and shows what an attacker can see. It produces a PCI practice report (not an official ASV scan report).",
+    stops: "Attack surface, Internet-facing issues and Reports are locked and scheduled external scans stop. Targets, findings and reports are kept.",
   },
 };
 
