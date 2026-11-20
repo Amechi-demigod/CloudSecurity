@@ -335,7 +335,7 @@ export default function RemoteViewer() {
 
   return (
     <div>
-      <Breadcrumbs items={[{ label: "Devices", to: "/devices" }, { label: hostname, to: `/devices/${id}` },
+      <Breadcrumbs items={[{ label: "Computers & servers", to: "/devices" }, { label: hostname, to: `/devices/${id}` },
         { label: "Remote session" }]} />
       <ErrorNote error={session.error} />
       <div ref={wrapRef} className={`flex flex-col gap-3 ${fullscreen ? "h-screen bg-surface-0 p-3" : ""}`}>

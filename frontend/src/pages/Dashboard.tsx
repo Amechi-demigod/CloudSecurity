@@ -1,9 +1,10 @@
 import { Download } from "lucide-react";
 import { api, type DashMeta, type DashRange } from "../api";
 import { GettingStarted } from "../components/org";
-import { ErrorNote } from "../components/ui";
+import { ErrorNote, InfoTip } from "../components/ui";
 import { TABS, type TabKey } from "../lib/dash";
 import { useModules } from "../lib/modules";
+import { PAGE_INFO } from "../lib/pageInfo";
 import { useApi } from "../lib/useApi";
 import { useUrlState } from "../lib/useUrlState";
 import EndpointsTab from "./dashboards/Endpoints";
@@ -12,13 +13,13 @@ import IdentitiesTab from "./dashboards/Identities";
 import OverviewTab from "./dashboards/Overview";
 import VulnsTab from "./dashboards/Vulnerabilities";
 
-// The Dashboards page: five tabs over one set of global controls (time range and cloud account),
+// The Overview page (route "/"): five tabs over one set of global controls (time range and cloud account),
 // all kept in the URL (?tab=vulns&range=90d&account=<id>) so every view can be linked to.
 // Each tab loads one /api/dashboards/<tab> response; every number links to the records behind it.
 
 const RANGES: DashRange[] = ["7d", "30d", "90d"];
 const HEADINGS: Record<TabKey, { title: string; sub: string }> = {
-  overview: { title: "Security overview", sub: "Live posture, runtime and risk across all connected cloud accounts and endpoints" },
+  overview: { title: "Overview", sub: "Live posture, runtime and risk across all connected cloud accounts and endpoints" },
   vulns: { title: "Vulnerabilities", sub: "Prioritised by exploitability, runtime use and internet exposure" },
   exposure: { title: "External exposure", sub: "What an attacker on the internet can reach, and the paths into your crown jewels" },
   identities: { title: "Identities", sub: "Cloud identities, their privileges and the paths they open" },
@@ -73,7 +74,10 @@ export default function DashboardPage() {
       </div>
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div className="min-w-0">
-          <h1 className="text-[22px] font-semibold tracking-tight">{heading.title}</h1>
+          <div className="flex items-center gap-1.5">
+            <h1 className="text-[22px] font-semibold tracking-tight">{heading.title}</h1>
+            {tab === "overview" && <InfoTip info={PAGE_INFO.overview} />}
+          </div>
           <p className="mt-0.5 text-[13px] text-ink-3">
             {heading.sub}
             {tab !== "endpoints" && account ? ` · ${accountName}` : ""} · last {range.replace("d", " days")}

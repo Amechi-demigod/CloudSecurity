@@ -11,6 +11,7 @@ import { fmtAgo } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
 import { useSortState } from "../../lib/useSort";
 import { useUrlState } from "../../lib/useUrlState";
+import { PAGE_INFO } from "../../lib/pageInfo";
 
 const hostPort = (host: string, port: number | null) => `${host}${port ? `:${port}` : ""}`;
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
@@ -40,7 +41,7 @@ export default function ExternalFindings() {
 
   return (
     <div className="space-y-4">
-      <PageHeader title="Attack surface findings" subtitle="Weaknesses an attacker could see from the internet. Findings close by themselves when a later scan no longer sees them." />
+      <PageHeader title="Internet-facing issues" info={PAGE_INFO.internetFacing} subtitle="Weaknesses an attacker could see from the internet. Findings close by themselves when a later scan no longer sees them." />
       <NotAsvBanner />
       <div className="flex flex-wrap items-center gap-3">
         <div role="group" aria-label="View" className="inline-flex overflow-hidden rounded border border-line text-sm">

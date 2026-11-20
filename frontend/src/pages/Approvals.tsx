@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import { api, type ApprovalSettings } from "../api";
 import { ApprovalList } from "../components/approvals";
 import { Card, ErrorNote, PageHeader, Stat } from "../components/ui";
@@ -44,7 +45,16 @@ export default function Approvals() {
   }
   return (
     <div>
-      <PageHeader title="Approvals" subtitle="Two-person approval for remote wipes and higher-risk scripts." />
+      <PageHeader
+        title="Approvals"
+        subtitle="Two-person approval for remote wipes and higher-risk scripts."
+        actions={
+          <>
+            <Link to="/admin/users" className="rounded border border-line bg-surface-2 px-3 py-1.5 text-sm font-medium text-ink hover:bg-line">People</Link>
+            <Link to="/admin/organization" className="rounded border border-line bg-surface-2 px-3 py-1.5 text-sm font-medium text-ink hover:bg-line">Organisation</Link>
+          </>
+        }
+      />
       <ErrorNote error={summary.error} />
       {summary.data && (
         <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-3">

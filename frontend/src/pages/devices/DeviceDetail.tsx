@@ -940,7 +940,7 @@ export default function DeviceDetail() {
 
   return (
     <div>
-      <Breadcrumbs items={[{ label: "Devices", to: "/devices" }, { label: device.hostname }]} />
+      <Breadcrumbs items={[{ label: "Computers & servers", to: "/devices" }, { label: device.hostname }]} />
       <PageHeader
         title={device.hostname}
         subtitle={linux

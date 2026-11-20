@@ -9,6 +9,7 @@ import { useApi } from "../../lib/useApi";
 import { useSort } from "../../lib/useSort";
 import { useUrlState } from "../../lib/useUrlState";
 import { networkApi, TRACK_TONE, TYPE_LABEL, type NetDeviceRow } from "../../networkApi";
+import { PAGE_INFO } from "../../lib/pageInfo";
 
 const STATUS = [
   { value: "", label: "All" },
@@ -34,7 +35,7 @@ export function NetworkNav({ active }: { active: "devices" | "scans" }) {
   return (
     <>
       <Link to="/network-devices" className={cls(active === "devices")}>
-        Network devices
+        Network
       </Link>
       <Link to="/network-scans" className={cls(active === "scans")}>
         Network scans
@@ -86,13 +87,14 @@ export default function NetworkDevices() {
   const last = s?.last_scan;
   return (
     <div>
-      <Breadcrumbs items={[{ label: "Endpoints & assets" }, { label: "Network devices" }]} />
+      <Breadcrumbs items={[{ label: "Assets" }, { label: "Network" }]} />
       <PageHeader
-        title="Network devices"
+        title="Network"
+        info={PAGE_INFO.network}
         subtitle={
           last
             ? `Last scan ${fmtAgo(last.finished_at ?? last.queued_at)}: ${last.status}${last.summary.addresses ? `, ${last.summary.addresses.toLocaleString()} addresses` : ""}${last.summary.duration_s ? ` in ${Math.round(last.summary.duration_s / 60)} min` : ""}.`
-            : "Devices found by network scans. Add a network scan under IT assets > Discovery."
+            : "Devices found by network scans. Add a network scan under Hardware register > Discovery."
         }
         actions={
           <div className="flex flex-wrap items-center gap-2">

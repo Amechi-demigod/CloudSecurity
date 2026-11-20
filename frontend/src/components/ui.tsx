@@ -1,5 +1,5 @@
-import { ArrowDown, ArrowUp, ArrowUpDown, ChevronRight, Inbox, type LucideIcon } from "lucide-react";
-import { isValidElement, useEffect, useRef, type InputHTMLAttributes, type ReactNode } from "react";
+import { ArrowDown, ArrowUp, ArrowUpDown, ChevronRight, Info, Inbox, type LucideIcon } from "lucide-react";
+import { isValidElement, useEffect, useId, useRef, useState, type InputHTMLAttributes, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { SEV_COLOR } from "../lib/format";
 import type { SortState } from "../lib/useSort";
@@ -130,11 +130,57 @@ export function Breadcrumbs({ items }: { items: { label: ReactNode; to?: string 
   );
 }
 
-export function PageHeader({ title, subtitle, actions }: { title: string; subtitle?: string; actions?: ReactNode }) {
+export type PageInfo = { title: string; text: string };
+
+/** Small (i) button after a page title: a tooltip on hover, keyboard focus and tap; Esc closes it. */
+export function InfoTip({ info }: { info: PageInfo }) {
+  const id = useId();
+  const [hover, setHover] = useState(false);
+  const [focus, setFocus] = useState(false);
+  const [pinned, setPinned] = useState(false);
+  const [dismissed, setDismissed] = useState(false);
+  const open = !dismissed && (hover || focus || pinned);
+  return (
+    <span className="relative inline-flex align-middle" onMouseEnter={() => { setDismissed(false); setHover(true); }} onMouseLeave={() => { setHover(false); setPinned(false); }}>
+      <button
+        type="button"
+        aria-label={`About this page: ${info.title}`}
+        aria-describedby={open ? id : undefined}
+        onClick={() => { setDismissed(false); setPinned((p) => !p); }}
+        onFocus={() => { setDismissed(false); setFocus(true); }}
+        onBlur={() => { setFocus(false); setPinned(false); }}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") {
+            setDismissed(true);
+            setPinned(false);
+          }
+        }}
+        className="flex h-6 w-6 items-center justify-center rounded-full text-ink-3 transition hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+      >
+        <Info aria-hidden className="h-4 w-4" />
+      </button>
+      {open && (
+        <span
+          role="tooltip"
+          id={id}
+          className="absolute left-0 top-full z-30 mt-1.5 w-max max-w-[300px] rounded-lg bg-[#0f172a] px-3 py-2 text-left text-xs font-normal normal-case leading-relaxed tracking-normal text-slate-100 shadow-xl ring-1 ring-white/10"
+        >
+          <span className="mb-0.5 block font-semibold text-white">{info.title}</span>
+          {info.text}
+        </span>
+      )}
+    </span>
+  );
+}
+
+export function PageHeader({ title, subtitle, actions, info }: { title: string; subtitle?: string; actions?: ReactNode; info?: PageInfo }) {
   return (
     <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
       <div>
-        <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
+        <div className="flex items-center gap-1.5">
+          <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
+          {info && <InfoTip info={info} />}
+        </div>
         {subtitle && <p className="mt-1 text-sm text-ink-2">{subtitle}</p>}
       </div>
       {actions && <div className="flex items-center gap-2">{actions}</div>}

@@ -4,6 +4,7 @@ import { Card, Empty, ErrorNote, PageHeader, Select, Table, Tag } from "../../co
 import { fmtTime } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
 import { useSortState } from "../../lib/useSort";
+import { PAGE_INFO } from "../../lib/pageInfo";
 
 const ACTIONS = [
   "",
@@ -52,7 +53,7 @@ export default function AuditLog() {
 
   return (
     <div>
-      <PageHeader title="Audit log" subtitle="Sign-ins, sign-outs, user changes and analyst actions (most recent first)." />
+      <PageHeader title="Audit log" info={PAGE_INFO.audit} subtitle="Sign-ins, sign-outs, user changes and analyst actions (most recent first)." />
       <ErrorNote error={error} />
       <div className="mb-3">
         <Select label="Action" value={action} onChange={setAction} options={ACTIONS} />

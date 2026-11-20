@@ -7,6 +7,7 @@ import { Button, Card, Empty, ErrorNote, PageHeader, Select, SeverityBadge, Tag 
 import { TYPE_LABEL, fmtAgo, fmtTime } from "../lib/format";
 import { useApi } from "../lib/useApi";
 import { useUrlState } from "../lib/useUrlState";
+import { PAGE_INFO } from "../lib/pageInfo";
 
 const EVENT_LABEL: Record<string, string> = {
   process_exec: "exec",
@@ -123,7 +124,8 @@ export default function Threats() {
   return (
     <div>
       <PageHeader
-        title="Runtime threats (CDR)"
+        title="Threats"
+        info={PAGE_INFO.threats}
         subtitle="Detections from runtime events: process execution, network, file access and privilege changes."
       />
       <ErrorNote error={alerts.error} />

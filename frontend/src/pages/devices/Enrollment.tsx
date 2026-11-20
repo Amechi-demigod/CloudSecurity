@@ -369,7 +369,7 @@ export default function Enrollment() {
     <div>
       <div className="mb-2 text-xs text-ink-3">
         <Link to="/devices" className="hover:text-ink">
-          Devices
+          Computers & servers
         </Link>{" "}
         / Enrollment
       </div>

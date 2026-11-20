@@ -261,7 +261,7 @@ export default function Discovery() {
 
   const header = (
     <>
-      <Breadcrumbs items={[{ label: "IT assets", to: "/it-assets" }, { label: "Discovery" }]} />
+      <Breadcrumbs items={[{ label: "Hardware register", to: "/it-assets" }, { label: "Discovery" }]} />
       <PageHeader
         title="Discovery"
         subtitle="Computers, devices and users from your directories, matched against agent devices and IT assets. Each physical machine is one row, whichever directories know it. Directory computers become IT assets only when you add them."
@@ -270,7 +270,7 @@ export default function Discovery() {
             <div className="flex flex-wrap items-center gap-2">
               {isAdmin && addScan !== "network-scan" && <Button onClick={() => setAddScan("network-scan")}>Add network scan</Button>}
               <Link to="/network-devices" className="rounded border border-line bg-surface-2 px-3 py-1.5 text-sm font-medium text-ink hover:bg-line">
-                Network devices
+                Network
               </Link>
               {s.sources > 0 && (<>
               <Link to="/connectors#directories" className="rounded border border-line bg-surface-2 px-3 py-1.5 text-sm font-medium text-ink hover:bg-line">

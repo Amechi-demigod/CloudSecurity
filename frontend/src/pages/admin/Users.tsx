@@ -1,8 +1,10 @@
 import { useState, type FormEvent } from "react";
+import { Link } from "react-router-dom";
 import { ApiError, api, type Role, type User } from "../../api";
 import { ROLE_LABEL, useAuth } from "../../auth/context";
 import { Button, Card, ErrorNote, Field, Modal, PageHeader, Table, Tag } from "../../components/ui";
 import { fmtAgo, fmtTime } from "../../lib/format";
+import { PAGE_INFO } from "../../lib/pageInfo";
 import { useApi } from "../../lib/useApi";
 import { rankOf, ts, useSort } from "../../lib/useSort";
 
@@ -253,12 +255,17 @@ export default function Users() {
   return (
     <div>
       <PageHeader
-        title="Users"
+        title="People & approvals"
+        info={PAGE_INFO.people}
         subtitle="Manage who can sign in and what they can do. All changes are recorded in the audit log."
         actions={
-          <Button variant="primary" onClick={() => setCreating(true)}>
-            Add user
-          </Button>
+          <>
+            <Link to="/approvals" className="rounded border border-line bg-surface-2 px-3 py-1.5 text-sm font-medium text-ink hover:bg-line">Approvals</Link>
+            <Link to="/admin/organization" className="rounded border border-line bg-surface-2 px-3 py-1.5 text-sm font-medium text-ink hover:bg-line">Organisation</Link>
+            <Button variant="primary" onClick={() => setCreating(true)}>
+              Add user
+            </Button>
+          </>
         }
       />
       <ErrorNote error={error ?? actionError} />

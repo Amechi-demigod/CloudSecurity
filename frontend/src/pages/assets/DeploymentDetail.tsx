@@ -95,7 +95,7 @@ export default function DeploymentDetail() {
     <div>
       <Breadcrumbs
         items={[
-          { label: "IT assets", to: "/it-assets" },
+          { label: "Hardware register", to: "/it-assets" },
           { label: "Discovery", to: "/it-assets/discovery" },
           { label: "Deployments", to: "/it-assets/discovery/deployments" },
           { label: d?.name ?? "Deployment" },
