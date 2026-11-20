@@ -141,6 +141,10 @@ def test_overview_numbers(seeded):
     assert top[0]["name"] == "vm1" and top[0]["risk"] == 98  # riskiest open vulnerability
     assert top[0]["critical"] == 1 and top[0]["high"] == 1 and top[0]["type_short"] == "VM"
     assert top[1]["name"] == "st1" and top[1]["risk"] == 85  # floor of its critical finding
+    # Overview widgets: top cloud issues (severity first, then assets affected) and assets with / without issues
+    assert [(t["rule_id"], t["severity"], t["assets"]) for t in d["top_issues"]] == [
+        ("AZ-STG-001", "critical", 1), ("AZ-ID-001", "high", 1), ("AZ-NSG-001", "high", 1)]
+    assert d["assets"] == {"total": 5, "with_issues": 4}
     ep = d["endpoints"]
     assert (ep["managed"], ep["healthy"], ep["failing"], ep["suspended"], ep["outdated"]) == (2, 1, 1, 1, 1)
     assert ep["latest_agent_version"] == "1.2.0"

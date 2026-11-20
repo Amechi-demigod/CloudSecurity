@@ -20,6 +20,7 @@ from .api import agent_updates as agent_updates_api
 from .api import approvals as approvals_api
 from .api import auth as auth_api
 from .api import contact as contact_api
+from .api import dashboard_layout as dashboard_layout_api
 from .api import dashboards as dashboards_api
 from .api import device_scripts as device_scripts_api
 from .api import devices, inventory, platform, runtime, vulns
@@ -243,6 +244,7 @@ def create_app() -> FastAPI:
     app.include_router(remote_relay_api.router)
     app.include_router(exposure_api.router, dependencies=session_required + cloud)  # /api/exposure: any signed-in user
     app.include_router(dashboards_api.router, dependencies=session_required)  # /api/dashboards/*: any signed-in user
+    app.include_router(dashboard_layout_api.router, dependencies=session_required)  # /api/dashboard/layout: viewer / admin
     app.include_router(auth_api.admin_router)
     app.include_router(agent_update_auto_api.router)  # /api/updates/automation, /api/updates/update-now
     app.include_router(notifications_api.router)  # analyst read-only, admin writes

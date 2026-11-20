@@ -27,6 +27,14 @@
   /* Tints behind change chips */
   --color-good-bg: #143022;
   --color-bad-bg: #3a1a1c;
+  /* Overview dashboard: severity marks and the neutral "healthy / none" fill. Used for swatches and
+     chart segments only (text stays in ink) and always shown with a text label. */
+  --color-ov-critical: #e5575b;
+  --color-ov-high: #f0905f;
+  --color-ov-medium: #fab219;
+  --color-ov-low: #8b95a5;
+  --color-ov-none: #3a4459;
+  --color-ov-neutral: #64748b;
 }
 
 /* Light palette: text tokens meet WCAG AA (4.5:1) on every surface; severity colors are
@@ -51,6 +59,12 @@
   --color-cat-4: #94a3b8;
   --color-good-bg: #e7f6ec;
   --color-bad-bg: #fdecec;
+  --color-ov-critical: #d03b3b;
+  --color-ov-high: #ec835a;
+  --color-ov-medium: #fab219;
+  --color-ov-low: #a3acba;
+  --color-ov-none: #d5dae3;
+  --color-ov-neutral: #a3acba;
   color-scheme: light;
 }
 
@@ -117,6 +131,12 @@ body {
     --color-cat-4: #94a3b8;
     --color-good-bg: #e7f6ec;
     --color-bad-bg: #fdecec;
+    --color-ov-critical: #d03b3b;
+    --color-ov-high: #ec835a;
+    --color-ov-medium: #fab219;
+    --color-ov-low: #a3acba;
+    --color-ov-none: #d5dae3;
+    --color-ov-neutral: #a3acba;
     color-scheme: light;
   }
   html,
