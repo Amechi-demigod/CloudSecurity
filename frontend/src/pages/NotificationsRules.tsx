@@ -2,7 +2,7 @@ import { useState, type FormEvent, type ReactNode } from "react";
 import { ApiError, type Severity } from "../api";
 import { SaveBar } from "../components/SaveBar";
 import { Switch } from "../components/Switch";
-import { Button, Card, Empty, ErrorNote, Field, Modal, SeverityBadge, Table, Tag } from "../components/ui";
+import { Button, Card, Empty, ErrorNote, Field, Modal, NameCell, Pill, PillRow, Table, Tag, TextCell, type PillTone } from "../components/ui";
 import { useApi } from "../lib/useApi";
 import { SEV_RANK, useSort } from "../lib/useSort";
 import { notificationsApi, type Channel, type NotificationMeta, type Rule, type RuleInput } from "../notificationsApi";
@@ -266,6 +266,8 @@ function RuleDialog({
   );
 }
 
+const SEV_TONE: Record<string, PillTone> = { critical: "critical", high: "high", medium: "medium", low: "neutral" };
+
 function describe(r: Rule, meta: NotificationMeta): string {
   const parts = [r.sources.length ? r.sources.map((s) => meta.sources.find((x) => x.name === s)?.label ?? s).join(", ") : "All sources"];
   if (r.event_types.length) parts.push(r.event_types.map(humanize).join(", "));
@@ -350,30 +352,39 @@ export default function NotificationsRules({ meta, isAdmin }: { meta: Notificati
         ) : (
           <Table
             tableId="notifications-rules"
-            head={[{ label: "Rule", sort: "rule" }, { label: "Matches", sort: "matches" }, { label: "From severity", sort: "severity" }, { label: "Channels", sort: "channels" }, { label: "Delivery", sort: "delivery" }, { label: "On", sort: "status" }, ...(isAdmin ? [""] : [])]}
+            head={[
+              { label: "Rule", sort: "rule", w: 300 },
+              { label: "Matches", sort: "matches", w: 240 },
+              { label: "From severity", sort: "severity", w: 140 },
+              { label: "Channels", sort: "channels", w: 220 },
+              { label: "Delivery", sort: "delivery", w: 140 },
+              { label: "On", sort: "status", w: 80 },
+              ...(isAdmin ? [{ label: "Actions", srOnly: true, w: 150 }] : []),
+            ]}
             sort={sorted.sort}
             onSort={sorted.onSort}
+            noun="rules"
           >
             {sorted.rows.map((r) => (
               <tr key={r.id}>
-                <td className="px-3 py-2 font-medium">{r.name}</td>
-                <td className="max-w-[22rem] px-3 py-2 text-xs text-ink-2">{describe(r, meta)}</td>
+                <td className="px-3 py-2"><NameCell name={r.name} onOpen={isAdmin ? () => setEditing(r) : undefined} openLabel={`Edit ${r.name}`} /></td>
+                <td className="px-3 py-2"><TextCell muted title={describe(r, meta)}>{describe(r, meta)}</TextCell></td>
                 <td className="px-3 py-2">
-                  <SeverityBadge severity={r.min_severity} />
+                  <PillRow><Pill tone={SEV_TONE[r.min_severity] ?? "neutral"}>{r.min_severity[0].toUpperCase() + r.min_severity.slice(1)}</Pill></PillRow>
                 </td>
-                <td className="px-3 py-2 text-xs">{r.channel_ids.length ? r.channel_ids.map(chName).join(", ") : <Tag tone="warn">none</Tag>}</td>
-                <td className="px-3 py-2 text-xs text-ink-2">
-                  {r.mode === "digest" ? `Daily digest at ${String(r.digest_hour).padStart(2, "0")}:00` : "Immediate"}
-                  {r.throttle_minutes > 0 && r.mode !== "digest" && <div>≤ 1 per group / {r.throttle_minutes} min</div>}
-                  {r.quiet_start && <div>Quiet {r.quiet_start}–{r.quiet_end} {r.timezone}</div>}
+                <td className="px-3 py-2">
+                  {r.channel_ids.length ? <TextCell muted title={r.channel_ids.map(chName).join(", ")}>{r.channel_ids.map(chName).join(", ")}</TextCell> : <PillRow><Pill tone="high">None</Pill></PillRow>}
+                </td>
+                <td className="px-3 py-2">
+                  <TextCell title={[r.throttle_minutes > 0 && r.mode !== "digest" ? `At most 1 per group every ${r.throttle_minutes} min` : "", r.quiet_start ? `Quiet ${r.quiet_start}-${r.quiet_end} ${r.timezone}` : ""].filter(Boolean).join(" · ") || undefined}>
+                    {r.mode === "digest" ? `Daily ${String(r.digest_hour).padStart(2, "0")}:00` : "Right away"}
+                  </TextCell>
                 </td>
                 <td className="px-3 py-2">
                   {isAdmin ? (
                     <Switch on={isOn(r)} label={`${r.name} on or off`} disabled={saving} onChange={(v) => setPending({ ...pending, [r.id]: v })} />
-                  ) : r.enabled ? (
-                    <Tag tone="good">On</Tag>
                   ) : (
-                    <Tag>Off</Tag>
+                    <PillRow>{r.enabled ? <Pill tone="good">On</Pill> : <Pill>Off</Pill>}</PillRow>
                   )}
                 </td>
                 {isAdmin && (
