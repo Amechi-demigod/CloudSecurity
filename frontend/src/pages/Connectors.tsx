@@ -9,11 +9,10 @@ import { ScopeList } from "../components/cloudScopes";
 import { CollectorsSection } from "../components/collectors";
 import { LockedCard } from "../components/ModuleLocked";
 import { DirectoriesSection } from "../components/directories";
-import { DirectoryMark } from "../components/directoryShared";
 import { directoryApi, collectorApi, DIRECTORY_NAME, type DirectorySource, type SyncRun } from "../directoryApi";
-import { Button, Card, ErrorNote, PageHeader, Select, SeverityBadge, Table, Tag } from "../components/ui";
+import { Button, Card, ErrorNote, FilterBar, FilterChips, MoreMenu, NameCell, NumCell, None, PageHeader, Pill, PillRow, Segments, SeverityBadge, Table, Tag, TextCell, type PillTone } from "../components/ui";
 import { CLOUD_NAME, CLOUD_PROVIDERS, CLOUD_ROLE, CLOUD_SCOPE } from "../lib/cloudSetup";
-import { RUN_COLOR, RUN_TEXT, RUN_TEXT_SERVER, TRIGGER_TEXT, runDuration } from "../lib/directory";
+import { RUN_TEXT, RUN_TEXT_SERVER, TRIGGER_TEXT, runDuration } from "../lib/directory";
 import { fmtAgo, fmtHours, fmtTime, fmtUntil } from "../lib/format";
 import { useModules } from "../lib/modules";
 import { useApi } from "../lib/useApi";
@@ -38,6 +37,16 @@ const STATUS_COLOR: Record<ScanRun["status"], string> = {
   skipped: "text-ink-3",
   running: "text-accent",
 };
+
+/** Plain-language reason for a failed cloud scan (the raw message stays in Scan history). */
+function failureReason(provider: string, last: ScanRun): string {
+  const raw = [last.message, ...last.errors].join(" ");
+  if (/authorization|forbidden|403|reader|permission|access denied|not authorized|unauthori[sz]ed|401/i.test(raw))
+    return `The last scan was refused: Sentrigis doesn't have read access to this ${provider === "azure" ? "subscription" : "account"}. Give the Sentrigis identity the read-only role, then scan again.`;
+  if (/expired|invalid.*(secret|credential|key)|secret|credential/i.test(raw)) return "The last scan could not sign in: the saved credentials are no longer valid. Edit the connection with new read-only credentials, then scan again.";
+  if (/timeout|timed out|network|connection|dns|unreachable/i.test(raw)) return "The last scan could not reach the cloud provider. Check the connection and scan again.";
+  return `The last scan failed${last.message ? `: ${last.message}` : ""}. Open Scan history for the details, then scan again.`;
+}
 
 /** "1m 48s" between start and finish; null while running. */
 function duration(run: ScanRun): string | null {
@@ -115,6 +124,7 @@ function CloudCard({
   const n = scopeCount(c);
   const [one, many] = CLOUD_SCOPE[provider];
   const errors = last?.errors.length ?? 0;
+  const failed = last?.status === "failed" && !running;
 
   let next: { value: ReactNode; sub?: ReactNode } | null = null;
   if (schedule && sched) {
@@ -134,9 +144,10 @@ function CloudCard({
           <div className="min-w-0">
             <h2 className="text-base font-semibold text-ink">{CLOUD_NAME[provider]}</h2>
             <div className="flex flex-wrap items-center gap-x-1.5 text-[13px] text-ink-3">
-              <span aria-hidden className="inline-block h-2 w-2 rounded-full bg-good" />
+              <span aria-hidden className={`inline-block h-2 w-2 rounded-full ${failed ? "bg-sev-high" : "bg-good"}`} />
+              <Pill tone={failed ? "high" : "good"}>{failed ? "Needs attention" : "Working"}</Pill>
               <span>
-                Connected{n > 0 && ` · ${n} ${n === 1 ? one : many}`} · read-only ({CLOUD_ROLE[provider]})
+                {n > 0 && `${n} ${n === 1 ? one : many} · `}read-only ({CLOUD_ROLE[provider]})
               </span>
               {config?.from_environment && <Tag>from server environment</Tag>}
             </div>
@@ -144,25 +155,36 @@ function CloudCard({
         </div>
         <div className="flex items-center gap-2">
           {isAdmin && (
-            <Button onClick={() => setEditing((v) => !v)} disabled={editing}>
-              Edit connection
-            </Button>
-          )}
-          {isAdmin && (
-            <Button onClick={() => setShowScopes((v) => !v)}>
-              {showScopes ? "Hide" : "Manage"} {many}
-            </Button>
+            <MoreMenu
+              items={[
+                { label: "Edit connection", onClick: () => setEditing(true), hidden: editing },
+                { label: `${showScopes ? "Hide" : "Manage"} ${many}`, onClick: () => setShowScopes((v) => !v) },
+              ]}
+            />
           )}
           {canScan && (
             <Button variant="primary" disabled={running} onClick={onScan} title={`Run a read-only ${CLOUD_NAME[provider]} posture scan now`}>
               <span className="inline-flex items-center gap-1.5">
                 <Play aria-hidden className="h-3.5 w-3.5 fill-current" />
-                {running ? "Scanning…" : "Run scan"}
+                {running ? "Scanning…" : failed ? "Scan again" : "Scan now"}
               </span>
             </Button>
           )}
         </div>
       </div>
+      {failed && last && (
+        <div role="alert" className="mt-3 flex flex-wrap items-start justify-between gap-3 rounded-lg border border-sev-high/50 bg-sev-high/10 px-3 py-2.5 text-sm">
+          <div className="min-w-0">
+            <div className="font-semibold text-ink">Needs attention</div>
+            <p className="mt-0.5 text-ink-2">{failureReason(provider, last)}</p>
+          </div>
+          {isAdmin && !editing && (
+            <Button onClick={() => setEditing(true)} title="Open the connection settings">
+              How to fix
+            </Button>
+          )}
+        </div>
+      )}
       <div className="mt-4 grid grid-cols-2 gap-y-3 px-1 sm:grid-cols-4" data-testid={`stats-${provider}`}>
         <StatCell
           label="Last scan"
@@ -186,12 +208,12 @@ function CloudCard({
           />
         )}
       </div>
-      {errors > 0 && (
+      {errors > 0 && !failed && (
         <p className="mt-3 px-1 text-xs text-sev-high">
           The last scan reported {errors} {errors === 1 ? "error" : "errors"} (see Scan history).
         </p>
       )}
-      {c.problem && <p className="mt-2 px-1 text-xs text-sev-high">{c.problem}</p>}
+      {c.problem && !failed && <p className="mt-2 px-1 text-xs text-sev-high">{c.problem}</p>}
       {isAdmin && showScopes && <ScopeList provider={provider} onChanged={onScopesChanged} />}
       {editing && (
         <div className="mt-4 border-t border-line px-1 pt-4">
@@ -493,10 +515,46 @@ export default function Connectors() {
   const loaded = connectors.data !== null;
   const before = loaded && connected.length === 0;
 
+  // Status line: how many connections work, need attention or are not set up, and when data last came in.
+  const cloudBad = connected.filter((c) => (runsOf(c.name)[0] ?? c.last_scan)?.status === "failed").length;
+  const dirList = sources.data ?? [];
+  const dirBad = dirList.filter((d) => d.enabled && d.last_sync_status === "failed").length;
+  const colList = (collectors.data ?? []).filter((c) => c.status === "active");
+  const colBad = colList.filter((c) => c.state !== "online").length;
+  const total = connected.length + dirList.length + colList.length;
+  const attention = cloudBad + dirBad + colBad;
+  const notSetUp = hasCloud && loaded ? unconnected.length : 0;
+  const lastData = [
+    ...(scans.data ?? []).filter((r) => r.status === "succeeded" && r.finished_at).map((r) => r.finished_at as string),
+    ...dirList.map((d) => d.last_success_at).filter((x): x is string => !!x),
+  ].sort().pop();
+
   return (
     <div>
       <PageHeader title="Connections" info={PAGE_INFO.connections} subtitle="Where Sentrigis gets its information from. It only reads; it never changes anything." />
       <ErrorNote error={connectors.error ?? scanError} />
+      {loaded && (total > 0 || notSetUp > 0) && (
+        <div className="mb-4 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-xl border border-line bg-surface-1 px-4 py-2.5 text-sm" aria-label="Connection status">
+          <span className="font-semibold text-ink">{plural(total, "connection")}</span>
+          <span className="inline-flex items-center gap-1.5 text-ink-2">
+            <span aria-hidden className="h-2 w-2 rounded-full bg-good" />
+            {total - attention} working
+          </span>
+          {attention > 0 && (
+            <span className="inline-flex items-center gap-1.5 text-ink-2">
+              <span aria-hidden className="h-2 w-2 rounded-full bg-sev-high" />
+              {attention} needs attention
+            </span>
+          )}
+          {notSetUp > 0 && (
+            <span className="inline-flex items-center gap-1.5 text-ink-3">
+              <span aria-hidden className="h-2 w-2 rounded-full bg-ink-3" />
+              {notSetUp} not set up
+            </span>
+          )}
+          {lastData && <span className="ml-auto text-ink-3">Last data in: {fmtAgo(lastData)}</span>}
+        </div>
+      )}
       {notice && (
         <div role="status" className="mb-4 flex items-start justify-between gap-3 rounded border border-good/60 bg-good/10 px-3 py-2 text-sm text-ink">
           <span>{notice}</span>
@@ -613,11 +671,9 @@ export default function Connectors() {
         <LockedCard module="assets" className="mb-4" />
       )}
 
-      <Card
-        title="Scan history"
-        className="mt-4"
-        actions={
-          <Select
+      <Card title={<span id="scan-history" className="scroll-mt-20">Scan history</span>} className="mt-4">
+        <FilterBar count={`${history.length} ${history.length === 1 ? "run" : "runs"}`}>
+          <Segments
             label="Show"
             value={historyKind}
             onChange={setHistoryKind}
@@ -625,27 +681,40 @@ export default function Connectors() {
               { value: "", label: "All" },
               { value: "cloud", label: "Cloud scans" },
               { value: "directory", label: "Directory syncs" },
-              { value: "failed", label: "Failed only" },
+              { value: "failed", label: "Failed" },
             ]}
           />
-        }
-      >
+        </FilterBar>
+        <FilterChips
+          chips={historyKind ? [{ label: "Show", value: { cloud: "Cloud scans", directory: "Directory syncs", failed: "Failed" }[historyKind] ?? historyKind, onRemove: () => setHistoryKind("") }] : []}
+          onClearAll={() => setHistoryKind("")}
+        />
         {historyEmpty ? (
           <p className="text-sm text-ink-3">
             {before
               ? "No scans yet. Your first scan starts automatically after you connect a cloud account."
               : "No scans or syncs yet."}
           </p>
-        ) : history.length === 0 && !scans.loading && !dirRuns.loading ? (
-          <p className="text-sm text-ink-3">Nothing matches this filter.</p>
         ) : (
           <Table
             tableId="connectors"
-            head={[{ label: "Started", sort: "started" }, { label: "Type", sort: "type" }, { label: "Source", sort: "source" }, { label: "Trigger", sort: "trigger" }, { label: "Result", sort: "result" }, { label: "Duration", sort: "duration" }, { label: "Found", sort: "found" }, { label: "Findings", sort: "findings" }]}
+            head={[
+              { label: "Started", sort: "started", w: 150 },
+              { label: "Source", sort: "source", w: 260 },
+              { label: "Trigger", sort: "trigger", w: 120 },
+              { label: "Result", sort: "result", w: 170 },
+              { label: "Duration", sort: "duration", w: 90, align: "right" },
+              { label: "Found", sort: "found", w: 100, align: "right" },
+              { label: "Issues", sort: "findings", w: 90, align: "right" },
+            ]}
             sort={sortedHistory.sort}
             onSort={sortedHistory.onSort}
             loading={scans.loading}
             rowCount={history.length}
+            noun="runs"
+            pageSize={25}
+            filtered={!!historyKind}
+            onClearFilters={() => setHistoryKind("")}
           >
             {sortedHistory.rows.map((r) => {
               const s = r.kind === "cloud" ? r.scan : null;
@@ -654,62 +723,40 @@ export default function Connectors() {
               const message = s ? s.message : d!.error;
               const errors = s ? s.errors : [];
               const server = r.kind === "directory" && r.source.type !== "ad";
+              const resultText = s ? STATUS_TEXT[s.status] : (server ? RUN_TEXT_SERVER : RUN_TEXT)[d!.status];
+              const tone: PillTone = status === "succeeded" ? "good" : status === "failed" ? "critical" : status === "running" ? "info" : "neutral";
+              const found = s ? (s.status === "succeeded" ? s.assets_found : null) : d!.status === "succeeded" ? d!.computers_seen + d!.users_seen : null;
+              const detail = [message, ...errors].filter(Boolean).join(" · ");
               return (
                 <tr key={`${r.kind}-${r.id}`}>
-                  <td className="whitespace-nowrap px-3 py-2 text-ink-2" title={fmtTime(r.at)}>
-                    {shortTime(r.at)}
+                  <td className="px-3 py-2">
+                    <TextCell title={fmtTime(r.at)}>{shortTime(r.at)}</TextCell>
                   </td>
                   <td className="px-3 py-2">
-                    <Tag tone={s ? "default" : "accent"}>{s ? "Cloud" : "Directory"}</Tag>
+                    <NameCell
+                      name={s ? cloudName(s.connector) : r.kind === "directory" ? r.source.name : ""}
+                      sub={s ? "Cloud scan" : r.kind === "directory" ? `${DIRECTORY_NAME[r.source.type]} sync` : ""}
+                    />
                   </td>
                   <td className="px-3 py-2">
-                    <span className="inline-flex items-center gap-1.5">
-                      {s ? (
-                        <>
-                          {isCloud(s.connector) && <ProviderMark provider={s.connector} size={12} />}
-                          {cloudName(s.connector)}
-                        </>
-                      ) : (
-                        <>
-                          <DirectoryMark size={12} type={r.kind === "directory" ? r.source.type : "ad"} />
-                          {r.kind === "directory" && r.source.name}
-                          <span className="text-ink-3">· {r.kind === "directory" && DIRECTORY_NAME[r.source.type]}</span>
-                        </>
-                      )}
-                    </span>
+                    <TextCell muted>{s ? trigger(s) : TRIGGER_TEXT[d!.trigger] ?? d!.trigger}</TextCell>
                   </td>
-                  <td className="px-3 py-2 text-ink-2">{s ? trigger(s) : TRIGGER_TEXT[d!.trigger] ?? d!.trigger}</td>
                   <td className="px-3 py-2">
-                    <span className="inline-flex items-center gap-1.5 whitespace-nowrap text-ink">
-                      <span aria-hidden className={s ? STATUS_COLOR[s.status] : RUN_COLOR[d!.status]}>
-                        ●
-                      </span>
-                      {s ? STATUS_TEXT[s.status] : (server ? RUN_TEXT_SERVER : RUN_TEXT)[d!.status]}
-                      {d?.truncated && " (capped)"}
-                    </span>
-                    {(status !== "succeeded" || errors.length > 0) && message && <div className="mt-1 max-w-md text-xs text-ink-3">{message}</div>}
-                    {errors.length > 0 && (
-                      <details className="mt-1 text-xs">
-                        <summary className="cursor-pointer text-ink-3">{errors.length} errors</summary>
-                        <ul className="mt-1 list-disc pl-4 font-mono text-[11px] text-ink-2">
-                          {errors.map((e, i) => (
-                            <li key={i}>{e}</li>
-                          ))}
-                        </ul>
-                      </details>
-                    )}
+                    <PillRow>
+                      <Pill tone={tone} title={status !== "succeeded" && detail ? detail : undefined}>
+                        {resultText}
+                      </Pill>
+                      {d?.truncated && <Pill>Capped</Pill>}
+                      {errors.length > 0 && <Pill tone="medium" title={errors.join("\n")}>{errors.length} {errors.length === 1 ? "error" : "errors"}</Pill>}
+                    </PillRow>
                   </td>
-                  <td className="px-3 py-2 text-ink-2">{(s ? duration(s) : runDuration(d!)) ?? "—"}</td>
+                  <td className="px-3 py-2 text-right tabular-nums">{(s ? duration(s) : runDuration(d!)) ?? <None />}</td>
                   <td className="px-3 py-2">
-                    {s
-                      ? s.status === "succeeded"
-                        ? `${s.assets_found.toLocaleString()} resources`
-                        : "—"
-                      : d!.status === "succeeded"
-                        ? `${d!.computers_seen.toLocaleString()} computers · ${d!.users_seen.toLocaleString()} users`
-                        : "—"}
+                    <NumCell value={found} title={d && found != null ? `${d.computers_seen} computers · ${d.users_seen} users` : undefined} />
                   </td>
-                  <td className="px-3 py-2">{s && s.status === "succeeded" ? s.findings_open.toLocaleString() : "—"}</td>
+                  <td className="px-3 py-2">
+                    <NumCell value={s && s.status === "succeeded" ? s.findings_open : null} />
+                  </td>
                 </tr>
               );
             })}
