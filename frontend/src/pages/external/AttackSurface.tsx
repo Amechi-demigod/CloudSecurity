@@ -7,7 +7,7 @@ import { NotAsvBanner, ResultBadge, ScopeModal } from "../../components/external
 import { OverflowMenu } from "../../components/OverflowMenu";
 import { FindingsPanel } from "./ExternalFindings";
 import { errMsg, inputCls } from "../../lib/externalUi";
-import { Button, Card, Empty, ErrorNote, Modal, PageHeader, Table, Tag } from "../../components/ui";
+import { Button, Card, Empty, ErrorNote, Modal, NameCell, None, NumCell, PageHeader, Table, Tag, TextCell } from "../../components/ui";
 import { externalApi, type ExtFindingGroup, type ExtOverview, type ExtTarget } from "../../externalApi";
 import { fmtAgo, fmtTime } from "../../lib/format";
 import { useUrlState } from "../../lib/useUrlState";
@@ -415,21 +415,30 @@ export default function AttackSurface() {
         <Card title={plural(hosts.data?.length ?? 0, "system") + " found on the internet"} actions={<span className="text-xs text-ink-3">From the last scan</span>}>
           <Table
             tableId="attack-surface"
-            head={[{ label: "System", sort: "host" }, { label: "Open ports", sort: "ports" }, { label: "Issues", sort: "findings", align: "right" }, { label: "First seen", sort: "first" }]}
+            head={[
+              { label: "System", sort: "host", w: 320 },
+              { label: "Open ports", sort: "ports", w: 260 },
+              { label: "Issues", sort: "findings", w: 100, align: "right" },
+              { label: "First seen", sort: "first", w: 130 },
+            ]}
             sort={sortedHosts.sort}
             onSort={sortedHosts.onSort}
             loading={hosts.loading}
             rowCount={hosts.data?.length ?? 0}
+            noun="systems"
+            pageSize={50}
             empty={<Empty icon={Globe2} title="No systems found yet">Verify a domain or IP address and run a scan.</Empty>}
           >
             {sortedHosts.rows.map((h) => (
               <tr key={h.id}>
-                <td className="px-3 py-2"><div className="font-mono text-xs text-ink">{h.host}</div>{h.ip && h.ip !== h.host && <div className="font-mono text-[11px] text-ink-3">{h.ip}</div>}</td>
-                <td className="px-3 py-2 text-xs">
-                  {h.ports.length === 0 ? "None" : <>{h.ports.length}<span className="block text-ink-3">{h.ports.slice(0, 5).map((p) => `${p.port} ${p.service}`).join(", ")}{h.ports.length > 5 ? "…" : ""}</span></>}
+                <td className="px-3 py-2"><NameCell name={h.host} sub={h.ip && h.ip !== h.host ? h.ip : undefined} /></td>
+                <td className="px-3 py-2">
+                  {h.ports.length === 0 ? <None /> : <TextCell mono title={h.ports.map((p) => `${p.port} ${p.service}`).join(", ")}>{h.ports.map((p) => p.port).join(", ")}</TextCell>}
                 </td>
-                <td className="px-3 py-2 text-right"><Link className="text-accent hover:underline" to={`/attack-surface?tab=results&host=${encodeURIComponent(h.host)}`}>{h.findings}</Link></td>
-                <td className="px-3 py-2 text-xs text-ink-2">{fmtTime(h.first_seen).split(",")[0]}</td>
+                <td className="px-3 py-2">
+                  {h.findings > 0 ? <Link className="block text-right tabular-nums text-accent hover:underline" to={`/attack-surface?tab=results&host=${encodeURIComponent(h.host)}`}>{h.findings}</Link> : <NumCell value={0} />}
+                </td>
+                <td className="px-3 py-2"><TextCell muted>{fmtTime(h.first_seen).split(",")[0]}</TextCell></td>
               </tr>
             ))}
           </Table>
