@@ -190,7 +190,9 @@ export function Table({
   const hideCss = rich
     ? cols
         .filter((c) => c.index !== 0 && hiddenSet.has(c.key))
-        .map((c) => `.dt-table[data-tid="${tableId}"] > :is(thead, tbody) > tr > :nth-child(${c.index + 1 + (selOn ? 1 : 0)})`)
+        // Body cells only: the header and the colgroup are built from `visible`, so hiding a header cell
+        // here too would shift every header after it one column to the left.
+        .map((c) => `.dt-table[data-tid="${tableId}"] > tbody > tr > :nth-child(${c.index + 1 + (selOn ? 1 : 0)})`)
         .join(",")
     : "";
   const nSel = selection?.selected.size ?? 0;
@@ -369,7 +371,7 @@ export function Table({
             </tr>
           </thead>
           <tbody className={rich ? undefined : "divide-y divide-line/60"}>
-            {loading && noRows ? <SkeletonRows cols={colCount} /> : shownRows}
+            {loading && noRows ? <SkeletonRows cols={rich ? cols.length + (selOn ? 1 : 0) : colCount} /> : shownRows}
           </tbody>
         </table>
       </div>
