@@ -105,6 +105,10 @@ export default function Devices() {
   const picked = selected.filter((id) => shown.has(id));
   const toggle = (id: string) => setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
   const { data: issueTypes } = useApi(api.deviceIssueTypes, []);
+  // Counts for two more "Needs attention" items. Each is left out when its data is not available (module off, no release imported).
+  const { data: updSummary } = useApi(() => api.updateSummary().catch(() => null), [], 60000);
+  const { data: releases } = useApi(() => api.agentReleases().catch(() => null), [], 60000);
+  const { data: missing } = useApi(() => api.devices({ updates: "security", status: "active" }).catch(() => null), [], 60000);
 
   const clearAll = () => {
     setQ("");
@@ -162,6 +166,8 @@ export default function Devices() {
 
   // "Needs attention": the most common issues across the fleet (summary endpoint), worst first, then offline computers.
   const offline = summary ? summary.connectivity.stale + summary.connectivity.inactive : 0;
+  const newestRelease = [...(releases ?? [])].filter((r) => !r.withdrawn_at && !r.expired).sort((a, b) => Date.parse(b.released_at) - Date.parse(a.released_at))[0];
+  const olderAgents = newestRelease && updSummary ? Math.max(0, updSummary.devices - (updSummary.versions.find((v) => v.version === newestRelease.version)?.devices ?? 0)) : 0;
   const attention: AttentionItem[] = summary
     ? [
         ...(issueTypes ?? [])
@@ -175,6 +181,12 @@ export default function Devices() {
             text: `${summary.issues[t.code]} ${summary.issues[t.code] === 1 ? "computer" : "computers"}: ${t.title}`,
             onClick: () => setIssue(t.code),
           })),
+        ...(missing && missing.length > 0
+          ? [{ key: "updates", label: "High", tone: "high" as PillTone, text: `${missing.length} ${missing.length === 1 ? "computer is" : "computers are"} missing security updates`, onClick: () => setUpdates("security") }]
+          : []),
+        ...(olderAgents > 0
+          ? [{ key: "agents", label: "Medium", tone: "medium" as PillTone, text: `${olderAgents} ${olderAgents === 1 ? "computer runs" : "computers run"} an older agent (newest is ${newestRelease?.version})`, to: "/devices/updates" }]
+          : []),
         ...(offline > 0
           ? [{ key: "offline", label: "Offline", tone: "medium" as PillTone, text: `${offline} ${offline === 1 ? "computer hasn't" : "computers haven't"} checked in for 24h+`, onClick: () => setConnectivity("offline") }]
           : []),
