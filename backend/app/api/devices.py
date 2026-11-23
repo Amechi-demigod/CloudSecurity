@@ -55,7 +55,7 @@ from ..schemas_devices import (
     SnapshotOut,
     SoftwareOut,
 )
-from ..services import agent_updates, approvals, endpoint_actions, installers, os_updates, remote_sessions
+from ..services import agent_updates, approvals, endpoint_actions, exports, installers, os_updates, remote_sessions
 from ..services import devices as svc
 from ..sorting import sort_rows
 
@@ -96,25 +96,9 @@ DEVICE_SORT = {
 }
 
 
-@router.get("", response_model=list[DeviceSummaryOut])
-def list_devices(db: Session = Depends(get_db),
-                 q: str | None = Query(None, max_length=255),
-                 os: str | None = Query(None, pattern="^(windows|macos|linux)$"),
-                 health: str | None = Query(None, pattern="^(healthy|warning|critical|unknown)$"),
-                 issue: str | None = Query(None, max_length=64),
-                 connectivity: str | None = Query(None, pattern="^(active|stale|inactive|never|offline)$",
-                                                   description="offline = stale or inactive (no check-in for 24 h+)"),
-                 status: str = Query("active", pattern="^(active|revoked|all)$"),
-                 group: str | None = Query(None, max_length=64),
-                 device_class: str | None = Query(None, pattern="^(workstation|server|domain_controller|unknown)$"),
-                 virtual: bool | None = Query(None, description="true: virtual machines only; false: physical only"),
-                 usb: str | None = Query(None, pattern="^(blocked|allowed|unknown)$",
-                                         description="USB mass storage as last reported (Windows, agent 1.4.0+)"),
-                 updates: str | None = Query(None, pattern="^(security|any|none|unknown)$",
-                                             description="missing OS updates (Windows Update report)"),
-                 limit: int = Query(500, ge=1, le=5000),
-                 sort: str | None = Query(None, description="name|os|class|user|health|issues|seen|agent|usb|updates"),
-                 dir: str = Query("asc", pattern="^(asc|desc)$")):
+def _filtered_devices(db: Session, *, q, os, health, issue, connectivity, status, group, device_class, virtual,
+                      usb, updates, limit, sort, dir) -> list[tuple[Device, dict]]:
+    """The Computers & servers page's query: (device, summary) pairs, filtered, sorted, then limited."""
     stmt = select(Device)
     if device_class == "unknown":
         stmt = stmt.where(Device.device_class.is_(None))
@@ -135,7 +119,7 @@ def list_devices(db: Session = Depends(get_db),
         stmt = stmt.where(or_(Device.hostname.ilike(like), Device.serial_number.ilike(like),
                               Device.model.ilike(like), Device.id == q.lower()))
     now = utcnow()
-    out = []
+    out: list[tuple[Device, dict]] = []
     for d in db.scalars(stmt.order_by(Device.hostname)):
         sm = svc.summarize(d, now)
         if health and sm["health"] != health:
@@ -148,10 +132,98 @@ def list_devices(db: Session = Depends(get_db),
             continue
         if updates and not os_updates.matches_filter(d, updates):
             continue
-        out.append(sm)
+        out.append((d, sm))
         if len(out) >= limit and not sort:
             break
-    return sort_rows(out, DEVICE_SORT, sort, dir)[:limit]  # sorted over every match, then limited
+    pairs = sort_rows([{**sm, "_device": d} for d, sm in out], DEVICE_SORT, sort, dir)[:limit]  # over every match
+    return [(p.pop("_device"), p) for p in pairs]
+
+
+@router.get("", response_model=list[DeviceSummaryOut])
+def list_devices(db: Session = Depends(get_db),
+                 q: str | None = Query(None, max_length=255),
+                 os: str | None = Query(None, pattern="^(windows|macos|linux)$"),
+                 health: str | None = Query(None, pattern="^(healthy|warning|critical|unknown)$"),
+                 issue: str | None = Query(None, max_length=64),
+                 connectivity: str | None = Query(None, pattern="^(active|stale|inactive|never|offline)$",
+                                                   description="offline = stale or inactive (no check-in for 24 h+)"),
+                 status: str = Query("active", pattern="^(active|revoked|all)$"),
+                 group: str | None = Query(None, max_length=64),
+                 device_class: str | None = Query(None, pattern="^(workstation|server|domain_controller|unknown)$"),
+                 virtual: bool | None = Query(None, description="true: virtual machines only; false: physical only"),
+                 usb: str | None = Query(None, pattern="^(blocked|allowed|unknown)$",
+                                         description="USB mass storage as last reported (Windows, agent 1.4.0+)"),
+                 updates: str | None = Query(None, pattern="^(security|any|none|unknown)$",
+                                             description="missing OS updates (Windows Update report)"),
+                 limit: int = Query(500, ge=1, le=5000),
+                 sort: str | None = Query(None, description="name|os|class|user|health|issues|seen|agent|usb|updates"),
+                 dir: str = Query("asc", pattern="^(asc|desc)$")):
+    return [sm for _, sm in _filtered_devices(
+        db, q=q, os=os, health=health, issue=issue, connectivity=connectivity, status=status, group=group,
+        device_class=device_class, virtual=virtual, usb=usb, updates=updates, limit=limit, sort=sort, dir=dir)]
+
+
+DEVICE_EXPORT_COLUMNS = ["name", "hostname", "class", "virtual", "os", "os_name", "os_version", "user", "health",
+                         "open_issues", "missing_os_updates", "security_os_updates", "encryption", "firewall",
+                         "usb_storage", "ip_addresses", "last_seen", "last_check_in", "agent_version", "status",
+                         "connectivity", "group", "serial_number", "manufacturer", "model", "id"]
+
+
+def _posture_state(device: Device, check: str) -> str:
+    st = ((device.posture or {}).get(check) or {}).get("status")
+    return {"pass": "on", "fail": "off"}.get(st, "unknown")
+
+
+def _device_ips(device: Device) -> list[str]:
+    ips: list[str] = []
+    for nic in (device.inventory or {}).get("network") or []:
+        for ip in (nic.get("ips") or []) if isinstance(nic, dict) else []:
+            if isinstance(ip, str) and ip not in ips:
+                ips.append(ip)
+    if not ips and device.last_ip:  # the address the server saw, when the agent reported none
+        ips.append(device.last_ip)
+    return ips
+
+
+@router.get("/export")
+def export_devices(request: Request,
+                   format: str = Query("csv", pattern="^(csv|json)$"),
+                   user: User = Depends(current_user),
+                   db: Session = Depends(get_db),
+                   q: str | None = Query(None, max_length=255),
+                   os: str | None = Query(None, pattern="^(windows|macos|linux)$"),
+                   health: str | None = Query(None, pattern="^(healthy|warning|critical|unknown)$"),
+                   issue: str | None = Query(None, max_length=64),
+                   connectivity: str | None = Query(None, pattern="^(active|stale|inactive|never|offline)$"),
+                   status: str = Query("active", pattern="^(active|revoked|all)$"),
+                   group: str | None = Query(None, max_length=64),
+                   device_class: str | None = Query(None, pattern="^(workstation|server|domain_controller|unknown)$"),
+                   virtual: bool | None = None,
+                   usb: str | None = Query(None, pattern="^(blocked|allowed|unknown)$"),
+                   updates: str | None = Query(None, pattern="^(security|any|none|unknown)$"),
+                   sort: str | None = Query(None), dir: str = Query("asc", pattern="^(asc|desc)$")):
+    """Every device matching the Computers & servers page filters, as CSV or JSON (all columns)."""
+    pairs = _filtered_devices(db, q=q, os=os, health=health, issue=issue, connectivity=connectivity, status=status,
+                              group=group, device_class=device_class, virtual=virtual, usb=usb, updates=updates,
+                              limit=exports.MAX_EXPORT_ROWS + 1, sort=sort, dir=dir)
+    exports.check_row_limit(len(pairs))
+    rows = []
+    for d, sm in pairs:
+        ou = sm["os_updates"] or {}
+        rows.append({
+            "name": d.hostname, "hostname": d.hostname, "class": sm["device_class"], "virtual": sm["is_virtual"],
+            "os": f"{d.os_name or ''} {d.os_version or ''}".strip() or d.os_family, "os_name": d.os_name,
+            "os_version": d.os_version, "user": ", ".join(sm["logged_in_users"]), "health": sm["health"],
+            "open_issues": len(sm["issues"]), "missing_os_updates": ou.get("missing"),
+            "security_os_updates": ou.get("security"), "encryption": _posture_state(d, "disk_encryption"),
+            "firewall": _posture_state(d, "firewall"), "usb_storage": sm["usb_storage"] or "unknown",
+            "ip_addresses": _device_ips(d), "last_seen": exports.iso(d.last_seen_at),
+            "last_check_in": exports.iso(d.last_checkin_at), "agent_version": d.agent_version, "status": d.status,
+            "connectivity": sm["connectivity"], "group": d.device_group, "serial_number": d.serial_number,
+            "manufacturer": d.manufacturer, "model": d.model, "id": d.id})
+    audit(db, "export_downloaded", actor=user, ip=client_ip(request), table="devices", format=format, rows=len(rows))
+    db.commit()
+    return exports.export_response(format, rows, DEVICE_EXPORT_COLUMNS, "computers")
 
 
 @router.get("/summary")

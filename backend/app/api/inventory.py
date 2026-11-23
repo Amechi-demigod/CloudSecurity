@@ -8,7 +8,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from .. import config, modules
-from ..auth import RateLimiter, audit, client_ip, require_analyst
+from ..auth import RateLimiter, audit, client_ip, current_user, require_analyst
 from ..compliance import finding_report
 from ..db import get_db
 from ..engine import posture
@@ -26,7 +26,7 @@ from ..schemas import (
     RelationshipOut,
     VulnerabilityOut,
 )
-from ..services import dashboards, finding_detail
+from ..services import dashboards, exports, finding_detail
 from ..sorting import sort_rows
 
 router = APIRouter(prefix="/api", tags=["inventory"])  # Cloud security module (app/main.py)
@@ -49,19 +49,8 @@ def finding_out(f: Finding) -> FindingOut:
     return o
 
 
-@router.get("/assets", response_model=list[AssetSummary])
-def list_assets(
-    db: Session = Depends(get_db),
-    type: str | None = None,
-    provider: str | None = None,
-    source: str | None = None,
-    subscription_id: str | None = None,
-    region: str | None = None,
-    internet_exposed: bool | None = None,
-    q: str | None = Query(None, description="Substring match on name / id"),
-    removed: bool = Query(False, description="true: the removed tab (cloud resources that no longer exist, "
-                                             "kept for history); default: active assets"),
-):
+def _asset_rows(db: Session, *, type, provider, source, subscription_id, region, internet_exposed, q,
+                removed) -> list[AssetSummary]:
     stmt = select(Asset).where(Asset.removed_at.is_not(None) if removed else Asset.removed_at.is_(None),
                                Asset.source.not_in(NON_CLOUD_SOURCES))
     if type:
@@ -95,6 +84,61 @@ def list_assets(
         s.open_findings, s.vulnerabilities, s.max_risk, s.open_alerts = nf[a.id], nv[a.id], mr.get(a.id, 0.0), na[a.id]
         out.append(s)
     return out
+
+
+@router.get("/assets", response_model=list[AssetSummary])
+def list_assets(
+    db: Session = Depends(get_db),
+    type: str | None = None,
+    provider: str | None = None,
+    source: str | None = None,
+    subscription_id: str | None = None,
+    region: str | None = None,
+    internet_exposed: bool | None = None,
+    q: str | None = Query(None, description="Substring match on name / id"),
+    removed: bool = Query(False, description="true: the removed tab (cloud resources that no longer exist, "
+                                             "kept for history); default: active assets"),
+):
+    return _asset_rows(db, type=type, provider=provider, source=source, subscription_id=subscription_id,
+                       region=region, internet_exposed=internet_exposed, q=q, removed=removed)
+
+
+ASSET_EXPORT_COLUMNS = ["name", "type", "provider", "subscription_id", "subscription_name", "resource_group",
+                        "region", "internet_exposed", "sensitive_data", "open_findings", "open_vulnerabilities",
+                        "max_vulnerability_risk", "open_alerts", "first_seen", "last_seen", "removed_at",
+                        "source", "id"]
+
+
+@router.get("/assets/export")
+def export_assets(
+    request: Request,
+    format: str = Query("csv", pattern="^(csv|json)$"),
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+    type: str | None = None,
+    provider: str | None = None,
+    source: str | None = None,
+    subscription_id: str | None = None,
+    region: str | None = None,
+    internet_exposed: bool | None = None,
+    q: str | None = Query(None, description="Substring match on name / id"),
+    removed: bool = False,
+):
+    """Every cloud resource matching the Cloud resources page filters, as CSV or JSON (all columns)."""
+    assets = _asset_rows(db, type=type, provider=provider, source=source, subscription_id=subscription_id,
+                         region=region, internet_exposed=internet_exposed, q=q, removed=removed)
+    exports.check_row_limit(len(assets))
+    rows = [{"name": a.name, "type": a.type, "provider": a.provider, "subscription_id": a.subscription_id,
+             "subscription_name": a.subscription_name, "resource_group": a.resource_group, "region": a.region,
+             "internet_exposed": a.internet_exposed, "sensitive_data": a.sensitive_data,
+             "open_findings": a.open_findings, "open_vulnerabilities": a.vulnerabilities,
+             "max_vulnerability_risk": a.max_risk, "open_alerts": a.open_alerts,
+             "first_seen": exports.iso(a.first_seen), "last_seen": exports.iso(a.last_seen),
+             "removed_at": exports.iso(a.removed_at), "source": a.source, "id": a.id} for a in assets]
+    audit(db, "export_downloaded", actor=user, ip=client_ip(request), table="cloud_resources", format=format,
+          rows=len(rows))
+    db.commit()
+    return exports.export_response(format, rows, ASSET_EXPORT_COLUMNS, "cloud-resources")
 
 
 @router.get("/assets/facets")
