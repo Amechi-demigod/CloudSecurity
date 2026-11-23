@@ -45,7 +45,6 @@ export default function NetworkScans() {
         subtitle="Scans that find the devices on your networks."
         actions={
           <div className="flex flex-wrap items-center gap-2">
-            <NetworkNav active="scans" />
             {isAdmin && !editing && (
               <Button variant="primary" onClick={() => setEditing("new")}>
                 Add network scan
@@ -54,6 +53,7 @@ export default function NetworkScans() {
           </div>
         }
       />
+      <NetworkNav active="scans" scans={scans.data?.length} />
       <ErrorNote error={scans.error ?? err} />
       {msg && <p className="mb-3 text-sm text-good">{msg}</p>}
       {editing && isAdmin && (
