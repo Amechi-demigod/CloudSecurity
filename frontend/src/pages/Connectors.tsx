@@ -55,6 +55,10 @@ function duration(run: ScanRun): string | null {
   return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h ${Math.round((s % 3600) / 60)}m`;
 }
 
+const NET_DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+const netScheduleText = (n: { schedule: string; schedule_weekday: number; schedule_time: string }) =>
+  n.schedule === "manual" ? "Manual" : `${n.schedule === "daily" ? "Every day" : `Every ${NET_DAYS[n.schedule_weekday]}`} at ${n.schedule_time} UTC`;
+
 function trigger(run: ScanRun): string {
   if (run.trigger === "scheduled") return "Scheduled";
   if (run.trigger === "first_scan") return "First scan";
@@ -177,6 +181,11 @@ function CloudCard({
           <div className="min-w-0">
             <div className="font-semibold text-ink">Needs attention</div>
             <p className="mt-0.5 text-ink-2">{failureReason(provider, last)}</p>
+            {(last.message || last.errors.length > 0) && (
+              <p className="mt-1 break-words text-xs text-ink-3" title="The message the cloud returned">
+                Error from the cloud: {[last.message, ...last.errors].filter(Boolean).join(" · ")}
+              </p>
+            )}
           </div>
           {isAdmin && !editing && (
             <Button onClick={() => setEditing(true)} title="Open the connection settings">
@@ -444,6 +453,9 @@ export default function Connectors() {
   );
   const [historyKind, setHistoryKind] = useState("");
   const [connecting, setConnecting] = useState<Provider | null>(null);
+  const [editSchedule, setEditSchedule] = useState(false);
+  const netScans = useApi(() => (hasAssets ? networkApi.scans() : Promise.resolve([])), [hasAssets], 60000);
+  const dirList = sources.data ?? [];
 
   const clouds = (connectors.data ?? []).filter((c) => isCloud(c.name));
   const connected = clouds.filter((c) => c.configured);
@@ -517,7 +529,6 @@ export default function Connectors() {
 
   // Status line: how many connections work, need attention or are not set up, and when data last came in.
   const cloudBad = connected.filter((c) => (runsOf(c.name)[0] ?? c.last_scan)?.status === "failed").length;
-  const dirList = sources.data ?? [];
   const dirBad = dirList.filter((d) => d.enabled && d.last_sync_status === "failed").length;
   const colList = (collectors.data ?? []).filter((c) => c.status === "active");
   const colBad = colList.filter((c) => c.state !== "online").length;
@@ -613,19 +624,54 @@ export default function Connectors() {
             <Card
               className={isAdmin && unconnected.length > 0 ? "xl:col-span-5" : "xl:col-span-12"}
               title="Scheduled scans"
-              actions={schedule.data.enabled ? <Tag tone="good">On</Tag> : <Tag>Off</Tag>}
+              actions={schedule.data.enabled ? <Pill tone="good">On</Pill> : <Pill>Off</Pill>}
             >
-              <p className="text-sm text-ink-2">
-                Every connected cloud is scanned automatically
-                {schedule.data.enabled ? `, every ${fmtHours(schedule.data.interval_hours)}` : " when this is on"}. One scan at a
-                time per cloud; manual scans do not move the schedule.
-              </p>
-              {isAdmin && (
-                <ScheduleSettings
-                  key={`${schedule.data.enabled}-${schedule.data.interval_hours}`}
-                  schedule={schedule.data}
-                  onSaved={schedule.reload}
-                />
+              <ul className="divide-y divide-line/60 text-sm">
+                <li className="flex flex-wrap items-center justify-between gap-2 py-2.5">
+                  <NameCell name="Cloud accounts" sub="All cloud subscriptions and accounts" />
+                  <span className="flex items-center gap-3">
+                    <span className="text-ink-2">{schedule.data.enabled ? `Every ${fmtHours(schedule.data.interval_hours)}` : "Off"}</span>
+                    {isAdmin && <Button onClick={() => setEditSchedule((v) => !v)}>{editSchedule ? "Close" : "Change"}</Button>}
+                  </span>
+                </li>
+                {hasAssets && dirList.length > 0 && (
+                  <li className="flex flex-wrap items-center justify-between gap-2 py-2.5">
+                    <NameCell name="Directories" sub={dirList.map((d) => DIRECTORY_NAME[d.type]).filter((v, i, a) => a.indexOf(v) === i).join(", ")} />
+                    <span className="flex items-center gap-3">
+                      <span className="text-ink-2">
+                        {[...new Set(dirList.filter((d) => d.enabled).map((d) => `Every ${fmtHours(d.config.interval_hours)}`))].join(", ") || "Off"}
+                      </span>
+                      {isAdmin && (
+                        <MoreMenu
+                          label="Change"
+                          items={dirList.map((d) => ({ label: d.name, onClick: () => window.dispatchEvent(new CustomEvent("sentrigis:edit-directory", { detail: d.id })) }))}
+                        />
+                      )}
+                    </span>
+                  </li>
+                )}
+                {hasAssets && (netScans.data ?? []).length > 0 && (
+                  <li className="flex flex-wrap items-center justify-between gap-2 py-2.5">
+                    <NameCell name="Network scans" sub={(netScans.data ?? []).map((n) => n.name).join(", ")} />
+                    <span className="flex items-center gap-3">
+                      <span className="text-ink-2">{[...new Set((netScans.data ?? []).filter((n) => n.enabled).map(netScheduleText))].join(", ") || "Off"}</span>
+                      {isAdmin && (
+                        <Link to="/network-scans" className="rounded border border-line bg-surface-2 px-3 py-1.5 text-sm font-medium text-ink hover:bg-line">
+                          Change
+                        </Link>
+                      )}
+                    </span>
+                  </li>
+                )}
+              </ul>
+              {isAdmin && editSchedule && (
+                <div className="mt-2 border-t border-line pt-2">
+                  <p className="text-sm text-ink-2">
+                    Every connected cloud is scanned automatically
+                    {schedule.data.enabled ? `, every ${fmtHours(schedule.data.interval_hours)}` : " when this is on"}. One scan at a time per cloud; manual scans do not move the schedule.
+                  </p>
+                  <ScheduleSettings key={`${schedule.data.enabled}-${schedule.data.interval_hours}`} schedule={schedule.data} onSaved={schedule.reload} />
+                </div>
               )}
             </Card>
           )}

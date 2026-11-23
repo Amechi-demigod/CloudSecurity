@@ -544,6 +544,16 @@ function SourceCard({ src, isAdmin, onChanged }: { src: DirectorySource; isAdmin
   const [err, setErr] = useState<string | null>(null);
   const runs = useApi(() => directoryApi.runs(src.id, 8), [src.id, src.last_sync_at, src.active_run?.status], src.active_run ? 5000 : undefined);
   const active = src.active_run;
+  // The Connections page "Scheduled scans" rows open this editor: "sentrigis:edit-directory" with the source id.
+  useEffect(() => {
+    const open = (e: Event) => {
+      if ((e as CustomEvent<string>).detail !== src.id) return;
+      setEditing(true);
+      document.getElementById(`dir-${src.id}`)?.scrollIntoView({ block: "center" });
+    };
+    window.addEventListener("sentrigis:edit-directory", open);
+    return () => window.removeEventListener("sentrigis:edit-directory", open);
+  }, [src.id]);
   const cols = src.legacy_collectors
     ? src.collectors.map((c) => ({ name: c.hostname, healthy: c.healthy, dc: false }))
     : (src.dedicated_collectors ?? []).map((c) => ({ name: c.name, healthy: c.healthy, dc: c.is_domain_controller }));
@@ -590,7 +600,7 @@ function SourceCard({ src, isAdmin, onChanged }: { src: DirectorySource; isAdmin
 
   return (
     <Card className="mb-3">
-      <div className="flex flex-wrap items-center justify-between gap-3 px-1">
+      <div id={`dir-${src.id}`} className="flex flex-wrap items-center justify-between gap-3 px-1">
         <div className="flex min-w-0 items-center gap-3">
           <DirectoryMark size={28} type={src.type} />
           <div className="min-w-0">
