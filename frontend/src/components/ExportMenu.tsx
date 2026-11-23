@@ -91,8 +91,8 @@ export function ExportMenu({ buildUrl, noun, count }: { buildUrl: (format: Expor
             <span className="text-xs text-ink-3">For scripts and other tools</span>
           </button>
           <p className="mt-1 border-t border-line px-2.5 pb-1 pt-2 text-xs text-ink-3">
-            Exports the {count !== undefined ? `${count.toLocaleString()} ` : ""}
-            {noun} that match your search and filters, with all columns.
+            Exports {count !== undefined ? `the ${count.toLocaleString()}` : "all"} {noun} that match your search and filters, with
+            all columns.
           </p>
         </div>
       )}

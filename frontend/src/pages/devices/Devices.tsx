@@ -92,7 +92,7 @@ export default function Devices() {
         subtitle="Are your laptops, desktops and servers updated and protected?"
         actions={
           <div className="flex items-center gap-2">
-            <ExportMenu noun="computers" count={data?.length} buildUrl={(format) => `/api/devices/export${qs({ ...filters, format })}`} />
+            <ExportMenu noun="computers" count={data && data.length < 500 ? data.length : undefined}buildUrl={(format) => `/api/devices/export${qs({ ...filters, format })}`} />
             <Link to="/devices/updates" className="rounded border border-line bg-surface-2 px-3 py-1.5 text-sm font-medium text-ink hover:bg-line">
               Agent updates
             </Link>
