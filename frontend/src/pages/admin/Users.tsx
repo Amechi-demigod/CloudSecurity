@@ -2,7 +2,7 @@ import { useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { ApiError, api, type Role, type User } from "../../api";
 import { ROLE_LABEL, useAuth } from "../../auth/context";
-import { Button, Card, ErrorNote, Field, Modal, PageHeader, Table, Tag } from "../../components/ui";
+import { Button, Card, ErrorNote, Field, Modal, NameCell, PageHeader, Pill, PillRow, Table, TextCell } from "../../components/ui";
 import { fmtAgo, fmtTime } from "../../lib/format";
 import { PAGE_INFO } from "../../lib/pageInfo";
 import { useApi } from "../../lib/useApi";
@@ -255,7 +255,7 @@ export default function Users() {
   return (
     <div>
       <PageHeader
-        title="People & approvals"
+        title="People"
         info={PAGE_INFO.people}
         subtitle="Who can sign in, and what they can do."
         actions={
@@ -277,20 +277,26 @@ export default function Users() {
       <Card>
         <Table
           tableId="users"
-          head={[{ label: "User", sort: "user" }, { label: "Role", sort: "role" }, { label: "Status", sort: "status" }, { label: "Sign-in", sort: "signin" }, { label: "Last sign-in", sort: "last_login" }, { label: "Created", sort: "created" }, "Actions"]}
+          head={[
+            { label: "Person", sort: "user", w: 320 },
+            { label: "Role", sort: "role", w: 130 },
+            { label: "Status", sort: "status", w: 120 },
+            { label: "Sign-in", sort: "signin", w: 200 },
+            { label: "Last sign-in", sort: "last_login", w: 130 },
+            { label: "Added", sort: "created", w: 130 },
+            { label: "Actions", srOnly: true, w: 330 },
+          ]}
           sort={sorted.sort}
           onSort={sorted.onSort}
+          noun="people"
+          pageSize={50}
         >
           {sorted.rows.map((u) => {
             const isMe = u.id === me?.id;
             return (
               <tr key={u.id}>
                 <td className="px-3 py-2">
-                  <div className="font-medium text-ink">
-                    {u.name || u.email}
-                    {isMe && <span className="ml-2 text-xs text-ink-3">(you)</span>}
-                  </div>
-                  <div className="text-xs text-ink-3">{u.email}</div>
+                  <NameCell name={`${u.name || u.email}${isMe ? " (you)" : ""}`} sub={u.name ? u.email : undefined} />
                 </td>
                 <td className="px-3 py-2">
                   <label className="sr-only" htmlFor={`role-${u.id}`}>
@@ -312,25 +318,19 @@ export default function Users() {
                   </select>
                 </td>
                 <td className="px-3 py-2">
-                  {!u.is_active ? (
-                    <Tag>Deactivated</Tag>
-                  ) : locked(u) ? (
-                    <span title={`Locked until ${fmtTime(u.locked_until!)}`}>
-                      <Tag tone="warn">Locked</Tag>
-                    </span>
-                  ) : (
-                    <Tag tone="good">Active</Tag>
-                  )}
+                  <PillRow>
+                    {!u.is_active ? <Pill>Deactivated</Pill> : locked(u) ? <Pill tone="high" title={`Locked until ${fmtTime(u.locked_until!)}`}>Locked</Pill> : <Pill tone="good">Active</Pill>}
+                  </PillRow>
                 </td>
                 <td className="px-3 py-2">
-                  <div className="flex flex-wrap gap-1">
-                    {u.auth_sources.includes("entra") && <Tag tone="accent">Microsoft</Tag>}
-                    {u.auth_sources.includes("password") && <Tag>Password</Tag>}
-                    {u.mfa_enabled ? <Tag tone="good">MFA on</Tag> : <Tag>MFA off</Tag>}
-                  </div>
+                  <PillRow>
+                    {u.auth_sources.includes("entra") && <Pill tone="info">Microsoft</Pill>}
+                    {u.auth_sources.includes("password") && <Pill>Password</Pill>}
+                    {u.mfa_enabled ? <Pill tone="good" title="Two-step verification is on">MFA</Pill> : <Pill tone="medium" title="Two-step verification is off">No MFA</Pill>}
+                  </PillRow>
                 </td>
-                <td className="px-3 py-2 text-xs text-ink-2">{u.last_login_at ? fmtAgo(u.last_login_at) : "Never"}</td>
-                <td className="px-3 py-2 text-xs text-ink-2">{fmtTime(u.created_at)}</td>
+                <td className="px-3 py-2"><TextCell muted>{u.last_login_at ? fmtAgo(u.last_login_at) : "Never"}</TextCell></td>
+                <td className="px-3 py-2"><TextCell muted title={fmtTime(u.created_at)}>{fmtTime(u.created_at).split(",")[0]}</TextCell></td>
                 <td className="px-3 py-2">
                   <div className="flex flex-wrap gap-2">
                     <Button onClick={() => setResetting(u)}>Reset password</Button>

@@ -5,7 +5,7 @@ import { ApiError, api, type Approval, type ApprovalSettings, type RiskLevel } f
 import { useAuth } from "../auth/context";
 import { fmtAgo, fmtTime } from "../lib/format";
 import { rankOf, ts, useSort } from "../lib/useSort";
-import { Button, Empty, Field, Modal, Table, Tag } from "./ui";
+import { Button, DetailDrawer, Empty, Field, Modal, NameCell, Pill, PillRow, Table, Tag, TextCell, type PillTone } from "./ui";
 
 const RISK_TONE: Record<RiskLevel, "good" | "warn" | "critical"> = { low: "good", medium: "warn", high: "critical" };
 
@@ -183,6 +183,7 @@ export function ApprovalList({
   const { can } = useAuth();
   const admin = can("admin");
   const [open, setOpen] = useState<{ approval: Approval; decision: Decision } | null>(null);
+  const [detail, setDetail] = useState<Approval | null>(null);
   const statusRank = rankOf(["pending", "approved", "executed", "rejected", "cancelled", "expired"]);
   const sorted = useSort(
     items,
@@ -199,48 +200,48 @@ export function ApprovalList({
   );
   if (items && items.length === 0) return <Empty>{empty}</Empty>;
   const head = [
-    ...(showDevice ? [{ label: "Device", sort: "device" }] : []),
-    { label: "Request", sort: "request" },
-    { label: "Requested by", sort: "by" },
-    { label: "Requested", sort: "requested" },
-    { label: "Status", sort: "status" },
-    "",
+    ...(showDevice ? [{ label: "Computer", sort: "device", w: 200 }] : []),
+    { label: "Request", sort: "request", w: 320 },
+    { label: "Requested by", sort: "by", w: 240 },
+    { label: "Requested", sort: "requested", w: 120 },
+    { label: "Status", sort: "status", w: 150 },
+    { label: "Actions", srOnly: true, w: 240 },
   ];
+  const statusText = (a: Approval) => (a.status === "approved" ? "Waiting" : a.status === "pending" ? "Needs approval" : a.status === "executed" ? "Done" : statusLabel(a.status));
+  const statusTone = (a: Approval): PillTone => (a.status === "pending" ? "medium" : a.status === "executed" ? "good" : a.status === "failed" ? "critical" : a.status === "approved" ? "info" : "neutral");
   return (
     <>
-      <Table tableId="approvals" head={head} sort={sorted.sort} onSort={sorted.onSort}>
+      <Table tableId="approvals" head={head} sort={sorted.sort} onSort={sorted.onSort} noun="requests" pageSize={25}>
         {sorted.rows.map((a) => {
           const isOpen = a.status === "pending" || a.status === "approved";
           return (
-            <tr key={a.id} className="align-top">
+            <tr key={a.id}>
               {showDevice && (
                 <td className="px-3 py-2">
-                  <Link to={`/devices/${a.device_id}`} className="font-medium hover:text-accent">
-                    {a.hostname}
-                  </Link>
-                  <div className="text-[11px] text-ink-3">{a.os_family}</div>
+                  <div className="min-w-0">
+                    <Link to={`/devices/${a.device_id}`} title={a.hostname} className="block truncate font-semibold text-ink hover:text-accent hover:underline">
+                      {a.hostname}
+                    </Link>
+                    <span className="block truncate text-xs text-ink-3">{a.os_family}</span>
+                  </div>
                 </td>
               )}
-              <td className="max-w-[22rem] px-3 py-2">
-                <div className="text-sm">{a.summary}</div>
-                <div className="mt-1 flex flex-wrap items-center gap-1">
-                  <RiskTag risk={a.risk} />
-                  {a.action === "wipe_device" && <Tag tone="critical">remote wipe</Tag>}
-                </div>
-                {Object.keys(a.params).length > 0 && (
-                  <div className="mt-1 break-words font-mono text-[11px] text-ink-3">{fmtParams(a.params)}</div>
-                )}
-              </td>
-              <td className="max-w-[16rem] px-3 py-2 text-xs">
-                {a.requested_by_email ?? "—"}
-                {a.is_own_request && <span className="text-ink-3"> (you)</span>}
-                <div className="text-ink-2">“{a.reason}”</div>
-              </td>
-              <td className="px-3 py-2 text-xs" title={fmtTime(a.requested_at)}>
-                {fmtAgo(a.requested_at)}
+              <td className="px-3 py-2">
+                <NameCell name={a.summary} sub={`${a.risk[0].toUpperCase()}${a.risk.slice(1)} risk${a.action === "wipe_device" ? " · remote wipe" : ""}`} onOpen={() => setDetail(a)} />
               </td>
               <td className="px-3 py-2">
-                <ApprovalStatus approval={a} />
+                <TextCell muted title={`${a.requested_by_email ?? ""}: ${a.reason}`}>
+                  {a.requested_by_email ?? "–"}
+                  {a.is_own_request ? " (you)" : ""}
+                </TextCell>
+              </td>
+              <td className="px-3 py-2">
+                <TextCell muted title={fmtTime(a.requested_at)}>{fmtAgo(a.requested_at)}</TextCell>
+              </td>
+              <td className="px-3 py-2">
+                <PillRow>
+                  <Pill tone={statusTone(a)}>{statusText(a)}</Pill>
+                </PillRow>
               </td>
               <td className="px-3 py-2">
                 {admin && isOpen && (
@@ -259,9 +260,6 @@ export function ApprovalList({
                       </>
                     )}
                     <Button onClick={() => setOpen({ approval: a, decision: "cancel" })}>Cancel</Button>
-                    {a.status === "pending" && !a.can_decide && (
-                      <div className="w-full text-[11px] text-ink-3">Waiting for a different admin.</div>
-                    )}
                   </div>
                 )}
               </td>
@@ -269,6 +267,26 @@ export function ApprovalList({
           );
         })}
       </Table>
+      <DetailDrawer
+        open={!!detail}
+        onClose={() => setDetail(null)}
+        title={detail?.summary ?? ""}
+        sub={detail ? `${detail.hostname} · ${detail.risk} risk` : undefined}
+        rows={
+          detail
+            ? [
+                { label: "Computer", value: detail.hostname, copy: detail.hostname },
+                { label: "Request", value: detail.summary },
+                { label: "Reason given", value: detail.reason },
+                { label: "Requested by", value: detail.requested_by_email, copy: detail.requested_by_email ?? undefined },
+                { label: "Requested", value: fmtTime(detail.requested_at) },
+                { label: "Status", value: <ApprovalStatus approval={detail} /> },
+                ...(Object.keys(detail.params).length ? [{ label: "Details", value: fmtParams(detail.params), copy: fmtParams(detail.params) }] : []),
+                { label: "Request ID", value: detail.id, copy: detail.id },
+              ]
+            : []
+        }
+      />
       <DecisionDialog
         approval={open?.approval ?? null}
         decision={open?.decision ?? "approve"}

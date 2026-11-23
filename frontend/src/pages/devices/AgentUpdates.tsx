@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { ApiError, api, uploadAgentRelease, type AgentRelease, type DeviceSummary, type UpdateRing } from "../../api";
 import { useAuth } from "../../auth/context";
 import { OverflowMenu } from "../../components/OverflowMenu";
-import { Button, Card, Empty, ErrorNote, Modal, PageHeader, Stat, Table, Tag } from "../../components/ui";
+import { Button, Card, Empty, ErrorNote, Modal, NameCell, NumCell, None, PageHeader, Pill, PillRow, Stat, Table, Tag, TextCell } from "../../components/ui";
 import { fmtAgo, fmtTime } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
 import { ts, useSort } from "../../lib/useSort";
@@ -17,12 +17,6 @@ function errMsg(e: unknown) {
 
 function shortKey(k: string) {
   return k.replace(/^ed25519:/, "");
-}
-
-function releaseState(r: AgentRelease) {
-  if (r.withdrawn_at) return <Tag tone="warn">withdrawn</Tag>;
-  if (r.expired) return <Tag tone="warn">expired</Tag>;
-  return <Tag tone="good">active</Tag>;
 }
 
 type Draft = { target: string; percent: string; groups: string };
@@ -397,14 +391,14 @@ export default function AgentUpdates() {
         {summary.data && summary.data.versions.length > 0 ? (
           <Table
             tableId="agent-updates-1"
-            head={[{ label: "Agent version", sort: "version" }, { label: "Devices", sort: "devices" }]}
+            head={[{ label: "Agent version", sort: "version", w: 200 }, { label: "Devices", sort: "devices", w: 100, align: "right" }]}
             sort={verSort.sort}
             onSort={verSort.onSort}
           >
             {verSort.rows.map((v) => (
-              <tr key={v.version} className="border-t border-line">
-                <td className="py-1.5 pr-3 font-mono text-sm">{v.version}</td>
-                <td className="py-1.5">{v.devices}</td>
+              <tr key={v.version}>
+                <td className="px-3 py-2"><TextCell mono>{v.version}</TextCell></td>
+                <td className="px-3 py-2"><NumCell value={v.devices} /></td>
               </tr>
             ))}
           </Table>
@@ -438,45 +432,46 @@ export default function AgentUpdates() {
           <Table
             tableId="agent-updates-2"
             head={[
-              { label: "Version", sort: "version" },
-              { label: "State", sort: "state" },
-              ...(platformAdmin ? [{ label: "Signed by", sort: "signed" }] : []),
-              { label: "Released", sort: "released" },
-              { label: "Expires", sort: "expires" },
-              { label: "Platforms", sort: "platforms" },
-              { label: "Running", sort: "running" },
-              "",
+              { label: "Version", sort: "version", w: 240 },
+              { label: "State", sort: "state", w: 130 },
+              ...(platformAdmin ? [{ label: "Signed by", sort: "signed", w: 160 }] : []),
+              { label: "Released", sort: "released", w: 150 },
+              { label: "Expires", sort: "expires", w: 150 },
+              { label: "Platforms", sort: "platforms", w: 280 },
+              { label: "Running on", sort: "running", w: 120, align: "right" },
+              { label: "Actions", srOnly: true, w: 110 },
             ]}
             sort={relSort.sort}
             onSort={relSort.onSort}
+            noun="releases"
           >
             {relSort.rows.map((r) => (
-              <tr key={r.id} className="border-t border-line align-top">
-                <td className="py-1.5 pr-3">
-                  <div className="font-mono text-sm">{r.version}</div>
-                  {r.notes && <div className="text-xs text-ink-3">{r.notes}</div>}
-                  {r.rollback_allowed_from.length > 0 && <div className="text-xs text-ink-3">signed rollback from {r.rollback_allowed_from.join(", ")}</div>}
+              <tr key={r.id}>
+                <td className="px-3 py-2">
+                  <NameCell
+                    name={r.version}
+                    sub={r.notes || (r.rollback_allowed_from.length > 0 ? `Signed rollback from ${r.rollback_allowed_from.join(", ")}` : undefined)}
+                  />
                 </td>
-                <td className="py-1.5 pr-3">{releaseState(r)}</td>
-                {platformAdmin && (
-                  <td className="py-1.5 pr-3 font-mono text-xs" title={r.key_id}>
-                    {shortKey(r.key_id)}
-                  </td>
-                )}
-                <td className="py-1.5 pr-3 text-xs" title={fmtTime(r.released_at)}>
-                  {fmtAgo(r.released_at)}
-                  <div className="text-ink-3">imported by {r.imported_by}</div>
+                <td className="px-3 py-2">
+                  <PillRow>
+                    {r.withdrawn_at ? <Pill tone="high">Withdrawn</Pill> : r.expired ? <Pill tone="high">Expired</Pill> : newest?.id === r.id ? <Pill tone="good">Newest</Pill> : <Pill tone="good">Active</Pill>}
+                  </PillRow>
                 </td>
-                <td className="py-1.5 pr-3 text-xs">{fmtTime(r.expires_at)}</td>
-                <td className="py-1.5 pr-3 text-xs">
-                  {r.artifacts.map((a) => (
-                    <div key={`${a.os}/${a.arch}`} title={`sha256 ${a.sha256}`}>
-                      {a.os}/{a.arch} · {(a.size_bytes / 1048576).toFixed(1)} MB
-                    </div>
-                  ))}
+                {platformAdmin && <td className="px-3 py-2"><TextCell mono title={r.key_id}>{shortKey(r.key_id)}</TextCell></td>}
+                <td className="px-3 py-2"><TextCell muted title={`${fmtTime(r.released_at)} · imported by ${r.imported_by}`}>{fmtTime(r.released_at).split(",")[0]}</TextCell></td>
+                <td className="px-3 py-2"><TextCell muted title={fmtTime(r.expires_at)}>{fmtTime(r.expires_at).split(",")[0]}</TextCell></td>
+                <td className="px-3 py-2">
+                  {r.artifacts.length ? (
+                    <TextCell muted title={r.artifacts.map((a) => `${a.os}/${a.arch} · ${(a.size_bytes / 1048576).toFixed(1)} MB · sha256 ${a.sha256}`).join("\n")}>
+                      {[...new Set(r.artifacts.map((a) => a.os))].join(", ")}
+                    </TextCell>
+                  ) : (
+                    <None />
+                  )}
                 </td>
-                <td className="py-1.5 pr-3">{r.devices_running}</td>
-                <td className="py-1.5">
+                <td className="px-3 py-2"><NumCell value={r.devices_running} /></td>
+                <td className="px-3 py-2">
                   {admin && !r.withdrawn_at && (
                     <Button variant="danger" onClick={() => withdraw(r)}>
                       Withdraw

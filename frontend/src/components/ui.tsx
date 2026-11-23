@@ -344,6 +344,9 @@ export { Table, SelectCell, type Column, type ColumnObject, type TableSelection 
 export { DetailDrawer, type DetailRow } from "./table/DetailDrawer";
 export { FilterChips, type FilterChip } from "./table/FilterChips";
 export { NameCell, NumCell, None, PillRow, TextCell } from "./table/cells";
+export { FilterBar, FilterSearch, FilterSelect, Pill, Segments, type PillTone } from "./table/filters";
+export { AttentionList, type AttentionItem } from "./table/attention";
+export { MoreMenu, type MenuItem } from "./table/menu";
 
 /** Accessible modal dialog: focus moves in on open, Escape / backdrop closes, focus is restored on close.
  * Never taller than the window: the title bar (and its close button) stays put and the body scrolls. */

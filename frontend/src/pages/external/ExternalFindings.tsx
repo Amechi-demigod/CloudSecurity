@@ -4,7 +4,7 @@ import { Link } from "react-router-dom";
 import { useAuth } from "../../auth/context";
 import { useFindingActions } from "../../components/ExternalFindingActions";
 import { FixBy, NotAsvBanner, StatusTag } from "../../components/external";
-import { Button, Card, Empty, ErrorNote, PageHeader, Select, SeverityBadge, Table } from "../../components/ui";
+import { Button, Card, Empty, ErrorNote, FilterBar, FilterChips, FilterSearch, FilterSelect, NumCell, None, PageHeader, Pill, PillRow, Segments, Table, type FilterChip, type PillTone } from "../../components/ui";
 import { externalApi, type ExtFinding, type ExtFindingFilter, type ExtFindingGroup } from "../../externalApi";
 import { preAsvLabel } from "../../lib/externalUi";
 import { fmtAgo } from "../../lib/format";
@@ -13,6 +13,10 @@ import { useSortState } from "../../lib/useSort";
 import { useUrlState } from "../../lib/useUrlState";
 import { PAGE_INFO } from "../../lib/pageInfo";
 
+const SEV_TONE: Record<string, PillTone> = { critical: "critical", high: "high", medium: "medium", low: "neutral", info: "neutral" };
+const SevPill = ({ severity }: { severity: string }) => <PillRow><Pill tone={SEV_TONE[severity] ?? "neutral"}>{severity[0].toUpperCase() + severity.slice(1)}</Pill></PillRow>;
+const PreAsv = ({ label }: { label: string }) =>
+  label === "-" ? <None /> : <PillRow><Pill tone={label === "Pass" ? "good" : label === "Exception" ? "neutral" : "critical"}>{label === "Pass" ? "Passes" : label === "Exception" ? "Exception" : "Fails"}</Pill></PillRow>;
 const hostPort = (host: string, port: number | null) => `${host}${port ? `:${port}` : ""}`;
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
@@ -37,56 +41,50 @@ export function FindingsPanel() {
     q: q.trim() || undefined,
   };
   const filtered = !!(severity || preAsv || target || host || q.trim()) || status !== "open";
-  const chips = [{ label: "Host", value: host, clear: () => setHost("") }].filter((c) => c.value);
+  const clearAll = () => {
+    setStatus("open");
+    setSeverity("");
+    setPreAsv("");
+    setTarget("");
+    setHost("");
+    setQ("");
+  };
+  const chipList: FilterChip[] = [
+    status !== "open" && { label: "Status", value: status || "All", onRemove: () => setStatus("open") },
+    severity && { label: "Severity", value: severity, onRemove: () => setSeverity("") },
+    preAsv && { label: "PCI scan", value: preAsv, onRemove: () => setPreAsv("") },
+    target && { label: "Target", value: verified.find((t) => t.id === target)?.value ?? target, onRemove: () => setTarget("") },
+    host && { label: "Host", value: host, onRemove: () => setHost("") },
+    q.trim() && { label: "Search", value: q, onRemove: () => setQ("") },
+  ].filter((c): c is FilterChip => !!c);
   const [count, setCount] = useState("");
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-3">
-        <div role="group" aria-label="View" className="inline-flex overflow-hidden rounded border border-line text-sm">
-          {[
-            { v: "grouped", label: "By finding" },
-            { v: "all", label: "All findings" },
-          ].map((o) => (
-            <button
-              key={o.v}
-              type="button"
-              aria-pressed={grouped === (o.v === "grouped")}
-              onClick={() => setView(o.v)}
-              className={`px-3 py-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${grouped === (o.v === "grouped") ? "bg-accent/15 font-medium text-ink" : "bg-surface-2 text-ink-2 hover:text-ink"}`}
-            >
-              {o.label}
-            </button>
-          ))}
-        </div>
-        <Select label="Severity" value={severity} onChange={setSeverity} options={["", "critical", "high", "medium", "low", "info"]} />
-        <Select label="Status" value={status} onChange={setStatus} options={[{ value: "", label: "All" }, "open", "disputed", "accepted", "resolved"]} />
-        <Select label="PCI scan" value={preAsv} onChange={setPreAsv} options={[{ value: "", label: "Any" }, { value: "fail", label: "Would fail" }, { value: "pass", label: "Would pass" }, { value: "exception", label: "Exception" }]} />
-        <Select label="Target" value={target} onChange={setTarget} options={[{ value: "", label: "All" }, ...verified.map((t) => ({ value: t.id, label: t.value }))]} />
-        <input
-          type="search"
-          aria-label="Search findings"
-          className="w-56 rounded border border-line bg-surface-2 px-2 py-1 text-sm"
-          placeholder="Search title, ID, check, host, port"
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
+      <FilterBar
+        count={count}
+        moreActive={[preAsv, target].filter(Boolean).length}
+        more={
+          <>
+            <FilterSelect label="PCI scan" value={preAsv} onChange={setPreAsv} options={[{ value: "", label: "Any" }, { value: "fail", label: "Would fail" }, { value: "pass", label: "Would pass" }, { value: "exception", label: "Exception" }]} />
+            <FilterSelect label="Target" value={target} onChange={setTarget} options={[{ value: "", label: "All" }, ...verified.map((t) => ({ value: t.id, label: t.value }))]} />
+          </>
+        }
+      >
+        <Segments
+          label="View"
+          value={view === "all" ? "all" : "grouped"}
+          onChange={setView}
+          options={[
+            { value: "grouped", label: "By finding" },
+            { value: "all", label: "All findings" },
+          ]}
         />
-        {chips.map((c) => (
-          <button
-            key={c.label}
-            type="button"
-            onClick={c.clear}
-            title={`Remove the ${c.label.toLowerCase()} filter`}
-            className="inline-flex max-w-[16rem] items-center gap-1 rounded-full border border-line bg-surface-2 px-2.5 py-0.5 text-xs text-ink-2 hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-          >
-            <span className="truncate">
-              {c.label}: <span className="text-ink">{c.value}</span>
-            </span>
-            <span aria-hidden>✕</span>
-          </button>
-        ))}
-        <span className="text-xs text-ink-3" aria-live="polite">{count}</span>
-      </div>
+        <FilterSearch value={q} onChange={setQ} placeholder="Title, ID, host, port" label="Search findings" />
+        <FilterSelect label="Severity" value={severity} onChange={setSeverity} options={["", "critical", "high", "medium", "low", "info"]} />
+        <FilterSelect label="Status" value={status} onChange={setStatus} options={[{ value: "", label: "All" }, "open", "disputed", "accepted", "resolved"]} />
+      </FilterBar>
+      <FilterChips chips={chipList} onClearAll={clearAll} />
       {grouped ? (
         <GroupedView filter={filter} filtered={filtered} setCount={setCount} setHost={setHost} />
       ) : (
@@ -164,31 +162,35 @@ function AllView({ filter, filtered, setCount, setHost }: ViewProps) {
         <Table
           tableId="external-findings-1"
           head={[
-            { label: "Severity", sort: "severity" },
-            { label: "Finding", sort: "title" },
-            { label: "Host", sort: "host" },
-            { label: "CVSS", sort: "cvss" },
-            { label: "PCI scan", sort: "pre_asv" },
-            { label: "Status", sort: "status" },
-            { label: "First seen", sort: "first_seen" },
-            { label: "Fix by", sort: "fix_by" },
+            { label: "Severity", sort: "severity", w: 110 },
+            { label: "Finding", sort: "title", w: 380 },
+            { label: "Host", sort: "host", w: 220 },
+            { label: "CVSS", sort: "cvss", w: 80, align: "right" },
+            { label: "PCI scan", sort: "pre_asv", w: 120 },
+            { label: "Status", sort: "status", w: 120 },
+            { label: "First seen", sort: "first_seen", w: 110 },
+            { label: "Fix by", sort: "fix_by", w: 130 },
             { label: "Details", srOnly: true },
           ]}
           sort={sorted.sort}
           onSort={sorted.onSort}
           loading={loading}
           rowCount={data?.length ?? 0}
+          noun="findings"
+          pageSize={50}
           empty={emptyState(filtered)}
         >
           {data?.map((f) => (
             <Fragment key={f.id}>
               <tr className="cursor-pointer hover:bg-surface-2" onClick={() => setExpanded(expanded === f.id ? null : f.id)}>
-                <td className="px-3 py-2"><SeverityBadge severity={f.severity} /></td>
+                <td className="px-3 py-2"><SevPill severity={f.severity} /></td>
                 <td className="px-3 py-2">
-                  <Link to={`/attack-surface/findings/${f.id}`} className="hover:text-accent" onClick={(e) => e.stopPropagation()}>
-                    {f.title}
-                  </Link>
-                  <div className="font-mono text-[11px] text-ink-3">{f.ref} · {f.check_id}</div>
+                  <div className="min-w-0">
+                    <Link to={`/attack-surface/findings/${f.id}`} title={f.title} className="block truncate font-semibold text-ink hover:text-accent hover:underline" onClick={(e) => e.stopPropagation()}>
+                      {f.title}
+                    </Link>
+                    <span className="block truncate font-mono text-xs text-ink-3">{f.ref} · {f.check_id}</span>
+                  </div>
                 </td>
                 <td className="px-3 py-2">
                   <button
@@ -204,8 +206,8 @@ function AllView({ filter, filtered, setCount, setHost }: ViewProps) {
                   </button>
                   {f.port ? <div className="text-[11px] text-ink-3">Port {f.port}{f.service ? ` · ${f.service}` : ""}</div> : null}
                 </td>
-                <td className="px-3 py-2 text-xs">{f.cvss ? f.cvss.toFixed(1) : "-"}</td>
-                <td className="px-3 py-2 text-xs">{preAsvLabel(f)}</td>
+                <td className="px-3 py-2"><NumCell value={f.cvss ? f.cvss.toFixed(1) : null} /></td>
+                <td className="px-3 py-2"><PreAsv label={preAsvLabel(f)} /></td>
                 <td className="px-3 py-2"><StatusTag status={f.status} /></td>
                 <td className="px-3 py-2 text-xs text-ink-2">{fmtAgo(f.first_seen)}</td>
                 <td className="px-3 py-2 text-xs"><FixBy due={f.fix_due} daysLeft={f.days_left} overdueDays={f.overdue_days} /></td>
@@ -306,32 +308,36 @@ function GroupedView({ filter, filtered, setCount, setHost }: ViewProps) {
         <Table
           tableId="external-findings-2"
           head={[
-            { label: "Severity", sort: "severity" },
-            { label: "Finding", sort: "title" },
-            { label: "Affected", sort: "affected" },
-            { label: "CVSS", sort: "cvss" },
-            { label: "PCI scan", sort: "pre_asv" },
-            "Status",
-            { label: "Fix by", sort: "fix_by" },
+            { label: "Severity", sort: "severity", w: 110 },
+            { label: "Finding", sort: "title", w: 380 },
+            { label: "Affected", sort: "affected", w: 100, align: "right" },
+            { label: "CVSS", sort: "cvss", w: 80, align: "right" },
+            { label: "PCI scan", sort: "pre_asv", w: 130 },
+            { label: "Status", w: 150 },
+            { label: "Fix by", sort: "fix_by", w: 130 },
             { label: "Details", srOnly: true },
           ]}
           sort={sorted.sort}
           onSort={sorted.onSort}
           loading={loading}
           rowCount={data?.length ?? 0}
+          noun="findings"
+          pageSize={50}
           empty={emptyState(filtered)}
         >
           {data?.map((g) => (
             <Fragment key={g.check_id}>
               <tr className="cursor-pointer hover:bg-surface-2" onClick={() => setExpanded(expanded === g.check_id ? null : g.check_id)}>
-                <td className="px-3 py-2"><SeverityBadge severity={g.severity} /></td>
+                <td className="px-3 py-2"><SevPill severity={g.severity} /></td>
                 <td className="px-3 py-2">
-                  {g.title}
-                  <div className="font-mono text-[11px] text-ink-3">{g.check_id}</div>
+                  <div className="min-w-0">
+                    <span title={g.title} className="block truncate font-semibold text-ink">{g.title}</span>
+                    <span className="block truncate font-mono text-xs text-ink-3">{g.check_id}</span>
+                  </div>
                 </td>
-                <td className="px-3 py-2 text-xs text-ink-2">{plural(g.affected, "host:port")} on {plural(g.hosts, "host")}</td>
-                <td className="px-3 py-2 text-xs">{g.cvss ? g.cvss.toFixed(1) : "-"}</td>
-                <td className="px-3 py-2 text-xs">{groupPreAsv(g)}</td>
+                <td className="px-3 py-2"><NumCell value={g.affected} title={`${plural(g.affected, "host:port")} on ${plural(g.hosts, "host")}`} /></td>
+                <td className="px-3 py-2"><NumCell value={g.cvss ? g.cvss.toFixed(1) : null} /></td>
+                <td className="px-3 py-2"><PreAsv label={groupPreAsv(g)} /></td>
                 <td className="px-3 py-2">{statusSummary(g)}</td>
                 <td className="px-3 py-2 text-xs"><FixBy due={g.fix_due} daysLeft={g.days_left} overdueDays={g.overdue_days} /></td>
                 <td className="px-3 py-2 text-right">

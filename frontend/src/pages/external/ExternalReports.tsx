@@ -3,7 +3,7 @@ import { useState } from "react";
 import { useAuth } from "../../auth/context";
 import { NotAsvBanner, ResultBadge, ScopeModal } from "../../components/external";
 import { errMsg } from "../../lib/externalUi";
-import { Button, Card, Empty, ErrorNote, PageHeader, Table, Tag } from "../../components/ui";
+import { Button, Card, Empty, ErrorNote, PageHeader, Table, Tag, TextCell } from "../../components/ui";
 import { externalApi, type ExtReportData } from "../../externalApi";
 import { fmtTime } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
@@ -120,10 +120,10 @@ export default function ExternalReports() {
         </div>
       </Card>
       <Card title="History">
-        <Table tableId="external-reports-3" head={[{ label: "Generated", sort: "generated" }, { label: "By", sort: "by" }, { label: "Result", sort: "result" }, "Download"]} sort={history.sort} onSort={history.onSort} loading={reports.loading} rowCount={reports.data?.length ?? 0} empty={<Empty icon={FileText} title="No reports yet">Create the first report above.</Empty>}>
+        <Table tableId="external-reports-3" head={[{ label: "Generated", sort: "generated", w: 200 }, { label: "By", sort: "by", w: 240 }, { label: "Result", sort: "result", w: 160 }, { label: "Download", w: 130 }]} sort={history.sort} onSort={history.onSort} loading={reports.loading} rowCount={reports.data?.length ?? 0} empty={<Empty icon={FileText} title="No reports yet">Create the first report above.</Empty>}>
           {history.rows.map((r) => (
             <tr key={r.id}>
-              <td className="px-3 py-2 text-sm">{fmtTime(r.generated_at)}</td><td className="px-3 py-2 text-sm">{r.generated_by}</td>
+              <td className="px-3 py-2"><TextCell>{fmtTime(r.generated_at)}</TextCell></td><td className="px-3 py-2"><TextCell muted>{r.generated_by}</TextCell></td>
               <td className="px-3 py-2"><ResultBadge result={r.result} /></td>
               <td className="space-x-3 px-3 py-2 text-sm">
                 <a className="text-accent hover:underline" href={externalApi.reportPdfUrl(r.id)}>PDF</a>

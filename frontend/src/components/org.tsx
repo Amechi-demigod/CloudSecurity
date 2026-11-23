@@ -5,7 +5,7 @@ import type { Role } from "../api";
 import { useAuth } from "../auth/context";
 import { useApi } from "../lib/useApi";
 import { orgApi, type InvitationState, type IssuedInvitation, type OnboardingStepKey } from "../orgApi";
-import { Button, Card, ErrorNote, Tag } from "./ui";
+import { Button, Card, ErrorNote, Pill, PillRow, Tag } from "./ui";
 
 // Where each checklist step is done, and the role that page needs (others are told to ask an admin).
 const ONBOARDING_STEPS: Record<OnboardingStepKey, { title: string; hint: string; to: string; label: string; role: Role }> = {
@@ -114,8 +114,12 @@ export function GettingStarted() {
 }
 
 export function InvitationStateTag({ state }: { state: InvitationState }) {
-  const tone = state === "pending" ? "accent" : state === "accepted" ? "good" : state === "expired" ? "warn" : "default";
-  return <Tag tone={tone}>{state[0].toUpperCase() + state.slice(1)}</Tag>;
+  const tone = state === "pending" ? "info" : state === "accepted" ? "good" : state === "expired" ? "high" : "neutral";
+  return (
+    <PillRow>
+      <Pill tone={tone}>{state[0].toUpperCase() + state.slice(1)}</Pill>
+    </PillRow>
+  );
 }
 
 /** Copy-to-clipboard for a one-time value (invitation link, token). */

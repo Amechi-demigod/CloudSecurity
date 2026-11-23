@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { ApiError } from "../api";
-import { Button, Card, Empty, ErrorNote, Field, Modal, Table, Tag } from "../components/ui";
+import { Button, Card, Empty, ErrorNote, Field, Modal, NameCell, Pill, PillRow, Table, TextCell } from "../components/ui";
 import { fmtAgo } from "../lib/format";
 import { useApi } from "../lib/useApi";
 import { ts, useSort } from "../lib/useSort";
@@ -257,25 +257,23 @@ export default function NotificationsChannels({ meta, isAdmin, onChange }: { met
         ) : (
           <Table
             tableId="notifications-channels"
-            head={[{ label: "Name", sort: "name" }, { label: "Type", sort: "type" }, { label: "Destination", sort: "destination" }, { label: "Status", sort: "status" }, { label: "Last test", sort: "last_test" }, ...(isAdmin ? ["Actions"] : [])]}
+            head={[{ label: "Channel", sort: "name", w: 240 }, { label: "Destination", sort: "destination", w: 280 }, { label: "Status", sort: "status", w: 110 }, { label: "Last test", sort: "last_test", w: 160 }, ...(isAdmin ? [{ label: "Actions", srOnly: true, w: 320 }] : [])]}
             sort={sorted.sort}
             onSort={sorted.onSort}
           >
             {sorted.rows.map((c) => (
               <tr key={c.id}>
-                <td className="px-3 py-2 font-medium">{c.name}</td>
-                <td className="px-3 py-2 text-sm text-ink-2">{label(c.type)}</td>
-                <td className="max-w-[18rem] truncate px-3 py-2 font-mono text-xs text-ink-2" title={destination(c)}>
-                  {destination(c)}
-                </td>
-                <td className="px-3 py-2">{c.enabled ? <Tag tone="good">On</Tag> : <Tag>Off</Tag>}</td>
-                <td className="px-3 py-2 text-xs">
+                <td className="px-3 py-2"><NameCell name={c.name} sub={label(c.type)} /></td>
+                <td className="px-3 py-2"><TextCell mono title={destination(c)}>{destination(c)}</TextCell></td>
+                <td className="px-3 py-2"><PillRow>{c.enabled ? <Pill tone="good">On</Pill> : <Pill>Off</Pill>}</PillRow></td>
+                <td className="px-3 py-2">
                   {c.last_test_at ? (
-                    <Tag tone={c.last_test_status === "ok" ? "good" : "warn"}>
-                      {c.last_test_status === "ok" ? "OK" : "Failed"} · {fmtAgo(c.last_test_at)}
-                    </Tag>
+                    <PillRow>
+                      <Pill tone={c.last_test_status === "ok" ? "good" : "high"}>{c.last_test_status === "ok" ? "OK" : "Failed"}</Pill>
+                      <span className="text-ink-3">{fmtAgo(c.last_test_at)}</span>
+                    </PillRow>
                   ) : (
-                    <span className="text-ink-3">Never</span>
+                    <TextCell muted>Never</TextCell>
                   )}
                 </td>
                 {isAdmin && (

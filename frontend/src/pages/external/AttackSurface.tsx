@@ -7,7 +7,7 @@ import { NotAsvBanner, ResultBadge, ScopeModal } from "../../components/external
 import { OverflowMenu } from "../../components/OverflowMenu";
 import { FindingsPanel } from "./ExternalFindings";
 import { errMsg, inputCls } from "../../lib/externalUi";
-import { Button, Card, Empty, ErrorNote, Modal, PageHeader, Table, Tag } from "../../components/ui";
+import { Button, Card, Empty, ErrorNote, Modal, NameCell, None, NumCell, PageHeader, Pill, PillRow, Table, TextCell, type PillTone } from "../../components/ui";
 import { externalApi, type ExtFindingGroup, type ExtOverview, type ExtTarget } from "../../externalApi";
 import { fmtAgo, fmtTime } from "../../lib/format";
 import { useUrlState } from "../../lib/useUrlState";
@@ -16,14 +16,24 @@ import { useSort } from "../../lib/useSort";
 import { PAGE_INFO } from "../../lib/pageInfo";
 
 function TargetStatus({ t }: { t: ExtTarget }) {
-  if (t.verified) return <Tag tone="good">Verified</Tag>;
-  if (t.approval_status === "requested") return <Tag tone="accent">Approval requested</Tag>;
-  if (t.approval_status === "rejected") return <Tag tone="critical">Approval rejected</Tag>;
-  if (t.kind !== "domain") return <Tag tone="warn">Needs approval</Tag>;
-  return <Tag tone="warn">Waiting for proof</Tag>;
+  const [tone, text]: [PillTone, string] = t.verified
+    ? ["good", t.kind === "domain" ? "Verified" : "Approved"]
+    : t.approval_status === "requested"
+      ? ["info", "Requested"]
+      : t.approval_status === "rejected"
+        ? ["critical", "Rejected"]
+        : t.kind !== "domain"
+          ? ["medium", "Needs approval"]
+          : ["medium", "Waiting for proof"];
+  return (
+    <PillRow>
+      <Pill tone={tone}>{text}</Pill>
+      {t.default_password_checks && <Pill tone="medium" title="Default-password checks are on">Passwords</Pill>}
+    </PillRow>
+  );
 }
 
-function TargetRow({ t, admin, analyst, anyRunning, scanning, onChange }: { t: ExtTarget; admin: boolean; analyst: boolean; anyRunning: boolean; scanning: boolean; onChange: () => void }) {
+function TargetRow({ t, systems, issues, admin, analyst, anyRunning, scanning, onChange }: { t: ExtTarget; systems: number; issues: number; admin: boolean; analyst: boolean; anyRunning: boolean; scanning: boolean; onChange: () => void }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -48,11 +58,19 @@ function TargetRow({ t, admin, analyst, anyRunning, scanning, onChange }: { t: E
 
   return (
     <li className="border-b border-line px-4 py-3 last:border-0">
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="font-mono text-sm text-ink">{t.value}</span>
-        <Tag>{t.kind === "cidr" ? "IP range" : t.kind === "ip" ? "IP address" : "Domain"}</Tag>
-        <TargetStatus t={t} />
-        {t.default_password_checks && <Tag tone="warn">Default-password checks on</Tag>}
+      <div className="flex items-center gap-3">
+        <div className="w-[300px] min-w-0 shrink-0">
+          <NameCell name={t.value} sub={t.kind === "cidr" ? "IP range" : t.kind === "ip" ? "Single IP address" : "Domain and subdomains"} />
+        </div>
+        <div className="w-[170px] shrink-0">
+          <TargetStatus t={t} />
+        </div>
+        <div className="w-[80px] shrink-0">
+          <NumCell value={systems} />
+        </div>
+        <div className="w-[90px] shrink-0">
+          <NumCell value={issues} />
+        </div>
         <span className="flex-1" />
         {admin && t.kind === "domain" && !t.verified && (
           <Button variant="primary" disabled={busy} onClick={() => void run(async () => {
@@ -319,6 +337,11 @@ export default function AttackSurface() {
   }
 
   const list = targets.data ?? [];
+  // Systems and open issues per target, counted from the systems list the page already loads.
+  const countFor = (t: ExtTarget) => {
+    const mine = (hosts.data ?? []).filter((h) => (t.kind === "domain" ? h.host === t.value || h.host.endsWith(`.${t.value}`) : t.kind === "ip" ? h.ip === t.value || h.host === t.value : false));
+    return { systems: mine.length, issues: mine.reduce((n, h) => n + h.findings, 0) };
+  };
   const domains = list.filter((t) => t.kind === "domain");
   const unproven = list.filter((t) => !t.verified);
   const hasTargets = list.length > 0;
@@ -415,21 +438,30 @@ export default function AttackSurface() {
         <Card title={plural(hosts.data?.length ?? 0, "system") + " found on the internet"} actions={<span className="text-xs text-ink-3">From the last scan</span>}>
           <Table
             tableId="attack-surface"
-            head={[{ label: "System", sort: "host" }, { label: "Open ports", sort: "ports" }, { label: "Issues", sort: "findings", align: "right" }, { label: "First seen", sort: "first" }]}
+            head={[
+              { label: "System", sort: "host", w: 320 },
+              { label: "Open ports", sort: "ports", w: 260 },
+              { label: "Issues", sort: "findings", w: 100, align: "right" },
+              { label: "First seen", sort: "first", w: 130 },
+            ]}
             sort={sortedHosts.sort}
             onSort={sortedHosts.onSort}
             loading={hosts.loading}
             rowCount={hosts.data?.length ?? 0}
+            noun="systems"
+            pageSize={50}
             empty={<Empty icon={Globe2} title="No systems found yet">Verify a domain or IP address and run a scan.</Empty>}
           >
             {sortedHosts.rows.map((h) => (
               <tr key={h.id}>
-                <td className="px-3 py-2"><div className="font-mono text-xs text-ink">{h.host}</div>{h.ip && h.ip !== h.host && <div className="font-mono text-[11px] text-ink-3">{h.ip}</div>}</td>
-                <td className="px-3 py-2 text-xs">
-                  {h.ports.length === 0 ? "None" : <>{h.ports.length}<span className="block text-ink-3">{h.ports.slice(0, 5).map((p) => `${p.port} ${p.service}`).join(", ")}{h.ports.length > 5 ? "…" : ""}</span></>}
+                <td className="px-3 py-2"><NameCell name={h.host} sub={h.ip && h.ip !== h.host ? h.ip : undefined} /></td>
+                <td className="px-3 py-2">
+                  {h.ports.length === 0 ? <None /> : <TextCell mono title={h.ports.map((p) => `${p.port} ${p.service}`).join(", ")}>{h.ports.map((p) => p.port).join(", ")}</TextCell>}
                 </td>
-                <td className="px-3 py-2 text-right"><Link className="text-accent hover:underline" to={`/attack-surface?tab=results&host=${encodeURIComponent(h.host)}`}>{h.findings}</Link></td>
-                <td className="px-3 py-2 text-xs text-ink-2">{fmtTime(h.first_seen).split(",")[0]}</td>
+                <td className="px-3 py-2">
+                  {h.findings > 0 ? <Link className="block text-right tabular-nums text-accent hover:underline" to={`/attack-surface?tab=results&host=${encodeURIComponent(h.host)}`}>{h.findings}</Link> : <NumCell value={0} />}
+                </td>
+                <td className="px-3 py-2"><TextCell muted>{fmtTime(h.first_seen).split(",")[0]}</TextCell></td>
               </tr>
             ))}
           </Table>
@@ -449,7 +481,15 @@ export default function AttackSurface() {
           {list.length === 0 ? (
             <Empty icon={Globe2} title="Nothing added yet">Add a domain you own, then prove it with a DNS record or a file.</Empty>
           ) : (
-            <ul className="-mx-4 -my-4">{list.map((t) => <TargetRow key={t.id} t={t} admin={admin} analyst={can("analyst")} anyRunning={!!o?.running} scanning={runningTarget === t.value} onChange={() => { targets.reload(); ov.reload(); }} />)}</ul>
+            <>
+            <div className="-mx-4 -mt-4 flex items-center gap-3 border-b border-line px-4 py-2 text-xs uppercase tracking-wide text-ink-3" aria-hidden>
+              <span className="w-[300px] shrink-0">Domain or IP</span>
+              <span className="w-[170px] shrink-0">Ownership</span>
+              <span className="w-[80px] shrink-0 text-right">Systems</span>
+              <span className="w-[90px] shrink-0 text-right">Open issues</span>
+            </div>
+            <ul className="-mx-4 -mb-4">{list.map((t) => <TargetRow key={t.id} t={t} systems={countFor(t).systems} issues={countFor(t).issues} admin={admin} analyst={can("analyst")} anyRunning={!!o?.running} scanning={runningTarget === t.value} onChange={() => { targets.reload(); ov.reload(); }} />)}</ul>
+            </>
           )}
           {domains.length === 0 && list.length > 0 && <p className="mt-3 text-xs text-ink-3">Tip: adding the domains your IP addresses serve lets them be verified automatically.</p>}
         </Card>

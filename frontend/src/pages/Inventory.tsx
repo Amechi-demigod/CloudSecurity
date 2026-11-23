@@ -1,12 +1,11 @@
 import { SearchX } from "lucide-react";
 import { useAuth } from "../auth/context";
-import { useState } from "react";
 import { Link } from "react-router-dom";
 import { api, qs } from "../api";
 import AssetDrawer from "../components/AssetDrawer";
 import { ExportMenu } from "../components/ExportMenu";
-import { Card, Empty, ErrorNote, PageHeader, RiskBar, Select, Table, Tag } from "../components/ui";
-import { PROVIDER_LABEL, SCOPE_LABEL, TYPE_LABEL, fmtAgo, fmtTime } from "../lib/format";
+import { Card, Empty, FilterBar, FilterChips, FilterSearch, FilterSelect, NameCell, NumCell, None, PageHeader, Pill, PillRow, RiskBar, Segments, Table, TextCell, type FilterChip } from "../components/ui";
+import { PROVIDER_LABEL, TYPE_LABEL, fmtAgo, fmtTime } from "../lib/format";
 import { useApi } from "../lib/useApi";
 import { useSort } from "../lib/useSort";
 import { useUrlState } from "../lib/useUrlState";
@@ -23,7 +22,7 @@ export default function Inventory() {
   // Active (default) or Removed: cloud resources that no longer exist, kept for a while as history.
   const [tab, setTab] = useUrlState("tab");
   const removed = tab === "removed";
-  const [q, setQ] = useState("");
+  const [q, setQ] = useUrlState("q");
   // ?asset=<id> opens the drawer (links from device pages: "Cloud VM -> resource").
   const [selectedId, setSelectedId] = useUrlState("asset");
   const selected = selectedId || null;
@@ -60,6 +59,24 @@ export default function Inventory() {
     removed ? { key: "removed_at", dir: "desc" } : { key: "name", dir: "asc" },
     { findings: "desc", vulns: "desc", risk: "desc", alerts: "desc", last_seen: "desc", removed_at: "desc" },
   );
+  const clearAll = () => {
+    setQ("");
+    setType("");
+    setProvider("");
+    setSub("");
+    setExposed("");
+    setSource("");
+  };
+  const subName = (id: string) => facets?.subscriptions.find((x) => x.id === id)?.name ?? id;
+  const chips: FilterChip[] = [
+    q && { label: "Search", value: q, onRemove: () => setQ("") },
+    type && { label: "Type", value: TYPE_LABEL[type] ?? type, onRemove: () => setType("") },
+    provider && { label: "Cloud", value: PROVIDER_LABEL[provider] ?? provider, onRemove: () => { setProvider(""); setSub(""); } },
+    sub && { label: "Account", value: subName(sub), onRemove: () => setSub("") },
+    exposed && { label: "Exposure", value: exposed === "yes" ? "On the internet" : "Internal", onRemove: () => setExposed("") },
+    source && { label: "Source", value: source, onRemove: () => setSource("") },
+  ].filter((c): c is FilterChip => !!c);
+  const filtered = chips.length > 0;
   const retentionDays = facets?.counts.retention_days ?? 60;
   const deletedOn = (iso: string) => new Date(Date.parse(iso) + retentionDays * 86400000).toLocaleDateString();
   const tabCls = (on: boolean) =>
@@ -79,7 +96,6 @@ export default function Inventory() {
             <Link to="/exposure" className="rounded border border-line bg-surface-2 px-3 py-1.5 text-sm font-medium text-ink hover:bg-line">On the internet</Link>
           </>
         } subtitle="Everything found in your connected cloud accounts." />
-      <ErrorNote error={error} />
       <div role="tablist" aria-label="Inventory" className="mb-3 flex gap-1 border-b border-line">
         <button role="tab" aria-selected={!removed} className={tabCls(!removed)} onClick={() => setTab("")}>
           Active{facets && <span className="ml-1.5 text-xs text-ink-3">{facets.counts.active.toLocaleString()}</span>}
@@ -93,77 +109,69 @@ export default function Inventory() {
           Resources that no longer exist in your cloud. Kept for {retentionDays} days as history, then deleted permanently. They don&apos;t count towards risk, findings or compliance.
         </p>
       )}
-      <div className="mb-3 flex flex-wrap items-center gap-3">
-        <input
-          className="w-56 rounded border border-line bg-surface-2 px-2 py-1 text-sm"
-          placeholder="Search name or ID…"
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-        />
-        <Select
-          label="Type"
-          value={type}
-          onChange={setType}
-          options={[{ value: "", label: "All" }, ...(facets?.types ?? []).map((t) => ({ value: t, label: TYPE_LABEL[t] ?? t }))]}
-        />
-        <Select
-          label="Cloud"
-          value={provider}
-          onChange={(v) => {
-            setProvider(v);
-            setSub("");
-          }}
-          options={[{ value: "", label: "All" }, ...(facets?.providers ?? []).map((p) => ({ value: p, label: PROVIDER_LABEL[p] ?? p }))]}
-        />
-        <Select
-          label={provider ? (SCOPE_LABEL[provider] ?? "Scope") : "Subscription / account / project"}
-          value={sub}
-          onChange={setSub}
-          options={[
-            { value: "", label: "All" },
-            ...(facets?.subscriptions ?? [])
-              .filter((s) => !provider || s.provider === provider)
-              .map((s) => ({ value: s.id, label: provider ? s.name : `${PROVIDER_LABEL[s.provider] ?? s.provider}: ${s.name}` })),
-          ]}
-        />
-        <Select
-          label="Exposure"
-          value={exposed}
-          onChange={setExposed}
-          options={[
-            { value: "", label: "All" },
-            { value: "yes", label: "Internet-exposed" },
-            { value: "no", label: "Internal" },
-          ]}
-        />
-        <Select label="Source" value={source} onChange={setSource} options={["", ...(facets?.sources ?? [])]} />
-        <span className="text-xs text-ink-3">{data ? `${data.length} ${removed ? "removed" : "assets"}` : ""}</span>
-      </div>
       <Card>
+        <FilterBar
+          count={data ? `${data.length.toLocaleString()} ${removed ? "removed" : "resources"}` : undefined}
+          moreActive={[source, exposed === "no" ? exposed : ""].filter(Boolean).length}
+          more={
+            <>
+              <FilterSelect label="Source" value={source} onChange={setSource} options={["", ...(facets?.sources ?? [])]} />
+              <FilterSelect label="Cloud" value={provider} onChange={(v) => { setProvider(v); setSub(""); }} options={[{ value: "", label: "All" }, ...(facets?.providers ?? []).map((p) => ({ value: p, label: PROVIDER_LABEL[p] ?? p }))]} />
+            </>
+          }
+        >
+          <FilterSearch value={q} onChange={setQ} placeholder="Name or ID" label="Search resources" />
+          <FilterSelect label="Type" value={type} onChange={setType} options={[{ value: "", label: "All" }, ...(facets?.types ?? []).map((t) => ({ value: t, label: TYPE_LABEL[t] ?? t }))]} />
+          <FilterSelect
+            label="Account"
+            value={sub}
+            onChange={setSub}
+            options={[
+              { value: "", label: "All" },
+              ...(facets?.subscriptions ?? [])
+                .filter((x) => !provider || x.provider === provider)
+                .map((x) => ({ value: x.id, label: provider ? x.name : `${PROVIDER_LABEL[x.provider] ?? x.provider}: ${x.name}` })),
+            ]}
+          />
+          <Segments
+            label="Exposure"
+            value={exposed}
+            onChange={setExposed}
+            options={[
+              { value: "", label: "All" },
+              { value: "yes", label: "On the internet" },
+              { value: "no", label: "Internal" },
+            ]}
+          />
+        </FilterBar>
+        <FilterChips chips={chips} onClearAll={clearAll} />
           <Table
             tableId="inventory"
             head={removed ? [
-              { label: "Resource", sort: "name" },
-              { label: "Type", sort: "type" },
-              { label: "Subscription / account / project", sort: "subscription" },
-              { label: "Last seen", sort: "last_seen" },
-              { label: "Removed", sort: "removed_at" },
-              "Deleted permanently",
+              { label: "Resource", sort: "name", w: 280 },
+              { label: "Account", sort: "subscription", w: 260 },
+              { label: "Last seen", sort: "last_seen", w: 120 },
+              { label: "Removed", sort: "removed_at", w: 120 },
+              { label: "Deleted on", w: 130 },
             ] : [
-              { label: "Name", sort: "name" },
-              { label: "Type", sort: "type" },
-              { label: "Subscription / account / project", sort: "subscription" },
-              { label: "Region", sort: "region" },
-              "Context",
-              { label: "Findings", sort: "findings" },
-              { label: "Vulns", sort: "vulns" },
-              { label: "Max vuln risk", sort: "risk" },
-              { label: "Alerts", sort: "alerts" },
+              { label: "Resource", sort: "name", w: 280 },
+              { label: "Account", sort: "subscription", w: 280 },
+              { label: "Region", sort: "region", w: 120 },
+              { label: "Flags", w: 150 },
+              { label: "Issues", sort: "findings", w: 80, align: "right" },
+              { label: "Vulns", sort: "vulns", w: 80, align: "right" },
+              { label: "Worst vuln", sort: "risk", w: 120 },
+              { label: "Alerts", sort: "alerts", w: 80, align: "right" },
             ]}
             sort={sorted.sort}
             onSort={sorted.onSort}
             loading={loading}
             rowCount={data?.length ?? 0}
+            noun="resources"
+            pageSize={50}
+            filtered={filtered}
+            onClearFilters={clearAll}
+            error={data ? null : error}
             empty={
               removed ? (
                 <Empty icon={SearchX} title="No removed resources">
@@ -176,40 +184,41 @@ export default function Inventory() {
               )
             }
           >
-            {removed && sorted.rows.map((a) => (
-              <tr key={a.id} className="cursor-pointer hover:bg-surface-2" onClick={() => setSelected(a.id)}>
-                <td className="px-3 py-2 font-medium">{a.name}</td>
-                <td className="px-3 py-2 text-ink-2">{TYPE_LABEL[a.type] ?? a.type}</td>
-                <td className="px-3 py-2 text-xs text-ink-2">
-                  {a.provider !== "azure" && <span className="mr-1 font-medium text-ink-3">{PROVIDER_LABEL[a.provider] ?? a.provider}</span>}
-                  {a.subscription_name}
-                </td>
-                <td className="px-3 py-2 text-xs text-ink-2" title={fmtTime(a.last_seen)}>{fmtAgo(a.last_seen)}</td>
-                <td className="px-3 py-2 text-xs text-ink-2" title={a.removed_at ? fmtTime(a.removed_at) : undefined}>{a.removed_at ? fmtAgo(a.removed_at) : "—"}</td>
-                <td className="px-3 py-2 text-xs text-ink-2">{a.removed_at ? deletedOn(a.removed_at) : "—"}</td>
-              </tr>
-            ))}
-            {!removed && sorted.rows.map((a) => (
-              <tr key={a.id} className="cursor-pointer hover:bg-surface-2" onClick={() => setSelected(a.id)}>
-                <td className="px-3 py-2 font-medium">{a.name}</td>
-                <td className="px-3 py-2 text-ink-2">{TYPE_LABEL[a.type] ?? a.type}</td>
-                <td className="px-3 py-2 text-xs text-ink-2">
-                  {a.provider !== "azure" && <span className="mr-1 font-medium text-ink-3">{PROVIDER_LABEL[a.provider] ?? a.provider}</span>}
-                  {a.subscription_name}
-                  {a.resource_group && <div className="text-ink-3">{a.resource_group}</div>}
-                </td>
-                <td className="px-3 py-2 text-ink-2">{a.region}</td>
-                <td className="space-x-1 px-3 py-2">
-                  {a.internet_exposed && <Tag tone="warn">On the internet</Tag>}
-                  {a.sensitive_data && <Tag tone="warn">Holds sensitive data</Tag>}
-                  {platformAdmin && a.source !== "simulated" && <Tag tone="accent">{a.source}</Tag>}
-                </td>
-                <td className="px-3 py-2">{a.open_findings || <span className="text-ink-3">0</span>}</td>
-                <td className="px-3 py-2">{a.vulnerabilities || <span className="text-ink-3">0</span>}</td>
-                <td className="px-3 py-2">{a.vulnerabilities ? <RiskBar value={a.max_risk} /> : <span className="text-ink-3">—</span>}</td>
-                <td className="px-3 py-2">{a.open_alerts || <span className="text-ink-3">0</span>}</td>
-              </tr>
-            ))}
+            {sorted.rows.map((a) => {
+              const account = [a.provider !== "azure" ? PROVIDER_LABEL[a.provider] ?? a.provider : "", a.subscription_name].filter(Boolean).join(" · ");
+              return (
+                <tr key={a.id} className="cursor-pointer hover:bg-surface-2" onClick={() => setSelected(a.id)}>
+                  <td className="px-3 py-2">
+                    <NameCell name={a.name} sub={TYPE_LABEL[a.type] ?? a.type} onOpen={() => setSelected(a.id)} />
+                  </td>
+                  <td className="px-3 py-2">
+                    <NameCell name={account || "Unknown"} sub={removed ? undefined : a.resource_group} />
+                  </td>
+                  {removed ? (
+                    <>
+                      <td className="px-3 py-2"><TextCell muted title={fmtTime(a.last_seen)}>{fmtAgo(a.last_seen)}</TextCell></td>
+                      <td className="px-3 py-2">{a.removed_at ? <TextCell muted title={fmtTime(a.removed_at)}>{fmtAgo(a.removed_at)}</TextCell> : <None />}</td>
+                      <td className="px-3 py-2">{a.removed_at ? <TextCell muted>{deletedOn(a.removed_at)}</TextCell> : <None />}</td>
+                    </>
+                  ) : (
+                    <>
+                      <td className="px-3 py-2">{a.region ? <TextCell>{a.region}</TextCell> : <None />}</td>
+                      <td className="px-3 py-2">
+                        <PillRow>
+                          {a.internet_exposed && <Pill tone="critical" title="Reachable from the internet">Internet</Pill>}
+                          {a.sensitive_data && <Pill tone="high" title="Holds sensitive data">Sensitive</Pill>}
+                          {platformAdmin && a.source !== "simulated" && <Pill tone="info">{a.source}</Pill>}
+                        </PillRow>
+                      </td>
+                      <td className="px-3 py-2"><NumCell value={a.open_findings} /></td>
+                      <td className="px-3 py-2"><NumCell value={a.vulnerabilities} /></td>
+                      <td className="px-3 py-2">{a.vulnerabilities ? <RiskBar value={a.max_risk} /> : <None />}</td>
+                      <td className="px-3 py-2"><NumCell value={a.open_alerts} /></td>
+                    </>
+                  )}
+                </tr>
+              );
+            })}
           </Table>
       </Card>
       <AssetDrawer assetId={selected} onClose={() => setSelected(null)} onNavigate={setSelected} />

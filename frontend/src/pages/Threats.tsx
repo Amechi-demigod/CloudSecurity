@@ -4,11 +4,13 @@ import { useSearchParams } from "react-router-dom";
 import { api, type Alert } from "../api";
 import { useAuth } from "../auth/context";
 import AssetDrawer from "../components/AssetDrawer";
-import { Button, Card, Empty, ErrorNote, PageHeader, Select, SeverityBadge, Tag } from "../components/ui";
+import { Button, Card, Empty, ErrorNote, FilterBar, FilterChips, FilterSelect, PageHeader, Pill, Segments, SeverityBadge, Tag, type PillTone } from "../components/ui";
 import { TYPE_LABEL, fmtAgo, fmtTime } from "../lib/format";
 import { useApi } from "../lib/useApi";
 import { useUrlState } from "../lib/useUrlState";
 import { PAGE_INFO } from "../lib/pageInfo";
+
+const SEV_TONE: Record<string, PillTone> = { critical: "critical", high: "high", medium: "medium", low: "neutral" };
 
 const EVENT_LABEL: Record<string, string> = {
   process_exec: "exec",
@@ -133,22 +135,22 @@ export default function Threats() {
         subtitle="Suspicious activity seen on your devices and servers."
       />
       <ErrorNote error={alerts.error} />
-      <div className="mb-3 flex flex-wrap items-center gap-3">
-        <Select
+      <FilterBar count={alerts.data ? `${alerts.data.length} ${alerts.data.length === 1 ? "threat" : "threats"}` : undefined}>
+        <Segments
           label="Status"
           value={status}
           onChange={setStatus}
           options={[
             { value: "", label: "Active" },
             { value: "open", label: "Open" },
-            { value: "acknowledged", label: "Acknowledged" },
+            { value: "acknowledged", label: "Investigating" },
             { value: "resolved", label: "Fixed" },
             { value: "all", label: "All" },
           ]}
         />
-        <Select label="Severity" value={severity} onChange={setSeverity} options={["", "critical", "high", "medium", "low"]} />
-        <span className="text-xs text-ink-3">{alerts.data ? `${alerts.data.length} threats` : ""}</span>
-      </div>
+        <FilterSelect label="Severity" value={severity} onChange={setSeverity} options={["", "critical", "high", "medium", "low"]} />
+      </FilterBar>
+      <FilterChips chips={severity ? [{ label: "Severity", value: severity, onRemove: () => setSeverity("") }] : []} onClearAll={() => setSeverity("")} />
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.3fr)]">
         <Card title="Threats">
           {alerts.data && alerts.data.length === 0 && <Empty>No threats right now.</Empty>}
@@ -160,14 +162,14 @@ export default function Threats() {
                 onClick={() => setSelected(a.id)}
               >
                 <div className="flex items-center gap-2">
-                  <SeverityBadge severity={a.severity} />
-                  <span className="truncate text-sm">{a.title}</span>
+                  <Pill tone={SEV_TONE[a.severity] ?? "neutral"}>{a.severity[0].toUpperCase() + a.severity.slice(1)}</Pill>
+                  <span className="truncate text-sm font-semibold">{a.title}</span>
                   {a.event_count > 1 && <span className="text-xs text-ink-3">×{a.event_count}</span>}
                   <span className="ml-auto shrink-0 text-xs text-ink-3">{fmtAgo(a.last_seen)}</span>
                 </div>
                 <div className="mt-0.5 flex gap-2 text-xs text-ink-3">
                   <span className="truncate">{a.asset_name}</span>
-                                    {a.status !== "open" && <span>· {statusLabel(a.status)}</span>}
+                                    {a.status !== "open" && <span>· {a.status === "acknowledged" ? "Investigating" : statusLabel(a.status)}</span>}
                 </div>
               </li>
             ))}

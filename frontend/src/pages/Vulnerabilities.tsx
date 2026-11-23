@@ -3,7 +3,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../api";
 import { useAuth } from "../auth/context";
 import AssetDrawer from "../components/AssetDrawer";
-import { Button, Card, Empty, ErrorNote, PageHeader, RiskBar, Select, SeverityBadge, Stat, Table, Tag } from "../components/ui";
+import { Button, Card, Empty, ErrorNote, FilterBar, FilterChips, FilterSearch, FilterSelect, NameCell, NumCell, None, PageHeader, Pill, PillRow, RiskBar, Stat, Table, TextCell, type FilterChip, type PillTone } from "../components/ui";
 import { FeedStatus, VulnTable } from "../components/vulns";
 import { useApi } from "../lib/useApi";
 import { useSort, useSortState } from "../lib/useSort";
@@ -12,6 +12,8 @@ import { PAGE_INFO } from "../lib/pageInfo";
 
 const VIEWS = ["Vulnerabilities", "By CVE", "By software", "Coverage"] as const;
 type View = (typeof VIEWS)[number];
+
+const SEV_TONE: Record<string, PillTone> = { critical: "critical", high: "high", medium: "medium", low: "neutral" };
 
 type Filters = Record<string, string | boolean | undefined>;
 
@@ -140,74 +142,74 @@ export default function Vulnerabilities() {
       </div>
 
       {view !== "Coverage" && (
-        <div className="mb-3 flex flex-wrap items-center gap-3">
-          <Select
-            label="Affected"
-            value={target}
-            onChange={setTarget}
-            options={[
-              { value: "", label: "Everything" },
-              { value: "asset", label: "Cloud workloads & servers" },
-              { value: "device", label: "Laptops (devices)" },
-            ]}
+        <>
+          <FilterBar
+            count={view === "Vulnerabilities" && list.data ? `${list.data.length} vulnerabilities` : undefined}
+            moreActive={[runtime !== "all" && target !== "device" ? runtime : "", priority, cve.trim()].filter(Boolean).length}
+            more={
+              <>
+                {target !== "device" && <FilterSelect label="Runtime" value={runtime} onChange={setRuntime} options={[{ value: "all", label: "All" }, { value: "in_use", label: "In use" }, { value: "dormant", label: "Not in use" }]} />}
+                {view === "Vulnerabilities" && <FilterSelect label="Priority" value={priority} onChange={setPriority} options={["", "critical", "high", "medium", "low"]} />}
+                <FilterSearch value={cve} onChange={setCve} placeholder="CVE-…" label="Filter by CVE" />
+                {view === "Vulnerabilities" && (
+                  <FilterSelect
+                    label="Sort by"
+                    value={listSort.sort.key}
+                    onChange={(k) => k !== listSort.sort.key && listSort.onSort(k)}
+                    options={[
+                      { value: "risk", label: "Risk" },
+                      { value: "cvss", label: "Severity score only" },
+                      { value: "epss", label: "Likely to be exploited" },
+                      { value: "recent", label: "Newest" },
+                      ...(["risk", "cvss", "epss", "recent"].includes(listSort.sort.key) ? [] : [{ value: listSort.sort.key, label: "Table column" }]),
+                    ]}
+                  />
+                )}
+              </>
+            }
+          >
+            <FilterSearch value={software} onChange={setSoftware} placeholder="Software or package" label="Filter by software" />
+            <FilterSelect label="Where" value={target} onChange={setTarget} options={[{ value: "", label: "All" }, { value: "asset", label: "Cloud workloads & servers" }, { value: "device", label: "Computers" }]} />
+            <FilterSelect label="Severity" value={severity} onChange={setSeverity} options={["", "critical", "high", "medium", "low"]} />
+            <FilterSelect label="Status" value={status} onChange={setStatus} options={[{ value: "open", label: "Open" }, { value: "resolved", label: "Fixed" }, { value: "all", label: "All" }]} />
+            <label className="inline-flex h-8 items-center gap-1.5 text-sm text-ink-2">
+              <input type="checkbox" className="accent-accent" checked={kevOnly} onChange={(e) => setKevOnly(e.target.checked)} /> Being exploited
+            </label>
+            {deviceId && (
+              <Link to="/vulnerabilities" className="text-xs text-accent">
+                clear device filter
+              </Link>
+            )}
+          </FilterBar>
+          <FilterChips
+            chips={
+              [
+                software.trim() && { label: "Software", value: software, onRemove: () => setSoftware("") },
+                target && { label: "Where", value: target === "device" ? "Computers" : "Cloud workloads & servers", onRemove: () => setTarget("") },
+                severity && { label: "Severity", value: severity, onRemove: () => setSeverity("") },
+                status !== "open" && { label: "Status", value: status === "resolved" ? "Fixed" : "All", onRemove: () => setStatus("open") },
+                kevOnly && { label: "Exploited", value: "Being exploited now", onRemove: () => setKevOnly(false) },
+                runtime !== "all" && target !== "device" && { label: "Runtime", value: runtime === "in_use" ? "In use" : "Not in use", onRemove: () => setRuntime("all") },
+                priority && { label: "Priority", value: priority, onRemove: () => setPriority("") },
+                cve.trim() && { label: "CVE", value: cve, onRemove: () => setCve("") },
+              ].filter((c): c is FilterChip => !!c)
+            }
+            onClearAll={() => {
+              setSoftware("");
+              setTarget("");
+              setSeverity("");
+              setStatus("open");
+              setKevOnly(false);
+              setRuntime("all");
+              setPriority("");
+              setCve("");
+            }}
           />
-          {target !== "device" && (
-            <Select
-              label="Runtime"
-              value={runtime}
-              onChange={setRuntime}
-              options={[
-                { value: "all", label: "All" },
-                { value: "in_use", label: "In use" },
-                { value: "dormant", label: "Not in use (lower priority)" },
-              ]}
-            />
-          )}
-          <Select label="Severity" value={severity} onChange={setSeverity} options={["", "critical", "high", "medium", "low"]} />
-          {view === "Vulnerabilities" && <Select label="Priority" value={priority} onChange={setPriority} options={["", "critical", "high", "medium", "low"]} />}
-          <Select label="Status" value={status} onChange={setStatus} options={[{ value: "open", label: "Open" }, { value: "resolved", label: "Fixed" }, { value: "all", label: "All" }]} />
-          <label className="flex items-center gap-1.5 text-sm text-ink-2">
-            <input type="checkbox" checked={kevOnly} onChange={(e) => setKevOnly(e.target.checked)} /> Being exploited now only
-          </label>
-          <input
-            value={software}
-            onChange={(e) => setSoftware(e.target.value)}
-            placeholder="Software / package"
-            aria-label="Filter by software"
-            className="w-44 rounded border border-line bg-surface-2 px-2 py-1 text-sm text-ink"
-          />
-          <input
-            value={cve}
-            onChange={(e) => setCve(e.target.value)}
-            placeholder="CVE-…"
-            aria-label="Filter by CVE"
-            className="w-36 rounded border border-line bg-surface-2 px-2 py-1 font-mono text-sm text-ink"
-          />
-          {view === "Vulnerabilities" && (
-            <Select
-              label="Sort by"
-              value={listSort.sort.key}
-              onChange={(k) => k !== listSort.sort.key && listSort.onSort(k)}
-              options={[
-                { value: "risk", label: "Risk" },
-                { value: "cvss", label: "Severity score only" },
-                { value: "epss", label: "Likely to be exploited" },
-                { value: "recent", label: "Newest" },
-                ...(["risk", "cvss", "epss", "recent"].includes(listSort.sort.key) ? [] : [{ value: listSort.sort.key, label: "Table column" }]),
-              ]}
-            />
-          )}
-          {deviceId && (
-            <Link to="/vulnerabilities" className="text-xs text-accent">
-              clear device filter
-            </Link>
-          )}
-        </div>
+        </>
       )}
 
       {view === "Vulnerabilities" && (
         <Card>
-          <p className="mb-2 text-xs text-ink-3">{list.data ? `${list.data.length} vulnerabilities` : "Loading…"}</p>
           {list.data && list.data.length === 0 ? <Empty>No vulnerabilities match these filters.</Empty> : <VulnTable rows={list.data ?? []} onAsset={setAsset} serverSort={listSort} />}
         </Card>
       )}
@@ -220,38 +222,45 @@ export default function Vulnerabilities() {
             <Table
               tableId="vulnerabilities-1"
               head={[
-                { label: "Severity", sort: "severity" },
-                { label: "CVE", sort: "cve" },
-                { label: "Software", sort: "software" },
-                { label: "Affected", sort: "affected" },
-                { label: "How serious", sort: "cvss" },
-                { label: "Fixed in", sort: "fixed" },
-                { label: "Risk", sort: "risk" },
+                { label: "CVE", sort: "cve", w: 300 },
+                { label: "Severity", sort: "severity", w: 150 },
+                { label: "Software", sort: "software", w: 200 },
+                { label: "Affected", sort: "affected", w: 100, align: "right" },
+                { label: "Score", sort: "cvss", w: 90, align: "right" },
+                { label: "Fixed in", sort: "fixed", w: 140 },
+                { label: "Risk", sort: "risk", w: 130 },
               ]}
               sort={cveSort.sort}
               onSort={cveSort.onSort}
+              noun="CVEs"
+              pageSize={50}
+              loading={byCve.loading}
+              rowCount={byCve.data?.length ?? 0}
             >
               {(byCve.data ?? []).map((g) => (
                 <tr key={g.cve_id} className="hover:bg-surface-2">
                   <td className="px-3 py-2">
-                    <SeverityBadge severity={g.severity} /> {g.kev && <Tag tone="critical">Being exploited now</Tag>}
+                    <div className="min-w-0">
+                      <Link className="block truncate font-mono text-sm font-semibold text-ink hover:text-accent hover:underline" to={`/vulnerabilities/${encodeURIComponent(g.cve_id)}`}>
+                        {g.cve_id}
+                      </Link>
+                      <span className="block truncate text-xs text-ink-3" title={g.title}>{g.title}</span>
+                    </div>
                   </td>
                   <td className="px-3 py-2">
-                    <Link className="font-mono text-xs hover:text-accent" to={`/vulnerabilities/${encodeURIComponent(g.cve_id)}`}>
-                      {g.cve_id}
-                    </Link>
-                    <div className="max-w-[18rem] truncate text-[11px] text-ink-3" title={g.title}>{g.title}</div>
+                    <PillRow>
+                      <Pill tone={SEV_TONE[g.severity] ?? "neutral"}>{g.severity[0].toUpperCase() + g.severity.slice(1)}</Pill>
+                      {g.kev && <Pill tone="critical" title="Being exploited now">Exploited</Pill>}
+                    </PillRow>
                   </td>
-                  <td className="px-3 py-2 text-xs">{g.packages.join(", ")}</td>
-                  <td className="px-3 py-2 text-xs">
-                    {g.device_count > 0 && <div title={g.devices.join(", ")}>{g.device_count} device{g.device_count === 1 ? "" : "s"}</div>}
-                    {g.asset_count > 0 && <div title={g.assets.join(", ")}>{g.asset_count} asset{g.asset_count === 1 ? "" : "s"}</div>}
+                  <td className="px-3 py-2"><TextCell>{g.packages.join(", ")}</TextCell></td>
+                  <td className="px-3 py-2">
+                    <NumCell value={g.device_count + g.asset_count} title={[g.devices.join(", "), g.assets.join(", ")].filter(Boolean).join(" · ") || undefined} />
                   </td>
-                  <td className="whitespace-nowrap px-3 py-2 text-xs">
-                    {g.cvss.toFixed(1)}
-                    {g.epss != null && <span className="text-ink-3" title="Chance of being exploited in the next 30 days"> · {(g.epss * 100).toFixed(0)}% likely to be exploited</span>}
+                  <td className="px-3 py-2">
+                    <NumCell value={g.cvss.toFixed(1)} title={g.epss != null ? `${(g.epss * 100).toFixed(0)}% chance of being exploited in the next 30 days` : undefined} />
                   </td>
-                  <td className="px-3 py-2 font-mono text-xs text-ink-2">{g.fixed_versions.slice(-2).join(", ") || "—"}</td>
+                  <td className="px-3 py-2">{g.fixed_versions.length ? <TextCell mono>{g.fixed_versions.slice(-2).join(", ")}</TextCell> : <None />}</td>
                   <td className="px-3 py-2"><RiskBar value={g.max_risk} /></td>
                 </tr>
               ))}
@@ -268,31 +277,32 @@ export default function Vulnerabilities() {
             <Table
               tableId="vulnerabilities-2"
               head={[
-                { label: "Software", sort: "software" },
-                { label: "Worst", sort: "severity" },
-                { label: "Flaws", sort: "cves" },
-                { label: "Being exploited", sort: "kev" },
-                { label: "Affected", sort: "affected" },
-                { label: "Installed versions", sort: "versions" },
-                { label: "Update to", sort: "fixed" },
+                { label: "Software", sort: "software", w: 280 },
+                { label: "Worst", sort: "severity", w: 110 },
+                { label: "Flaws", sort: "cves", w: 80, align: "right" },
+                { label: "Being exploited", sort: "kev", w: 140, align: "right" },
+                { label: "Affected", sort: "affected", w: 100, align: "right" },
+                { label: "Installed versions", sort: "versions", w: 210 },
+                { label: "Update to", sort: "fixed", w: 150 },
               ]}
               sort={swSort.sort}
               onSort={swSort.onSort}
+              noun="software"
+              pageSize={50}
+              loading={bySw.loading}
+              rowCount={bySw.data?.length ?? 0}
             >
               {(bySw.data ?? []).map((g) => (
                 <tr key={g.package} className="hover:bg-surface-2">
                   <td className="px-3 py-2">
-                    <button className="hover:text-accent" onClick={() => { setSoftware(g.package); setView("Vulnerabilities"); }}>{g.package}</button>
+                    <NameCell name={g.package} onOpen={() => { setSoftware(g.package); setView("Vulnerabilities"); }} openLabel={`Show the flaws in ${g.package}`} />
                   </td>
-                  <td className="px-3 py-2"><SeverityBadge severity={g.severity} /></td>
-                  <td className="px-3 py-2 text-xs">{g.cve_count}</td>
-                  <td className="px-3 py-2 text-xs">{g.kev_count > 0 ? <Tag tone="critical">{g.kev_count}</Tag> : "—"}</td>
-                  <td className="px-3 py-2 text-xs">
-                    {g.device_count > 0 && <div>{g.device_count} device{g.device_count === 1 ? "" : "s"}</div>}
-                    {g.asset_count > 0 && <div>{g.asset_count} asset{g.asset_count === 1 ? "" : "s"}</div>}
-                  </td>
-                  <td className="max-w-[16rem] truncate px-3 py-2 font-mono text-xs text-ink-2" title={g.versions.join(", ")}>{g.versions.join(", ")}</td>
-                  <td className="px-3 py-2 font-mono text-xs text-ink-2">{g.fixed_versions.length ? `≥ ${g.fixed_versions[g.fixed_versions.length - 1]}` : "—"}</td>
+                  <td className="px-3 py-2"><PillRow><Pill tone={SEV_TONE[g.severity] ?? "neutral"}>{g.severity[0].toUpperCase() + g.severity.slice(1)}</Pill></PillRow></td>
+                  <td className="px-3 py-2"><NumCell value={g.cve_count} /></td>
+                  <td className="px-3 py-2"><NumCell value={g.kev_count} /></td>
+                  <td className="px-3 py-2"><NumCell value={g.device_count + g.asset_count} title={`${g.device_count} computers, ${g.asset_count} cloud assets`} /></td>
+                  <td className="px-3 py-2"><TextCell mono title={g.versions.join(", ")}>{g.versions.join(", ")}</TextCell></td>
+                  <td className="px-3 py-2">{g.fixed_versions.length ? <TextCell mono>{`≥ ${g.fixed_versions[g.fixed_versions.length - 1]}`}</TextCell> : <None />}</td>
                 </tr>
               ))}
             </Table>

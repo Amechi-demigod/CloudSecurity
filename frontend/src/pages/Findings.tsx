@@ -5,12 +5,14 @@ import { Link, Navigate, useSearchParams } from "react-router-dom";
 import { api, type Finding } from "../api";
 import { useAuth } from "../auth/context";
 import AssetDrawer from "../components/AssetDrawer";
-import { Button, Card, Empty, ErrorNote, PageHeader, Select, SeverityBadge, Table, Tag } from "../components/ui";
+import { Button, Card, Empty, ErrorNote, FilterBar, FilterChips, FilterSearch, FilterSelect, NameCell, PageHeader, Pill, PillRow, Segments, Table, TextCell, type FilterChip, type PillTone } from "../components/ui";
 import { PROVIDER_LABEL, TYPE_LABEL, fmtAgo } from "../lib/format";
 import { useApi } from "../lib/useApi";
 import { useSortState } from "../lib/useSort";
 import { useUrlState } from "../lib/useUrlState";
 import { PAGE_INFO } from "../lib/pageInfo";
+
+const SEV_TONE: Record<string, PillTone> = { critical: "critical", high: "high", medium: "medium", low: "neutral" };
 
 export default function Findings() {
   // Deep links: ?severity=, ?status=, ?provider=, ?compliance=, ?category=, ?subscription= (dashboards); ?rule= (compliance); ?finding=<id> redirects below
@@ -52,6 +54,31 @@ export default function Findings() {
       }),
     [severity, status, source, provider, compliance, category, subscription, rule, reason, sorted.sort.key, sorted.sort.dir],
   );
+  const STATUS_OPTS = [{ value: "open", label: "Open" }, { value: "resolved", label: "Fixed" }, { value: "suppressed", label: "Snoozed" }, { value: "all", label: "All" }];
+  const clearAll = () => {
+    setSeverity("");
+    setStatus("open");
+    setSource("");
+    setProvider("");
+    setCompliance("");
+    setCategory("");
+    setSubscription("");
+    setRule("");
+    setReason("");
+  };
+  const chips: FilterChip[] = [
+    severity && { label: "Severity", value: severity, onRemove: () => setSeverity("") },
+    status !== "open" && { label: "Status", value: STATUS_OPTS.find((o) => o.value === status)?.label ?? status, onRemove: () => setStatus("open") },
+    reason && { label: "Reason", value: "Resource removed", onRemove: () => setReason("") },
+    provider && { label: "Cloud", value: PROVIDER_LABEL[provider] ?? provider, onRemove: () => setProvider("") },
+    source && { label: "Source", value: source, onRemove: () => setSource("") },
+    compliance && { label: "Framework", value: compliance, onRemove: () => setCompliance("") },
+    category && { label: "Category", value: category, onRemove: () => setCategory("") },
+    subscription && { label: "Account", value: subscription, onRemove: () => setSubscription("") },
+    rule && { label: "Rule", value: rule, onRemove: () => setRule("") },
+  ].filter((c): c is FilterChip => !!c);
+  const filtered = chips.some((c) => c.label !== "Status");
+
   async function setFindingStatus(f: Finding, s: Finding["status"]) {
     try {
       await api.updateFinding(f.id, s);
@@ -77,70 +104,53 @@ export default function Findings() {
         }
         subtitle="Settings in your cloud accounts that put you at risk."
       />
-      <ErrorNote error={error ?? actionError} />
-      <div className="mb-3 flex flex-wrap items-center gap-3">
-        <Select label="Severity" value={severity} onChange={setSeverity} options={["", "critical", "high", "medium", "low"]} />
-        <Select label="Status" value={status} onChange={setStatus} options={[{ value: "open", label: "Open" }, { value: "suppressed", label: "Snoozed" }, { value: "resolved", label: "Fixed" }, { value: "all", label: "All" }]} />
-        <Select
-          label="Reason"
-          value={reason}
-          onChange={(v) => {
-            setReason(v);
-            if (v && status === "open") setStatus("resolved");
-          }}
-          options={[{ value: "", label: "Any" }, { value: "removed", label: "Resource removed" }]}
-        />
-        <Select
-          label="Cloud"
-          value={provider}
-          onChange={setProvider}
-          options={[{ value: "", label: "All" }, ...["azure", "aws", "gcp"].map((p) => ({ value: p, label: PROVIDER_LABEL[p] }))]}
-        />
-        <Select label="Source" value={source} onChange={setSource} options={[{ value: "", label: "All" }, ...(platformAdmin ? [{ value: "simulated", label: "Demo data" }] : []), { value: "azure", label: "Azure" }, { value: "aws", label: "AWS" }, { value: "gcp", label: "Google Cloud" }]} />
-        <input
-          className="w-48 rounded border border-line bg-surface-2 px-2 py-1 text-sm"
-          placeholder="Compliance, e.g. CIS AWS 2.1"
-          value={compliance}
-          onChange={(e) => setCompliance(e.target.value)}
-        />
-        {[
-          { label: "Category", value: category, clear: () => setCategory("") },
-          { label: "Account", value: subscription, clear: () => setSubscription("") },
-          { label: "Rule", value: rule, clear: () => setRule("") },
-        ]
-          .filter((f) => f.value)
-          .map((f) => (
-            <button
-              key={f.label}
-              type="button"
-              onClick={f.clear}
-              title={`Remove the ${f.label.toLowerCase()} filter`}
-              className="inline-flex max-w-[16rem] items-center gap-1 rounded-full border border-line bg-surface-2 px-2.5 py-0.5 text-xs text-ink-2 hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-            >
-              <span className="truncate">
-                {f.label}: <span className="text-ink">{f.value}</span>
-              </span>
-              <span aria-hidden>✕</span>
-            </button>
-          ))}
-        <span className="text-xs text-ink-3">{data ? `${data.length} findings` : ""}</span>
-      </div>
+      <ErrorNote error={actionError} />
       <Card>
+        <FilterBar
+          count={data ? `${data.length} ${data.length === 1 ? "issue" : "issues"}` : undefined}
+          moreActive={[reason, provider, source].filter(Boolean).length}
+          more={
+            <>
+              <FilterSelect
+                label="Reason"
+                value={reason}
+                onChange={(v) => {
+                  setReason(v);
+                  if (v && status === "open") setStatus("resolved");
+                }}
+                options={[{ value: "", label: "Any" }, { value: "removed", label: "Resource removed" }]}
+              />
+              <FilterSelect label="Cloud" value={provider} onChange={setProvider} options={[{ value: "", label: "All" }, ...["azure", "aws", "gcp"].map((p) => ({ value: p, label: PROVIDER_LABEL[p] }))]} />
+              <FilterSelect label="Source" value={source} onChange={setSource} options={[{ value: "", label: "All" }, ...(platformAdmin ? [{ value: "simulated", label: "Demo data" }] : []), { value: "azure", label: "Azure" }, { value: "aws", label: "AWS" }, { value: "gcp", label: "Google Cloud" }]} />
+            </>
+          }
+        >
+          <Segments label="Status" value={status} onChange={setStatus} options={STATUS_OPTS} />
+          <FilterSelect label="Severity" value={severity} onChange={setSeverity} options={["", "critical", "high", "medium", "low"]} />
+          <FilterSearch value={compliance} onChange={setCompliance} placeholder="Framework, e.g. CIS AWS 2.1" label="Filter by compliance framework" />
+        </FilterBar>
+        <FilterChips chips={chips} onClearAll={clearAll} />
           <Table
             tableId="findings"
             head={[
-              { label: "Severity", sort: "severity" },
-              { label: "Finding", sort: "title" },
-              { label: "Resource", sort: "resource" },
-              "Compliance",
-              { label: "Status", sort: "status" },
-              { label: "First seen", sort: "first_seen" },
+              { label: "Severity", sort: "severity", w: 110 },
+              { label: "Issue", sort: "title", w: 360 },
+              { label: "Resource", sort: "resource", w: 260 },
+              { label: "Compliance", w: 170 },
+              { label: "Status", sort: "status", w: 120 },
+              { label: "First seen", sort: "first_seen", w: 110 },
               { label: "Details", srOnly: true },
             ]}
             sort={sorted.sort}
             onSort={sorted.onSort}
             loading={loading}
             rowCount={data?.length ?? 0}
+            noun="issues"
+            pageSize={50}
+            filtered={filtered}
+            onClearFilters={clearAll}
+            error={data ? null : error}
+            onRetry={reload}
             empty={
               <Empty icon={ShieldCheck} title={status === "open" && !severity && !provider && !source && !compliance && !category && !subscription && !rule && !reason ? "No open findings" : "No findings match these filters"}>
                 {status === "open" ? "Nothing to fix here right now. Run a scan under Settings > Connections to re-check." : "Try another status or clear a filter."}
@@ -151,39 +161,39 @@ export default function Findings() {
               <Fragment key={f.id}>
                 <tr className="cursor-pointer hover:bg-surface-2" onClick={() => setExpanded(expanded === f.id ? null : f.id)}>
                   <td className="px-3 py-2">
-                    <SeverityBadge severity={f.severity} />
+                    <Pill tone={SEV_TONE[f.severity] ?? "neutral"}>{f.severity[0].toUpperCase() + f.severity.slice(1)}</Pill>
                   </td>
                   <td className="px-3 py-2">
-                    <Link to={`/findings/${f.id}`} className="hover:text-accent" onClick={(e) => e.stopPropagation()}>
-                      {f.title}
-                    </Link>
-                    <div className="font-mono text-[11px] text-ink-3">{f.rule_id}</div>
+                    <div className="min-w-0" onClick={(e) => e.stopPropagation()}>
+                      <Link to={`/findings/${f.id}`} title={f.title} className="block overflow-hidden text-ellipsis whitespace-nowrap font-semibold text-ink hover:text-accent hover:underline">
+                        {f.title}
+                      </Link>
+                      <span className="block truncate font-mono text-xs text-ink-3">{f.rule_id}</span>
+                    </div>
                   </td>
                   <td className="px-3 py-2">
-                    <button
-                      className="hover:text-accent"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setAsset(f.asset_id);
-                      }}
-                    >
-                      {f.asset_name}
-                    </button>
-                    <div className="text-[11px] text-ink-3">{TYPE_LABEL[f.asset_type ?? ""] ?? f.asset_type}</div>
-                  </td>
-                  <td className="space-x-1 px-3 py-2">
-                    {f.compliance.map((c) => (
-                      <Tag key={c}>{c}</Tag>
-                    ))}
+                    <NameCell name={f.asset_name ?? ""} sub={TYPE_LABEL[f.asset_type ?? ""] ?? f.asset_type} onOpen={() => setAsset(f.asset_id)} />
                   </td>
                   <td className="px-3 py-2">
-                    {f.status === "resolved" && f.close_reason === "resource_removed" ? (
-                      <Tag>Closed · resource removed</Tag>
-                    ) : (
-                      <Tag tone={f.status === "open" ? "warn" : f.status === "resolved" ? "good" : "default"}>{statusLabel(f.status)}</Tag>
-                    )}
+                    <PillRow>
+                      {f.compliance.slice(0, 2).map((c) => (
+                        <Pill key={c} title={c}>{c.length > 14 ? `${c.slice(0, 13)}…` : c}</Pill>
+                      ))}
+                      {f.compliance.length > 2 && <Pill title={f.compliance.slice(2).join(", ")}>+{f.compliance.length - 2}</Pill>}
+                    </PillRow>
                   </td>
-                  <td className="px-3 py-2 text-xs text-ink-2">{fmtAgo(f.first_seen)}</td>
+                  <td className="px-3 py-2">
+                    <PillRow>
+                      {f.status === "resolved" && f.close_reason === "resource_removed" ? (
+                        <Pill title="Closed because the cloud resource no longer exists">Removed</Pill>
+                      ) : (
+                        <Pill tone={f.status === "open" ? "high" : f.status === "resolved" ? "good" : "neutral"}>{statusLabel(f.status)}</Pill>
+                      )}
+                    </PillRow>
+                  </td>
+                  <td className="px-3 py-2">
+                    <TextCell muted>{fmtAgo(f.first_seen)}</TextCell>
+                  </td>
                   <td className="px-3 py-2 text-right text-xs text-ink-3">{expanded === f.id ? "▲" : "▼"}</td>
                 </tr>
                 {expanded === f.id && (
