@@ -23,8 +23,8 @@ import { fmtAgo, fmtHours, fmtTime, fmtUntil } from "../lib/format";
 import { useApi } from "../lib/useApi";
 import { EntraForm } from "./directoryEntra";
 import { GoogleForm } from "./directoryGoogle";
-import { CodeBox, DirectoryMark, RunResult, ScopeChips, StatCell } from "./directoryShared";
-import { Button, Card, ErrorNote, Field, Tag } from "./ui";
+import { CodeBox, DirectoryMark, RunResult, ScopeChips } from "./directoryShared";
+import { Button, Card, ErrorNote, Field, MoreMenu, Pill, Tag } from "./ui";
 
 type AdSource = Extract<DirectorySource, { type: "ad" }>;
 
@@ -566,40 +566,64 @@ function SourceCard({ src, isAdmin, onChanged }: { src: DirectorySource; isAdmin
   }
 
   const lastValue = active ? runText[active.status] : src.last_sync_status ? runText[src.last_sync_status] : "Not yet";
-  const lastClass = active ? RUN_COLOR[active.status] : src.last_sync_status ? RUN_COLOR[src.last_sync_status] : "text-ink-3";
   const objectsSub = server ? `${src.computers_count.toLocaleString()} device records · ${src.users_count.toLocaleString()} users` : `${src.computers_count.toLocaleString()} computers · ${src.users_count.toLocaleString()} users`;
 
+  const partly = Object.values(src.scope_status).some((x) => x.status !== "ok");
+  const failedSync = !active && src.last_sync_status === "failed";
+  const [pillTone, pillText]: ["good" | "high" | "info" | "neutral" | "medium", string] = !src.enabled
+    ? ["neutral", "Off"]
+    : active
+      ? ["info", "Syncing"]
+      : failedSync
+        ? ["high", "Needs attention"]
+        : !src.last_sync_at
+          ? ["neutral", "Not synced yet"]
+          : partly
+            ? ["medium", "Partly synced"]
+            : ["good", "Synced"];
+  const summaryLine = [
+    server ? `${src.computers_count.toLocaleString()} device records` : `${src.computers_count.toLocaleString()} computers`,
+    `${src.users_count.toLocaleString()} users`,
+    src.enabled && src.next_sync_at ? `next sync ${fmtUntil(src.next_sync_at)}` : src.enabled ? `every ${fmtHours(src.config.interval_hours)}` : "source disabled",
+    !server ? `${healthy}/${cols.length} collectors online` : "",
+  ].filter(Boolean);
+
   return (
-    <Card className="mb-4">
-      <div className="flex flex-wrap items-start justify-between gap-4 px-1">
+    <Card className="mb-3">
+      <div className="flex flex-wrap items-center justify-between gap-3 px-1">
         <div className="flex min-w-0 items-center gap-3">
-          <DirectoryMark size={32} type={src.type} />
+          <DirectoryMark size={28} type={src.type} />
           <div className="min-w-0">
-            <h3 className="text-base font-semibold text-ink">{src.name}</h3>
-            <div className="flex flex-wrap items-center gap-x-1.5 text-[13px] text-ink-3">
-              <span aria-hidden className={`inline-block h-2 w-2 rounded-full ${src.enabled ? "bg-good" : "bg-ink-3"}`} />
-              <span>{sourceSubtitle(src)}</span>
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="text-sm font-semibold text-ink">{src.name}</h3>
+              <Pill tone={pillTone}>{pillText}</Pill>
+              {src.last_sync_at && !active && (
+                <span className="text-xs text-ink-3" title={fmtTime(src.last_sync_at)}>
+                  {fmtAgo(src.last_sync_at)}
+                </span>
+              )}
+            </div>
+            <div className="truncate text-xs text-ink-3" title={sourceSubtitle(src)}>
+              {DIRECTORY_NAME[src.type]} · {summaryLine.join(" · ")}
             </div>
           </div>
         </div>
         {isAdmin && (
           <div className="flex flex-wrap items-center gap-2">
-            <Button onClick={() => setEditing((v) => !v)} disabled={editing || busy}>
-              Edit
-            </Button>
-            <Button disabled={busy} onClick={() => void act(() => directoryApi.updateSource(src.id, { enabled: !src.enabled }))}>
-              {src.enabled ? "Disable" : "Enable"}
-            </Button>
-            <Button
-              variant="danger"
-              disabled={busy}
-              onClick={() => {
-                if (window.confirm(`Delete ${src.name}? Its synced computers, users and discovery issues are removed. Hardware register items already added stay.`))
-                  void act(() => directoryApi.deleteSource(src.id));
-              }}
-            >
-              Delete
-            </Button>
+            <MoreMenu
+              items={[
+                { label: "Edit", onClick: () => setEditing(true), hidden: editing || busy },
+                { label: src.enabled ? "Disable" : "Enable", onClick: () => void act(() => directoryApi.updateSource(src.id, { enabled: !src.enabled })), hidden: busy },
+                {
+                  label: "Delete…",
+                  hidden: busy,
+                  onClick: () => {
+                    if (window.confirm(`Delete ${src.name}? Its synced computers, users and discovery issues are removed. Hardware register items already added stay.`))
+                      void act(() => directoryApi.deleteSource(src.id));
+                  },
+                },
+              ]}
+            />
             <Button variant="primary" disabled={busy || !src.enabled || !!active} onClick={() => void act(() => directoryApi.syncNow(src.id))}>
               <span className="inline-flex items-center gap-1.5">
                 <RefreshCw aria-hidden className={`h-3.5 w-3.5 ${active ? "animate-spin" : ""}`} />
@@ -610,44 +634,7 @@ function SourceCard({ src, isAdmin, onChanged }: { src: DirectorySource; isAdmin
         )}
       </div>
       <ErrorNote error={err} />
-      <div className="mt-4 grid grid-cols-2 gap-y-3 px-1 sm:grid-cols-4">
-        <StatCell
-          label="Last sync"
-          value={lastValue}
-          valueClass={lastClass}
-          sub={
-            active ? (
-              active.status === "queued" ? (
-                server ? `queued ${fmtAgo(active.queued_at)}` : `queued ${fmtAgo(active.queued_at)} on ${active.device_hostname ?? "collector"}`
-              ) : (
-                `${(active.computers_seen + active.users_seen).toLocaleString()} objects so far`
-              )
-            ) : src.last_sync_at ? (
-              <span title={fmtTime(src.last_sync_at)}>{fmtAgo(src.last_sync_at)}</span>
-            ) : undefined
-          }
-        />
-        <StatCell label="Objects" value={(src.computers_count + src.users_count).toLocaleString()} sub={objectsSub} />
-        <StatCell
-          label="Next sync"
-          value={!src.enabled ? "Off" : src.next_sync_at ? fmtUntil(src.next_sync_at) : "—"}
-          sub={src.enabled ? `every ${fmtHours(src.config.interval_hours)}` : "source disabled"}
-        />
-        {server ? (
-          <StatCell
-            label="Collection"
-            value="Server-side"
-            sub={src.type === "entra" ? `app ${src.config.client_id}` : src.type === "google" ? `key ${src.config.key_id}… · ${src.config.service_account_email}` : undefined}
-          />
-        ) : (
-          <StatCell
-            label="Collectors"
-            value={`${healthy} / ${cols.length} online`}
-            valueClass={healthy === 0 ? "text-sev-high" : "text-ink"}
-            sub={cols.map((c) => c.name + (c.dc ? " (DC)" : "")).join(", ")}
-          />
-        )}
-      </div>
+      <p className="sr-only">{`Last sync ${lastValue}. ${objectsSub}.`}</p>
       {src.legacy_collectors && (
         <div role="note" className="mt-3 rounded border border-sev-medium/60 bg-sev-medium/10 px-3 py-2 text-sm">
           <strong>Legacy: uses endpoint agents</strong> — move to a dedicated collector (Edit → Switch to dedicated collectors). Objects, issues

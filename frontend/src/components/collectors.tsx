@@ -17,7 +17,7 @@ import { errMsg } from "../lib/directory";
 import { fmtAgo, fmtTime } from "../lib/format";
 import { useApi } from "../lib/useApi";
 import { CodeBox } from "./directoryShared";
-import { Button, Card, Empty, ErrorNote, Field, Modal, Tag } from "./ui";
+import { Button, Card, Empty, ErrorNote, Field, Modal, Tag, MoreMenu, Pill, PillRow } from "./ui";
 
 const RUN_AS_LABEL: Record<DedicatedCollector["run_as_kind"], string> = {
   computer_account: "computer account",
@@ -372,27 +372,30 @@ function CollectorRow({ c, isAdmin, onChanged, newest }: { c: DedicatedCollector
     }
   }
   return (
-    <li className="space-y-2 rounded border border-line p-3">
-      <div className="flex flex-wrap items-start justify-between gap-3">
+    <li className="space-y-2 rounded border border-line px-3 py-2.5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <Server aria-hidden className="h-4 w-4 text-ink-3" />
-            <span className="font-medium text-ink">{c.name}</span>
-            <Tag tone={c.state === "online" ? "good" : c.state === "revoked" ? "critical" : "warn"}>{c.state}</Tag>
-            {c.is_domain_controller && <Tag tone="warn">domain controller</Tag>}
+            <span className="text-sm font-semibold text-ink">{c.name}</span>
+            <PillRow>
+              <Pill tone={c.state === "online" ? "good" : c.state === "revoked" ? "critical" : "high"}>{c.state === "online" ? "Online" : c.state === "revoked" ? "Revoked" : c.state === "never" ? "Never seen" : "Offline"}</Pill>
+              {(outdated || (c.status === "active" && isTestBuild(c))) && (
+                <Pill tone="medium" title={isTestBuild(c) ? "Test build: can't update itself" : "Needs a one-time update"}>
+                  Update needed
+                </Pill>
+              )}
+              {c.is_domain_controller && <Pill tone="medium">Domain controller</Pill>}
+            </PillRow>
             {c.version && <span className="text-xs text-ink-3">v{c.version}</span>}
-            {isTestBuild(c) && <Tag tone="warn">Test build: can&apos;t update itself</Tag>}
-            {outdated && <Tag tone="warn">Needs a one-time update</Tag>}
           </div>
-          <div className="mt-0.5 text-xs text-ink-3">
-            {c.dns_hostname || c.hostname || "not enrolled yet"} {c.domain && `· ${c.domain}`} · runs as{" "}
-            <span className="font-mono text-ink-2">{c.run_as || "?"}</span> ({RUN_AS_LABEL[c.run_as_kind]}) · last seen{" "}
-            {c.last_seen_at ? fmtAgo(c.last_seen_at) : "never"}
+          <div className="mt-0.5 truncate text-xs text-ink-3" title={`${c.dns_hostname || c.hostname || "not enrolled yet"}${c.domain ? ` · ${c.domain}` : ""} · runs as ${c.run_as || "?"} (${RUN_AS_LABEL[c.run_as_kind]})`}>
+            {c.dns_hostname || c.hostname || "not enrolled yet"} {c.domain && `· ${c.domain}`} · last seen {c.last_seen_at ? fmtAgo(c.last_seen_at) : "never"}
             {c.sources.length > 0 && ` · used by ${c.sources.map((s) => s.name).join(", ")}`}
           </div>
         </div>
         {isAdmin && c.status === "active" && (
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Button
               onClick={() =>
                 act(async () => {
@@ -404,13 +407,19 @@ function CollectorRow({ c, isAdmin, onChanged, newest }: { c: DedicatedCollector
             >
               Test
             </Button>
-            <Button onClick={() => act(async () => {
-              const n = window.prompt("New name", c.name);
-              if (n && n.trim()) await collectorApi.rename(c.id, n.trim());
-            })}>Rename</Button>
-            <Button variant="danger" onClick={() => window.confirm(`Revoke ${c.name}? It can no longer reach this server.`) && act(() => collectorApi.revoke(c.id))}>
-              Revoke
-            </Button>
+            <MoreMenu
+              items={[
+                {
+                  label: "Rename",
+                  onClick: () =>
+                    void act(async () => {
+                      const n = window.prompt("New name", c.name);
+                      if (n && n.trim()) await collectorApi.rename(c.id, n.trim());
+                    }),
+                },
+                { label: "Revoke…", onClick: () => window.confirm(`Revoke ${c.name}? It can no longer reach this server.`) && void act(() => collectorApi.revoke(c.id)) },
+              ]}
+            />
           </div>
         )}
         {isAdmin && c.status === "revoked" && (
