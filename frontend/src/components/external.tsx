@@ -2,7 +2,7 @@ import { useState } from "react";
 import { externalApi, type ExtOverview } from "../externalApi";
 import { errMsg, inputCls } from "../lib/externalUi";
 import { fmtTime } from "../lib/format";
-import { Button, ErrorNote, Modal, Tag } from "./ui";
+import { Button, ErrorNote, Modal, None, Pill, PillRow, Tag } from "./ui";
 
 /** One small line, shown once per attack-surface page. The full explanation is in the PDF report and the page's info tip. */
 export function NotAsvBanner() {
@@ -20,8 +20,15 @@ export function ResultBadge({ result }: { result: "pass" | "fail" | null | strin
 }
 
 export function StatusTag({ status }: { status: string }) {
-  const tone = status === "open" ? "warn" : status === "resolved" ? "good" : status === "disputed" ? "accent" : "default";
-  return <Tag tone={tone as "warn" | "good" | "accent" | "default"}>{status === "accepted" ? "accepted risk" : status}</Tag>;
+  const tone = status === "open" ? "info" : status === "resolved" ? "good" : status === "disputed" ? "medium" : "neutral";
+  const text = status === "accepted" ? "Accepted" : status[0].toUpperCase() + status.slice(1);
+  return (
+    <PillRow>
+      <Pill tone={tone} title={status === "accepted" ? "Accepted risk" : undefined}>
+        {text}
+      </Pill>
+    </PillRow>
+  );
 }
 
 /** Confirm what is in scope. Needed once, before the first report; the text appears in the report (Part 3c). */
@@ -68,8 +75,13 @@ export function ScopeModal({ open, onClose, scope, canEdit, onSaved }: {
 
 /** Fix-by text from the API's days_left / overdue_days (never from the due date: it lies in the future). */
 export function FixBy({ due, daysLeft, overdueDays }: { due: string | null; daysLeft: number | null; overdueDays: number | null }) {
-  if (!due) return <span className="text-ink-3">-</span>;
-  if (overdueDays) return <span className="font-medium text-sev-critical">Overdue {overdueDays} d</span>;
+  if (!due) return <None />;
+  if (overdueDays)
+    return (
+      <PillRow>
+        <Pill tone="critical">Overdue {overdueDays} {overdueDays === 1 ? "day" : "days"}</Pill>
+      </PillRow>
+    );
   if (!daysLeft) return <span className="text-ink-2">Due today</span>;
   return <span className="text-ink-2">In {daysLeft} {daysLeft === 1 ? "day" : "days"}</span>;
 }

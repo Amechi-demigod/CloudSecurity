@@ -4,7 +4,7 @@ import { Link } from "react-router-dom";
 import { useAuth } from "../../auth/context";
 import { useFindingActions } from "../../components/ExternalFindingActions";
 import { FixBy, NotAsvBanner, StatusTag } from "../../components/external";
-import { Button, Card, Empty, ErrorNote, FilterBar, FilterChips, FilterSearch, FilterSelect, NumCell, PageHeader, Pill, PillRow, Segments, Table, TextCell, type FilterChip, type PillTone } from "../../components/ui";
+import { Button, Card, Empty, ErrorNote, FilterBar, FilterChips, FilterSearch, FilterSelect, NumCell, None, PageHeader, Pill, PillRow, Segments, Table, type FilterChip, type PillTone } from "../../components/ui";
 import { externalApi, type ExtFinding, type ExtFindingFilter, type ExtFindingGroup } from "../../externalApi";
 import { preAsvLabel } from "../../lib/externalUi";
 import { fmtAgo } from "../../lib/format";
@@ -15,6 +15,8 @@ import { PAGE_INFO } from "../../lib/pageInfo";
 
 const SEV_TONE: Record<string, PillTone> = { critical: "critical", high: "high", medium: "medium", low: "neutral", info: "neutral" };
 const SevPill = ({ severity }: { severity: string }) => <PillRow><Pill tone={SEV_TONE[severity] ?? "neutral"}>{severity[0].toUpperCase() + severity.slice(1)}</Pill></PillRow>;
+const PreAsv = ({ label }: { label: string }) =>
+  label === "-" ? <None /> : <PillRow><Pill tone={label === "Pass" ? "good" : label === "Exception" ? "neutral" : "critical"}>{label === "Pass" ? "Passes" : label === "Exception" ? "Exception" : "Fails"}</Pill></PillRow>;
 const hostPort = (host: string, port: number | null) => `${host}${port ? `:${port}` : ""}`;
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
@@ -205,7 +207,7 @@ function AllView({ filter, filtered, setCount, setHost }: ViewProps) {
                   {f.port ? <div className="text-[11px] text-ink-3">Port {f.port}{f.service ? ` · ${f.service}` : ""}</div> : null}
                 </td>
                 <td className="px-3 py-2"><NumCell value={f.cvss ? f.cvss.toFixed(1) : null} /></td>
-                <td className="px-3 py-2"><TextCell>{preAsvLabel(f)}</TextCell></td>
+                <td className="px-3 py-2"><PreAsv label={preAsvLabel(f)} /></td>
                 <td className="px-3 py-2"><StatusTag status={f.status} /></td>
                 <td className="px-3 py-2 text-xs text-ink-2">{fmtAgo(f.first_seen)}</td>
                 <td className="px-3 py-2 text-xs"><FixBy due={f.fix_due} daysLeft={f.days_left} overdueDays={f.overdue_days} /></td>
@@ -335,7 +337,7 @@ function GroupedView({ filter, filtered, setCount, setHost }: ViewProps) {
                 </td>
                 <td className="px-3 py-2"><NumCell value={g.affected} title={`${plural(g.affected, "host:port")} on ${plural(g.hosts, "host")}`} /></td>
                 <td className="px-3 py-2"><NumCell value={g.cvss ? g.cvss.toFixed(1) : null} /></td>
-                <td className="px-3 py-2"><TextCell>{groupPreAsv(g)}</TextCell></td>
+                <td className="px-3 py-2"><PreAsv label={groupPreAsv(g)} /></td>
                 <td className="px-3 py-2">{statusSummary(g)}</td>
                 <td className="px-3 py-2 text-xs"><FixBy due={g.fix_due} daysLeft={g.days_left} overdueDays={g.overdue_days} /></td>
                 <td className="px-3 py-2 text-right">
