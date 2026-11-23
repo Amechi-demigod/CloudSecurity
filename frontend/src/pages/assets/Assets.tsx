@@ -3,8 +3,8 @@ import { useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { assetsApi, type AssetBrief, type ImportResult } from "../../assetsApi";
 import { useAuth } from "../../auth/context";
-import { AssetFormModal, AssetStatusBadge, FormError, OwnerDirectory } from "../../components/assets";
-import { Button, Card, Empty, ErrorNote, Modal, PageHeader, Select, Stat, Table, Tag } from "../../components/ui";
+import { AssetFormModal, AssetStatusBadge, FormError } from "../../components/assets";
+import { Button, Card, Empty, FilterBar, FilterChips, FilterSearch, FilterSelect, Modal, MoreMenu, NameCell, None, PageHeader, Pill, PillRow, Stat, Table, TextCell, type FilterChip } from "../../components/ui";
 import { STATUS_LABEL, STATUS_ORDER, TYPE_LABEL, errMsg, fmtDate, fmtMoney, namedByHost, ownerLabel } from "../../lib/assets";
 import { fmtAgo } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
@@ -139,6 +139,22 @@ export default function Assets() {
     },
     { key: "name", dir: "asc" },
   );
+  const clearAll = () => {
+    setQ("");
+    setStatus("active");
+    setType("");
+    setLocation("");
+    setAgent("");
+    setFlag("");
+  };
+  const chips: FilterChip[] = [
+    q.trim() && { label: "Search", value: q, onRemove: () => setQ("") },
+    type && { label: "Type", value: TYPE_LABEL[type] ?? type, onRemove: () => setType("") },
+    status !== "active" && { label: "Status", value: STATUS_LABEL[status as keyof typeof STATUS_LABEL] ?? (status || "All"), onRemove: () => setStatus("active") },
+    location && { label: "Site", value: location, onRemove: () => setLocation("") },
+    agent && { label: "Agent", value: agent === "yes" ? "Enrolled" : "No agent", onRemove: () => setAgent("") },
+    flag && { label: "Flag", value: flag.replace(/_/g, " "), onRemove: () => setFlag("") },
+  ].filter((c): c is FilterChip => !!c);
   const { data: settings } = useApi(assetsApi.settings, []);
   const s = summary.data;
   const reload = () => {
@@ -154,27 +170,21 @@ export default function Assets() {
         subtitle="Everything your company owns: who has it and when the warranty ends."
         actions={
           <div className="flex flex-wrap items-center gap-2">
-            <Link to="/it-assets/discovery" className="rounded border border-line bg-surface-2 px-3 py-1.5 text-sm font-medium text-ink hover:bg-line">
-              Discovery
-            </Link>
-            <Link to="/it-assets/offboarding" className="rounded border border-line bg-surface-2 px-3 py-1.5 text-sm font-medium text-ink hover:bg-line">
-              Offboarding
-            </Link>
-            {can("admin") && (
-              <Link to="/it-assets/settings" className="rounded border border-line bg-surface-2 px-3 py-1.5 text-sm font-medium text-ink hover:bg-line">
-                Settings
-              </Link>
-            )}
+            <MoreMenu
+              items={[
+                { label: "Discovery", to: "/it-assets/discovery" },
+                { label: "Offboarding", to: "/it-assets/offboarding" },
+                { label: "Settings", to: "/it-assets/settings", hidden: !can("admin") },
+                { label: "Import CSV", onClick: () => setImporting(true), hidden: !can("analyst") },
+              ]}
+            />
             <a href={assetsApi.exportUrl(filters)} className="rounded border border-line bg-surface-2 px-3 py-1.5 text-sm font-medium text-ink hover:bg-line">
               Export CSV
             </a>
             {can("analyst") && (
-              <>
-                <Button onClick={() => setImporting(true)}>Import CSV</Button>
-                <Button variant="primary" onClick={() => setAdding(true)}>
-                  Add asset
-                </Button>
-              </>
+              <Button variant="primary" onClick={() => setAdding(true)}>
+                Add hardware
+              </Button>
             )}
           </div>
         }
@@ -222,53 +232,43 @@ export default function Assets() {
         </>
       )}
       <Card>
-        <div className="mb-3 flex flex-wrap items-center gap-3">
-          <label className="flex items-center gap-1.5 text-xs text-ink-3">
-            Search
-            <input
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              placeholder="computer name, tag, serial, model, owner"
-              className="w-64 rounded border border-line bg-surface-2 px-2 py-1 text-sm text-ink"
-            />
-          </label>
-          <Select
-            label="Status"
-            value={status}
-            onChange={setStatus}
-            options={[{ value: "active", label: "In use (not disposed/lost)" }, { value: "", label: "All" }, ...STATUS_ORDER.map((v) => ({ value: v, label: STATUS_LABEL[v] }))]}
-          />
-          <Select label="Type" value={type} onChange={setType} options={[{ value: "", label: "All" }, ...Object.entries(TYPE_LABEL).map(([value, label]) => ({ value, label }))]} />
-          <Select label="Site" value={location} onChange={setLocation} options={[{ value: "", label: "All" }, ...(settings?.locations ?? []).map((l) => ({ value: l, label: l }))]} />
-          <Select label="Agent" value={agent} onChange={setAgent} options={[{ value: "", label: "Any" }, { value: "yes", label: "Enrolled" }, { value: "no", label: "No agent" }]} />
-          <Select
-            label="Flag"
-            value={flag}
-            onChange={setFlag}
-            options={[
-              { value: "", label: "None" },
-              { value: "retrieval_overdue", label: "Retrieval overdue" },
-              { value: "warranty_expiring", label: "Warranty expiring" },
-              { value: "idle", label: "Idle device" },
-            ]}
-          />
-        </div>
-        <ErrorNote error={list.error} />
+        <FilterBar
+          count={list.data ? `${list.data.length} ${list.data.length === 1 ? "asset" : "assets"}` : undefined}
+          moreActive={[agent, flag].filter(Boolean).length}
+          more={
+            <>
+              <FilterSelect label="Agent" value={agent} onChange={setAgent} options={[{ value: "", label: "Any" }, { value: "yes", label: "Enrolled" }, { value: "no", label: "No agent" }]} />
+              <FilterSelect label="Flag" value={flag} onChange={setFlag} options={[{ value: "", label: "None" }, { value: "retrieval_overdue", label: "Retrieval overdue" }, { value: "warranty_expiring", label: "Warranty expiring" }, { value: "idle", label: "Idle device" }]} />
+            </>
+          }
+        >
+          <FilterSearch value={q} onChange={setQ} placeholder="Name, tag, serial, owner" label="Search hardware" />
+          <FilterSelect label="Type" value={type} onChange={setType} options={[{ value: "", label: "All" }, ...Object.entries(TYPE_LABEL).map(([value, label]) => ({ value, label }))]} />
+          <FilterSelect label="Status" value={status} onChange={setStatus} options={[{ value: "active", label: "In use" }, { value: "", label: "All" }, ...STATUS_ORDER.map((v) => ({ value: v, label: STATUS_LABEL[v] }))]} />
+          <FilterSelect label="Site" value={location} onChange={setLocation} options={[{ value: "", label: "All" }, ...(settings?.locations ?? []).map((l) => ({ value: l, label: l }))]} />
+        </FilterBar>
+        <FilterChips chips={chips} onClearAll={clearAll} />
           <Table
             tableId="assets"
             head={[
-              { label: "Asset", sort: "name" },
-              { label: "Type", sort: "type" },
-              { label: "Status", sort: "status" },
-              { label: "Owner", sort: "owner" },
-              { label: "Site", sort: "site" },
-              { label: "Warranty", sort: "warranty" },
-              { label: "Agent", sort: "agent" },
+              { label: "Asset", sort: "name", w: 260 },
+              { label: "Type", sort: "type", w: 110 },
+              { label: "Status", sort: "status", w: 150 },
+              { label: "Owner", sort: "owner", w: 190 },
+              { label: "Site", sort: "site", w: 130 },
+              { label: "Warranty", sort: "warranty", w: 130 },
+              { label: "Agent", sort: "agent", w: 130 },
             ]}
             sort={sorted.sort}
             onSort={sorted.onSort}
             loading={list.loading}
             rowCount={list.data?.length ?? 0}
+            noun="assets"
+            pageSize={50}
+            filtered={chips.length > 0}
+            onClearFilters={clearAll}
+            error={list.data ? null : list.error}
+            onRetry={list.reload}
             empty={
               <Empty icon={Package} title="No assets match">
                 Clear a filter, or add assets by hand or by CSV import. Devices with the agent appear here automatically.
@@ -278,48 +278,37 @@ export default function Assets() {
             {sorted.rows.map((a) => (
               <tr key={a.id} className="cursor-pointer hover:bg-surface-2" onClick={() => navigate(`/it-assets/${a.id}`)}>
                 <td className="px-3 py-2">
-                  <Link to={`/it-assets/${a.id}`} className="font-medium hover:text-accent" onClick={(e) => e.stopPropagation()}>
-                    {a.display_name}
-                  </Link>
-                  {namedByHost(a) && <div className="font-mono text-[11px] text-ink-3">{a.asset_tag}</div>}
-                  <div className="text-[11px] text-ink-3">
-                    {[a.manufacturer, a.model].filter(Boolean).join(" ")} {a.serial_number && `· ${a.serial_number}`}
-                  </div>
+                  <NameCell
+                    name={a.display_name}
+                    sub={[a.manufacturer, a.model].filter(Boolean).join(" ") + (a.serial_number ? ` · ${a.serial_number}` : "") || (namedByHost(a) ? a.asset_tag : "")}
+                    onOpen={() => navigate(`/it-assets/${a.id}`)}
+                  />
                 </td>
-                <td className="px-3 py-2 text-ink-2">{TYPE_LABEL[a.asset_type] ?? a.asset_type}</td>
                 <td className="px-3 py-2">
-                  <AssetStatusBadge status={a.status} />
-                  {a.retrieval_overdue && (
-                    <div className="mt-0.5">
-                      <Tag tone="warn">overdue {fmtDate(a.retrieval_due)}</Tag>
-                    </div>
-                  )}
+                  <TextCell>{TYPE_LABEL[a.asset_type] ?? a.asset_type}</TextCell>
                 </td>
-                <td className="px-3 py-2 text-xs">
-                  {ownerLabel(a) ? (
-                    <>
-                      <div className="text-ink">{ownerLabel(a)}</div>
-                      <OwnerDirectory a={a} />
-                    </>
-                  ) : (
-                    <span className="text-ink-3">—</span>
-                  )}
+                <td className="px-3 py-2">
+                  <PillRow>
+                    <AssetStatusBadge status={a.status} />
+                    {a.retrieval_overdue && <Pill tone="high" title={`Retrieval due ${fmtDate(a.retrieval_due)}`}>Overdue</Pill>}
+                  </PillRow>
                 </td>
-                <td className="px-3 py-2 text-xs text-ink-2">{a.location || "—"}</td>
-                <td className="px-3 py-2 text-xs">
-                  <span className={a.warranty_expiring ? "text-sev-high" : "text-ink-2"}>{fmtDate(a.warranty_end)}</span>
+                <td className="px-3 py-2">
+                  {ownerLabel(a) ? <NameCell name={ownerLabel(a)} sub={a.assignee_department || a.owner_directory?.department} /> : <None />}
                 </td>
-                <td className="px-3 py-2 text-xs">
+                <td className="px-3 py-2">{a.location ? <TextCell>{a.location}</TextCell> : <None />}</td>
+                <td className="px-3 py-2">
+                  {a.warranty_end ? <TextCell title={fmtDate(a.warranty_end)}><span className={a.warranty_expiring ? "text-sev-high" : ""}>{fmtDate(a.warranty_end)}</span></TextCell> : <None />}
+                </td>
+                <td className="px-3 py-2">
                   {a.device_id ? (
-                    <>
-                      <span className="text-ink-2">{a.device_hostname}</span>
-                      <div className={a.idle ? "text-sev-high" : "text-ink-3"}>
-                        {a.device_last_seen_at ? fmtAgo(a.device_last_seen_at) : "never seen"}
-                        {a.idle && " · idle"}
-                      </div>
-                    </>
+                    <PillRow>
+                      <Pill tone={a.idle ? "high" : "good"} title={`${a.device_hostname ?? ""} · ${a.device_last_seen_at ? fmtAgo(a.device_last_seen_at) : "never seen"}`}>
+                        {a.idle ? "Idle" : "Enrolled"}
+                      </Pill>
+                    </PillRow>
                   ) : (
-                    <span className="text-ink-3">—</span>
+                    <None />
                   )}
                 </td>
               </tr>
