@@ -4,7 +4,7 @@ import { ROLE_LABEL, useAuth } from "../../auth/context";
 import { InvitationStateTag, InviteResult } from "../../components/org";
 import { Switch } from "../../components/Switch";
 import { SaveBar } from "../../components/SaveBar";
-import { Button, Card, Drawer, ErrorNote, Field, Modal, PageHeader, Table, Tag } from "../../components/ui";
+import { Button, Card, Drawer, ErrorNote, Field, Modal, NameCell, NumCell, PageHeader, Pill, PillRow, Table, Tag, TextCell } from "../../components/ui";
 import { fmtAgo, fmtTime } from "../../lib/format";
 import { MODULES, MODULE_KEYS } from "../../lib/modules";
 import { useApi } from "../../lib/useApi";
@@ -17,15 +17,15 @@ function errMsg(e: unknown) {
 
 /** Product modules of an organisation as chips (the platform owner's at-a-glance view). */
 function ModuleChips({ modules }: { modules: ModuleKey[] }) {
-  if (modules.length === 0) return <span className="text-xs text-ink-3">None</span>;
+  if (modules.length === 0) return <TextCell muted>None</TextCell>;
   return (
-    <span className="flex flex-wrap gap-1">
+    <PillRow>
       {modules.map((m) => (
-        <Tag key={m} tone="accent">
+        <Pill key={m} tone="info">
           {MODULES[m].label}
-        </Tag>
+        </Pill>
       ))}
-    </span>
+    </PillRow>
   );
 }
 
@@ -344,30 +344,33 @@ export default function Organizations() {
       <Card>
         <Table
           tableId="organizations"
-          head={[{ label: "Organisation", sort: "organisation" }, { label: "Status", sort: "status" }, { label: "Modules", sort: "modules" }, { label: "Users", sort: "users" }, { label: "Devices", sort: "devices" }, { label: "Assets", sort: "assets" }, { label: "Pending invitations", sort: "invitations" }, { label: "Created", sort: "created" }]}
+          head={[
+            { label: "Organisation", sort: "organisation", w: 250 },
+            { label: "Status", sort: "status", w: 110 },
+            { label: "Modules", sort: "modules", w: 330 },
+            { label: "People", sort: "users", w: 90, align: "right" },
+            { label: "Computers", sort: "devices", w: 110, align: "right" },
+            { label: "Cloud resources", sort: "assets", w: 140, align: "right" },
+            { label: "Invites", sort: "invitations", w: 90, align: "right" },
+            { label: "Created", sort: "created", w: 130 },
+          ]}
           sort={sorted.sort}
           onSort={sorted.onSort}
+          noun="organisations"
+          pageSize={50}
         >
           {sorted.rows.map((o: PlatformOrg) => (
             <tr key={o.id} className="cursor-pointer hover:bg-surface-2" onClick={() => setOpen(o.id)}>
               <td className="px-3 py-2">
-                <button className="text-left font-medium text-ink hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-                  onClick={(e) => { e.stopPropagation(); setOpen(o.id); }}>
-                  {o.name}
-                </button>
-                <div className="text-xs text-ink-3">
-                  {o.slug}
-                  {o.is_default && " · default"}
-                  {o.plan && ` · ${o.plan}`}
-                </div>
+                <NameCell name={o.name} sub={`${o.slug}${o.is_default ? " · default" : ""}${o.plan ? ` · ${o.plan}` : ""}`} onOpen={() => setOpen(o.id)} />
               </td>
-              <td className="px-3 py-2">{o.status === "active" ? <Tag tone="good">Active</Tag> : <Tag tone="critical">Suspended</Tag>}</td>
+              <td className="px-3 py-2"><PillRow>{o.status === "active" ? <Pill tone="good">Active</Pill> : <Pill tone="critical">Suspended</Pill>}</PillRow></td>
               <td className="px-3 py-2"><ModuleChips modules={o.modules} /></td>
-              <td className="px-3 py-2">{o.usage.users}</td>
-              <td className="px-3 py-2">{o.usage.devices}</td>
-              <td className="px-3 py-2">{o.usage.assets}</td>
-              <td className="px-3 py-2">{o.pending_invitations || "—"}</td>
-              <td className="px-3 py-2 text-xs text-ink-2">{fmtTime(o.created_at)}</td>
+              <td className="px-3 py-2"><NumCell value={o.usage.users} /></td>
+              <td className="px-3 py-2"><NumCell value={o.usage.devices} /></td>
+              <td className="px-3 py-2"><NumCell value={o.usage.assets} /></td>
+              <td className="px-3 py-2"><NumCell value={o.pending_invitations} /></td>
+              <td className="px-3 py-2"><TextCell muted title={fmtTime(o.created_at)}>{fmtTime(o.created_at).split(",")[0]}</TextCell></td>
             </tr>
           ))}
         </Table>
