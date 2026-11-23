@@ -32,6 +32,7 @@ from .api import os_updates as os_updates_api
 from .api import platform_admin as platform_admin_api
 from .api import remote_relay as remote_relay_api
 from .api import remote_sessions as remote_sessions_api
+from .api import table_prefs as table_prefs_api
 from .api import vuln_fixes as vuln_fixes_api
 from .asset_lifecycle import api as it_assets_api
 from .compliance import api as compliance_api
@@ -245,6 +246,7 @@ def create_app() -> FastAPI:
     app.include_router(exposure_api.router, dependencies=session_required + cloud)  # /api/exposure: any signed-in user
     app.include_router(dashboards_api.router, dependencies=session_required)  # /api/dashboards/*: any signed-in user
     app.include_router(dashboard_layout_api.router, dependencies=session_required)  # /api/dashboard/layout: viewer / admin
+    app.include_router(table_prefs_api.router, dependencies=session_required)  # /api/table-prefs/{id}: the user's own
     app.include_router(auth_api.admin_router)
     app.include_router(agent_update_auto_api.router)  # /api/updates/automation, /api/updates/update-now
     app.include_router(notifications_api.router)  # analyst read-only, admin writes

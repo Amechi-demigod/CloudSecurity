@@ -218,6 +218,7 @@ export default function Vulnerabilities() {
             <Empty>No vulnerabilities match these filters.</Empty>
           ) : (
             <Table
+              tableId="vulnerabilities-1"
               head={[
                 { label: "Severity", sort: "severity" },
                 { label: "CVE", sort: "cve" },
@@ -265,6 +266,7 @@ export default function Vulnerabilities() {
             <Empty>No vulnerabilities match these filters.</Empty>
           ) : (
             <Table
+              tableId="vulnerabilities-2"
               head={[
                 { label: "Software", sort: "software" },
                 { label: "Worst", sort: "severity" },
@@ -311,6 +313,7 @@ export default function Vulnerabilities() {
               <Empty>Everything reported is checked.</Empty>
             ) : (
               <Table
+                tableId="vulnerabilities-3"
                 head={[{ label: "Software", sort: "name" }, { label: "Devices", sort: "devices" }, { label: "Why", sort: "reason" }]}
                 sort={ncSort.sort}
                 onSort={ncSort.onSort}

@@ -131,6 +131,7 @@ function RunsTable({ runs }: { runs: ScriptRun[] }) {
   if (runs.length === 0) return <Empty>No scripts have been run yet.</Empty>;
   return (
     <Table
+      tableId="scripts-1"
       head={[{ label: "Requested", sort: "requested" }, { label: "Device", sort: "device" }, { label: "Script", sort: "script" }, { label: "Parameters", sort: "parameters" }, { label: "Status", sort: "status" }, { label: "Exit", sort: "exit" }, "Output"]}
       sort={sorted.sort}
       onSort={sorted.onSort}
@@ -213,6 +214,7 @@ export default function Scripts() {
         {lib.data && lib.data.scripts.length > 0 && (
           <div className="mt-4">
             <Table
+              tableId="scripts-2"
               head={[{ label: "Script", sort: "script" }, { label: "Platform", sort: "platform" }, { label: "Risk", sort: "risk" }, { label: "Parameters", sort: "parameters" }, { label: "Timeout", sort: "timeout" }]}
               sort={libSort.sort}
               onSort={libSort.onSort}

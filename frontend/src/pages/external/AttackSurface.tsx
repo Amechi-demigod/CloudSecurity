@@ -414,6 +414,7 @@ export default function AttackSurface() {
       {tab === "systems" && (
         <Card title={plural(hosts.data?.length ?? 0, "system") + " found on the internet"} actions={<span className="text-xs text-ink-3">From the last scan</span>}>
           <Table
+            tableId="attack-surface"
             head={[{ label: "System", sort: "host" }, { label: "Open ports", sort: "ports" }, { label: "Issues", sort: "findings", align: "right" }, { label: "First seen", sort: "first" }]}
             sort={sortedHosts.sort}
             onSort={sortedHosts.onSort}

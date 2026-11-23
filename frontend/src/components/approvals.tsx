@@ -208,7 +208,7 @@ export function ApprovalList({
   ];
   return (
     <>
-      <Table head={head} sort={sorted.sort} onSort={sorted.onSort}>
+      <Table tableId="approvals" head={head} sort={sorted.sort} onSort={sorted.onSort}>
         {sorted.rows.map((a) => {
           const isOpen = a.status === "pending" || a.status === "approved";
           return (

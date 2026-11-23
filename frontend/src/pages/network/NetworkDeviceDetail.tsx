@@ -330,6 +330,7 @@ export default function NetworkDeviceDetail() {
       {tab === "vulnerabilities" && (
         <Card>
           <Table
+            tableId="network-device-detail-1"
             head={[{ label: "CVE", sort: "cve" }, { label: "Severity", sort: "severity" }, { label: "CVSS", sort: "cvss" }, { label: "Being exploited", sort: "kev" }, { label: "Firmware", sort: "firmware" }, { label: "Fixed in", sort: "fixed" }]}
             sort={vulnSort.sort}
             onSort={vulnSort.onSort}
@@ -387,6 +388,7 @@ export default function NetworkDeviceDetail() {
       {tab === "interfaces" && (
         <Card>
           <Table
+            tableId="network-device-detail-2"
             head={[{ label: "Name", sort: "name" }, { label: "Description", sort: "descr" }, { label: "MAC", sort: "mac" }, { label: "State", sort: "state" }, { label: "Speed", sort: "speed" }]}
             sort={ifaceSort.sort}
             onSort={ifaceSort.onSort}
@@ -411,6 +413,7 @@ export default function NetworkDeviceDetail() {
       {tab === "connected" && (
         <Card>
           <Table
+            tableId="network-device-detail-3"
             head={[{ label: "MAC", sort: "mac" }, { label: "Vendor", sort: "vendor" }, { label: "Port", sort: "port" }, { label: "VLAN", sort: "vlan" }, { label: "Status", sort: "status" }]}
             sort={connSort.sort}
             onSort={connSort.onSort}

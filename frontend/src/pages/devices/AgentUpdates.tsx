@@ -396,6 +396,7 @@ export default function AgentUpdates() {
       <Card title="Versions on your devices" className="mb-4">
         {summary.data && summary.data.versions.length > 0 ? (
           <Table
+            tableId="agent-updates-1"
             head={[{ label: "Agent version", sort: "version" }, { label: "Devices", sort: "devices" }]}
             sort={verSort.sort}
             onSort={verSort.onSort}
@@ -435,6 +436,7 @@ export default function AgentUpdates() {
         {releases.data && releases.data.length === 0 && <Empty>No releases imported yet.</Empty>}
         {releases.data && releases.data.length > 0 && (
           <Table
+            tableId="agent-updates-2"
             head={[
               { label: "Version", sort: "version" },
               { label: "State", sort: "state" },

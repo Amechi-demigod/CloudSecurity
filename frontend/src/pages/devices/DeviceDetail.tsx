@@ -471,6 +471,7 @@ function SoftwareTab({ device, commands, reload }: { device: Device; commands: D
         <Empty>No software reported.</Empty>
       ) : (
         <Table
+          tableId="device-detail-1"
           head={device.os_family === "linux"
             ? [{ label: "Package", sort: "name" }, { label: "Version", sort: "version" }, { label: "Source package", sort: "srcpkg" }, { label: "Vulnerability feed", sort: "feed" }, { label: "Manager", sort: "source" }]
             : [{ label: "Name", sort: "name" }, { label: "Version", sort: "version" }, { label: "Publisher", sort: "publisher" }, { label: "Installed", sort: "installed" }, { label: "Source", sort: "source" }, ...(uninstall ? [""] : [])]}
@@ -571,6 +572,7 @@ function VulnerabilitiesTab({ id, os }: { id: string; os: string }) {
         >
           {showChecked ? (
             <Table
+              tableId="device-detail-2"
               head={[{ label: os === "linux" ? "Package" : "Software", sort: "name" }, { label: "Version", sort: "version" }, { label: os === "linux" ? "Ecosystem" : "Matched as", sort: "eco" }]}
               sort={checkedSort.sort}
               onSort={checkedSort.onSort}
@@ -587,6 +589,7 @@ function VulnerabilitiesTab({ id, os }: { id: string; os: string }) {
             <Empty>{os === "linux" ? "All reported packages are covered by the vulnerability feed." : "All reported software is covered by the CPE mapping."}</Empty>
           ) : (
             <Table
+              tableId="device-detail-3"
               head={[{ label: "Software", sort: "name" }, { label: "Version", sort: "version" }, { label: "Why not checked", sort: "reason" }]}
               sort={notCheckedSort.sort}
               onSort={notCheckedSort.onSort}
@@ -626,6 +629,7 @@ function HistoryTab({ id }: { id: string }) {
         <Empty>No check-ins yet.</Empty>
       ) : (
         <Table
+          tableId="device-detail-4"
           head={[{ label: "Received", sort: "received" }, { label: "OS version", sort: "os" }, { label: "Agent", sort: "agent" }, { label: "Posture", sort: "posture" }, { label: "Issues", sort: "issues" }]}
           sort={sorted.sort}
           onSort={sorted.onSort}
@@ -687,6 +691,7 @@ function CommandsTab({ device, commands, error, reload }: { device: Device; comm
         <Empty>No remote actions yet.</Empty>
       ) : (
         <Table
+          tableId="device-detail-5"
           head={[{ label: "Requested", sort: "requested" }, { label: "Action", sort: "action" }, { label: "Status", sort: "status" }, { label: "Reason", sort: "reason" }, { label: "Output", sort: "output" }, ""]}
           sort={sorted.sort}
           onSort={sorted.onSort}
@@ -871,6 +876,7 @@ function UpdatesTab({ id, admin, analyst }: { id: string; admin: boolean; analys
         {s && s.history.length === 0 && <Empty>No updates reported yet.</Empty>}
         {s && s.history.length > 0 && (
           <Table
+            tableId="device-detail-6"
             head={[{ label: "When", sort: "when" }, { label: "Status", sort: "status" }, { label: "From", sort: "from" }, { label: "To", sort: "to" }, { label: "Detail", sort: "detail" }]}
             sort={histSort.sort}
             onSort={histSort.onSort}

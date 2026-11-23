@@ -58,6 +58,7 @@ function MachineTable({
   );
   return (
     <Table
+      tableId="deploy-agent"
       head={[{ label: "Machine", sort: "machine" }, { label: "Found in", sort: "found" }, { label: "OS", sort: "os" }, { label: "OU / domain", sort: "ou" }, { label: "Route", sort: "route" }]}
       sort={sorted.sort}
       onSort={sorted.onSort}

@@ -240,6 +240,7 @@ export function OsUpdatesTab({ device, onChanged }: { device: Device; onChanged?
             </Empty>
           ) : (
             <Table
+              tableId="os-updates"
               head={[{ label: "Update", sort: "update" }, { label: "Classification", sort: "classification" }, { label: "Severity", sort: "severity" }, { label: "Released", sort: "released" }, { label: "CVEs", sort: "cves" }, { label: "Restart", sort: "restart" }, { label: "Size", sort: "size" }]}
               sort={sorted.sort}
               onSort={sorted.onSort}

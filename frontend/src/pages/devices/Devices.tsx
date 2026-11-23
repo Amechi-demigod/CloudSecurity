@@ -7,7 +7,7 @@ import { DeviceClassTag } from "../../components/deviceClass";
 import { CLASS_FILTER_OPTIONS, CLASS_LABEL } from "../../lib/deviceClass";
 import { ConnectivityTag, HealthBadge, IssueList } from "../../components/devices";
 import { ExportMenu } from "../../components/ExportMenu";
-import { Card, Empty, ErrorNote, PageHeader, Select, Stat, Table, Tag } from "../../components/ui";
+import { Card, Empty, ErrorNote, PageHeader, Select, SelectCell, Stat, Table, Tag } from "../../components/ui";
 import { OS_LABEL, osLine } from "../../lib/devices";
 import { fmtAgo } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
@@ -92,7 +92,7 @@ export default function Devices() {
         subtitle="Are your laptops, desktops and servers updated and protected?"
         actions={
           <div className="flex items-center gap-2">
-            <ExportMenu noun="computers" count={data && data.length < 500 ? data.length : undefined}buildUrl={(format) => `/api/devices/export${qs({ ...filters, format })}`} />
+            <ExportMenu noun="computers" count={data && data.length < 500 ? data.length : undefined} buildUrl={(format) => `/api/devices/export${qs({ ...filters, format })}`} />
             <Link to="/devices/updates" className="rounded border border-line bg-surface-2 px-3 py-1.5 text-sm font-medium text-ink hover:bg-line">
               Agent updates
             </Link>
@@ -209,33 +209,35 @@ export default function Devices() {
           />
         </div>
         <ErrorNote error={error} />
-        {bulk && <BulkActionsBar selected={picked} onClear={() => setSelected([])} onDone={reload} />}
           <Table
+            tableId="devices"
             head={[
-              ...(bulk
-                ? [{
-                    label: (
-                      <input type="checkbox" aria-label="Select all devices shown" className="accent-accent"
-                        checked={!!data?.length && picked.length === data.length}
-                        onChange={(e) => setSelected(e.target.checked ? (data ?? []).filter((d) => d.status === "active" && d.os_family !== "linux").map((d) => d.id) : [])} />
-                    ),
-                  }]
-                : []),
-              { label: "Device", sort: "name" },
-              { label: "Class", sort: "class" },
-              { label: "OS", sort: "os" },
-              { label: "User", sort: "user" },
-              { label: "Health", sort: "health" },
-              { label: "Issues", sort: "issues" },
-              { label: "OS updates", sort: "updates" },
-              { label: "Last seen", sort: "seen" },
-              { label: "USB storage", sort: "usb" },
-              { label: "Agent", sort: "agent" },
+              { label: "Device", sort: "name", w: 300 },
+              { label: "Class", sort: "class", w: 130 },
+              { label: "OS", sort: "os", w: 190 },
+              { label: "User", sort: "user", w: 160 },
+              { label: "Health", sort: "health", w: 120 },
+              { label: "Issues", sort: "issues", w: 190 },
+              { label: "OS updates", sort: "updates", w: 150 },
+              { label: "Last seen", sort: "seen", w: 130 },
+              { label: "USB storage", sort: "usb", w: 120 },
+              { label: "Agent", sort: "agent", w: 110 },
             ]}
             sort={sorted.sort}
             onSort={sorted.onSort}
             loading={loading}
             rowCount={data?.length ?? 0}
+            noun="devices"
+            selection={
+              bulk
+                ? {
+                    ids: (data ?? []).map((d) => (d.status === "active" && d.os_family !== "linux" ? d.id : null)),
+                    selected: new Set(picked),
+                    onChange: (next) => setSelected([...next]),
+                    actions: <BulkActionsBar selected={picked} onDone={reload} />,
+                  }
+                : undefined
+            }
             empty={
               <Empty
                 icon={Laptop}
@@ -258,14 +260,17 @@ export default function Devices() {
               <tr
                 key={d.id}
                 className="cursor-pointer hover:bg-surface-2"
+                aria-selected={selected.includes(d.id)}
                 onClick={() => navigate(`/devices/${d.id}`)}
               >
                 {bulk && (
-                  <td className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
-                    <input type="checkbox" aria-label={`Select ${d.hostname}`} className="accent-accent" disabled={d.status !== "active" || d.os_family === "linux"}
-                      title={d.os_family === "linux" ? "Bulk actions are not available for Linux servers" : undefined}
-                      checked={selected.includes(d.id)} onChange={() => toggle(d.id)} />
-                  </td>
+                  <SelectCell
+                    label={`Select ${d.hostname}`}
+                    disabled={d.status !== "active" || d.os_family === "linux"}
+                    title={d.os_family === "linux" ? "Bulk actions are not available for Linux servers" : undefined}
+                    checked={selected.includes(d.id)}
+                    onChange={() => toggle(d.id)}
+                  />
                 )}
                 <td className="px-3 py-2">
                   <Link to={`/devices/${d.id}`} className="font-medium hover:text-accent" onClick={(e) => e.stopPropagation()}>

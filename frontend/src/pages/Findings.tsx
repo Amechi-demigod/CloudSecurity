@@ -127,6 +127,7 @@ export default function Findings() {
       </div>
       <Card>
           <Table
+            tableId="findings"
             head={[
               { label: "Severity", sort: "severity" },
               { label: "Finding", sort: "title" },

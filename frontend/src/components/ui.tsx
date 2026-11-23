@@ -1,8 +1,7 @@
-import { ArrowDown, ArrowUp, ArrowUpDown, ChevronRight, Info, Inbox, type LucideIcon } from "lucide-react";
-import { isValidElement, useEffect, useId, useRef, useState, type InputHTMLAttributes, type ReactNode } from "react";
+import { ChevronRight, Info, Inbox, type LucideIcon } from "lucide-react";
+import { useEffect, useId, useRef, useState, type InputHTMLAttributes, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { SEV_COLOR } from "../lib/format";
-import type { SortState } from "../lib/useSort";
 
 const SEV_ICON: Record<string, string> = { critical: "!!", high: "!", medium: "~", low: "-", info: "i" };
 
@@ -281,21 +280,56 @@ export function ErrorNote({ error }: { error: string | null }) {
   return <div className="mb-3 rounded border border-sev-critical/60 bg-sev-critical/10 px-3 py-2 text-sm text-ink">{error}</div>;
 }
 
+const FOCUSABLE = "input, select, textarea, button, a[href], [tabindex]:not([tabindex='-1'])";
+
+/** Side drawer: a modal dialog (role=dialog), focus moves in on open, Tab stays inside, Escape or the backdrop
+ * closes and focus returns to whatever opened it. */
 export function Drawer({ open, onClose, title, children }: { open: boolean; onClose: () => void; title: ReactNode; children: ReactNode }) {
+  const ref = useRef<HTMLElement>(null);
+  const titleId = useId();
+  const closeRef = useRef(onClose);
   useEffect(() => {
-    const h = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", h);
-    return () => window.removeEventListener("keydown", h);
+    closeRef.current = onClose;
   }, [onClose]);
+  useEffect(() => {
+    if (!open) return;
+    const prev = document.activeElement as HTMLElement | null;
+    ref.current?.querySelector<HTMLElement>("[data-autofocus]")?.focus();
+    if (!ref.current?.contains(document.activeElement)) ref.current?.querySelector<HTMLElement>(FOCUSABLE)?.focus();
+    const h = (e: KeyboardEvent) => {
+      if (e.key === "Escape") closeRef.current();
+      if (e.key === "Tab" && ref.current) {
+        const items = Array.from(ref.current.querySelectorAll<HTMLElement>(FOCUSABLE)).filter((el) => !el.hasAttribute("disabled"));
+        if (items.length === 0) return;
+        const [a, z] = [items[0], items[items.length - 1]];
+        if (e.shiftKey && document.activeElement === a) {
+          e.preventDefault();
+          z.focus();
+        } else if (!e.shiftKey && document.activeElement === z) {
+          e.preventDefault();
+          a.focus();
+        }
+      }
+    };
+    window.addEventListener("keydown", h);
+    return () => {
+      window.removeEventListener("keydown", h);
+      prev?.focus();
+    };
+  }, [open]);
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-40 flex justify-end bg-black/50" onClick={onClose}>
       <aside
+        ref={ref}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
         className="h-full w-full max-w-2xl overflow-y-auto border-l border-line bg-surface-1 shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         <header className="sticky top-0 flex items-center justify-between border-b border-line bg-surface-1 px-5 py-3">
-          <div className="min-w-0 text-base font-semibold">{title}</div>
+          <div id={titleId} className="min-w-0 text-base font-semibold">{title}</div>
           <button className="text-ink-3 hover:text-ink" onClick={onClose} aria-label="Close">
             ✕
           </button>
@@ -306,101 +340,10 @@ export function Drawer({ open, onClose, title, children }: { open: boolean; onCl
   );
 }
 
-export type Column = ReactNode | { label: ReactNode; sort?: string; align?: "left" | "right"; srOnly?: boolean };
-
-const isColumnObject = (c: Column): c is { label: ReactNode; sort?: string; align?: "left" | "right"; srOnly?: boolean } =>
-  typeof c === "object" && c !== null && !isValidElement(c) && "label" in c;
-
-/**
- * Table shell with consistent styling. The header stays visible while the rows scroll (the table
- * scrolls inside its card once it is taller than the window). Columns given as
- * { label, sort: "key" } are sortable when `sort` / `onSort` are passed (see lib/useSort.ts).
- * `loading` with no rows shows placeholder rows; `empty` is shown when there are no rows.
- */
-export function Table({
-  head,
-  children,
-  sort,
-  onSort,
-  loading,
-  empty,
-  rowCount,
-}: {
-  head: Column[];
-  children: ReactNode;
-  sort?: SortState;
-  onSort?: (key: string) => void;
-  loading?: boolean;
-  empty?: ReactNode;
-  rowCount?: number;
-}) {
-  const noRows = rowCount === 0;
-  if (noRows && !loading && empty) return <>{empty}</>;
-  return (
-    <div className="max-h-[calc(100vh-13rem)] overflow-auto rounded-lg">
-      <table className="w-full text-left text-sm">
-        <thead className="sticky top-0 z-10 bg-surface-1 shadow-[inset_0_-1px_0_var(--color-line)]">
-          <tr className="text-xs uppercase tracking-wide text-ink-3">
-            {head.map((h, i) => {
-              const col = isColumnObject(h) ? h : { label: h };
-              const active = !!sort && !!col.sort && sort.key === col.sort;
-              const align = col.align === "right" ? "text-right" : "";
-              return (
-                <th
-                  key={i}
-                  scope="col"
-                  aria-sort={active ? (sort.dir === "asc" ? "ascending" : "descending") : undefined}
-                  className={`px-3 py-2.5 font-medium ${align}`}
-                >
-                  {col.sort && onSort ? (
-                    <button
-                      type="button"
-                      onClick={() => onSort(col.sort!)}
-                      className={`group inline-flex items-center gap-1 rounded uppercase tracking-wide transition hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${active ? "text-ink" : ""}`}
-                    >
-                      {col.label}
-                      {active ? (
-                        sort.dir === "asc" ? <ArrowUp aria-hidden className="h-3.5 w-3.5" /> : <ArrowDown aria-hidden className="h-3.5 w-3.5" />
-                      ) : (
-                        <ArrowUpDown aria-hidden className="h-3.5 w-3.5 opacity-0 transition group-hover:opacity-60 group-focus-visible:opacity-60" />
-                      )}
-                    </button>
-                  ) : col.srOnly ? (
-                    <span className="sr-only">{col.label}</span>
-                  ) : (
-                    col.label
-                  )}
-                </th>
-              );
-            })}
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-line/60">
-          {loading && noRows ? <SkeletonRows cols={head.length} /> : children}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function SkeletonRows({ cols, rows = 6 }: { cols: number; rows?: number }) {
-  return (
-    <>
-      {Array.from({ length: rows }, (_, r) => (
-        <tr key={r} aria-hidden>
-          {Array.from({ length: cols }, (_, c) => (
-            <td key={c} className="px-3 py-3">
-              <div className="h-3 animate-pulse rounded bg-surface-2" style={{ width: `${45 + ((r * 7 + c * 13) % 45)}%` }} />
-            </td>
-          ))}
-        </tr>
-      ))}
-      <tr className="sr-only">
-        <td role="status">Loading…</td>
-      </tr>
-    </>
-  );
-}
+export { Table, SelectCell, type Column, type ColumnObject, type TableSelection } from "./table/Table";
+export { DetailDrawer, type DetailRow } from "./table/DetailDrawer";
+export { FilterChips, type FilterChip } from "./table/FilterChips";
+export { NameCell, NumCell, None, PillRow, TextCell } from "./table/cells";
 
 /** Accessible modal dialog: focus moves in on open, Escape / backdrop closes, focus is restored on close.
  * Never taller than the window: the title bar (and its close button) stays put and the body scrolls. */

@@ -36,20 +36,18 @@ const KINDS: Record<BulkKind, { label: string; what: string; undo: string; servi
   },
 };
 
-export function BulkActionsBar({ selected, onClear, onDone }: { selected: string[]; onClear: () => void; onDone: () => void }) {
+/** The bulk action buttons (and their dialogs); the table's selection bar supplies "N selected" and "Clear selection". */
+export function BulkActionsBar({ selected, onDone }: { selected: string[]; onDone: () => void }) {
   const [kind, setKind] = useState<BulkKind | null>(null);
-  if (selected.length === 0) return null;
   return (
-    <div className="mb-3 flex flex-wrap items-center gap-2 rounded border border-accent/40 bg-accent/5 px-3 py-2 text-sm" role="toolbar" aria-label="Bulk actions">
-      <span className="font-medium">{selected.length} selected</span>
+    <>
       {(Object.keys(KINDS) as BulkKind[]).map((k) => (
         <Button key={k} variant={KINDS[k].danger ? "danger" : "default"} onClick={() => setKind(k)}>
           {KINDS[k].label}
         </Button>
       ))}
-      <Button onClick={onClear}>Clear selection</Button>
       <BulkDialog kind={kind} deviceIds={selected} onClose={() => setKind(null)} onDone={onDone} />
-    </div>
+    </>
   );
 }
 

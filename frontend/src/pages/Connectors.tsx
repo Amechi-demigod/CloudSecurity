@@ -640,6 +640,7 @@ export default function Connectors() {
           <p className="text-sm text-ink-3">Nothing matches this filter.</p>
         ) : (
           <Table
+            tableId="connectors"
             head={[{ label: "Started", sort: "started" }, { label: "Type", sort: "type" }, { label: "Source", sort: "source" }, { label: "Trigger", sort: "trigger" }, { label: "Result", sort: "result" }, { label: "Duration", sort: "duration" }, { label: "Found", sort: "found" }, { label: "Findings", sort: "findings" }]}
             sort={sortedHistory.sort}
             onSort={sortedHistory.onSort}

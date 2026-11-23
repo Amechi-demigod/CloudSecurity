@@ -93,6 +93,7 @@ function Detail({ id, canEdit, onChange }: { id: string; canEdit: boolean; onCha
         <Empty>No assets were assigned to this person.</Empty>
       ) : (
         <Table
+          tableId="offboarding-1"
           head={[{ label: "Asset", sort: "asset" }, { label: "Status", sort: "status" }, { label: "Due", sort: "due" }]}
           sort={sorted.sort}
           onSort={sorted.onSort}
@@ -155,6 +156,7 @@ export default function Offboarding() {
             <Empty>No offboardings.</Empty>
           ) : (
             <Table
+              tableId="offboarding-2"
               head={[{ label: "Person", sort: "person" }, { label: "Leave date", sort: "leave" }, { label: "Due", sort: "due" }, { label: "Outstanding", sort: "outstanding" }]}
               sort={sorted.sort}
               onSort={sorted.onSort}

@@ -349,6 +349,7 @@ export default function NotificationsRules({ meta, isAdmin }: { meta: Notificati
           <Empty>No rules yet. Nothing is sent until you add one.</Empty>
         ) : (
           <Table
+            tableId="notifications-rules"
             head={[{ label: "Rule", sort: "rule" }, { label: "Matches", sort: "matches" }, { label: "From severity", sort: "severity" }, { label: "Channels", sort: "channels" }, { label: "Delivery", sort: "delivery" }, { label: "On", sort: "status" }, ...(isAdmin ? [""] : [])]}
             sort={sorted.sort}
             onSort={sorted.onSort}

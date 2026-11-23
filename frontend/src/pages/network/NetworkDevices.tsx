@@ -3,7 +3,7 @@ import { statusLabel } from "../../lib/labels";
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useAuth } from "../../auth/context";
-import { Breadcrumbs, Button, Card, Empty, ErrorNote, PageHeader, Stat, Table, Tag } from "../../components/ui";
+import { Breadcrumbs, Button, Card, Empty, ErrorNote, PageHeader, SelectCell, Stat, Table, Tag } from "../../components/ui";
 import { errMsg } from "../../lib/assets";
 import { fmtAgo, fmtTime } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
@@ -70,7 +70,6 @@ export default function NetworkDevices() {
     { ports: "desc", issues: "desc", seen: "desc" },
   );
   const rows = sorted.rows;
-  const addable = rows.filter((r) => !r.it_asset_id);
 
   async function add() {
     setErr(null);
@@ -146,45 +145,40 @@ export default function NetworkDevices() {
               ))}
             </select>
           </label>
-          {isAdmin && (
-            <div className="ml-auto">
-              <Button variant="primary" disabled={selected.size === 0} onClick={() => void add()}>
-                Add selected to hardware register{selected.size ? ` (${selected.size})` : ""}
-              </Button>
-            </div>
-          )}
         </div>
         {notice && <p className="mb-2 text-sm text-good">{notice}</p>}
         <ErrorNote error={devices.error ?? err} />
         <Table
+          tableId="network-devices"
           head={[
-            ...(isAdmin
-              ? [
-                  {
-                    label: (
-                      <input
-                        type="checkbox"
-                        aria-label="Select all"
-                        checked={addable.length > 0 && addable.every((r) => selected.has(r.id))}
-                        onChange={(e) => setSelected(e.target.checked ? new Set(addable.map((r) => r.id)) : new Set())}
-                      />
-                    ),
-                  },
-                ]
-              : []),
-            { label: "Device", sort: "device" },
-            { label: "Type", sort: "type" },
-            { label: "Vendor / model", sort: "vendor" },
-            { label: "Firmware", sort: "firmware" },
-            { label: "Open ports", sort: "ports" },
-            { label: "Issues", sort: "issues" },
-            { label: "Tracked", sort: "tracked" },
-            { label: "Last seen", sort: "seen" },
+            { label: "Device", sort: "device", w: 260 },
+            { label: "Type", sort: "type", w: 130 },
+            { label: "Vendor / model", sort: "vendor", w: 190 },
+            { label: "Firmware", sort: "firmware", w: 130 },
+            { label: "Open ports", sort: "ports", w: 150 },
+            { label: "Issues", sort: "issues", w: 220 },
+            { label: "Tracked", sort: "tracked", w: 120 },
+            { label: "Last seen", sort: "seen", w: 130 },
           ]}
           sort={sorted.sort}
           onSort={sorted.onSort}
           loading={devices.loading}
           rowCount={rows.length}
+          noun="network devices"
+          selection={
+            isAdmin
+              ? {
+                  ids: rows.map((r) => (r.it_asset_id ? null : r.id)),
+                  selected,
+                  onChange: setSelected,
+                  actions: (
+                    <Button variant="primary" onClick={() => void add()}>
+                      Add selected to hardware register ({selected.size})
+                    </Button>
+                  ),
+                }
+              : undefined
+          }
           empty={
             <Empty icon={Network} title="No network devices">
               Nothing matches, or no network scan has run yet. Add a network scan to find your devices.
@@ -192,24 +186,21 @@ export default function NetworkDevices() {
           }
         >
           {rows.map((d: NetDeviceRow) => (
-            <tr key={d.id}>
+            <tr key={d.id} aria-selected={selected.has(d.id)}>
               {isAdmin && (
-                <td className="px-3 py-2">
-                  <input
-                    type="checkbox"
-                    aria-label={`Select ${d.name}`}
-                    disabled={!!d.it_asset_id}
-                    checked={selected.has(d.id)}
-                    onChange={(e) =>
-                      setSelected((p) => {
-                        const n = new Set(p);
-                        if (e.target.checked) n.add(d.id);
-                        else n.delete(d.id);
-                        return n;
-                      })
-                    }
-                  />
-                </td>
+                <SelectCell
+                  label={`Select ${d.name}`}
+                  disabled={!!d.it_asset_id}
+                  checked={selected.has(d.id)}
+                  onChange={(on) =>
+                    setSelected((p) => {
+                      const n = new Set(p);
+                      if (on) n.add(d.id);
+                      else n.delete(d.id);
+                      return n;
+                    })
+                  }
+                />
               )}
               <td className="px-3 py-2">
                 <Link to={`/network-devices/${d.id}`} className="font-medium text-accent hover:underline">
