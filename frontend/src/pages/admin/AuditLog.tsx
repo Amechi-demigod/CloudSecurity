@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { api } from "../../api";
-import { Card, Empty, ErrorNote, PageHeader, Select, Table, Tag } from "../../components/ui";
+import { Card, DetailDrawer, Empty, FilterBar, FilterChips, FilterSelect, NameCell, None, PageHeader, Pill, PillRow, Table, TextCell, type PillTone } from "../../components/ui";
 import { fmtTime } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
 import { useSortState } from "../../lib/useSort";
@@ -32,12 +32,17 @@ const ACTIONS = [
   "notification_delivery_retried",
 ];
 
-function tone(action: string): "default" | "warn" | "good" | "accent" {
-  if (action.startsWith("login_fail") || action === "login_locked" || action === "login_rate_limited") return "warn";
+function tone(action: string): PillTone {
+  if (action.startsWith("login_fail") || action === "login_locked" || action === "login_rate_limited") return "high";
   if (action === "login_success") return "good";
-  if (action.startsWith("user_") || action.startsWith("password_")) return "accent";
-  return "default";
+  if (action.startsWith("user_") || action.startsWith("password_")) return "info";
+  return "neutral";
 }
+
+const actionLabel = (a: string) => {
+  const t = a.replace(/_/g, " ");
+  return t[0].toUpperCase() + t.slice(1);
+};
 
 function detailText(d: Record<string, unknown>): string {
   return Object.entries(d)
@@ -49,42 +54,67 @@ export default function AuditLog() {
   const [action, setAction] = useState("");
   // The server sorts the whole log (only the newest 500 are returned), so the sort goes to the API.
   const sorted = useSortState(["time", "action", "actor", "target", "ip"], { key: "time", dir: "desc" }, { time: "desc" });
-  const { data, error } = useApi(() => api.auditLog({ action: action || undefined, limit: 500, sort: sorted.sort.key, dir: sorted.sort.dir }), [action, sorted.sort.key, sorted.sort.dir], 15000);
+  const { data, error, loading, reload } = useApi(() => api.auditLog({ action: action || undefined, limit: 500, sort: sorted.sort.key, dir: sorted.sort.dir }), [action, sorted.sort.key, sorted.sort.dir], 15000);
 
+  const [open, setOpen] = useState<NonNullable<typeof data>[number] | null>(null);
   return (
     <div>
-      <PageHeader title="Audit log" info={PAGE_INFO.audit} subtitle="Who did what, newest first." />
-      <ErrorNote error={error} />
-      <div className="mb-3">
-        <Select label="Action" value={action} onChange={setAction} options={ACTIONS} />
-      </div>
+      <PageHeader title="Audit log" info={PAGE_INFO.audit} subtitle="Everything people and the system changed in your organisation." />
       <Card>
-        {data && data.length === 0 ? (
-          <Empty>No audit entries.</Empty>
-        ) : (
-          <Table
-            tableId="audit-log"
-            head={[{ label: "Time", sort: "time" }, { label: "Action", sort: "action" }, { label: "Actor", sort: "actor" }, { label: "Target", sort: "target" }, { label: "IP", sort: "ip" }, "Details"]}
-            sort={sorted.sort}
-            onSort={sorted.onSort}
-          >
-            {data?.map((e) => (
-              <tr key={e.id}>
-                <td className="whitespace-nowrap px-3 py-2 text-xs text-ink-2">{fmtTime(e.timestamp)}</td>
-                <td className="px-3 py-2">
-                  <Tag tone={tone(e.action)}>{e.action}</Tag>
-                </td>
-                <td className="px-3 py-2 text-sm">{e.actor_email ?? "-"}</td>
-                <td className="max-w-[16rem] truncate px-3 py-2 text-xs text-ink-2" title={e.target ?? ""}>
-                  {e.target ?? "-"}
-                </td>
-                <td className="px-3 py-2 font-mono text-xs text-ink-3">{e.ip ?? "-"}</td>
-                <td className="px-3 py-2 text-xs text-ink-3">{detailText(e.detail)}</td>
-              </tr>
-            ))}
-          </Table>
-        )}
+        <FilterBar count={data ? `${data.length} entries` : undefined}>
+          <FilterSelect label="Action" value={action} onChange={setAction} options={ACTIONS.map((a) => ({ value: a, label: a ? actionLabel(a) : "All" }))} />
+        </FilterBar>
+        <FilterChips chips={action ? [{ label: "Action", value: actionLabel(action), onRemove: () => setAction("") }] : []} onClearAll={() => setAction("")} />
+        <Table
+          tableId="audit-log"
+          head={[
+            { label: "Time", sort: "time", w: 160 },
+            { label: "Action", sort: "action", w: 260 },
+            { label: "Who", sort: "actor", w: 240 },
+            { label: "Target", sort: "target", w: 260 },
+            { label: "IP", sort: "ip", w: 140 },
+          ]}
+          sort={sorted.sort}
+          onSort={sorted.onSort}
+          loading={loading}
+          rowCount={data?.length ?? 0}
+          noun="entries"
+          pageSize={50}
+          error={data ? null : error}
+          onRetry={reload}
+          empty={<Empty>No audit entries.</Empty>}
+        >
+          {data?.map((e) => (
+            <tr key={e.id}>
+              <td className="px-3 py-2"><TextCell muted title={fmtTime(e.timestamp)}>{fmtTime(e.timestamp)}</TextCell></td>
+              <td className="px-3 py-2">
+                <NameCell name={actionLabel(e.action)} onOpen={() => setOpen(e)} openLabel={`Open details for ${e.action}`} />
+              </td>
+              <td className="px-3 py-2">{e.actor_email ? <TextCell>{e.actor_email}</TextCell> : <None />}</td>
+              <td className="px-3 py-2">{e.target ? <TextCell muted>{e.target}</TextCell> : <None />}</td>
+              <td className="px-3 py-2">{e.ip ? <TextCell mono>{e.ip}</TextCell> : <None />}</td>
+            </tr>
+          ))}
+        </Table>
       </Card>
+      <DetailDrawer
+        open={!!open}
+        onClose={() => setOpen(null)}
+        title={open ? actionLabel(open.action) : ""}
+        sub={open ? <PillRow><Pill tone={tone(open.action)}>{open.action}</Pill></PillRow> : undefined}
+        rows={
+          open
+            ? [
+                { label: "Time", value: fmtTime(open.timestamp), copy: open.timestamp },
+                { label: "Who", value: open.actor_email, copy: open.actor_email ?? undefined },
+                { label: "Target", value: open.target, copy: open.target ?? undefined },
+                { label: "IP", value: open.ip, copy: open.ip ?? undefined },
+                { label: "Details", value: detailText(open.detail) || null, copy: detailText(open.detail) || undefined },
+                { label: "Entry ID", value: open.id, copy: String(open.id) },
+              ]
+            : []
+        }
+      />
     </div>
   );
 }
