@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { ApiError, type Role } from "../../api";
 import { ROLE_LABEL, useAuth } from "../../auth/context";
 import { InvitationStateTag, InviteResult } from "../../components/org";
-import { Button, Card, ErrorNote, Field, PageHeader, Stat, Table } from "../../components/ui";
+import { Button, Card, ErrorNote, Field, NameCell, PageHeader, Stat, Table, TextCell } from "../../components/ui";
 import { fmtAgo, fmtTime } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
 import { rankOf, ts, useSort } from "../../lib/useSort";
@@ -171,22 +171,26 @@ function Invitations() {
       {!!invitations?.length && (
         <Table
           tableId="organization"
-          head={[{ label: "Email", sort: "email" }, { label: "Role", sort: "role" }, { label: "Status", sort: "status" }, { label: "Invited", sort: "invited" }, { label: "Expires", sort: "expires" }, "Actions"]}
+          head={[
+            { label: "Invitee", sort: "email", w: 300 },
+            { label: "Role", sort: "role", w: 120 },
+            { label: "Status", sort: "status", w: 130 },
+            { label: "Invited", sort: "invited", w: 120 },
+            { label: "Expires", sort: "expires", w: 140 },
+            { label: "Actions", srOnly: true, w: 200 },
+          ]}
           sort={sorted.sort}
           onSort={sorted.onSort}
         >
           {sorted.rows.map((i) => (
             <tr key={i.id}>
-              <td className="px-3 py-2">
-                <div className="text-ink">{i.email}</div>
-                {i.invited_by && <div className="text-xs text-ink-3">by {i.invited_by}</div>}
-              </td>
-              <td className="px-3 py-2">{ROLE_LABEL[i.role]}</td>
+              <td className="px-3 py-2"><NameCell name={i.email} sub={i.invited_by ? `by ${i.invited_by}` : undefined} /></td>
+              <td className="px-3 py-2"><TextCell>{ROLE_LABEL[i.role]}</TextCell></td>
               <td className="px-3 py-2">
                 <InvitationStateTag state={i.state} />
               </td>
-              <td className="px-3 py-2 text-xs text-ink-2">{fmtAgo(i.created_at)}</td>
-              <td className="px-3 py-2 text-xs text-ink-2">{i.state === "pending" || i.state === "expired" ? fmtTime(i.expires_at) : "—"}</td>
+              <td className="px-3 py-2"><TextCell muted>{fmtAgo(i.created_at)}</TextCell></td>
+              <td className="px-3 py-2"><TextCell muted>{i.state === "pending" || i.state === "expired" ? fmtTime(i.expires_at) : "–"}</TextCell></td>
               <td className="px-3 py-2">
                 {(i.state === "pending" || i.state === "expired") && (
                   <div className="flex gap-2">
