@@ -1,11 +1,12 @@
 import { Laptop } from "lucide-react";
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { api, type DeviceSummary } from "../../api";
+import { api, qs, type DeviceSummary } from "../../api";
 import { useAuth } from "../../auth/context";
 import { DeviceClassTag } from "../../components/deviceClass";
 import { CLASS_FILTER_OPTIONS, CLASS_LABEL } from "../../lib/deviceClass";
 import { ConnectivityTag, HealthBadge, IssueList } from "../../components/devices";
+import { ExportMenu } from "../../components/ExportMenu";
 import { Card, Empty, ErrorNote, PageHeader, Select, SelectCell, Stat, Table, Tag } from "../../components/ui";
 import { OS_LABEL, osLine } from "../../lib/devices";
 import { fmtAgo } from "../../lib/format";
@@ -91,6 +92,7 @@ export default function Devices() {
         subtitle="Are your laptops, desktops and servers updated and protected?"
         actions={
           <div className="flex items-center gap-2">
+            <ExportMenu noun="computers" count={data && data.length < 500 ? data.length : undefined} buildUrl={(format) => `/api/devices/export${qs({ ...filters, format })}`} />
             <Link to="/devices/updates" className="rounded border border-line bg-surface-2 px-3 py-1.5 text-sm font-medium text-ink hover:bg-line">
               Agent updates
             </Link>
