@@ -19,7 +19,7 @@ import {
 } from "../complianceApi";
 import { ChartEmpty, ChartTip, LegendKeys } from "../components/dash";
 import SortHeader from "../components/SortHeader";
-import { Button, Card, Empty, ErrorNote, Field, Modal, PageHeader, Select, Stat, Tag } from "../components/ui";
+import { Button, Card, Empty, ErrorNote, Field, FilterBar, FilterChips, FilterSearch, FilterSelect, Modal, NameCell, NumCell, PageHeader, Pill, PillRow, Select, Stat, Table, Tag, TextCell, type PillTone } from "../components/ui";
 import { AXIS, GRID } from "../lib/dash";
 import { fmtAgo, fmtTime } from "../lib/format";
 import { useApi } from "../lib/useApi";
@@ -29,13 +29,7 @@ import { useUrlState } from "../lib/useUrlState";
 const errMsg = (e: unknown) => (e instanceof ApiError ? e.message : String(e));
 const pct = (v: number | null | undefined) => (v == null ? "—" : `${v}%`);
 
-const STATUS_CLASS: Record<ControlStatus, string> = {
-  pass: "border-good/60 bg-good/10 text-good",
-  fail: "border-sev-critical/60 bg-sev-critical/10 text-sev-critical",
-  partial: "border-sev-medium/60 bg-sev-medium/10 text-sev-medium",
-  no_data: "border-line text-ink-3",
-  manual: "border-line bg-surface-2 text-ink-2",
-};
+const STATUS_TONE: Record<ControlStatus, PillTone> = { pass: "good", fail: "critical", partial: "medium", no_data: "neutral", manual: "neutral" };
 const CHECK_CLASS: Record<CheckResult["status"], string> = {
   pass: "text-good",
   fail: "text-sev-critical",
@@ -48,11 +42,13 @@ const COVERAGE_COLOR = "var(--color-cat-2)";
 
 function StatusPill({ status }: { status: ControlStatus }) {
   return (
-    <span title={STATUS_HINT[status]} className={`inline-block whitespace-nowrap rounded border px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide ${STATUS_CLASS[status]}`}>
+    <Pill tone={STATUS_TONE[status]} title={STATUS_HINT[status]}>
       {STATUS_LABEL[status]}
-    </span>
+    </Pill>
   );
 }
+
+const countBy = (c: Control, k: CheckResult["status"]) => c.checks.filter((x) => x.status === k).length;
 
 function evidenceText(c: Control) {
   if (c.checks.length === 0) return "Not assessed automatically";
@@ -297,49 +293,45 @@ function ScheduledReports({ frameworks, isAdmin }: { frameworks: { id: string; n
           {isAdmin ? "Schedule one to email the PDF to your team." : "An admin can schedule an emailed PDF report."}
         </Empty>
       ) : (
-        <ul className="divide-y divide-line">
+        <Table
+          tableId="compliance-schedules"
+          head={[
+            { label: "Report", w: 300 },
+            { label: "Frequency", w: 200 },
+            { label: "Recipients", w: 110, align: "right" },
+            { label: "Last sent", w: 150 },
+            { label: "Status", w: 130 },
+            ...(isAdmin ? [{ label: "Actions", srOnly: true, w: 260 }] : []),
+          ]}
+          rowCount={data?.items.length ?? 0}
+          noun="reports"
+        >
           {(data?.items ?? []).map((s) => (
-            <li key={s.id} className="flex flex-wrap items-start justify-between gap-3 py-2.5">
-              <div className="min-w-0">
-                <div className="font-medium text-ink">
-                  {s.name} {!s.enabled && <Tag>paused</Tag>}
-                </div>
-                <div className="text-xs text-ink-2">
-                  {s.frameworks.map((f) => names[f] ?? f).join(", ")} · {when(s)} · {s.recipients.length} recipient{s.recipients.length === 1 ? "" : "s"}
-                </div>
-                <div className="text-xs text-ink-3">
-                  {s.enabled && s.next_run_at && <>Next {fmtTime(s.next_run_at)}. </>}
-                  {s.last_run_at && (
-                    <>
-                      Last {fmtAgo(s.last_run_at)}:{" "}
-                      <span className={s.last_status === "sent" ? "text-good" : "text-sev-high"}>{s.last_status}</span>
-                      {s.last_error && <span title={s.last_error}> ({s.last_error.slice(0, 120)})</span>}
-                    </>
-                  )}
-                </div>
-              </div>
+            <tr key={s.id}>
+              <td className="px-3 py-2"><NameCell name={s.name} sub={s.frameworks.map((f) => names[f] ?? f).join(", ")} /></td>
+              <td className="px-3 py-2"><TextCell>{when(s)}</TextCell></td>
+              <td className="px-3 py-2"><NumCell value={s.recipients.length} /></td>
+              <td className="px-3 py-2"><TextCell muted title={s.next_run_at && s.enabled ? `Next ${fmtTime(s.next_run_at)}` : undefined}>{s.last_run_at ? fmtAgo(s.last_run_at) : "Never"}</TextCell></td>
+              <td className="px-3 py-2">
+                <PillRow>
+                  {!s.enabled ? <Pill>Paused</Pill> : s.last_status && s.last_status !== "sent" ? <Pill tone="high" title={s.last_error ?? undefined}>Failed</Pill> : <Pill tone="good">On</Pill>}
+                </PillRow>
+              </td>
               {isAdmin && (
-                <div className="flex gap-2">
-                  <Button onClick={() => void act(async () => {
-                    const r = await complianceApi.sendNow(s.id);
-                    if (r.status === "failed") throw new Error(r.errors.join("; ") || "sending failed");
-                  }, "Report sent.")}>Send now</Button>
-                  <Button
-                    onClick={() => {
-                      setEditing(s);
-                      setOpen(true);
-                    }}
-                  >
-                    Edit
-                  </Button>
-                  <Button variant="danger" onClick={() => void act(() => complianceApi.deleteSchedule(s.id))}>
-                    Delete
-                  </Button>
-                </div>
+                <td className="px-3 py-2">
+                  <div className="flex gap-2">
+                    <Button onClick={() => void act(async () => {
+                      const r = await complianceApi.sendNow(s.id);
+                      if (r.status === "failed") throw new Error(r.errors.join("; ") || "sending failed");
+                    }, "Report sent.")}>Send now</Button>
+                    <Button onClick={() => { setEditing(s); setOpen(true); }}>Edit</Button>
+                    <Button variant="danger" onClick={() => void act(() => complianceApi.deleteSchedule(s.id))}>Delete</Button>
+                  </div>
+                </td>
               )}
-            </li>
+            </tr>
           ))}
-        </ul>
+        </Table>
       )}
       <ScheduleDialog open={open} onClose={() => setOpen(false)} onSaved={reload} initial={editing} frameworks={frameworks} />
     </Card>
@@ -495,15 +487,6 @@ export default function Compliance() {
           />
         ))}
       </div>
-      {statusFilter && s && (
-        <div className="mb-3 flex items-center gap-2 text-sm" data-print="hide">
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-accent/40 bg-accent/10 px-2.5 py-0.5">
-            Showing: {STATUS_LABEL[statusFilter as ControlStatus] ?? statusFilter} ({(s[statusFilter as ControlStatus] ?? 0).toLocaleString()})
-            <button type="button" onClick={() => setStatusFilter("")} aria-label="Clear the status filter" className="text-ink-3 hover:text-ink">✕</button>
-          </span>
-        </div>
-      )}
-
       <Card title="Trend" className="mb-4" actions={<LegendKeys items={[{ label: "Score", color: SCORE_COLOR }, { label: "Automated coverage", color: COVERAGE_COLOR, dashed: true }]} />}>
         {points.length < 2 ? (
           <ChartEmpty height="h-40">The trend fills in from today: one snapshot a day.{s?.score != null ? ` Today's score: ${s.score}%.` : ""}</ChartEmpty>
@@ -525,20 +508,25 @@ export default function Compliance() {
 
       <Card title="Controls" className="mb-4">
         {p?.framework.notice && <p className="mb-3 text-xs text-ink-3">{p.framework.notice}</p>}
-        <div className="mb-3 flex flex-wrap items-center gap-3" data-print="hide">
-          <Select
-            label="Status"
-            value={statusFilter}
-            onChange={setStatusFilter}
-            options={[{ value: "", label: "All" }, ...(["fail", "partial", "pass", "no_data", "manual"] as ControlStatus[]).map((k) => ({ value: k, label: STATUS_LABEL[k] }))]}
-          />
-          <input
-            type="search"
-            aria-label="Search controls"
-            placeholder="Search control or title"
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            className="w-60 rounded border border-line bg-surface-2 px-2.5 py-1 text-sm text-ink placeholder:text-ink-3"
+        <div data-print="hide">
+          <FilterBar count={`${groups.reduce((n, g) => n + g.controls.length, 0)} controls`}>
+            <FilterSearch value={q} onChange={setQ} placeholder="Control or requirement" label="Search controls" />
+            <FilterSelect
+              label="Result"
+              value={statusFilter}
+              onChange={setStatusFilter}
+              options={[{ value: "", label: "All" }, ...(["fail", "partial", "pass", "no_data", "manual"] as ControlStatus[]).map((k) => ({ value: k, label: STATUS_LABEL[k] }))]}
+            />
+          </FilterBar>
+          <FilterChips
+            chips={[
+              statusFilter && { label: "Result", value: STATUS_LABEL[statusFilter as ControlStatus] ?? statusFilter, onRemove: () => setStatusFilter("") },
+              q.trim() && { label: "Search", value: q, onRemove: () => setQ("") },
+            ].filter((c): c is { label: string; value: string; onRemove: () => void } => !!c)}
+            onClearAll={() => {
+              setStatusFilter("");
+              setQ("");
+            }}
           />
         </div>
         {posture.loading && !p ? (
@@ -552,16 +540,17 @@ export default function Compliance() {
                 <tr className="text-xs uppercase tracking-wide text-ink-3">
                   <th className="w-8 px-2 py-2" />
                   <SortHeader sortKey="control" label="Control" sort={ctlSort.sort} onSort={ctlSort.onSort} className="px-2 py-2" />
-                  <SortHeader sortKey="title" label="Title (paraphrased)" sort={ctlSort.sort} onSort={ctlSort.onSort} className="px-2 py-2" />
-                  <SortHeader sortKey="status" label="Status" sort={ctlSort.sort} onSort={ctlSort.onSort} className="px-2 py-2" />
-                  <SortHeader sortKey="evidence" label="Evidence" sort={ctlSort.sort} onSort={ctlSort.onSort} className="px-2 py-2" />
+                  <SortHeader sortKey="title" label="Requirement" sort={ctlSort.sort} onSort={ctlSort.onSort} className="px-2 py-2" />
+                  <SortHeader sortKey="status" label="Result" sort={ctlSort.sort} onSort={ctlSort.onSort} className="px-2 py-2" />
+                  <SortHeader sortKey="evidence" label="Failing" sort={ctlSort.sort} onSort={ctlSort.onSort} className="px-2 py-2 text-right" />
+                  <th scope="col" className="px-2 py-2 text-right font-medium">Passing</th>
                 </tr>
               </thead>
               <tbody>
                 {groups.map((g) => (
                   <Fragment key={g.id}>
                     <tr className="bg-surface-2/60">
-                      <td colSpan={5} className="px-2 py-1.5 text-xs font-semibold text-ink-2">
+                      <td colSpan={6} className="px-2 py-1.5 text-xs font-semibold text-ink-2">
                         {/* CIS groups have slug ids ("azure"): the title alone */}
                         {g.id === g.id.toLowerCase() && /[a-z]/.test(g.id) ? g.title : `${g.id} · ${g.title}`}
                       </td>
@@ -579,22 +568,23 @@ export default function Compliance() {
                               )}
                             </td>
                             <td className="whitespace-nowrap px-2 py-2 font-mono text-xs text-ink">{c.id}</td>
-                            <td className="px-2 py-2 text-ink">
-                              {c.title}
-                              {c.note && <div className="text-[11px] text-ink-3">{c.note}</div>}
+                            <td className="max-w-[34rem] px-2 py-2">
+                              <NameCell name={c.title} sub={c.note || (c.coverage === "partial" ? "Covers part of the control" : c.checks.length === 0 ? "Not assessed automatically" : undefined)} />
                             </td>
                             <td className="px-2 py-2">
                               <StatusPill status={c.status} />
                             </td>
-                            <td className="px-2 py-2 text-xs text-ink-2">
-                              {evidenceText(c)}
-                              {c.coverage === "partial" && <div className="text-ink-3">covers part of the control</div>}
+                            <td className="px-2 py-2" title={evidenceText(c)}>
+                              <NumCell value={countBy(c, "fail")} />
+                            </td>
+                            <td className="px-2 py-2">
+                              <NumCell value={countBy(c, "pass")} />
                             </td>
                           </tr>
                           {expanded && (
                             <tr>
                               <td />
-                              <td colSpan={4} className="px-2 pb-3">
+                              <td colSpan={5} className="px-2 pb-3">
                                 <ul className="space-y-1.5">
                                   {c.checks.map((ch) => (
                                     <CheckRow key={ch.id} ch={ch} />
