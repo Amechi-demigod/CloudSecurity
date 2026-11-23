@@ -195,6 +195,11 @@ def get_runtime_event(db, event_id: str | None) -> RuntimeEvent | None:
     return db.get(RuntimeEvent, (require_org(db), event_id)) if event_id else None
 
 
+# Asset rows other modules add only so their findings have something to point at (network discovery:
+# app/network/service.ensure_asset). They are not cloud resources: cloud inventory lists and counts skip them.
+NON_CLOUD_SOURCES = ("network",)
+
+
 class Relationship(TenantMixin, Base):
     """Directed edge between two assets (used for the risk graph / attack paths)."""
 

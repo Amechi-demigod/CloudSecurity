@@ -59,6 +59,7 @@ from ..engine import nsg, posture
 from ..engine.attack_paths import AttackPath
 from ..engine.risk import noise_reduction, overall_risk_score
 from ..models import (
+    NON_CLOUD_SOURCES,
     AgentRelease,
     Alert,
     Asset,
@@ -291,7 +292,8 @@ def _al(stmt, w: Window):
 
 
 def _a(stmt, w: Window):
-    stmt = stmt.where(Asset.removed_at.is_(None))  # removed cloud resources are history, not inventory
+    stmt = stmt.where(Asset.removed_at.is_(None),  # removed cloud resources are history, not inventory
+                      Asset.source.not_in(NON_CLOUD_SOURCES))
     return stmt.where(Asset.subscription_id == w.account) if w.account else stmt
 
 
