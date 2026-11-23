@@ -13,7 +13,7 @@ from ..compliance import finding_report
 from ..db import get_db
 from ..engine import posture
 from ..engine.detection import DETECTION_RULES
-from ..models import Alert, Asset, Finding, Relationship, User, Vulnerability, get_asset, utcnow
+from ..models import NON_CLOUD_SOURCES, Alert, Asset, Finding, Relationship, User, Vulnerability, get_asset, utcnow
 from ..notifications import builtin as notify
 from ..schemas import (
     AlertOut,
@@ -62,7 +62,8 @@ def list_assets(
     removed: bool = Query(False, description="true: the removed tab (cloud resources that no longer exist, "
                                              "kept for history); default: active assets"),
 ):
-    stmt = select(Asset).where(Asset.removed_at.is_not(None) if removed else Asset.removed_at.is_(None))
+    stmt = select(Asset).where(Asset.removed_at.is_not(None) if removed else Asset.removed_at.is_(None),
+                               Asset.source.not_in(NON_CLOUD_SOURCES))
     if type:
         stmt = stmt.where(Asset.type == type)
     if provider:
@@ -98,8 +99,10 @@ def list_assets(
 
 @router.get("/assets/facets")
 def asset_facets(db: Session = Depends(get_db)):
+    cloud = Asset.source.not_in(NON_CLOUD_SOURCES)
+
     def distinct(col):
-        return sorted(v for (v,) in db.execute(select(col).where(Asset.removed_at.is_(None)).distinct()) if v)
+        return sorted(v for (v,) in db.execute(select(col).where(Asset.removed_at.is_(None), cloud).distinct()) if v)
 
     subs = sorted({(s, n, p) for s, n, p in db.execute(
         select(Asset.subscription_id, Asset.subscription_name, Asset.provider)
@@ -111,9 +114,9 @@ def asset_facets(db: Session = Depends(get_db)):
         "sources": distinct(Asset.source),
         "regions": distinct(Asset.region),
         # tab counts of the inventory page
-        "counts": {"active": db.scalar(select(func.count()).select_from(Asset).where(Asset.removed_at.is_(None))) or 0,
+        "counts": {"active": db.scalar(select(func.count()).select_from(Asset).where(Asset.removed_at.is_(None), cloud)) or 0,
                    "removed": db.scalar(select(func.count()).select_from(Asset)
-                                        .where(Asset.removed_at.is_not(None))) or 0,
+                                        .where(Asset.removed_at.is_not(None), cloud)) or 0,
                    "retention_days": config.settings.cloud_removed_retention_days},
         # Azure subscriptions, AWS accounts and GCP projects
         "subscriptions": [{"id": s, "name": n or s, "provider": p} for s, n, p in subs],

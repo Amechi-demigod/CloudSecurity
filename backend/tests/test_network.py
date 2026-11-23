@@ -972,6 +972,10 @@ def test_simulated_data_seeds_a_usable_estate(admin):
     core = next(d for d in admin.get("/api/network/devices").json() if d["name"] == "hq-core-sw01")
     detail = admin.get(f"/api/network/devices/{core['id']}").json()
     assert detail["fixes"][0]["target"] == "17.3.8a" and detail["connected"]["rows"] == [] and detail["it_asset"]["asset_tag"]
+    # Network devices are not cloud resources: Cloud resources and its counts leave them out.
+    assert all(a["type"] != "network_device" for a in admin.get("/api/assets").json())
+    facets = admin.get("/api/assets/facets").json()
+    assert "network_device" not in facets["types"] and "onprem" not in facets["providers"]
 
 
 def test_old_collectors_are_refused_and_scans_get_a_long_expiry(admin):
