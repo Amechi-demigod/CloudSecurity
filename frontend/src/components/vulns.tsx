@@ -4,36 +4,31 @@ import type { Vulnerability, VulnStatus } from "../api";
 import { fmtAgo, fmtTime, TYPE_LABEL } from "../lib/format";
 import { SEV_RANK, useSort, type SortState } from "../lib/useSort";
 import { SOURCE_LABEL } from "../lib/vulns";
-import { Card, RiskBar, SeverityBadge, Table, Tag } from "./ui";
+import { Card, NameCell, NumCell, None, Pill, PillRow, RiskBar, Table, TextCell, type PillTone } from "./ui";
 
+const SEV_TONE: Record<string, PillTone> = { critical: "critical", high: "high", medium: "medium", low: "neutral" };
+
+/** One-word flags: In use, Internet, Data, Exploited. */
 function RuntimeContext({ v }: { v: Vulnerability }) {
-  if (v.device_id) {
-    return (
-      <span className="space-x-1 whitespace-nowrap">
-        <span title="Installed apps on laptops are treated as in use">
-          <Tag>Computer</Tag>
-        </span>
-        {v.kev && <span title="CISA KEV: on the list of flaws known to be exploited"><Tag tone="critical">Being exploited now</Tag></span>}
-      </span>
-    );
-  }
+  const exploited = v.kev ? (
+    <Pill tone="critical" title="CISA KEV: on the list of flaws known to be exploited">
+      Exploited
+    </Pill>
+  ) : null;
+  if (v.device_id) return <PillRow>{exploited}</PillRow>;
   return (
-    <span className="space-x-1 whitespace-nowrap">
+    <PillRow>
       {v.in_use ? (
-        v.in_use_source === "sensor" ? (
-          <span title={v.in_use_last_seen ? `Seen by runtime sensor ${new Date(v.in_use_last_seen).toLocaleString()}` : "Seen by runtime sensor"}>
-            <Tag tone="warn">In use</Tag>
-          </span>
-        ) : (
-          <Tag tone="warn">In use</Tag>
-        )
+        <Pill tone="high" title={v.in_use_source === "sensor" && v.in_use_last_seen ? `Seen by runtime sensor ${new Date(v.in_use_last_seen).toLocaleString()}` : "Software that is running"}>
+          In use
+        </Pill>
       ) : (
-        <Tag>Not in use</Tag>
+        <Pill title="Software that is not running (lower priority)">Dormant</Pill>
       )}
-      {v.internet_exposed && <Tag tone="warn">On the internet</Tag>}
-      {v.sensitive_data_access && <Tag tone="warn">Reaches data</Tag>}
-      {v.kev ? <span title="CISA KEV: on the list of flaws known to be exploited"><Tag tone="critical">Being exploited now</Tag></span> : v.exploit_available && <Tag tone="warn">Exploit exists</Tag>}
-    </span>
+      {v.internet_exposed && <Pill tone="critical" title="On the internet">Internet</Pill>}
+      {v.sensitive_data_access && <Pill tone="high" title="Can reach sensitive data">Data</Pill>}
+      {exploited ?? (v.exploit_available && <Pill tone="medium" title="A public exploit exists">Exploit</Pill>)}
+    </PillRow>
   );
 }
 
@@ -67,63 +62,54 @@ export function VulnTable({
   );
   const sorted = serverSort ? { ...serverSort, rows } : local;
   const head = [
-    { label: "Priority", sort: "priority" },
-    { label: "CVE", sort: "cve" },
-    { label: "Software", sort: "software" },
-    ...(showTarget ? [{ label: "Affected", sort: "affected" }] : []),
-    { label: "How serious", sort: "cvss" },
-    "Context",
-    { label: "Risk", sort: "risk" },
-    { label: "Fix", sort: "fixed" },
+    { label: "CVE", sort: "cve", w: 300 },
+    { label: "Priority", sort: "priority", w: 110 },
+    { label: "Software", sort: "software", w: 220 },
+    ...(showTarget ? [{ label: "Affected", sort: "affected", w: 220 }] : []),
+    { label: "Score", sort: "cvss", w: 80, align: "right" as const },
+    { label: "Flags", w: 190 },
+    { label: "Risk", sort: "risk", w: 130 },
+    { label: "Fix", sort: "fixed", w: 120 },
   ];
   return (
-    <Table tableId="vulns" head={head} sort={sorted.sort} onSort={sorted.onSort}>
+    <Table tableId="vulns" head={head} sort={sorted.sort} onSort={sorted.onSort} noun="vulnerabilities" pageSize={50} rowCount={rows.length}>
       {sorted.rows.map((v) => (
         <tr key={v.id} className={`hover:bg-surface-2 ${v.status === "resolved" ? "opacity-60" : ""}`}>
           <td className="px-3 py-2">
-            <SeverityBadge severity={v.priority} />
-            {v.status === "resolved" && (
-              <div className="mt-1 text-[11px] text-ink-3" title={v.resolved_at ? fmtTime(v.resolved_at) : undefined}>
-                {statusLabel("resolved")}{v.resolved_at ? ` ${fmtAgo(v.resolved_at)}` : ""}
-              </div>
-            )}
+            <div className="min-w-0">
+              <Link className="block truncate font-mono text-sm font-semibold text-ink hover:text-accent hover:underline" to={`/vulnerabilities/${encodeURIComponent(v.cve_id)}`} title={`Details and how to fix ${v.cve_id}`}>
+                {v.cve_id}
+              </Link>
+              <span className="block truncate text-xs text-ink-3" title={v.title}>
+                {v.title}
+              </span>
+            </div>
           </td>
           <td className="px-3 py-2">
-            <Link className="font-mono text-xs hover:text-accent" to={`/vulnerabilities/${encodeURIComponent(v.cve_id)}`} title={`Details and how to fix ${v.cve_id}`}>
-              {v.cve_id}
-            </Link>
-            <div className="max-w-[16rem] truncate text-[11px] text-ink-3" title={v.title}>
-              {v.title}
-            </div>
+            <PillRow>
+              <Pill tone={SEV_TONE[v.priority] ?? "neutral"}>{v.priority[0].toUpperCase() + v.priority.slice(1)}</Pill>
+              {v.status === "resolved" && <Pill tone="good" title={v.resolved_at ? fmtTime(v.resolved_at) : undefined}>{statusLabel("resolved")}</Pill>}
+            </PillRow>
           </td>
-          <td className="px-3 py-2 text-xs">
-            <div className="font-mono">
-              {v.package} <span className="text-ink-3">{v.version}</span>
-            </div>
-            {v.source && <div className="text-[11px] text-ink-3">{SOURCE_LABEL[v.source] ?? v.source}</div>}
+          <td className="px-3 py-2">
+            <NameCell name={v.package} sub={[v.version, v.source ? SOURCE_LABEL[v.source] ?? v.source : ""].filter(Boolean).join(" · ")} />
           </td>
           {showTarget && (
             <td className="px-3 py-2">
               {v.device_id ? (
-                <>
-                  <Link className="hover:text-accent" to={`/devices/${encodeURIComponent(v.device_id)}`}>
+                <div className="min-w-0">
+                  <Link className="block truncate font-semibold text-ink hover:text-accent hover:underline" to={`/devices/${encodeURIComponent(v.device_id)}`}>
                     {v.device_name ?? v.device_id}
                   </Link>
-                  <div className="text-[11px] text-ink-3">Computer</div>
-                </>
+                  <span className="block text-xs text-ink-3">Computer</span>
+                </div>
               ) : (
-                <>
-                  <button className="hover:text-accent" onClick={() => v.asset_id && onAsset?.(v.asset_id)}>
-                    {v.asset_name ?? v.asset_id}
-                  </button>
-                  <div className="text-[11px] text-ink-3">{TYPE_LABEL[v.asset_type ?? ""] ?? v.asset_type}</div>
-                </>
+                <NameCell name={v.asset_name ?? v.asset_id ?? ""} sub={TYPE_LABEL[v.asset_type ?? ""] ?? v.asset_type} onOpen={v.asset_id ? () => onAsset?.(v.asset_id as string) : undefined} />
               )}
             </td>
           )}
-          <td className="whitespace-nowrap px-3 py-2 text-xs">
-            {v.cvss.toFixed(1)} <span className="text-ink-3">({v.severity})</span>
-            {v.epss != null && <div className="text-[11px] text-ink-3" title="EPSS: the chance this is exploited in the next 30 days">{(v.epss * 100).toFixed(0)}% likely to be exploited</div>}
+          <td className="px-3 py-2">
+            <NumCell value={v.cvss.toFixed(1)} title={`${v.severity}${v.epss != null ? ` · ${(v.epss * 100).toFixed(0)}% chance of being exploited in the next 30 days` : ""}`} />
           </td>
           <td className="px-3 py-2">
             <RuntimeContext v={v} />
@@ -131,7 +117,7 @@ export function VulnTable({
           <td className="px-3 py-2">
             <RiskBar value={v.risk_score} />
           </td>
-          <td className="px-3 py-2 font-mono text-xs text-ink-2">{v.fixed_version ?? "—"}</td>
+          <td className="px-3 py-2">{v.fixed_version ? <TextCell mono>{v.fixed_version}</TextCell> : <None />}</td>
         </tr>
       ))}
     </Table>
