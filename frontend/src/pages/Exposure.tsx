@@ -3,7 +3,7 @@ import { Fragment, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api, type ExposureItem } from "../api";
 import AssetDrawer from "../components/AssetDrawer";
-import { Card, Empty, ErrorNote, PageHeader, Select, SeverityBadge, Stat, Table, Tag } from "../components/ui";
+import { Card, Empty, FilterBar, FilterChips, FilterSearch, FilterSelect, NameCell, None, PageHeader, Pill, PillRow, SeverityBadge, Stat, Table, Tag, TextCell, type FilterChip } from "../components/ui";
 import { PROVIDER_LABEL, TYPE_LABEL } from "../lib/format";
 import { useApi } from "../lib/useApi";
 import { useSort } from "../lib/useSort";
@@ -26,16 +26,16 @@ const PORT_NAME: Record<string, string> = {
 const RISKY = new Set(["22", "3389", "5985", "5986", "445", "1433", "3306", "5432", "6379", "27017", "*"]);
 
 function Ports({ ports }: { ports: string[] }) {
-  if (!ports.length) return <span className="text-ink-3">—</span>;
+  if (!ports.length) return <None />;
   return (
-    <span className="flex flex-wrap gap-1">
-      {ports.slice(0, 6).map((p) => (
-        <Tag key={p} tone={RISKY.has(p) ? "critical" : "default"}>
-          {p === "*" ? "all ports" : PORT_NAME[p] ? `${p} ${PORT_NAME[p]}` : p}
-        </Tag>
+    <PillRow>
+      {ports.slice(0, 3).map((p) => (
+        <Pill key={p} tone={RISKY.has(p) ? "critical" : "neutral"} title={ports.join(", ")}>
+          {p === "*" ? "All ports" : PORT_NAME[p] ? `${p} ${PORT_NAME[p]}` : p}
+        </Pill>
       ))}
-      {ports.length > 6 && <span className="text-xs text-ink-3">+{ports.length - 6}</span>}
-    </span>
+      {ports.length > 3 && <Pill title={ports.slice(3).join(", ")}>+{ports.length - 3}</Pill>}
+    </PillRow>
   );
 }
 
@@ -166,7 +166,6 @@ export default function Exposure() {
         title="Exposed to the internet"
         subtitle="Cloud resources anyone on the internet can reach."
       />
-      <ErrorNote error={error} />
       {s && (
         <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-5">
           <Stat label="Open to everyone" selected={f.level === "open"} onSelect={() => set("level")(f.level === "open" ? "" : "open")} value={s.open} sub={`${s.attack_path_entries} start an attack path`} />
@@ -176,63 +175,53 @@ export default function Exposure() {
           <Stat label="With private endpoint" value={s.with_private_endpoint} sub="but still publicly reachable" />
         </div>
       )}
-      <div className="mb-3 flex flex-wrap items-center gap-3">
-        <Select
-          label="Cloud"
-          value={f.provider}
-          onChange={set("provider")}
-          options={[{ value: "", label: "All" }, ...(facets?.providers ?? []).map((p) => ({ value: p, label: PROVIDER_LABEL[p] ?? p }))]}
-        />
-        <Select
-          label="Subscription"
-          value={f.subscription}
-          onChange={set("subscription")}
-          options={[{ value: "", label: "All" }, ...(facets?.subscriptions ?? []).map((x) => ({ value: x, label: x }))]}
-        />
-        <Select
-          label="Type"
-          value={f.type}
-          onChange={set("type")}
-          options={[{ value: "", label: "All" }, ...(facets?.types ?? []).map((t) => ({ value: t, label: TYPE_LABEL[t] ?? t }))]}
-        />
-        <label className="flex items-center gap-1.5 text-xs text-ink-3">
-          Port
-          <input
-            className="w-20 rounded border border-line bg-surface-2 px-2 py-1 text-sm text-ink"
-            inputMode="numeric"
-            placeholder="e.g. 22"
-            value={f.port}
-            onChange={(e) => set("port")(e.target.value.replace(/\D/g, "").slice(0, 5))}
-          />
-        </label>
-        <Select
-          label="Exposure"
-          value={f.level}
-          onChange={set("level")}
-          options={[
-            { value: "", label: "All" },
-            { value: "open", label: "Everyone" },
-            { value: "restricted", label: "Some addresses" },
-          ]}
-        />
-        <span className="text-xs text-ink-3">{data ? `${data.items.length} assets` : ""}</span>
-      </div>
       <Card>
+        <FilterBar
+          count={data ? `${data.items.length} resources` : undefined}
+          moreActive={[f.provider, f.port].filter(Boolean).length}
+          more={
+            <>
+              <FilterSelect label="Cloud" value={f.provider} onChange={set("provider")} options={[{ value: "", label: "All" }, ...(facets?.providers ?? []).map((p) => ({ value: p, label: PROVIDER_LABEL[p] ?? p }))]} />
+              <FilterSearch value={f.port} onChange={(v) => set("port")(v.replace(/\D/g, "").slice(0, 5))} placeholder="Port, e.g. 22" label="Filter by port" />
+            </>
+          }
+        >
+          <FilterSelect label="Who" value={f.level} onChange={set("level")} options={[{ value: "", label: "All" }, { value: "open", label: "Anyone" }, { value: "restricted", label: "Some addresses" }]} />
+          <FilterSelect label="Account" value={f.subscription} onChange={set("subscription")} options={[{ value: "", label: "All" }, ...(facets?.subscriptions ?? []).map((x) => ({ value: x, label: x }))]} />
+          <FilterSelect label="Type" value={f.type} onChange={set("type")} options={[{ value: "", label: "All" }, ...(facets?.types ?? []).map((t) => ({ value: t, label: TYPE_LABEL[t] ?? t }))]} />
+        </FilterBar>
+        <FilterChips
+          chips={
+            [
+              f.level && { label: "Who", value: f.level === "open" ? "Anyone" : "Some addresses", onRemove: () => set("level")("") },
+              f.subscription && { label: "Account", value: f.subscription, onRemove: () => set("subscription")("") },
+              f.type && { label: "Type", value: TYPE_LABEL[f.type] ?? f.type, onRemove: () => set("type")("") },
+              f.provider && { label: "Cloud", value: PROVIDER_LABEL[f.provider] ?? f.provider, onRemove: () => set("provider")("") },
+              f.port && { label: "Port", value: f.port, onRemove: () => set("port")("") },
+            ].filter((c): c is FilterChip => !!c)
+          }
+          onClearAll={() => setParams(new URLSearchParams(), { replace: true })}
+        />
           <Table
             tableId="exposure"
             head={[
-              { label: "Who can reach it", sort: "level" },
-              { label: "Asset", sort: "name" },
-              "How",
-              { label: "Open doors", sort: "ports" },
-              "Controls",
-              { label: "Risk", sort: "risk" },
+              { label: "Who can reach it", sort: "level", w: 150 },
+              { label: "Resource", sort: "name", w: 280 },
+              { label: "How", w: 230 },
+              { label: "Open ports", sort: "ports", w: 190 },
+              { label: "Controls", w: 180 },
+              { label: "Risk", sort: "risk", w: 190 },
               { label: "Details", srOnly: true },
             ]}
             sort={sorted.sort}
             onSort={sorted.onSort}
             loading={loading}
             rowCount={data?.items.length ?? 0}
+            noun="resources"
+            pageSize={50}
+            filtered={!!(f.provider || f.subscription || f.type || f.port || f.level)}
+            onClearFilters={() => setParams(new URLSearchParams(), { replace: true })}
+            error={data ? null : error}
             empty={
               <Empty icon={Globe} title="No internet-exposed assets match these filters">
                 Nothing reachable from the Internet with these filters. Clear a filter to see all exposed assets.
@@ -243,54 +232,48 @@ export default function Exposure() {
               <Fragment key={i.id}>
                 <tr className="cursor-pointer align-top hover:bg-surface-2" onClick={() => setExpanded(expanded === i.id ? null : i.id)}>
                   <td className="px-3 py-2">
-                    <Tag tone={i.level === "open" ? "critical" : "warn"}>{i.level === "open" ? "Everyone" : "Some addresses"}</Tag>
-                    {i.sensitive_data && (
-                      <div className="mt-1">
-                        <Tag tone="accent">Sensitive data</Tag>
-                      </div>
-                    )}
+                    <PillRow>
+                      <Pill tone={i.level === "open" ? "critical" : "high"}>{i.level === "open" ? "Anyone" : "Some"}</Pill>
+                      {i.sensitive_data && <Pill tone="high" title="Holds sensitive data">Sensitive</Pill>}
+                    </PillRow>
                   </td>
                   <td className="px-3 py-2">
-                    <button
-                      className="text-left hover:text-accent"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setAsset(i.id);
-                      }}
-                    >
-                      {i.name}
-                    </button>
-                    <div className="text-[11px] text-ink-3">
-                      {TYPE_LABEL[i.type] ?? i.type} · {PROVIDER_LABEL[i.provider] ?? i.provider}
-                      {i.subscription_name ? ` · ${i.subscription_name}` : ""}
-                    </div>
+                    <NameCell
+                      name={i.name}
+                      sub={[TYPE_LABEL[i.type] ?? i.type, PROVIDER_LABEL[i.provider] ?? i.provider, i.subscription_name].filter(Boolean).join(" · ")}
+                      onOpen={() => setAsset(i.id)}
+                    />
                   </td>
-                  <td className="max-w-md px-3 py-2 text-xs">
-                    {i.methods
-                      .filter((m) => m.level !== "blocked")
-                      .slice(0, 2)
-                      .map((m, n) => (
-                        <div key={n}>
-                          <span className="text-ink-3">{m.label}:</span> {m.detail}
-                        </div>
-                      ))}
-                    {i.exposed_only_via.length > 0 && <div className="text-ink-3">via {i.exposed_only_via.join(", ")}</div>}
+                  <td className="px-3 py-2">
+                    {(() => {
+                      const how = i.methods.filter((m) => m.level !== "blocked").map((m) => `${m.label}: ${m.detail}`).join("; ");
+                      return how ? <TextCell muted title={how}>{i.methods.find((m) => m.level !== "blocked")?.label}</TextCell> : <None />;
+                    })()}
                   </td>
                   <td className="px-3 py-2">
                     <Ports ports={i.effective_ports} />
                   </td>
-                  <td className="px-3 py-2 text-xs text-ink-2">
-                    {i.network_controls.slice(0, 2).join(" · ") || <span className="text-ink-3">none</span>}
-                    {i.private_endpoints.length > 0 && <div className="text-ink-3">private endpoint</div>}
-                  </td>
-                  <td className="px-3 py-2 text-xs">
-                    <div>{i.findings.count} findings</div>
-                    {i.vulnerabilities.count > 0 && <div>{i.vulnerabilities.count} vulnerabilities</div>}
-                    {i.attack_paths.length > 0 && (
-                      <div className={i.attack_paths.some((p) => p.confirmed) ? "text-sev-critical" : "text-ink-2"}>
-                        {i.attack_paths.length} attack paths
-                      </div>
+                  <td className="px-3 py-2">
+                    {i.network_controls.length || i.private_endpoints.length ? (
+                      <PillRow>
+                        {i.network_controls.slice(0, 1).map((c) => <Pill key={c} title={i.network_controls.join(" · ")}>{c.length > 16 ? `${c.slice(0, 15)}…` : c}</Pill>)}
+                        {i.private_endpoints.length > 0 && <Pill tone="info">Private link</Pill>}
+                      </PillRow>
+                    ) : (
+                      <Pill tone="high" title="No protecting controls reported">None</Pill>
                     )}
+                  </td>
+                  <td className="px-3 py-2">
+                    {(() => {
+                      const parts = [i.findings.count ? `${i.findings.count} issues` : "", i.vulnerabilities.count ? `${i.vulnerabilities.count} vulns` : "", i.attack_paths.length ? `${i.attack_paths.length} paths` : ""].filter(Boolean);
+                      return parts.length ? (
+                        <TextCell title={parts.join(" · ")}>
+                          <span className={i.attack_paths.some((p) => p.confirmed) ? "text-sev-critical" : ""}>{parts.join(" · ")}</span>
+                        </TextCell>
+                      ) : (
+                        <None />
+                      );
+                    })()}
                   </td>
                   <td className="px-3 py-2 text-right text-xs text-ink-3">{expanded === i.id ? "▲" : "▼"}</td>
                 </tr>
