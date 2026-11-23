@@ -256,6 +256,7 @@ export default function NotificationsChannels({ meta, isAdmin, onChange }: { met
           <Empty>No channels yet.{isAdmin ? " Add a Teams, Slack, email or webhook channel to start." : ""}</Empty>
         ) : (
           <Table
+            tableId="notifications-channels"
             head={[{ label: "Name", sort: "name" }, { label: "Type", sort: "type" }, { label: "Destination", sort: "destination" }, { label: "Status", sort: "status" }, { label: "Last test", sort: "last_test" }, ...(isAdmin ? ["Actions"] : [])]}
             sort={sorted.sort}
             onSort={sorted.onSort}

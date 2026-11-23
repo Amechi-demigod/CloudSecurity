@@ -179,6 +179,7 @@ export function RemoteSessionsCard({ deviceId }: { deviceId: string }) {
         <Empty>No remote sessions yet.</Empty>
       ) : (
         <Table
+          tableId="remote-sessions"
           head={[{ label: "Requested", sort: "requested" }, { label: "By", sort: "by" }, { label: "Mode", sort: "mode" }, { label: "Duration", sort: "duration" }, { label: "Outcome", sort: "outcome" }, { label: "Reason", sort: "reason" }]}
           sort={sorted.sort}
           onSort={sorted.onSort}

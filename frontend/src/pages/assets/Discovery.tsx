@@ -491,6 +491,7 @@ export default function Discovery() {
         {view === "people" ? (
           <>
             <Table
+              tableId="discovery-1"
               head={[
                 { label: "User", sort: "user" },
                 { label: "Department / domain", sort: "department" },
@@ -552,6 +553,7 @@ export default function Discovery() {
         ) : view === "computers" ? (
           <>
             <Table
+              tableId="discovery-2"
               head={[
                 ...(selectAllCell ? [{ label: selectAllCell }] : []),
                 { label: "Computer / device", sort: "name" },
@@ -637,6 +639,7 @@ export default function Discovery() {
         ) : (
           <>
             <Table
+              tableId="discovery-3"
               head={[
                 ...(selectAllCell ? [{ label: selectAllCell }] : []),
                 { label: view === "users" ? "User" : "Computer / device", sort: "name" },

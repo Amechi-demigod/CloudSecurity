@@ -59,6 +59,7 @@ export function ScopeList({ provider, onChanged }: { provider: Provider; onChang
       </p>
       <ErrorNote error={error} />
       <Table
+        tableId="cloud-scopes"
         head={[{ label: noun, sort: "id" }, { label: "Status", sort: "status" }, { label: "Resources", sort: "resources" }, { label: "Last scanned", sort: "last_scanned" }, { label: "Remove", srOnly: true }]}
         sort={sorted.sort}
         onSort={sorted.onSort}

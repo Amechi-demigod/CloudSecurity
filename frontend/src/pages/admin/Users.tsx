@@ -276,6 +276,7 @@ export default function Users() {
       )}
       <Card>
         <Table
+          tableId="users"
           head={[{ label: "User", sort: "user" }, { label: "Role", sort: "role" }, { label: "Status", sort: "status" }, { label: "Sign-in", sort: "signin" }, { label: "Last sign-in", sort: "last_login" }, { label: "Created", sort: "created" }, "Actions"]}
           sort={sorted.sort}
           onSort={sorted.onSort}

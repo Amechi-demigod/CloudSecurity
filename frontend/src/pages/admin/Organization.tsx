@@ -170,6 +170,7 @@ function Invitations() {
       </form>
       {!!invitations?.length && (
         <Table
+          tableId="organization"
           head={[{ label: "Email", sort: "email" }, { label: "Role", sort: "role" }, { label: "Status", sort: "status" }, { label: "Invited", sort: "invited" }, { label: "Expires", sort: "expires" }, "Actions"]}
           sort={sorted.sort}
           onSort={sorted.onSort}

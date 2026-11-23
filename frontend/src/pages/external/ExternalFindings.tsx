@@ -162,6 +162,7 @@ function AllView({ filter, filtered, setCount, setHost }: ViewProps) {
       )}
       <Card>
         <Table
+          tableId="external-findings-1"
           head={[
             { label: "Severity", sort: "severity" },
             { label: "Finding", sort: "title" },
@@ -303,6 +304,7 @@ function GroupedView({ filter, filtered, setCount, setHost }: ViewProps) {
       <ErrorNote error={error} />
       <Card>
         <Table
+          tableId="external-findings-2"
           head={[
             { label: "Severity", sort: "severity" },
             { label: "Finding", sort: "title" },

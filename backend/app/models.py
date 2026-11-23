@@ -1284,6 +1284,19 @@ class DashboardLayout(TenantMixin, Base):
     updated_by: Mapped[str | None] = mapped_column(String(320), nullable=True)
 
 
+class TablePreference(TenantMixin, Base):
+    """One user's view of one console table (column widths, hidden columns, density), per organisation."""
+
+    __tablename__ = "table_preferences"
+    __table_args__ = (UniqueConstraint("user_id", "organization_id", "table_id", name="uq_table_preferences_user_org_table"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(String(32), ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    table_id: Mapped[str] = mapped_column(String(64))
+    prefs: Mapped[dict] = mapped_column(JSON)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class ExternalScan(TenantMixin, Base):
     __tablename__ = "external_scans"
 

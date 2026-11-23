@@ -77,7 +77,7 @@ export function VulnTable({
     { label: "Fix", sort: "fixed" },
   ];
   return (
-    <Table head={head} sort={sorted.sort} onSort={sorted.onSort}>
+    <Table tableId="vulns" head={head} sort={sorted.sort} onSort={sorted.onSort}>
       {sorted.rows.map((v) => (
         <tr key={v.id} className={`hover:bg-surface-2 ${v.status === "resolved" ? "opacity-60" : ""}`}>
           <td className="px-3 py-2">

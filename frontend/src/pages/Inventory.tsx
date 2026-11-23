@@ -131,6 +131,7 @@ export default function Inventory() {
       </div>
       <Card>
           <Table
+            tableId="inventory"
             head={removed ? [
               { label: "Resource", sort: "name" },
               { label: "Type", sort: "type" },

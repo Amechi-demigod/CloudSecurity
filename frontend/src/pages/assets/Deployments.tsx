@@ -49,6 +49,7 @@ export default function Deployments() {
       <ErrorNote error={deps.error} />
       <Card>
         <Table
+          tableId="deployments"
           head={[{ label: "Deployment", sort: "deployment" }, { label: "Routes", sort: "routes" }, { label: "Progress", sort: "progress" }, { label: "Pending", sort: "pending" }, { label: "State", sort: "state" }, { label: "Created", sort: "created" }]}
           sort={sorted.sort}
           onSort={sorted.onSort}

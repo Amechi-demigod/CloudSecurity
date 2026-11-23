@@ -63,6 +63,7 @@ export default function AuditLog() {
           <Empty>No audit entries.</Empty>
         ) : (
           <Table
+            tableId="audit-log"
             head={[{ label: "Time", sort: "time" }, { label: "Action", sort: "action" }, { label: "Actor", sort: "actor" }, { label: "Target", sort: "target" }, { label: "IP", sort: "ip" }, "Details"]}
             sort={sorted.sort}
             onSort={sorted.onSort}

@@ -219,6 +219,7 @@ export default function Exposure() {
       </div>
       <Card>
           <Table
+            tableId="exposure"
             head={[
               { label: "Who can reach it", sort: "level" },
               { label: "Asset", sort: "name" },

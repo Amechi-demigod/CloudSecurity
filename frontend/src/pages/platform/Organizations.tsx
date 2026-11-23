@@ -343,6 +343,7 @@ export default function Organizations() {
       {issued && <InviteResult issued={issued} onDismiss={() => setIssued(null)} />}
       <Card>
         <Table
+          tableId="organizations"
           head={[{ label: "Organisation", sort: "organisation" }, { label: "Status", sort: "status" }, { label: "Modules", sort: "modules" }, { label: "Users", sort: "users" }, { label: "Devices", sort: "devices" }, { label: "Assets", sort: "assets" }, { label: "Pending invitations", sort: "invitations" }, { label: "Created", sort: "created" }]}
           sort={sorted.sort}
           onSort={sorted.onSort}

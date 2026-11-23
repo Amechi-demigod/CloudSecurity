@@ -255,6 +255,7 @@ export default function Assets() {
         </div>
         <ErrorNote error={list.error} />
           <Table
+            tableId="assets"
             head={[
               { label: "Asset", sort: "name" },
               { label: "Type", sort: "type" },

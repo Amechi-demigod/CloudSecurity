@@ -43,7 +43,7 @@ function ReportView({ r }: { r: ExtReportData }) {
         </dl>
       </Card>
       <Card title="Part 2. Component compliance summary">
-        <Table head={[{ label: "Host / IP", sort: "host" }, { label: "Vulnerabilities", sort: "findings" }, { label: "Status", sort: "status" }]} sort={comps.sort} onSort={comps.onSort} rowCount={r.components.length} empty={<Empty title="No components" />}>
+        <Table tableId="external-reports-1" head={[{ label: "Host / IP", sort: "host" }, { label: "Vulnerabilities", sort: "findings" }, { label: "Status", sort: "status" }]} sort={comps.sort} onSort={comps.onSort} rowCount={r.components.length} empty={<Empty title="No components" />}>
           {comps.rows.map((c) => (
             <tr key={c.host}><td className="px-3 py-2 font-mono text-xs">{c.host}</td><td className="px-3 py-2 text-sm">{c.findings}</td>
               <td className="px-3 py-2"><Tag tone={c.result === "Pass" ? "good" : "critical"}>{c.result}</Tag></td></tr>
@@ -51,7 +51,7 @@ function ReportView({ r }: { r: ExtReportData }) {
         </Table>
       </Card>
       <Card title="Part 3a. Vulnerabilities noted for each component">
-        <Table head={[{ label: "Component", sort: "component" }, { label: "Vulnerability", sort: "vulnerability" }, { label: "Severity", sort: "severity" }, { label: "CVSS", sort: "cvss" }, { label: "Status", sort: "status" }, { label: "Exceptions / compensating controls", sort: "exceptions" }]} sort={vulns.sort} onSort={vulns.onSort} rowCount={r.vulnerabilities.length} empty={<Empty title="None noted" />}>
+        <Table tableId="external-reports-2" head={[{ label: "Component", sort: "component" }, { label: "Vulnerability", sort: "vulnerability" }, { label: "Severity", sort: "severity" }, { label: "CVSS", sort: "cvss" }, { label: "Status", sort: "status" }, { label: "Exceptions / compensating controls", sort: "exceptions" }]} sort={vulns.sort} onSort={vulns.onSort} rowCount={r.vulnerabilities.length} empty={<Empty title="None noted" />}>
           {vulns.rows.map((v) => (
             <tr key={v.ref}><td className="px-3 py-2 font-mono text-xs">{v.host}{v.port ? `:${v.port}` : ""}</td><td className="px-3 py-2 text-sm">{v.ref} {v.title}</td>
               <td className="px-3 py-2 text-xs capitalize">{v.severity}</td><td className="px-3 py-2 text-xs">{v.cvss.toFixed(1)}</td>
@@ -120,7 +120,7 @@ export default function ExternalReports() {
         </div>
       </Card>
       <Card title="History">
-        <Table head={[{ label: "Generated", sort: "generated" }, { label: "By", sort: "by" }, { label: "Result", sort: "result" }, "Download"]} sort={history.sort} onSort={history.onSort} loading={reports.loading} rowCount={reports.data?.length ?? 0} empty={<Empty icon={FileText} title="No reports yet">Create the first report above.</Empty>}>
+        <Table tableId="external-reports-3" head={[{ label: "Generated", sort: "generated" }, { label: "By", sort: "by" }, { label: "Result", sort: "result" }, "Download"]} sort={history.sort} onSort={history.onSort} loading={reports.loading} rowCount={reports.data?.length ?? 0} empty={<Empty icon={FileText} title="No reports yet">Create the first report above.</Empty>}>
           {history.rows.map((r) => (
             <tr key={r.id}>
               <td className="px-3 py-2 text-sm">{fmtTime(r.generated_at)}</td><td className="px-3 py-2 text-sm">{r.generated_by}</td>

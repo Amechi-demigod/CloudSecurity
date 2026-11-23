@@ -185,6 +185,7 @@ export default function DeploymentDetail() {
             }
           >
             <Table
+              tableId="deployment-detail-1"
               head={[{ label: "Machine", sort: "machine" }, { label: "Found in", sort: "found" }, { label: "OS", sort: "os" }, { label: "Route", sort: "route" }, { label: "Status", sort: "status" }, { label: "Agent device", sort: "device" }]}
               rowCount={items.length}
               sort={itemSort.sort}
@@ -233,6 +234,7 @@ export default function DeploymentDetail() {
                 <p className="text-sm text-ink-3">None yet: download an installer above{isAdmin ? "" : " (admins)"}.</p>
               ) : (
                 <Table
+                  tableId="deployment-detail-2"
                   head={[{ label: "Name", sort: "name" }, { label: "Token", sort: "token" }, { label: "Uses", sort: "uses" }, { label: "State", sort: "state" }]}
                   sort={tokenSort.sort}
                   onSort={tokenSort.onSort}

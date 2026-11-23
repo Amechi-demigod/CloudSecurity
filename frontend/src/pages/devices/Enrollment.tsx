@@ -409,6 +409,7 @@ export default function Enrollment() {
           <Empty>No tokens yet.</Empty>
         ) : (
           <Table
+            tableId="enrollment"
             head={[{ label: "Name", sort: "name" }, { label: "Token", sort: "token" }, { label: "State", sort: "state" }, { label: "Uses", sort: "uses" }, { label: "Expires", sort: "expires" }, { label: "Created", sort: "created" }, ""]}
             sort={sorted.sort}
             onSort={sorted.onSort}

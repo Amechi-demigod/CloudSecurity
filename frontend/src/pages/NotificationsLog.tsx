@@ -82,6 +82,7 @@ export default function NotificationsLog({ isAdmin, onChange }: { isAdmin: boole
           <Empty>No deliveries yet.</Empty>
         ) : (
           <Table
+            tableId="notifications-log"
             head={[{ label: "Time", sort: "time" }, { label: "Channel", sort: "channel" }, { label: "Notification", sort: "notification" }, { label: "Status", sort: "status" }, { label: "Attempts", sort: "attempts" }, "Details", ...(isAdmin ? [""] : [])]}
             sort={sorted.sort}
             onSort={sorted.onSort}

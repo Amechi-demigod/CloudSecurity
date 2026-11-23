@@ -292,6 +292,7 @@ export function ActionsTab({ device, commands, reload, error }: {
           <Empty>No endpoint actions yet.</Empty>
         ) : (
           <Table
+            tableId="endpoint-actions-1"
             head={[{ label: "Requested", sort: "requested" }, { label: "Action", sort: "action" }, { label: "Status", sort: "status" }, { label: "Result", sort: "result" }]}
             sort={sorted.sort}
             onSort={sorted.onSort}
@@ -401,6 +402,7 @@ export function ServicesTab({ device, commands, reload }: { device: Device; comm
           </Empty>
         ) : (
           <Table
+            tableId="endpoint-actions-2"
             head={[{ label: "Service", sort: "service" }, { label: "Status", sort: "status" }, { label: "Startup type", sort: "startup" }, admin ? "Actions" : ""]}
             sort={sorted.sort}
             onSort={sorted.onSort}
