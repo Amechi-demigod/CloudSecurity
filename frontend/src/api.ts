@@ -412,6 +412,8 @@ export interface OrganizationBrief {
   logo_url: string | null;
   /** Enabled modules; the others are shown locked. */
   modules: ModuleKey[];
+  /** "msp" for a partner account; absent or "customer" otherwise. */
+  kind?: string;
 }
 
 export interface SessionInfo {
@@ -423,6 +425,10 @@ export interface SessionInfo {
   organization: OrganizationBrief | null;
   /** May open the platform console (manage organisations). */
   platform_admin: boolean;
+  /** MSP staff only: their own partner organisation (absent for everybody else). */
+  home_organization?: OrganizationBrief | null;
+  /** MSP staff only: the session currently works inside one of the MSP's clients. */
+  acting_as_client?: boolean;
 }
 
 /** Returned by login instead of a session when a second step is needed. */

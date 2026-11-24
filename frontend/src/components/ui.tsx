@@ -418,13 +418,15 @@ export function Modal({ open, onClose, title, size = "md", children }: {
   );
 }
 
-/** Labelled text input used by forms. */
+/** Labelled text input used by forms. `error` shows a validation message next to the field. */
 export function Field({
   label,
   id,
   hint,
+  error,
   ...props
-}: { label: string; id: string; hint?: string } & InputHTMLAttributes<HTMLInputElement>) {
+}: { label: string; id: string; hint?: string; error?: string | null } & InputHTMLAttributes<HTMLInputElement>) {
+  const described = [error ? `${id}-error` : null, hint ? `${id}-hint` : null].filter(Boolean).join(" ") || undefined;
   return (
     <div>
       <label htmlFor={id} className="mb-1 block text-sm font-medium text-ink-2">
@@ -433,9 +435,17 @@ export function Field({
       <input
         id={id}
         {...props}
-        aria-describedby={hint ? `${id}-hint` : undefined}
-        className="block w-full rounded border border-line bg-surface-2 px-3 py-1.5 text-sm text-ink focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/40"
+        aria-invalid={error ? true : undefined}
+        aria-describedby={described}
+        className={`block w-full rounded border bg-surface-2 px-3 py-1.5 text-sm text-ink focus:outline-none focus:ring-2 ${
+          error ? "border-sev-critical focus:border-sev-critical focus:ring-sev-critical/40" : "border-line focus:border-accent focus:ring-accent/40"
+        }`}
       />
+      {error && (
+        <p id={`${id}-error`} className="mt-1 text-xs text-sev-critical">
+          {error}
+        </p>
+      )}
       {hint && (
         <p id={`${id}-hint`} className="mt-1 text-xs text-ink-3">
           {hint}

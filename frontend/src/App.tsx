@@ -1,9 +1,10 @@
-import { AlertTriangle, Building2, ChevronDown, LayoutDashboard, Lock, Menu, Monitor, Moon, Radar, Settings, ShieldCheck, Sun, type LucideIcon } from "lucide-react";
+import { AlertTriangle, Building2, ChevronDown, Users as UsersIcon, LayoutDashboard, Lock, Menu, Monitor, Moon, Radar, Settings, ShieldCheck, Sun, type LucideIcon } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { api, type ModuleKey, type Role } from "./api";
 import { useAuth } from "./auth/context";
 import { RequireModule } from "./components/ModuleLocked";
+import { ClientBar, ClientSwitcher } from "./components/msp";
 import UserMenu from "./components/UserMenu";
 import { useBrand } from "./lib/brand";
 import { PROVIDER_LABEL } from "./lib/format";
@@ -46,6 +47,7 @@ import AuditLog from "./pages/admin/AuditLog";
 import OrganizationPage from "./pages/admin/Organization";
 import Users from "./pages/admin/Users";
 import Invite from "./pages/Invite";
+import Clients from "./pages/msp/Clients";
 import Organizations from "./pages/platform/Organizations";
 import ExternalReview from "./pages/platform/ExternalReview";
 import AttackSurface from "./pages/external/AttackSurface";
@@ -120,6 +122,23 @@ const NAV: NavTop[] = [
   },
 ];
 
+// MSP staff in their own partner organisation: their clients, and the few settings that belong to the MSP itself
+// (its team and audit log). Everything else belongs to a client and is reached by opening one.
+const MSP_HOME_NAV: NavTop[] = [
+  { key: "clients", label: "Clients", icon: UsersIcon, to: "/" },
+  {
+    key: "settings",
+    label: "Settings",
+    icon: Settings,
+    children: [
+      { to: "/notifications", label: "Notifications", role: "analyst" },
+      { to: "/admin/users", label: "People & approvals", also: ["/approvals", "/admin/organization"], admin: true, badge: "approvals" },
+      { to: "/admin/audit-log", label: "Audit log", admin: true },
+    ],
+  },
+  NAV[NAV.length - 1],
+];
+
 /** How well a path matches an item (0: not at all); the longest match wins, so /devices/updates beats /devices. */
 function matchLen(path: string, item: { to?: string; also?: string[] }): number {
   let best = 0;
@@ -146,14 +165,15 @@ function LockMark() {
 }
 
 function SideNav({ approvals, onNavigate }: { approvals?: number; onNavigate: () => void }) {
-  const { can, platformAdmin } = useAuth();
+  const { can, platformAdmin, homeOrganization, actingAsClient } = useAuth();
+  const mspHome = !!homeOrganization && !actingAsClient;
   const { has } = useModules();
   const { pathname } = useLocation();
   const navigate = useNavigate();
   const admin = can("admin");
 
   // What this user sees; locked children sink to the bottom of their group.
-  const tops = NAV.filter((t) => !t.platform || platformAdmin)
+  const tops = (mspHome ? MSP_HOME_NAV : NAV).filter((t) => !t.platform || platformAdmin)
     .map((t) => {
       const children = t.children
         ?.filter((c) => (!c.role || can(c.role)) && (!c.admin || admin) && (!c.showWith || has(...c.showWith)))
@@ -314,8 +334,10 @@ function RequirePlatformAdmin({ children }: { children: ReactNode }) {
 
 /** Which organisation the session works in (every page shows only its data). */
 function OrgIndicator() {
-  const { organization } = useAuth();
+  const { organization, homeOrganization } = useAuth();
   if (!organization) return null;
+  // MSP staff get a switcher; everybody else sees a plain name.
+  if (homeOrganization) return <ClientSwitcher />;
   return (
     <div className="mr-auto flex min-w-0 items-center gap-2 text-sm" title={`You are working in ${organization.name}`}>
       <span aria-hidden className="flex h-6 w-6 items-center justify-center rounded bg-surface-2 text-xs font-semibold text-ink-2">
@@ -328,7 +350,8 @@ function OrgIndicator() {
 }
 
 function Shell() {
-  const { can, forbidden, dismissForbidden, platformAdmin } = useAuth();
+  const { can, forbidden, dismissForbidden, platformAdmin, homeOrganization, actingAsClient } = useAuth();
+  const mspHome = !!homeOrganization && !actingAsClient;
   const brand = useBrand();
   const { data: health, error } = useApi(api.health, [], 15000);
   // This organisation's connectors (console settings, or the environment for the default one).
@@ -380,6 +403,7 @@ function Shell() {
         </div>
       </nav>
       <div className="flex min-w-0 flex-1 flex-col" data-print="flow">
+        <ClientBar />
         <header className="flex items-center justify-end gap-2 border-b border-line bg-surface-1 px-4 py-2 md:px-6" data-print="hide">
           <button
             type="button"
@@ -403,7 +427,7 @@ function Shell() {
             </div>
           )}
           <Routes>
-            <Route path="/" element={<DashboardPage />} />
+            <Route path="/" element={mspHome ? <Clients /> : <DashboardPage />} />
             <Route path="/compliance" element={<Compliance />} />
             <Route path="/inventory" element={<RequireModule module="cloud"><Inventory /></RequireModule>} />
             <Route path="/findings" element={<RequireModule module="cloud"><Findings /></RequireModule>} />

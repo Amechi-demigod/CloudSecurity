@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useMemo, useState, type FormEvent } from "react";
 import { ApiError, type ModuleKey, type Role } from "../../api";
 import { ROLE_LABEL, useAuth } from "../../auth/context";
 import { InvitationStateTag, InviteResult } from "../../components/org";
@@ -70,6 +70,54 @@ function ModulesSection({ orgId, modules, busy, onSave }: { orgId: string; modul
   );
 }
 
+/** Who manages this organisation (a customer's MSP), or how many clients an MSP may have. Pending until saved. */
+function PartnershipSection({ org, msps, busy, onSavePartner, onSaveMax }: {
+  org: PlatformOrg;
+  msps: PlatformOrg[];
+  busy: boolean;
+  onSavePartner: (id: string | null) => Promise<unknown>;
+  onSaveMax: (n: number | null) => Promise<unknown>;
+}) {
+  const [partner, setPartner] = useState(org.partner_org_id ?? "");
+  const [max, setMax] = useState(org.max_clients == null ? "" : String(org.max_clients));
+  if (org.kind === "msp") {
+    const bad = max.trim() !== "" && !/^\d{1,6}$/.test(max.trim());
+    const next = max.trim() === "" ? null : Number(max.trim());
+    const changed = !bad && next !== org.max_clients;
+    return (
+      <section>
+        <h3 className="mb-2 font-semibold">Partner account</h3>
+        <p className="mb-2 text-xs text-ink-3">This organisation is an MSP and manages {org.clients} {org.clients === 1 ? "client" : "clients"}.</p>
+        <Field label="Maximum clients" id="pm-max" inputMode="numeric" value={max} placeholder="No limit" disabled={busy}
+          error={bad ? "Enter a whole number, or leave it empty for no limit." : null} onChange={(e) => setMax(e.target.value)} />
+        <SaveBar count={changed ? 1 : 0} saving={busy} onDiscard={() => setMax(org.max_clients == null ? "" : String(org.max_clients))}
+          onSave={() => void onSaveMax(next)} />
+      </section>
+    );
+  }
+  const changed = partner !== (org.partner_org_id ?? "");
+  const current = msps.find((m) => m.id === org.partner_org_id);
+  return (
+    <section>
+      <h3 className="mb-2 font-semibold">Managed by</h3>
+      <label htmlFor="pm-partner" className="sr-only">MSP partner</label>
+      <select id="pm-partner" value={partner} disabled={busy} onChange={(e) => setPartner(e.target.value)}
+        className="block w-full rounded border border-line bg-surface-2 px-3 py-1.5 text-sm text-ink">
+        <option value="">Nobody (managed by its own team)</option>
+        {msps.map((m) => (
+          <option key={m.id} value={m.id}>{m.name}</option>
+        ))}
+      </select>
+      <p className="mt-1 text-xs text-ink-3">
+        {current ? `${current.name}'s staff can open this organisation and work in it.` : "An MSP's staff can open it and work in it. The organisation's own users never see this."}
+        {partner === "" && org.partner_org_id && " Removing the partner ends the MSP's access at once."}
+      </p>
+      <SaveBar count={changed ? 1 : 0} saving={busy} onDiscard={() => setPartner(org.partner_org_id ?? "")}
+        onSave={() => void onSavePartner(partner || null)} />
+    </section>
+  );
+}
+
 function CreateOrgDialog({ open, onClose, onCreated }: { open: boolean; onClose: () => void; onCreated: (i: IssuedInvitation) => void }) {
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
@@ -77,10 +125,15 @@ function CreateOrgDialog({ open, onClose, onCreated }: { open: boolean; onClose:
   const [adminEmail, setAdminEmail] = useState("");
   const [plan, setPlan] = useState("");
   const [modules, setModules] = useState<ModuleKey[]>([]);
+  const [kind, setKind] = useState<"customer" | "msp">("customer");
+  const [maxClients, setMaxClients] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const maxBad = kind === "msp" && maxClients.trim() !== "" && !/^\d{1,6}$/.test(maxClients.trim());
 
   function close() {
+    setKind("customer");
+    setMaxClients("");
     setName("");
     setSlug("");
     setContact("");
@@ -103,6 +156,8 @@ function CreateOrgDialog({ open, onClose, onCreated }: { open: boolean; onClose:
         plan: plan.trim() || undefined,
         admin_email: adminEmail.trim(),
         modules,
+        kind,
+        max_clients: kind === "msp" && maxClients.trim() ? Number(maxClients.trim()) : undefined,
       });
       onCreated(r.invitation);
       close();
@@ -117,6 +172,19 @@ function CreateOrgDialog({ open, onClose, onCreated }: { open: boolean; onClose:
     <Modal open={open} onClose={close} title="New organisation">
       <form className="space-y-3" onSubmit={submit}>
         <ErrorNote error={err} />
+        <div>
+          <label htmlFor="no-kind" className="mb-1 block text-sm font-medium text-ink-2">Kind</label>
+          <select id="no-kind" value={kind} onChange={(e) => setKind(e.target.value as "customer" | "msp")}
+            className="block w-full rounded border border-line bg-surface-2 px-3 py-1.5 text-sm text-ink">
+            <option value="customer">Customer</option>
+            <option value="msp">MSP (partner)</option>
+          </select>
+          {kind === "msp" && <p className="mt-1 text-xs text-ink-3">An MSP creates and manages its own client organisations.</p>}
+        </div>
+        {kind === "msp" && (
+          <Field label="Maximum clients (optional)" id="no-max" inputMode="numeric" value={maxClients} placeholder="No limit"
+            error={maxBad ? "Enter a whole number, or leave it empty for no limit." : null} onChange={(e) => setMaxClients(e.target.value)} />
+        )}
         <Field label="Name" id="no-name" required maxLength={128} value={name} onChange={(e) => setName(e.target.value)} />
         <Field label="Short name (optional)" id="no-slug" maxLength={64} placeholder="derived from the name" value={slug}
           hint="Lowercase letters, digits and -; unique on the platform." onChange={(e) => setSlug(e.target.value)} />
@@ -147,7 +215,7 @@ function CreateOrgDialog({ open, onClose, onCreated }: { open: boolean; onClose:
         </fieldset>
         <div className="flex justify-end gap-2 pt-2">
           <Button onClick={close}>Cancel</Button>
-          <Button type="submit" variant="primary" disabled={busy || !name.trim() || !adminEmail.trim()}>
+          <Button type="submit" variant="primary" disabled={busy || maxBad || !name.trim() || !adminEmail.trim()}>
             {busy ? "Creating…" : "Create and invite"}
           </Button>
         </div>
@@ -156,7 +224,7 @@ function CreateOrgDialog({ open, onClose, onCreated }: { open: boolean; onClose:
   );
 }
 
-function OrgDrawer({ orgId, onClose, onChanged }: { orgId: string | null; onClose: () => void; onChanged: () => void }) {
+function OrgDrawer({ orgId, msps, onClose, onChanged }: { orgId: string | null; msps: PlatformOrg[]; onClose: () => void; onChanged: () => void }) {
   const { data: org, error, reload } = useApi(() => (orgId ? orgApi.platformOrg(orgId) : Promise.resolve(null)), [orgId]);
   const [err, setErr] = useState<string | null>(null);
   const [issued, setIssued] = useState<IssuedInvitation | null>(null);
@@ -229,6 +297,11 @@ function OrgDrawer({ orgId, onClose, onChanged }: { orgId: string | null; onClos
                 </Button>
               )}
             </div>
+          )}
+          {!org.is_default && (
+            <PartnershipSection key={`${org.id}-${org.kind}-${org.partner_org_id}-${org.max_clients}`} org={org} msps={msps} busy={busy}
+              onSavePartner={(id) => act(() => orgApi.setOrgPartner(org.id, id))}
+              onSaveMax={(n) => act(() => orgApi.setOrgMaxClients(org.id, n))} />
           )}
           <ModulesSection key={org.id} orgId={org.id} modules={org.modules} busy={busy}
             onSave={async (changes) => { await act(async () => { for (const [m, enabled] of changes) await orgApi.setOrgModule(org.id, m, enabled); }); }} />
@@ -307,12 +380,15 @@ export default function Organizations() {
   const [creating, setCreating] = useState(false);
   const [issued, setIssued] = useState<IssuedInvitation | null>(null);
   const [open, setOpen] = useState<string | null>(null);
+  const msps = useMemo(() => (orgs ?? []).filter((o) => o.kind === "msp"), [orgs]);
+  const mspName = useMemo(() => new Map((orgs ?? []).filter((o) => o.kind === "msp").map((o) => [o.id, o.name])), [orgs]);
   const sorted = useSort(
     orgs,
     {
       organisation: (o) => o.name,
       status: (o) => (o.status === "active" ? 0 : 1),
       modules: (o) => o.modules.length,
+      clients: (o) => o.clients,
       users: (o) => o.usage.users,
       devices: (o) => o.usage.devices,
       assets: (o) => o.usage.assets,
@@ -320,14 +396,14 @@ export default function Organizations() {
       created: (o) => ts(o.created_at),
     },
     { key: "organisation", dir: "asc" },
-    { modules: "desc", users: "desc", devices: "desc", assets: "desc", invitations: "desc", created: "desc" },
+    { modules: "desc", clients: "desc", users: "desc", devices: "desc", assets: "desc", invitations: "desc", created: "desc" },
   );
 
   return (
     <div>
       <PageHeader
         title="Organisations"
-        subtitle="Every customer on the platform. Each only sees its own data."
+        subtitle="Every customer and partner on the platform. Each only sees its own data."
         actions={
           <Button variant="primary" onClick={() => setCreating(true)}>
             New organisation
@@ -348,6 +424,7 @@ export default function Organizations() {
             { label: "Organisation", sort: "organisation", w: 250 },
             { label: "Status", sort: "status", w: 110 },
             { label: "Modules", sort: "modules", w: 330 },
+            { label: "Clients", sort: "clients", w: 90, align: "right" },
             { label: "People", sort: "users", w: 90, align: "right" },
             { label: "Computers", sort: "devices", w: 110, align: "right" },
             { label: "Cloud resources", sort: "assets", w: 140, align: "right" },
@@ -362,10 +439,11 @@ export default function Organizations() {
           {sorted.rows.map((o: PlatformOrg) => (
             <tr key={o.id} className="cursor-pointer hover:bg-surface-2" onClick={() => setOpen(o.id)}>
               <td className="px-3 py-2">
-                <NameCell name={o.name} sub={`${o.slug}${o.is_default ? " · default" : ""}${o.plan ? ` · ${o.plan}` : ""}`} onOpen={() => setOpen(o.id)} />
+                <NameCell name={o.name} sub={`${o.slug}${o.kind === "msp" ? " · MSP (partner)" : ""}${o.is_default ? " · default" : ""}${o.plan ? ` · ${o.plan}` : ""}${o.partner_org_id ? ` · managed by ${mspName.get(o.partner_org_id) ?? "an MSP"}` : ""}`} onOpen={() => setOpen(o.id)} />
               </td>
               <td className="px-3 py-2"><PillRow>{o.status === "active" ? <Pill tone="good">Active</Pill> : <Pill tone="critical">Suspended</Pill>}</PillRow></td>
               <td className="px-3 py-2"><ModuleChips modules={o.modules} /></td>
+              <td className="px-3 py-2"><NumCell value={o.kind === "msp" ? o.clients : null} title={o.max_clients != null ? `Limit ${o.max_clients}` : undefined} /></td>
               <td className="px-3 py-2"><NumCell value={o.usage.users} /></td>
               <td className="px-3 py-2"><NumCell value={o.usage.devices} /></td>
               <td className="px-3 py-2"><NumCell value={o.usage.assets} /></td>
@@ -376,7 +454,7 @@ export default function Organizations() {
         </Table>
       </Card>
       <CreateOrgDialog open={creating} onClose={() => setCreating(false)} onCreated={(i) => { setIssued(i); reload(); }} />
-      <OrgDrawer orgId={open} onClose={() => setOpen(null)} onChanged={reload} />
+      <OrgDrawer orgId={open} msps={msps} onClose={() => setOpen(null)} onChanged={reload} />
     </div>
   );
 }

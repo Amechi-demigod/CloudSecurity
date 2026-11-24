@@ -90,6 +90,14 @@ export interface ConnectorConfig {
 }
 
 export interface PlatformOrg extends Organization {
+  /** "msp" for a partner that manages client organisations. */
+  kind: "customer" | "msp";
+  /** On a client: the MSP that manages it. */
+  partner_org_id: string | null;
+  /** On an MSP: most clients it may have (null = unlimited). */
+  max_clients: number | null;
+  /** On an MSP: how many clients it manages. */
+  clients: number;
   updated_at: string | null;
   suspended_at: string | null;
   suspended_reason: string | null;
@@ -175,10 +183,14 @@ export const orgApi = {
   platformOrgs: () => request<PlatformOrg[]>("/api/platform/organizations"),
   platformOrg: (id: string) => request<PlatformOrgDetail>(`/api/platform/organizations/${id}`),
   platformMail: () => request<{ configured: boolean }>("/api/platform/mail"),
-  createOrg: (body: { name: string; slug?: string; contact_email?: string; plan?: string; admin_email: string; modules?: ModuleKey[] }) =>
+  createOrg: (body: { name: string; slug?: string; contact_email?: string; plan?: string; admin_email: string; modules?: ModuleKey[]; kind?: "customer" | "msp"; max_clients?: number | null }) =>
     request<{ organization: PlatformOrg; invitation: IssuedInvitation }>("/api/platform/organizations", json("POST", body)),
   updateOrg: (id: string, patch: Partial<Pick<Organization, "name" | "contact_email" | "logo_url" | "plan" | "max_users" | "max_devices">>) =>
     request<PlatformOrg>(`/api/platform/organizations/${id}`, json("PATCH", patch)),
+  setOrgPartner: (id: string, partnerOrgId: string | null) =>
+    request<PlatformOrg>(`/api/platform/organizations/${id}/partner`, json("PUT", { partner_org_id: partnerOrgId })),
+  setOrgMaxClients: (id: string, maxClients: number | null) =>
+    request<PlatformOrg>(`/api/platform/organizations/${id}`, json("PATCH", { max_clients: maxClients })),
   setOrgModule: (id: string, module: ModuleKey, enabled: boolean) =>
     request<PlatformOrg>(`/api/platform/organizations/${id}/modules/${module}`, json("PUT", { enabled })),
   suspendOrg: (id: string, reason: string) => request<PlatformOrg>(`/api/platform/organizations/${id}/suspend`, json("POST", { reason })),
