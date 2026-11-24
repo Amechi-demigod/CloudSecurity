@@ -199,7 +199,8 @@ login_limiter = RateLimiter()
 # --- audit -----------------------------------------------------------------------
 
 def audit(db: Session, action: str, *, actor: User | None = None, actor_email: str | None = None,
-          target: str | None = None, ip: str | None = None, organization_id: str | None = None, **detail) -> None:
+          target: str | None = None, ip: str | None = None, organization_id: str | None = None,
+          via_partner_org_id: str | None = None, **detail) -> None:
     """Add an audit record to the current transaction (caller commits). It goes
     to the session's organisation, else the given one, else the actor's
     (sign-in events), else the default organisation (the platform operator:
@@ -209,11 +210,24 @@ def audit(db: Session, action: str, *, actor: User | None = None, actor_email: s
         rows = memberships(db, actor.id)
         org = rows[0][1].id if rows else None
     org = org or tenancy.DEFAULT_ORG_ID
+    email = actor.email if actor else actor_email
+    # MSP staff working inside a client: the row names the real person and is flagged so the
+    # client's own audit-log API never shows it (docs/MSP.md).
+    ctx = db.info.get(ACTING_KEY)
+    if ctx and org == ctx["client_org_id"]:
+        via_partner_org_id = via_partner_org_id or ctx["partner_org_id"]
+        if actor is not None and actor.id == ctx["actor_id"]:
+            email = ctx["actor_email"]
     db.add(AuditLog(action=action, actor_id=actor.id if actor else None, organization_id=org,
-                    actor_email=actor.email if actor else actor_email, target=target, ip=ip, detail=detail))
+                    actor_email=email, target=target, ip=ip, detail=detail, via_partner_org_id=via_partner_org_id))
 
 
 # --- organisations ----------------------------------------------------------------
+
+#: `db.info` key holding the partner context of a request made by MSP staff inside a client.
+ACTING_KEY = "partner_acting"
+#: What client users see where MSP staff would otherwise leave a name (created_by, requested_by, ...).
+PARTNER_ACTOR_LABEL = "Managed security team"
 
 class OrgAccessError(Exception):
     """The user has no usable organisation membership (none, or suspended)."""
@@ -376,6 +390,7 @@ def session_from_connection(conn: HTTPConnection, db: Session, *, check_csrf: bo
         db.commit()
         raise _unauthorized("Organisation access suspended" if e.reason == "organization_suspended"
                             else "Session expired") from None
+    acting = _acting_client(db, sess)
     idle_deadline = sess.last_seen_at + timedelta(minutes=s.session_idle_minutes)
     if now >= sess.expires_at or now >= idle_deadline:
         sess.revoked_at = now
@@ -389,7 +404,70 @@ def session_from_connection(conn: HTTPConnection, db: Session, *, check_csrf: bo
         sess.last_seen_at = now
         db.commit()
     conn.state.session = sess
+    tenancy.set_org(db, acting.id if acting else sess.organization_id)
+    if acting is not None:
+        _enter_acting(db, sess, acting)
+    return sess
+
+
+def partner_client(db: Session, msp_org_id: str, client_id: str) -> Organization | None:
+    """`client_id` if it is a (non-default) customer organisation managed by the MSP `msp_org_id`, else None.
+    The one place the partner relationship is checked."""
+    client = db.get(Organization, client_id)
+    if (client is None or client.kind != "customer" or client.is_default or client.partner_org_id != msp_org_id):
+        return None
+    return client
+
+
+def _acting_client(db: Session, sess: UserSession) -> Organization | None:
+    """The client organisation this session works in, if it still may: the home organisation is an active MSP
+    and the client still belongs to it and is active. Otherwise the acting organisation is cleared (the
+    session falls back to the MSP's own organisation). Access follows the partner relationship, never a
+    membership row in the client."""
+    if not sess.acting_org_id:
+        return None
+    home = db.get(Organization, sess.organization_id)
+    client = (partner_client(db, home.id, sess.acting_org_id)
+              if home is not None and home.kind == "msp" and home.status == "active" else None)
+    if client is None or client.status != "active":
+        sess.acting_org_id = None
+        db.commit()
+        return None
+    return client
+
+
+def _enter_acting(db: Session, sess: UserSession, client: Organization) -> None:
+    """MSP staff in a client: same role as in the MSP, but never a platform owner, and under a stand-in
+    identity (the client sees only PARTNER_ACTOR_LABEL where the person's name would be stored)."""
+    real = sess.user
+    real.organization_id = client.id
+    stand_in = User(id=real.id, email=PARTNER_ACTOR_LABEL, name=PARTNER_ACTOR_LABEL, password_hash="",
+                    is_active=True, is_platform_admin=False)
+    stand_in.role, stand_in.organization_id = real.role, client.id
+    sess.acting_user = stand_in
+    db.info[ACTING_KEY] = {"partner_org_id": sess.organization_id, "client_org_id": client.id,
+                           "actor_id": real.id, "actor_email": real.email}
+
+
+def partner_session_fields(db: Session, sess: UserSession) -> dict:
+    """Extra /me fields, only for MSP staff (None / False for everybody else, so client users learn nothing)."""
+    from .schemas import OrganizationBrief
+
+    home = db.get(Organization, sess.organization_id)
+    if home is None or home.kind != "msp":
+        return {}
+    return {"home_organization": OrganizationBrief.model_validate(home), "acting_as_client": bool(sess.acting_org_id)}
+
+
+def leave_acting(db: Session, sess: UserSession) -> UserSession:
+    """Scope the request to the MSP's own organisation (MSP endpoints work the same whether or not the
+    session currently works in a client). Returns the session again (the switch drops loaded objects)."""
+    role, sid = sess.user.role, sess.id
+    db.info.pop(ACTING_KEY, None)
     tenancy.set_org(db, sess.organization_id)
+    sess = db.get(UserSession, sid)
+    sess.acting_user = None
+    sess.user.role, sess.user.organization_id = role, sess.organization_id
     return sess
 
 
@@ -400,7 +478,7 @@ def current_session(request: Request, db: Session = Depends(get_db)) -> UserSess
 
 
 def current_user(sess: UserSession = Depends(current_session)) -> User:
-    return sess.user
+    return sess.acting_user or sess.user
 
 
 def require_role(minimum: str):

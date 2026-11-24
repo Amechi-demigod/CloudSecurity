@@ -69,7 +69,8 @@ MIGRATION_CHAIN = ["0001_baseline", "0002_device_management", "0003_notification
                    "0024_agent_deployments", "0025_compliance_reports", "0026_device_classification",
                    "0027_directory_collectors", "0028_network_discovery", "0029_network_sensor_link", "0030_linux_agent",
                    "0031_org_modules", "0032_attack_surface", "0033_cloud_resource_lifecycle", "0034_dashboard_layouts",
-                   "0035_table_preferences"]
+                   "0035_table_preferences",
+                   "0036_msp_partners"]
 
 
 def test_migration_history_is_linear():

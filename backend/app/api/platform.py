@@ -139,7 +139,8 @@ def list_scans(db: Session = Depends(get_db), limit: int = Query(20, ge=1, le=20
         oldest = min(r.started_at for r in runs if r.id in started) - timedelta(minutes=5)
         by = {}
         for detail, email in db.execute(select(AuditLog.detail, AuditLog.actor_email).where(
-                AuditLog.action == "scan_started", AuditLog.timestamp >= oldest.replace(tzinfo=None))):
+                AuditLog.action == "scan_started", AuditLog.timestamp >= oldest.replace(tzinfo=None),
+                AuditLog.via_partner_org_id.is_(None))):
             sid = (detail or {}).get("scan_id")
             if sid in started and email:
                 by[sid] = email

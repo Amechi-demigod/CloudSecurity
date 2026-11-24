@@ -41,6 +41,7 @@ from ..auth import (
     login_limiter,
     normalize_email,
     org_user,
+    partner_session_fields,
     require_admin,
     revoke_user_sessions,
     set_membership,
@@ -77,11 +78,11 @@ CALLBACK_PATH = "/api/auth/sso/entra/callback"
 
 
 def session_info(db: Session, sess: UserSession, recovery_codes: list[str] | None = None) -> LoginComplete:
-    org = db.get(Organization, sess.organization_id)
+    org = db.get(Organization, sess.active_organization_id)
     return LoginComplete(user=UserOut.model_validate(sess.user), csrf_token=sess.csrf_token,
                          expires_at=sess.expires_at, idle_timeout_minutes=config.settings.session_idle_minutes,
                          recovery_codes=recovery_codes, organization=OrganizationBrief.model_validate(org),
-                         platform_admin=is_platform_admin(sess.user))
+                         platform_admin=is_platform_admin(sess.user), **partner_session_fields(db, sess))
 
 
 def safe_return_path(path: str | None) -> str:

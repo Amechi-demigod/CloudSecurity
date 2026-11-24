@@ -24,6 +24,7 @@ from ..auth import (
     normalize_email,
     org_user,
     org_users,
+    partner_session_fields,
     password_problem,
     require_admin,
     revoke_user_sessions,
@@ -59,7 +60,8 @@ def org_brief(db: Session, org_id: str) -> OrganizationBrief:
 def _session_info(db: Session, sess: UserSession) -> SessionInfo:
     return SessionInfo(user=UserOut.model_validate(sess.user), csrf_token=sess.csrf_token,
                        expires_at=sess.expires_at, idle_timeout_minutes=config.settings.session_idle_minutes,
-                       organization=org_brief(db, sess.organization_id), platform_admin=is_platform_admin(sess.user))
+                       organization=org_brief(db, sess.active_organization_id),
+                       platform_admin=is_platform_admin(sess.user), **partner_session_fields(db, sess))
 
 
 def _check_password(password: str) -> None:
@@ -259,7 +261,8 @@ def audit_log(db: Session = Depends(get_db), action: str | None = None, actor: s
               limit: int = Query(200, ge=1, le=2000),
               sort: str | None = Query(None, description="time|action|actor|target|ip"),
               dir: str = Query("desc", pattern="^(asc|desc)$")):
-    stmt = select(AuditLog)
+    # Rows written while MSP staff acted in this organisation are not shown to it (docs/MSP.md).
+    stmt = select(AuditLog).where(AuditLog.via_partner_org_id.is_(None))
     if action:
         stmt = stmt.where(AuditLog.action == action)
     if actor:

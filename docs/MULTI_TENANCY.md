@@ -22,6 +22,7 @@ environment-based settings (`AZURE_*`, `AWS_*`, `GCP_*`, `INGEST_API_TOKEN`,
 - [Email for invitations](#email-for-invitations)
 - [Upgrading an existing installation](#upgrading-an-existing-installation)
 - [Limits and deferred items](#limits-and-deferred-items)
+- [MSP accounts (partner organisations)](MSP.md): managed service providers that manage client organisations
 
 ## Model
 

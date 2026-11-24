@@ -67,6 +67,17 @@ class Organization(Base):
     plan: Mapped[str | None] = mapped_column(String(32), nullable=True)
     max_users: Mapped[int | None] = mapped_column(Integer, nullable=True)
     max_devices: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # customer | msp (docs/MSP.md). An MSP is a partner company that manages client organisations.
+    kind: Mapped[str] = mapped_column(String(16), default="customer", server_default="customer", index=True)
+    # Client organisations: the MSP that manages them (set by the platform owner or the MSP only).
+    partner_org_id: Mapped[str | None] = mapped_column(
+        String(32), ForeignKey("organizations.id", name="fk_organizations_partner_org_id"), nullable=True,
+        index=True)
+    # MSP organisations: most client organisations it may have (NULL = unlimited).
+    max_clients: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Who last changed the status: "platform" | "partner" (NULL = unknown, treated as platform).
+    # A client suspended by the platform owner cannot be reactivated by its MSP.
+    status_set_by: Mapped[str | None] = mapped_column(String(16), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     created_by: Mapped[str | None] = mapped_column(String(320), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
@@ -545,6 +556,11 @@ class UserSession(Base):
     organization_id: Mapped[str] = mapped_column(
         String(32), ForeignKey("organizations.id", ondelete="CASCADE", name="fk_user_sessions_organization_id"),
         index=True)
+    # MSP staff only: the client organisation currently worked in (validated on every request:
+    # the client must still belong to the staff member's MSP). NULL = acting in `organization_id`.
+    acting_org_id: Mapped[str | None] = mapped_column(
+        String(32), ForeignKey("organizations.id", ondelete="SET NULL", name="fk_user_sessions_acting_org_id"),
+        nullable=True)
     csrf_token: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
@@ -554,6 +570,15 @@ class UserSession(Base):
     user_agent: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     user: Mapped[User] = relationship(lazy="joined")
+
+    # Not a column: the stand-in user a request made through a partner (MSP) acts as
+    # (app/auth.py: acting_user); None for ordinary requests.
+    acting_user = None
+
+    @property
+    def active_organization_id(self) -> str:
+        """The organisation requests of this session act in."""
+        return self.acting_org_id or self.organization_id
 
 
 class AuditLog(TenantMixin, Base):
@@ -573,6 +598,9 @@ class AuditLog(TenantMixin, Base):
     target: Mapped[str | None] = mapped_column(String(512), nullable=True)
     ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
     detail: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Set when MSP staff acted inside this (client) organisation: the MSP's id. Such rows are
+    # hidden from the client's own audit-log API (docs/MSP.md).
+    via_partner_org_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
 
 
 # --- Device management (endpoint agent) ------------------------------------------
