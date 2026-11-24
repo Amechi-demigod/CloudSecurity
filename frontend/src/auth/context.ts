@@ -10,6 +10,10 @@ export interface AuthState {
   user: User | null | undefined;
   /** The organisation the session acts in. */
   organization: OrganizationBrief | null;
+  /** MSP staff only: their own partner organisation (null for everybody else; no client user ever sees it). */
+  homeOrganization: OrganizationBrief | null;
+  /** MSP staff only: currently working inside a client. */
+  actingAsClient: boolean;
   /** Platform owner: may open the platform console. */
   platformAdmin: boolean;
   /** Re-read /api/auth/me (e.g. after renaming the organisation). */

@@ -15,10 +15,21 @@ import { AuthContext, hasRole, type AuthState } from "./context";
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null | undefined>(undefined);
   const [organization, setOrganization] = useState<OrganizationBrief | null>(null);
+  const [homeOrganization, setHomeOrganization] = useState<OrganizationBrief | null>(null);
+  const [actingAsClient, setActingAsClient] = useState(false);
   const [platformAdmin, setPlatformAdmin] = useState(false);
   const [sessionExpired, setSessionExpired] = useState(false);
   const [forbidden, setForbidden] = useState<string | null>(null);
   const userRef = useRef(user);
+
+  const adopt = useCallback((s: SessionInfo) => {
+    setCsrfToken(s.csrf_token);
+    setOrganization(s.organization ?? null);
+    setHomeOrganization(s.home_organization ?? null);
+    setActingAsClient(!!s.acting_as_client);
+    setPlatformAdmin(!!s.platform_admin);
+    setUser(s.user);
+  }, []);
 
   useEffect(() => {
     userRef.current = user;
@@ -31,10 +42,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .me()
       .then((s) => {
         if (cancelled) return;
-        setCsrfToken(s.csrf_token);
-        setOrganization(s.organization ?? null);
-        setPlatformAdmin(!!s.platform_admin);
-        setUser(s.user);
+        adopt(s);
       })
       .catch((e) => {
         if (cancelled) return;
@@ -45,7 +53,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [adopt]);
 
   // Global 401 / 403 handling for every API call.
   useEffect(() => {
@@ -63,18 +71,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setCsrfToken(s.csrf_token);
     setSessionExpired(false);
     setForbidden(null);
-    setOrganization(s.organization ?? null);
-    setPlatformAdmin(!!s.platform_admin);
-    setUser(s.user);
-  }, []);
+    adopt(s);
+  }, [adopt]);
 
   const refresh = useCallback(async () => {
-    const s = await api.me();
-    setCsrfToken(s.csrf_token);
-    setOrganization(s.organization ?? null);
-    setPlatformAdmin(!!s.platform_admin);
-    setUser(s.user);
-  }, []);
+    adopt(await api.me());
+  }, [adopt]);
 
   const login = useCallback(
     async (email: string, password: string) => {
@@ -92,6 +94,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setCsrfToken(null);
       setSessionExpired(false);
       setOrganization(null);
+      setHomeOrganization(null);
+      setActingAsClient(false);
       setPlatformAdmin(false);
       setUser(null);
     }
@@ -105,6 +109,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     () => ({
       user,
       organization,
+      homeOrganization,
+      actingAsClient,
       platformAdmin,
       refresh,
       sessionExpired,
@@ -116,7 +122,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       forbidden,
       dismissForbidden: () => setForbidden(null),
     }),
-    [user, organization, platformAdmin, refresh, sessionExpired, login, completeLogin, logout, changePassword, forbidden],
+    [user, organization, homeOrganization, actingAsClient, platformAdmin, refresh, sessionExpired, login, completeLogin, logout, changePassword, forbidden],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
