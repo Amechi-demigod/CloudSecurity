@@ -455,6 +455,8 @@ class OrganizationBrief(ORM):
     status: str
     is_default: bool = False
     logo_url: str | None = None
+    # customer | msp (a partner that manages client organisations, docs/MSP.md).
+    kind: str = "customer"
     # Enabled product modules (app/modules.py): the console locks the others.
     modules: Annotated[list[str], BeforeValidator(coerce_modules)] = []
 
@@ -468,6 +470,10 @@ class SessionInfo(BaseModel):
     # platform console (manage organisations).
     organization: OrganizationBrief | None = None
     platform_admin: bool = False
+    # MSP staff only (None / False for everybody else): their own MSP organisation, and whether
+    # the session currently works inside one of its clients.
+    home_organization: OrganizationBrief | None = None
+    acting_as_client: bool = False
 
 
 class ChangePasswordRequest(BaseModel):

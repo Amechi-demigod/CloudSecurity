@@ -27,6 +27,7 @@ from .api import devices, inventory, platform, runtime, vulns
 from .api import exposure as exposure_api
 from .api import invitations as invitations_api
 from .api import mfa_sso as mfa_sso_api
+from .api import msp as msp_api
 from .api import organization as organization_api
 from .api import os_updates as os_updates_api
 from .api import platform_admin as platform_admin_api
@@ -265,6 +266,7 @@ def create_app() -> FastAPI:
     app.include_router(organization_api.router)  # /api/organization/*: the session's organisation
     app.include_router(invitations_api.router)  # /api/organization/invitations: org admins
     app.include_router(invitations_api.public_router)  # /api/invitations/*: public, the token is the credential
+    app.include_router(msp_api.router)  # /api/msp/*: MSP staff (partner organisations)
     app.include_router(platform_admin_api.router)  # /api/platform/*: platform owners only
     if s.api_docs_enabled:
         _add_docs(app)

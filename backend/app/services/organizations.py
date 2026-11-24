@@ -37,7 +37,8 @@ def validate_slug(slug: str) -> str:
 
 def create_organization(db: Session, *, name: str, slug: str | None = None, contact_email: str | None = None,
                         logo_url: str | None = None, plan: str | None = None, created_by: str | None = None,
-                        modules: Iterable[str] = ()) -> Organization:
+                        modules: Iterable[str] = (), kind: str = "customer", partner_org_id: str | None = None,
+                        max_clients: int | None = None) -> Organization:
     """New organisations start with no product modules unless `modules` names some."""
     name = name.strip()
     if not name:
@@ -47,18 +48,20 @@ def create_organization(db: Session, *, name: str, slug: str | None = None, cont
         raise OrgError(f"an organisation with slug {slug!r} already exists")
     org = Organization(name=name[:128], slug=slug, contact_email=(contact_email or "").strip().lower() or None,
                        logo_url=logo_url or None, plan=plan or None, status="active", is_default=False,
-                       created_by=created_by, modules=normalize_modules(modules))
+                       created_by=created_by, modules=normalize_modules(modules), kind=kind,
+                       partner_org_id=partner_org_id, max_clients=max_clients, status_set_by="platform")
     db.add(org)
     db.flush()
     return org
 
 
-def set_status(db: Session, org: Organization, status: str, reason: str | None = None) -> None:
+def set_status(db: Session, org: Organization, status: str, reason: str | None = None, by: str = "platform") -> None:
     if status not in ("active", "suspended"):
         raise OrgError("status must be active or suspended")
     if status == "suspended" and org.is_default:
         raise OrgError("the default organisation cannot be suspended")
     org.status = status
+    org.status_set_by = by
     org.suspended_at = utcnow() if status == "suspended" else None
     org.suspended_reason = (reason or "")[:500] or None if status == "suspended" else None
     org.updated_at = utcnow()

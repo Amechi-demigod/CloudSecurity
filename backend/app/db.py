@@ -146,8 +146,11 @@ def _add_missing_columns(eng: Engine) -> None:
                 continue
             existing = {c["name"] for c in insp.get_columns(table.name)}
             for col in table.columns:
-                if col.name not in existing and col.nullable:
+                default = getattr(col.server_default, "arg", None)
+                if col.name not in existing and (col.nullable or isinstance(default, str)):
                     ddl = col.type.compile(dialect=eng.dialect)
+                    if isinstance(default, str):  # e.g. organizations.kind: NOT NULL with a server default
+                        ddl += (" NOT NULL" if not col.nullable else "") + " DEFAULT '" + default.replace("'", "''") + "'"
                     # identifiers come from our own ORM metadata, never from user input
                     conn.execute(text(f'ALTER TABLE "{table.name}" ADD COLUMN "{col.name}" {ddl}'))
 
