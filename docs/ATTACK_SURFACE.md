@@ -12,6 +12,9 @@ layout of the PCI ASV scan report.
 > requests, the standard IIS tilde probe). It does not send exploit or injection payloads and never downloads or
 > stores file contents.
 
+Reputation checks (email security, look-alike domains, blocklists, certificates) for verified domains are described
+in [REPUTATION.md](REPUTATION.md).
+
 Code: `backend/app/external/` (guard, net, dnsclient, tlsprobe, checks, catalog, engine, rules, cve, service, report,
 api, scheduler). Migration `0032_attack_surface`. UI: Attack surface, Findings, Reports (sidebar group "Attack surface &
 pre-ASV"); platform owners: Platform > Attack surface review.

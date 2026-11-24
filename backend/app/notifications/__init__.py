@@ -20,6 +20,7 @@ from . import (
     external_source,  # noqa: F401  (attack surface: new critical / high external findings)
     host_isolation_source,  # noqa: F401  (host isolation: sign-in suspension and restore)
     remote_session_source,  # noqa: F401  (attended remote desktop sessions)
+    reputation_source,  # noqa: F401  (reputation: new high findings)
     server_update_source,  # noqa: F401  (on-prem server updates: failures and automatic rollbacks)
 )
 from .events import SEVERITIES, Event, EventSource, emit, register_source, sources

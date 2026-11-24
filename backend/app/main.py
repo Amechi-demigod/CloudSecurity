@@ -44,6 +44,7 @@ from .directory import collector_api
 from .directory import deploy_api as directory_deploy_api
 from .directory.scheduler import DirectoryScheduler
 from .external import api as external_api
+from .external.reputation import api as reputation_api
 from .external.scheduler import ExternalScheduler
 from .network import api as network_api
 from .notifications import api as notifications_api
@@ -257,6 +258,7 @@ def create_app() -> FastAPI:
     app.include_router(collector_api.admin_router, dependencies=assets)  # /api/collectors/*: viewer reads, admin writes
     app.include_router(network_api.router, dependencies=assets)  # /api/network/*: viewer reads, analyst exports, admin writes
     app.include_router(directory_deploy_api.router, dependencies=assets)  # /api/directory/deployments/*
+    app.include_router(reputation_api.router)  # /api/external/reputation/*: before the generic external routes
     app.include_router(external_api.router)  # /api/external/*: the Attack surface & pre-ASV module
     app.include_router(external_api.platform_router)  # /api/platform/external/*: approvals and dispute reviews
     app.include_router(compliance_api.router)  # /api/compliance/*: viewer reads / exports, admin schedules
