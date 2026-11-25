@@ -106,7 +106,7 @@ def normalize_severity(sev: str | None) -> str:
 # organisation that does not have it. Unlisted sources (approvals, agent security, ...) always are.
 SOURCE_MODULES = {
     "runtime_alert": "endpoints", "device": "endpoints", "host_isolation": "endpoints", "endpoint_action": "endpoints",
-    "remote_session": "endpoints", "server_update": "endpoints",
+    "remote_session": "endpoints", "server_update": "endpoints", "device_tracking": "endpoints",
     "posture_finding": "cloud", "attack_path": "cloud", "scan": "cloud",
     "vulnerability": "vulnerabilities",
     "directory_source": "assets", "asset_lifecycle": "assets",

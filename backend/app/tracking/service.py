@@ -120,21 +120,35 @@ def observe(db: Session, device: Device, now: datetime | None = None) -> None:
         now = now or utcnow()
         geo = geoip.lookup(device.last_ip)
         with db.begin_nested():
-            _record(db, device, geo, now)
+            prev, cur, changed = _record(db, device, geo, now)
             missing.stamp_signed_in(db, device)
             _maybe_prune(db, org_id, now)
+        _raise_alerts(db, device, st, prev, cur, changed, now)
         missing.on_contact(db, device, now)  # missing-device mode: reconnect alert (no-op otherwise)
     except Exception:
         log.exception("device tracking failed for device %s (ignored)", getattr(device, "id", "?"))
 
 
-def _record(db: Session, device: Device, geo: geoip.GeoResult, now: datetime) -> None:
+def _raise_alerts(db: Session, device: Device, st: DeviceTrackingSettings, prev, cur, changed: bool,
+                  now: datetime) -> None:
+    """Alerts (app/tracking/alerts.py) in their own savepoint: a failing alert never loses the location."""
+    try:
+        from . import alerts  # (imports this module)
+
+        with db.begin_nested():
+            alerts.on_observe(db, device, st, prev, cur, changed, now)
+    except Exception:
+        log.exception("device tracking alerts failed for device %s (ignored)", getattr(device, "id", "?"))
+
+
+def _record(db: Session, device: Device, geo: geoip.GeoResult, now: datetime):
+    """Returns (previous row, current row, changed): `changed` is True when a new history row was written."""
     office = match_office(offices(db), geo.ip)
     latest = db.get(DeviceLocation, device.location_id) if device.location_id else None
     if (latest is not None and latest.ip == geo.ip and latest.office_id == (office.id if office else None)
             and latest.city == geo.city and latest.country_code == geo.country_code):
         latest.last_seen_at = now
-        return
+        return latest, latest, False
     row = DeviceLocation(device_id=device.id, first_seen_at=now, last_seen_at=now, ip=geo.ip[:64],
                          country_code=geo.country_code, country=geo.country, region=geo.region, city=geo.city,
                          latitude=geo.latitude, longitude=geo.longitude, accuracy_km=geo.accuracy_km, asn=geo.asn,
@@ -143,6 +157,7 @@ def _record(db: Session, device: Device, geo: geoip.GeoResult, now: datetime) ->
     db.add(row)
     db.flush()
     device.location_id = row.id
+    return latest, row, True
 
 
 def prune(db: Session, now: datetime | None = None, days: int | None = None) -> int:
@@ -230,5 +245,8 @@ def device_location(db: Session, device: Device, *, days: int, full: bool) -> di
             ev["kind"] = kind
             ev["at"] = r.first_seen_at
             events.append(ev)
-    out["history"] = list(reversed(events))
+    from . import alerts  # (imports this module)
+
+    events.extend(alerts.history_events(db, device, since))
+    out["history"] = sorted(events, key=lambda e: e["at"], reverse=True)
     return out

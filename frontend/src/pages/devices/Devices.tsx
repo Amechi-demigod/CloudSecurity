@@ -33,6 +33,7 @@ import { useApi } from "../../lib/useApi";
 import { useSortState } from "../../lib/useSort";
 import { useUrlState } from "../../lib/useUrlState";
 import { BulkActionsBar } from "./BulkActions";
+import FleetMap from "./FleetMap";
 import { PAGE_INFO } from "../../lib/pageInfo";
 
 const HEALTH_PILL: Record<DeviceHealth, { tone: PillTone; label: string }> = {
@@ -94,6 +95,8 @@ export default function Devices() {
   // Missing OS updates (Windows Update report): security | any | none | unknown
   const [updates, setUpdates] = useUrlState("updates");
   const [selected, setSelected] = useState<string[]>([]);
+  // List | Map (device tracking, docs/DEVICE_TRACKING.md#map-view)
+  const [view, setView] = useUrlState("view");
   // The server sorts the whole result (the list is capped), so the sort goes to the API.
   const sorted = useSortState(["name", "os", "class", "user", "health", "issues", "seen", "agent", "usb", "updates"], { key: "name", dir: "asc" }, { health: "desc", issues: "desc", seen: "desc", updates: "desc" });
   const filters = { sort: sorted.sort.key, dir: sorted.sort.dir, q: q.trim() || undefined, os, health, issue, connectivity, status, usb, updates, device_class: deviceClass || undefined, virtual: virtual || undefined, missing: missingFilter || undefined };
@@ -205,6 +208,14 @@ export default function Devices() {
         subtitle="Are your laptops, desktops and servers updated and protected?"
         actions={
           <div className="flex items-center gap-2">
+            <div role="group" aria-label="View" className="flex overflow-hidden rounded border border-line text-sm">
+              {(["", "map"] as const).map((v) => (
+                <button key={v || "list"} type="button" aria-pressed={view === v} onClick={() => setView(v)}
+                  className={`px-3 py-1.5 ${view === v ? "bg-accent text-white" : "text-ink-2 hover:bg-surface-2"}`}>
+                  {v ? "Map" : "List"}
+                </button>
+              ))}
+            </div>
             <MoreMenu
               items={[
                 { label: "Agent updates", to: "/devices/updates" },
@@ -220,6 +231,7 @@ export default function Devices() {
           </div>
         }
       />
+      {view === "map" ? <FleetMap /> : <>
       {summary && (
         <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
           <Stat
@@ -377,6 +389,7 @@ export default function Devices() {
           })}
         </Table>
       </div>
+      </>}
     </div>
   );
 }

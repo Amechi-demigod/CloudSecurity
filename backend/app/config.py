@@ -241,6 +241,8 @@ class Settings:
     # Map tiles shown in the console (the frontend's Content-Security-Policy must allow this host for images).
     map_tile_url: str = field(default_factory=lambda: (
         os.getenv("MAP_TILE_URL") or "https://tile.openstreetmap.org/{z}/{x}/{y}.png").strip())
+    # Daily checks for device tracking alerts: not seen for N days, agent stopped (leader-elected; tests drive it).
+    tracking_alert_worker_enabled: bool = field(default_factory=lambda: _bool("TRACKING_ALERT_WORKER_ENABLED", True))
     # DB-IP "IP to City Lite" / "IP to ASN Lite" (MMDB, CC BY 4.0). Missing files only mean "Not available yet".
     geoip_city_db: str = field(default_factory=lambda: os.getenv("GEOIP_CITY_DB") or str(
         __import__("pathlib").Path(__file__).resolve().parents[1] / "data" / "dbip-city-lite.mmdb"))

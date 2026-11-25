@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { SaveBar } from "../../components/SaveBar";
 import { Switch } from "../../components/Switch";
 import { Button, Card, Empty, ErrorNote, Field, Modal, PageHeader, Table } from "../../components/ui";
+import TrackingAlerts from "./TrackingAlerts";
 import { useApi } from "../../lib/useApi";
 import { trackingApi, timeZones, type Country, type TrackingOffice } from "../../trackingApi";
 
@@ -191,6 +192,8 @@ export default function DeviceTracking() {
           {[...new Set([timezone, ...zones])].map((z) => <option key={z} value={z}>{z}</option>)}
         </select>
       </Card>
+
+      <TrackingAlerts s={s} onSaved={() => settings.reload()} />
 
       <p className="mb-4 text-xs text-ink-3">
         IP geolocation by <a className="text-accent hover:underline" href="https://db-ip.com" target="_blank" rel="noopener noreferrer">DB-IP</a>.

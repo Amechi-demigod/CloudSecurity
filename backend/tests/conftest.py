@@ -46,6 +46,7 @@ os.environ.update({
     "EXECUTIVE_REPORT_WORKER_ENABLED": "false",
     # Device tracking: never download the location databases in tests.
     "GEOIP_AUTO_UPDATE": "false",
+    "TRACKING_ALERT_WORKER_ENABLED": "false",
     "GEOIP_CITY_DB": "/nonexistent/dbip-city-lite.mmdb",
     "GEOIP_ASN_DB": "/nonexistent/dbip-asn-lite.mmdb",
     # Purge of removed cloud assets: tests drive the job explicitly.

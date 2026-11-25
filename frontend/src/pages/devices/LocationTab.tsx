@@ -6,7 +6,7 @@ import { Link } from "react-router-dom";
 import { useAuth } from "../../auth/context";
 import { Button, Card, Empty, Tag } from "../../components/ui";
 import { fmtAgo } from "../../lib/format";
-import { fmtInZone, trackingApi, type DeviceLocation, type LocationEvent } from "../../trackingApi";
+import { fmtInZone, trackingApi, type AlertEvent, type DeviceLocation, type LocationEvent } from "../../trackingApi";
 
 const DEFAULT_RADIUS_KM = 25;
 
@@ -52,7 +52,8 @@ function AreaMap({ lat, lon, radiusKm, tileUrl }: { lat: number; lon: number; ra
   );
 }
 
-function eventText(e: LocationEvent): string {
+function eventText(e: LocationEvent | AlertEvent): string {
+  if (e.alert) return e.title;
   if (e.kind === "arrived") return `Arrived at ${e.office}`;
   if (e.kind === "new_country") return `New country: ${e.country ?? "unknown"}${e.city ? ` (${e.city})` : ""}`;
   if (e.kind === "private") return "On a private network";
@@ -150,7 +151,7 @@ export function LocationTab({ deviceId, loc, error, reload, active }: {
             <ul className="space-y-2 text-sm">
               {loc.history.map((e) => (
                 <li key={`${e.at}-${e.kind}`} className="flex justify-between gap-3">
-                  <span>{eventText(e)}</span>
+                  <span>{e.alert && <Tag tone="warn">Alert</Tag>} {eventText(e)}</span>
                   <span className="shrink-0 text-xs text-ink-3">{fmtInZone(e.at, loc.timezone)}</span>
                 </li>
               ))}

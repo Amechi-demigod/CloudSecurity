@@ -1261,6 +1261,7 @@ from .directory import models as _directory_models  # noqa: E402, F401
 from .executive import models as _executive_models  # noqa: E402, F401
 from .network import models as _network_models  # noqa: E402, F401
 from .notifications import models as _notification_models  # noqa: E402, F401
+from .tracking import alert_models as _tracking_alert_models  # noqa: E402, F401
 from .tracking import models as _tracking_models  # noqa: E402, F401
 
 # --- Attack surface & pre-ASV (app/external, docs/ATTACK_SURFACE.md) ---------------------------

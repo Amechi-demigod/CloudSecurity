@@ -14,6 +14,7 @@ export interface TrackingSettings {
   alert_hardware_changed: boolean;
   alert_agent_stopped: boolean;
   auto_lost_mode_outside_countries: boolean;
+  auto_lost_mode_phone: string | null;
   updated_by: string | null;
   updated_at: string;
   retention_days: number;
@@ -22,7 +23,12 @@ export interface TrackingSettings {
 }
 
 export type TrackingSettingsPatch = Partial<
-  Pick<TrackingSettings, "enabled" | "timezone" | "allowed_countries">
+  Pick<
+    TrackingSettings,
+    | "enabled" | "timezone" | "allowed_countries" | "alert_outside_countries" | "alert_not_seen_days" | "alert_after_hours"
+    | "after_hours_start" | "after_hours_end" | "after_hours_weekdays" | "alert_hardware_changed" | "alert_agent_stopped"
+    | "auto_lost_mode_outside_countries" | "auto_lost_mode_phone"
+  >
 >;
 
 export interface TrackingOffice {
@@ -68,6 +74,63 @@ export interface LocationView {
 export interface LocationEvent extends LocationView {
   kind: "arrived" | "away" | "new_country" | "private";
   at: string;
+  alert?: undefined;
+}
+
+export type AlertKind = "outside_countries" | "not_seen" | "after_hours" | "hardware_changed" | "agent_stopped" | "auto_lost_mode";
+
+/** An alert shown in the history (city and country only, for every role). */
+export interface AlertEvent {
+  kind: AlertKind;
+  alert: true;
+  at: string;
+  title: string;
+  severity: string;
+  city: string | null;
+  country: string | null;
+  country_code: string | null;
+}
+
+export interface FleetCity {
+  city: string | null;
+  country: string | null;
+  country_code: string | null;
+  count: number;
+  flagged: boolean;
+  device_ids: string[];
+  // analysts and admins only
+  latitude?: number;
+  longitude?: number;
+}
+
+export interface FleetDevice {
+  id: string;
+  hostname: string;
+  group: string | null;
+  network: "office" | "away" | "private" | "unlocated";
+  office: string | null;
+  city: string | null;
+  country: string | null;
+  country_code: string | null;
+  last_seen_at: string | null;
+  status: "active" | "stale" | "inactive";
+  outside_countries: boolean;
+  not_seen: boolean;
+  lost_mode: boolean;
+}
+
+export interface Fleet {
+  enabled: boolean;
+  detail: "full" | "basic";
+  tile_url: string;
+  database_available: boolean;
+  not_seen_days: number;
+  timezone: string;
+  tiles: { at_office: number; away: number; outside_countries: number; missing: number; unlocated: number };
+  groups: string[];
+  cities: FleetCity[];
+  devices: FleetDevice[];
+  truncated: boolean;
 }
 
 export interface DeviceLocation {
@@ -80,13 +143,21 @@ export interface DeviceLocation {
   days: number;
   database_available: boolean;
   current: (LocationView & { timezone: string; available: boolean }) | null;
-  history: LocationEvent[];
+  history: (LocationEvent | AlertEvent)[];
 }
 
 export const trackingApi = {
   settings: () => request<TrackingSettings>("/api/device-tracking/settings"),
   saveSettings: (body: TrackingSettingsPatch) =>
     request<TrackingSettings>("/api/device-tracking/settings", { method: "PUT", body: JSON.stringify(body) }),
+  fleet: (f: { group?: string; status?: string; notSeen?: boolean } = {}) => {
+    const q = new URLSearchParams();
+    if (f.group) q.set("group", f.group);
+    if (f.status) q.set("status", f.status);
+    if (f.notSeen) q.set("not_seen", "true");
+    const qs = q.toString();
+    return request<Fleet>(`/api/device-tracking/fleet${qs ? `?${qs}` : ""}`);
+  },
   countries: () => request<Country[]>("/api/device-tracking/countries"),
   offices: () => request<TrackingOffice[]>("/api/device-tracking/offices"),
   createOffice: (body: OfficeInput) =>

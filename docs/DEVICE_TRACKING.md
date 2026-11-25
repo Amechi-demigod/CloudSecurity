@@ -65,8 +65,64 @@ shown in the organisation's time zone.
 - **Allowed places**: countries where computers are expected (ISO 3166-1; empty = no rule).
 - **Time zone**.
 
-The alert settings (outside allowed countries, not seen for N days, after hours, hardware changed, agent stopped,
-automatic lost mode outside countries) are stored but not used yet.
+- **Alerts**: see [Alerts](#alerts). Saved with their own Save bar.
+
+## Map view
+
+**Computers & servers > Map** (`?view=map`; List is the default). Tracking must be on, otherwise the Map shows an
+empty state that points admins to Settings > Device tracking.
+
+- Tiles: **At an office**, **Away from offices**, **Outside allowed countries** (highlighted when above 0) and
+  **Missing**. Tiles count every tracked laptop and desktop whatever the filters. "Missing" counts computers in lost
+  mode for now; the missing-device mode (PR C) replaces it, see `missing_count()` in `backend/app/tracking/fleet.py`.
+- Filters (kept in the URL): group, status (online / stale / inactive) and **Not seen for N+ days** (N = the "not
+  seen" alert setting, 7 when it is off).
+- One marker per city with the number of computers inside, **orange** when any computer there is outside the allowed
+  countries or not seen for N days. The map fits itself to wherever the computers are (no fixed region).
+- A side panel lists the selected city's computers: name, office or "Away · city", last seen, and an Open link.
+- Viewers: the API returns city and country only, **no coordinates**, so viewers get no map: the same cities are
+  shown as a grouped list (the simplest safe option; no centroid is looked up for them).
+- `GET /api/device-tracking/fleet?group=&status=&not_seen=` returns the tiles, the cities and one row per computer
+  (at most 5000, `truncated` says when more exist). Computers with no location yet or on a private network count in
+  the tiles ("no location yet") but have no marker.
+
+## Alerts
+
+Each alert has a switch in **Settings > Device tracking > Alerts**, is off by default, and runs only while tracking
+is on and the organisation has Endpoints & servers. Each one is written to the computer's **Location history**
+(city and country only, visible to every role) and raised as a notification from the source **Device tracking**
+(`device_tracking`, [NOTIFICATIONS.md](NOTIFICATIONS.md#device-tracking-events)), so rules can send it to email,
+Teams, Slack or a webhook.
+
+| Alert | Severity | When | Once per |
+| --- | --- | --- | --- |
+| Outside allowed countries | high | A computer's new location is in a country that is not in the allowed list (only when the list is not empty; offices and private networks never count). "FIN-LT-021 connected from Accra, Ghana" | move into a country (and at most every 6 h per computer) |
+| Not seen for N days | medium | No check-in for N days (1 to 90, default 7; off when cleared). Computers quiet for over 180 days are ignored | absence |
+| Away from offices after hours | medium | Away from every office (not on a private network) during the start/end window on the chosen weekdays. Time zone: the last office the computer was at, else the organisation's | computer and night (a night belongs to the day it starts on) |
+| Hardware changed | medium | Serial number or system maker/model changed, memory decreased, a disk removed or resized by more than 5 % | change (the new hardware becomes the baseline) |
+| Agent stopped or removed | medium | The agent was polling about every minute (5 polls in a row) and has been silent for over 2 hours, device not removed | gap |
+| Locked automatically | high | See below | see below |
+
+- **Hardware**: uses what the agent already reports (serial number, manufacturer, model, memory, disks). The agent
+  does **not** report the motherboard, so system maker + model stand in for it. The first inventory only sets the
+  baseline. A disk counts as removed only if it had been present for 24 hours, so a USB stick is never reported.
+- **Agent stopped** cannot tell a stopped agent from a laptop asleep overnight; expect some noise for laptops.
+  It needs tracking on while the agent was polling (that is how "polling every minute" is known).
+- **Automatic lost mode**: when a computer moves into a country outside the allowed list the existing
+  `enable_lost_mode` command is queued with reason "Automatic: outside allowed countries" and the actor
+  "Automatic: device tracking" (audited as `device_command_created`, `automatic: true`). It never wipes. It is skipped
+  while lost mode is on or being turned on or a wipe is pending, so it happens once until lost mode is cleared; the
+  next move into an outside country after a person clears it locks again. It needs a **contact phone number**
+  (shown on the lock screen; the agent requires one) and a fixed message: "This computer was locked automatically
+  because it connected from outside the countries your organisation allows. Please contact your IT team." Turning it on
+  while a computer is already outside does nothing until that computer next changes location.
+- **Rate limit**: one alert of a kind per computer per 6 h (hardware 1 h), and at most 100 alerts per organisation
+  per hour (the rest are dropped and logged).
+- A leader-elected job (`TRACKING_ALERT_WORKER_ENABLED`, default `true`, every 15 minutes) raises "not seen" and
+  "agent stopped", and removes alert history older than the retention. The other alerts are raised when the computer
+  checks in or polls.
+- Data: `device_tracking_events` (alert history, also the de-duplication record) and `device_tracking_state`
+  (per-computer bookkeeping), migration `0041_device_tracking_alerts`.
 
 ## Missing-device mode
 
@@ -165,10 +221,11 @@ Module-gated (Endpoints & servers) and scoped to the session's organisation.
 | Endpoint | Role | Purpose |
 | --- | --- | --- |
 | `GET /api/device-tracking/settings` | analyst | Settings, retention, tile URL, whether the database is present |
-| `PUT /api/device-tracking/settings` | admin | Partial update (audited as `device_tracking_settings_changed`) |
+| `PUT /api/device-tracking/settings` | admin | Partial update, including the alert settings (audited as `device_tracking_settings_changed`) |
 | `GET /api/device-tracking/countries` | any | ISO country list |
 | `GET/POST /api/device-tracking/offices` | admin | List (with computers there now) / create |
 | `PATCH/DELETE /api/device-tracking/offices/{id}` | admin | Edit / delete (audited) |
+| `GET /api/device-tracking/fleet` | viewer | Map view data (tiles, cities, computers); viewers get no coordinates |
 | `GET /api/devices/{id}/location?days=7` | viewer | Current location and history, role-filtered |
 | `POST /api/devices/{id}/location/refresh` | analyst | "Locate now": queues `recheck_posture`, answers 202 |
 
