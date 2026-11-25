@@ -60,6 +60,7 @@ from .services.dashboard_snapshots import DashboardSnapshotWorker
 from .services.scan_schedule import ScanScheduler
 from .services.simulation import RuntimeSimulator, seed_if_empty
 from .tracking import api as tracking_api
+from .tracking import missing_api as tracking_missing_api
 from .vulnmatch import worker as vuln_worker
 
 log = logging.getLogger("cnapp")
@@ -265,6 +266,7 @@ def create_app() -> FastAPI:
     app.include_router(remote_relay_api.router)
     app.include_router(tracking_api.router, dependencies=session_required)  # /api/device-tracking/*
     app.include_router(tracking_api.device_router, dependencies=session_required)  # /api/devices/{id}/location
+    app.include_router(tracking_missing_api.router, dependencies=session_required)  # /api/devices/{id}/missing
     app.include_router(exposure_api.router, dependencies=session_required + cloud)  # /api/exposure: any signed-in user
     app.include_router(dashboards_api.router, dependencies=session_required)  # /api/dashboards/*: any signed-in user
     app.include_router(dashboard_layout_api.router, dependencies=session_required)  # /api/dashboard/layout: viewer / admin
