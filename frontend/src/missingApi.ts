@@ -55,6 +55,7 @@ export interface MarkMissingBody {
   confirm_hostname: string;
   message?: string;
   phone?: string;
+  email?: string;
 }
 
 export const missingApi = {

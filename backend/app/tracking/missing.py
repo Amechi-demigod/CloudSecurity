@@ -127,7 +127,7 @@ def _new_command(db, device, user, cmd_type, params, reason, ip):
 
 
 def mark(db: Session, device: Device, user: User, *, reason: str, confirm_hostname: str, message: str | None,
-         phone: str | None, ip: str | None) -> dict[str, Any]:
+         phone: str | None, ip: str | None, email: str | None = None) -> dict[str, Any]:
     """Mark `device` missing (admin; the caller commits). Raises MissingError."""
     from ..auth import audit
     from ..services import devices as svc
@@ -157,7 +157,8 @@ def mark(db: Session, device: Device, user: User, *, reason: str, confirm_hostna
         lost_note = "sign_in_suspended"  # lost mode and suspended sign-in cannot run together
     else:
         try:
-            lost_params = svc.validate_params("enable_lost_mode", {"message": message or "", "phone": phone or ""})
+            lost_params = svc.validate_params("enable_lost_mode", {"message": message or "", "phone": phone or "",
+                                                                  "email": email or ""})
         except ValueError as e:
             raise MissingError(422, str(e)) from None
     note = f"Missing device: {reason}"[:500]

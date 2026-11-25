@@ -114,7 +114,8 @@ Teams, Slack or a webhook.
   while lost mode is on or being turned on or a wipe is pending, so it happens once until lost mode is cleared; the
   next move into an outside country after a person clears it locks again. It needs a **contact phone number**
   (shown on the lock screen; the agent requires one) and a fixed message: "This computer was locked automatically
-  because it connected from outside the countries your organisation allows. Please contact your IT team." Turning it on
+  because it connected from outside the countries your organisation allows. Please contact your IT team." An optional
+  **IT support email** is added as the message's last line ("IT support email: …"). Turning it on
   while a computer is already outside does nothing until that computer next changes location.
 - **Rate limit**: one alert of a kind per computer per 6 h (hardware 1 h), and at most 100 alerts per organisation
   per hour (the rest are dropped and logged).
@@ -131,7 +132,7 @@ area, next to Lost mode). Windows and macOS laptops and desktops only (Linux mac
 are refused with 409), and device tracking must be on. Not a new module: it is part of Endpoints & servers.
 
 **Mark missing** (admin) needs a reason (3-500 characters), the device name typed again, and, when Lost mode is not
-already on, a message and a contact phone (the same rules as Lost mode). It then:
+already on, a message, a contact phone and an optional IT support email (the same rules as Lost mode). It then:
 
 1. stores who / when / why (`missing_by` shows the user's name; MSP staff appear as "Managed security team"),
    the previous check-in interval and the hardware seen at that moment;
@@ -174,7 +175,7 @@ report.
 | Endpoint | Role | Purpose |
 | --- | --- | --- |
 | `GET /api/devices/{id}/missing` | viewer | The panel; viewers get city and country only |
-| `POST /api/devices/{id}/missing` | admin | Mark missing `{reason, confirm_hostname, message?, phone?}` (audited `device_missing_marked`) |
+| `POST /api/devices/{id}/missing` | admin | Mark missing `{reason, confirm_hostname, message?, phone?, email?}` (audited `device_missing_marked`) |
 | `POST /api/devices/{id}/missing/recover` | admin | Mark recovered `{exit_lost_mode: true}` (audited `device_missing_recovered`) |
 | `GET /api/devices/{id}/missing/report.pdf` | analyst | The PDF |
 
@@ -233,3 +234,10 @@ Module-gated (Endpoints & servers) and scoped to the session's organisation.
 
 `device_tracking_settings` (one row per organisation), `tracking_offices`, `device_locations` (indexed on
 `device_id, last_seen_at`; `signed_in` is filled only while a device is missing), and `devices.location_id` pointing at the newest row (cleared when that row is pruned). Missing-device mode adds the `devices.missing_*` columns (migration `0040_missing_devices`).
+
+## IT support email on the lock screen
+
+Lost mode (manual, Mark missing and automatic) takes an optional IT support email (at most 100 characters). The agent
+accepts only `message` and `phone`, so the console adds the email to the message as its last line
+(`IT support email: …`). That works on every agent version. The message plus that line must still fit the agent's
+limits: 300 characters and 6 lines.

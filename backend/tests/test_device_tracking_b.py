@@ -11,6 +11,7 @@ from sqlalchemy import select
 from app import db, geoip
 from app.models import AuditLog, Device, DeviceCommand, Organization, utcnow
 from app.notifications.models import NotificationEvent
+from app.services import devices as dev_svc
 from app.tracking import alerts, service
 from app.tracking.alert_models import DeviceTrackingEvent, DeviceTrackingState
 from app.tracking.worker import TrackingAlertWorker
@@ -505,6 +506,43 @@ def test_auto_lost_mode_queued_once_and_audited(admin, device, seen_ip):  # noqa
     assert len(lost_commands(did)) == 1
     observe_at(did, "9.9.9.9", NOW + timedelta(hours=4))
     assert len(lost_commands(did)) == 2
+
+
+def test_alert_defaults_agent_stopped_off(admin):  # noqa: F811
+    s = admin.get(SETTINGS).json()
+    assert s["alert_agent_stopped"] is False and s["auto_lost_mode_outside_countries"] is False
+    assert s["auto_lost_mode_email"] is None
+
+
+def test_auto_lost_mode_support_email(admin, device, seen_ip):  # noqa: F811
+    agent, did = device
+    assert admin.put(SETTINGS, json={"auto_lost_mode_email": "not-an-email"}).status_code == 422
+    r = admin.put(SETTINGS, json={"auto_lost_mode_email": " it@example.com "})
+    assert r.status_code == 200 and r.json()["auto_lost_mode_email"] == "it@example.com"
+    configure(admin, allowed_countries=["US"], auto_lost_mode_outside_countries=True,
+              auto_lost_mode_phone="+234 800 000 0000")
+    observe_at(did, "5.5.5.5", NOW)
+    (cmd,) = lost_commands(did)
+    assert set(cmd.params) == {"message", "phone"}  # what every agent version accepts
+    assert cmd.params["message"].endswith("\nIT support email: it@example.com")
+    assert len(cmd.params["message"]) <= dev_svc.LOST_MESSAGE_MAX
+    assert admin.put(SETTINGS, json={"auto_lost_mode_email": None}).json()["auto_lost_mode_email"] is None
+
+
+def test_lost_mode_params_support_email():
+    v = dev_svc.validate_params
+    assert v("enable_lost_mode", {"message": "Lost", "phone": "+1 555"}) == {"message": "Lost", "phone": "+1 555"}
+    assert v("enable_lost_mode", {"message": "Lost", "phone": "+1 555", "email": ""}) == \
+        {"message": "Lost", "phone": "+1 555"}
+    assert v("enable_lost_mode", {"message": "Lost", "phone": "+1 555", "email": "help@corp.example"}) == \
+        {"message": "Lost\nIT support email: help@corp.example", "phone": "+1 555"}
+    for bad in ("nope", "a@b", "x" * 95 + "@b.com", "a b@c.com"):
+        with pytest.raises(ValueError):
+            v("enable_lost_mode", {"message": "Lost", "phone": "+1 555", "email": bad})
+    with pytest.raises(ValueError, match="email line"):  # message + email line over 300 characters
+        v("enable_lost_mode", {"message": "m" * 290, "phone": "+1 555", "email": "help@corp.example"})
+    with pytest.raises(ValueError, match="email line"):  # six lines + the email line
+        v("enable_lost_mode", {"message": "1\n2\n3\n4\n5\n6", "phone": "+1 555", "email": "help@corp.example"})
 
 
 def test_auto_lost_mode_never_when_off_or_not_outside(admin, device, seen_ip):  # noqa: F811

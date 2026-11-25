@@ -10,6 +10,9 @@ import { fmtInZone } from "../../trackingApi";
 import { missingApi, type MissingSighting, type MissingView } from "../../missingApi";
 
 const PHONE_RE = /^[0-9+][0-9 ()./+-]{2,31}$/;
+const EMAIL_RE = /^[^\s@]{1,64}@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$/;
+// The optional email is added to the message as its last line (the agent shows a message and a phone number).
+const EMAIL_LINE = "IT support email: ";
 const MESSAGE_MAX = 300;
 const DEFAULT_MESSAGE = "This device has been reported lost. Please contact the IT helpdesk to return it.";
 
@@ -33,6 +36,7 @@ export function MarkMissingDialog({ device, lostModeOn, open, onClose, onDone }:
   const [reason, setReason] = useState("");
   const [message, setMessage] = useState(DEFAULT_MESSAGE);
   const [phone, setPhone] = useState("");
+  const [email, setEmail] = useState("");
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -44,7 +48,10 @@ export function MarkMissingDialog({ device, lostModeOn, open, onClose, onDone }:
     onClose();
   }
   const msg = message.trim();
-  const lostOk = lostModeOn || (msg.length >= 1 && msg.length <= MESSAGE_MAX && msg.split("\n").length <= 6 && PHONE_RE.test(phone.trim()));
+  const mail = email.trim();
+  const shown = mail ? `${msg}\n${EMAIL_LINE}${mail}` : msg;
+  const emailOk = !mail || (mail.length <= 100 && EMAIL_RE.test(mail));
+  const lostOk = lostModeOn || (msg.length >= 1 && shown.length <= MESSAGE_MAX && shown.split("\n").length <= 6 && PHONE_RE.test(phone.trim()) && emailOk);
   const valid = reason.trim().length >= 3 && confirm.trim().toLowerCase() === device.hostname.toLowerCase() && lostOk;
 
   async function submit(e: FormEvent) {
@@ -55,7 +62,7 @@ export function MarkMissingDialog({ device, lostModeOn, open, onClose, onDone }:
       await missingApi.mark(device.id, {
         reason: reason.trim(),
         confirm_hostname: confirm.trim(),
-        ...(lostModeOn ? {} : { message: msg, phone: phone.trim() }),
+        ...(lostModeOn ? {} : { message: msg, phone: phone.trim(), ...(mail ? { email: mail } : {}) }),
       });
       onDone();
       close();
@@ -94,10 +101,12 @@ export function MarkMissingDialog({ device, lostModeOn, open, onClose, onDone }:
               </label>
               <textarea id="missing-message" rows={3} maxLength={MESSAGE_MAX} required value={message} onChange={(e) => setMessage(e.target.value)}
                 className="block w-full rounded border border-line bg-surface-2 px-3 py-1.5 text-sm text-ink focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/40" />
-              <p className="mt-1 text-xs text-ink-3">{msg.length}/{MESSAGE_MAX} characters, at most 6 lines.</p>
+              <p className="mt-1 text-xs text-ink-3">{shown.length}/{MESSAGE_MAX} characters{mail ? " with the email line" : ""}, at most 6 lines.</p>
             </div>
             <Field label="Contact phone number" id="missing-phone" required maxLength={32} value={phone} placeholder="+234 1 234 5678"
               onChange={(e) => setPhone(e.target.value)} hint="3-32 characters: digits, spaces and + ( ) . / -" />
+            <Field label="IT support email (optional)" id="missing-email" type="email" maxLength={100} value={email} placeholder="itsupport@yourcompany.com"
+              onChange={(e) => setEmail(e.target.value)} hint={emailOk ? "Shown under the message on the device." : "Enter a valid email address."} />
           </>
         )}
         <Field label={`Type the device name "${device.hostname}" to confirm`} id="missing-confirm" autoComplete="off" value={confirm}

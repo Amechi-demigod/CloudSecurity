@@ -216,7 +216,8 @@ def _auto_lost_mode(db: Session, device: Device, st: DeviceTrackingSettings, sta
     if device.status != "active" or device.lost_mode_status is not None \
             or device.wipe_status in dev_svc.WIPE_PENDING_STATES:
         return
-    params = {"message": AUTO_LOST_MESSAGE, "phone": st.auto_lost_mode_phone}
+    params = {"message": dev_svc.with_support_email(AUTO_LOST_MESSAGE, st.auto_lost_mode_email),
+              "phone": st.auto_lost_mode_phone}
     cmd = dev_svc.new_command(db, device, "enable_lost_mode", params, AUTO_LOST_REASON, requested_by_id=None,
                               requested_by_email=AUTO_LOST_ACTOR,
                               ttl=timedelta(hours=config.settings.device_command_ttl_hours))

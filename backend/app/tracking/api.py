@@ -57,6 +57,7 @@ class SettingsIn(BaseModel):
     alert_agent_stopped: bool | None = None
     auto_lost_mode_outside_countries: bool | None = None
     auto_lost_mode_phone: Annotated[str, StringConstraints(strip_whitespace=True, max_length=32)] | None = None
+    auto_lost_mode_email: Annotated[str, StringConstraints(strip_whitespace=True, max_length=100)] | None = None
 
     _check_tz = field_validator("timezone")(_tz)
 
@@ -76,6 +77,13 @@ class SettingsIn(BaseModel):
         # Same rule the lost mode command and the agent enforce.
         if v and not dev_svc.PHONE_RE.match(v):
             raise ValueError("phone must be 3-32 characters: digits, spaces and + ( ) . / -")
+        return v or None
+
+    @field_validator("auto_lost_mode_email")
+    @classmethod
+    def _email(cls, v):
+        if v and not dev_svc.valid_support_email(v):
+            raise ValueError("enter a valid IT support email address")
         return v or None
 
 
@@ -104,7 +112,9 @@ class OfficePatch(BaseModel):
 SETTING_FIELDS = ("enabled", "timezone", "allowed_countries", "alert_outside_countries", "alert_not_seen_days",
                   "alert_after_hours", "after_hours_start", "after_hours_end", "after_hours_weekdays",
                   "alert_hardware_changed", "alert_agent_stopped", "auto_lost_mode_outside_countries",
-                  "auto_lost_mode_phone")
+                  "auto_lost_mode_phone", "auto_lost_mode_email")
+
+NULLABLE_FIELDS = ("alert_not_seen_days", "auto_lost_mode_phone", "auto_lost_mode_email")
 
 
 def _settings_out(st: DeviceTrackingSettings) -> dict:
@@ -136,9 +146,9 @@ def put_settings(body: SettingsIn, request: Request, admin: User = Depends(requi
         raise HTTPException(422, "enter the contact phone number shown on a computer locked automatically")
     for f in SETTING_FIELDS:
         v = getattr(body, f)
-        if v is None and f not in ("alert_not_seen_days", "auto_lost_mode_phone"):
+        if v is None and f not in NULLABLE_FIELDS:
             continue
-        if f in ("alert_not_seen_days", "auto_lost_mode_phone") and f not in body.model_fields_set:
+        if f in NULLABLE_FIELDS and f not in body.model_fields_set:
             continue
         if v != getattr(st, f):
             changes[f] = [getattr(st, f), v]

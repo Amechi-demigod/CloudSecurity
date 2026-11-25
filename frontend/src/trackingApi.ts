@@ -15,6 +15,7 @@ export interface TrackingSettings {
   alert_agent_stopped: boolean;
   auto_lost_mode_outside_countries: boolean;
   auto_lost_mode_phone: string | null;
+  auto_lost_mode_email: string | null;
   updated_by: string | null;
   updated_at: string;
   retention_days: number;
@@ -27,7 +28,7 @@ export type TrackingSettingsPatch = Partial<
     TrackingSettings,
     | "enabled" | "timezone" | "allowed_countries" | "alert_outside_countries" | "alert_not_seen_days" | "alert_after_hours"
     | "after_hours_start" | "after_hours_end" | "after_hours_weekdays" | "alert_hardware_changed" | "alert_agent_stopped"
-    | "auto_lost_mode_outside_countries" | "auto_lost_mode_phone"
+    | "auto_lost_mode_outside_countries" | "auto_lost_mode_phone" | "auto_lost_mode_email"
   >
 >;
 

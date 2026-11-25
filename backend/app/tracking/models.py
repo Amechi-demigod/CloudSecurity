@@ -33,6 +33,8 @@ class DeviceTrackingSettings(TenantMixin, Base):
     auto_lost_mode_outside_countries: Mapped[bool] = mapped_column(Boolean, default=False)
     # Contact shown on the lock screen of a computer locked automatically (required to turn that switch on).
     auto_lost_mode_phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Optional IT support email added to that lock screen message.
+    auto_lost_mode_email: Mapped[str | None] = mapped_column(String(100), nullable=True)
     updated_by: Mapped[str | None] = mapped_column(String(320), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 

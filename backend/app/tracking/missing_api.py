@@ -33,6 +33,7 @@ class MarkMissing(BaseModel):
     # Lost mode text; needed only when lost mode is not on yet.
     message: Annotated[str, StringConstraints(max_length=1000)] | None = None
     phone: Annotated[str, StringConstraints(max_length=64)] | None = None
+    email: Annotated[str, StringConstraints(max_length=320)] | None = None
 
     @field_validator("reason")
     @classmethod
@@ -67,7 +68,7 @@ def mark_missing(body: MarkMissing, request: Request, device_id: str = DeviceId,
     d = _device(db, device_id)
     try:
         res = missing.mark(db, d, admin, reason=body.reason, confirm_hostname=body.confirm_hostname,
-                           message=body.message, phone=body.phone, ip=client_ip(request))
+                           message=body.message, phone=body.phone, email=body.email, ip=client_ip(request))
     except missing.MissingError as e:
         db.rollback()
         raise HTTPException(e.status, e.detail) from None

@@ -96,11 +96,15 @@ export default function TrackingAlerts({ s, onSaved }: { s: TrackingSettings; on
         hint="The agent was reporting every minute and has been silent for over 2 hours (not for removed computers). Laptops that sleep overnight can trigger it."
         onChange={(on) => set({ alert_agent_stopped: on })} />
       <Row title="Lock automatically outside allowed countries" label="Turn on lost mode automatically" on={v.auto_lost_mode_outside_countries}
-        hint="Turns on lost mode (the screen shows a message and a contact number). It never wipes the computer, and happens once until lost mode is cleared. Shown in the audit log as an automatic action."
+        hint="Turns on lost mode (the screen shows a message, a contact number and, if set, an IT support email). It never wipes the computer, and happens once until lost mode is cleared. Shown in the audit log as an automatic action."
         onChange={(on) => set({ auto_lost_mode_outside_countries: on })}>
         <label className="flex items-center gap-2">Contact phone shown on the screen
           <input type="tel" aria-label="Contact phone" value={v.auto_lost_mode_phone ?? ""} className={`${inputCls} w-48`} maxLength={32}
             placeholder="+234 800 000 0000" onChange={(e) => set({ auto_lost_mode_phone: e.target.value })} />
+        </label>
+        <label className="flex items-center gap-2">IT support email (optional)
+          <input type="email" aria-label="IT support email" value={v.auto_lost_mode_email ?? ""} className={`${inputCls} w-64`} maxLength={100}
+            placeholder="itsupport@yourcompany.com" onChange={(e) => set({ auto_lost_mode_email: e.target.value || null })} />
         </label>
       </Row>
       {error && <p role="alert" className="mt-2 text-sm text-sev-critical">{error}</p>}
