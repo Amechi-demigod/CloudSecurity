@@ -27,7 +27,8 @@ import { PendingUpdateView, UpdateNowButton } from "./UpdateAutomation";
 const TABS = ["Overview", "Posture", "Software", "Services", "Vulnerabilities", "OS updates", "History", "Actions", "Commands", "Updates"] as const;
 type TabName = (typeof TABS)[number];
 
-// Not offered in the console (product decision 25 Nov 2026: customers see only actionable, working actions).
+// Not offered in the console (product decision 25 Nov 2026: customers see only actionable, working actions;
+// Run script is gone from the toolbar too).
 // The API still accepts them; they stay in ACTIONS so past commands keep their labels.
 const HIDDEN_ACTIONS: CommandType[] = ["collect_logs", "lock_device"];
 const shown = (a: { type: CommandType }) => !HIDDEN_ACTIONS.includes(a.type);
@@ -923,6 +924,7 @@ export default function DeviceDetail() {
   const tab: TabName = (TABS as readonly string[]).includes(tabParam) ? (tabParam as TabName) : "Overview";
   const setTab = (t: TabName) => setTabParam(t);
   const [action, setAction] = useState<(typeof ACTIONS)[number] | null>(null);
+  const [revokeOpen, setRevokeOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [lostOpen, setLostOpen] = useState(false);
   const [wipeOpen, setWipeOpen] = useState(false);
@@ -1006,6 +1008,11 @@ export default function DeviceDetail() {
               {a.label}
             </Button>
           ))}
+          {can("admin") && (
+            <Button variant="danger" onClick={() => setRevokeOpen(true)} title="Invalidate the device credential">
+              Revoke
+            </Button>
+          )}
           <p className="basis-full text-xs text-ink-3">
             Linux servers are read-only: the agent reads and reports. Lock, remote wipe, lost mode, scripts, service control, USB blocking,
             remote sessions and OS update install are not available.
@@ -1069,6 +1076,9 @@ export default function DeviceDetail() {
                   </Button>
                 </span>
               )}
+              <Button variant="danger" onClick={() => setRevokeOpen(true)} title="Invalidate the device credential">
+                Revoke
+              </Button>
             </>
           )}
         </div>
@@ -1166,6 +1176,13 @@ export default function DeviceDetail() {
           )}
         </>
       )}
+      <ReasonDialog open={revokeOpen} title={`Revoke ${device.hostname}`} cta="Revoke device"
+        help="The device credential stops working immediately and pending actions are cancelled. The agent keeps running but is rejected until someone re-enrolls it with a new enrollment token."
+        onClose={() => setRevokeOpen(false)}
+        onSubmit={async (reason) => {
+          await api.revokeDevice(device.id, reason);
+          reload();
+        }} />
       <ReasonDialog open={deleteOpen} title={`Delete ${device.hostname}`} cta="Delete permanently"
         help="Removes the device with its posture history, software inventory, actions and log bundles. This cannot be undone."
         onClose={() => setDeleteOpen(false)}
