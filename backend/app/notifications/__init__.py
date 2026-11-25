@@ -15,6 +15,7 @@ from . import (
     asset_lifecycle_source,  # noqa: F401  (IT assets: overdue retrievals, warranties, unseen devices)
     builtin,  # noqa: F401  (registers the built-in sources)
     device_source,  # noqa: F401  (endpoint devices: posture issues, connectivity, remote actions)
+    device_tracking_source,  # noqa: F401  (device tracking alerts: outside countries, not seen, after hours, ...)
     directory_source,  # noqa: F401  (directory discovery: failed syncs, unmanaged computers)
     endpoint_action_source,  # noqa: F401  (built-in endpoint actions: failures, refusals, restarts)
     external_source,  # noqa: F401  (attack surface: new critical / high external findings)

@@ -60,6 +60,7 @@ from .services.dashboard_snapshots import DashboardSnapshotWorker
 from .services.scan_schedule import ScanScheduler
 from .services.simulation import RuntimeSimulator, seed_if_empty
 from .tracking import api as tracking_api
+from .tracking.worker import TrackingAlertWorker
 from .vulnmatch import worker as vuln_worker
 
 log = logging.getLogger("cnapp")
@@ -139,6 +140,11 @@ async def lifespan(app: FastAPI):
     if s.geoip_auto_update:
         app.state.geoip_updater = GeoipUpdater()
         app.state.geoip_updater.start()
+    # Device tracking alerts that depend on time (not seen for N days, agent stopped; leader-elected).
+    app.state.tracking_alerts = None
+    if s.tracking_alert_worker_enabled:
+        app.state.tracking_alerts = TrackingAlertWorker()
+        app.state.tracking_alerts.start()
     # Vulnerability (CVE) matching: feeds, debounced re-matching, KEV / EPSS
     # (leader-elected; never runs inside a request).
     app.state.vuln_worker = None
@@ -167,6 +173,8 @@ async def lifespan(app: FastAPI):
         app.state.exec_reports.stop()
     if app.state.geoip_updater:
         app.state.geoip_updater.stop()
+    if app.state.tracking_alerts:
+        app.state.tracking_alerts.stop()
     if app.state.simulator:
         app.state.simulator.stop()
     if app.state.notifier:

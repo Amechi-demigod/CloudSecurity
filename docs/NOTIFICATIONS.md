@@ -10,7 +10,7 @@ analysts can see them (secrets masked) and the delivery log; viewers cannot.
 - [Microsoft Teams](#microsoft-teams) · [Slack](#slack) · [Email: SMTP](#email-smtp) · [Email: Azure Communication Services](#email-azure-communication-services) · [Signed webhooks](#signed-webhooks)
 - [Rules: matching, throttling, quiet hours, digests](#rules)
 - [Security](#security)
-- [Endpoint device events](#endpoint-device-events)
+- [Endpoint device events](#endpoint-device-events) · [Device tracking events](#device-tracking-events)
 - [Adding a new event source](#adding-a-new-event-source)
 - [Troubleshooting](#troubleshooting)
 
@@ -313,6 +313,23 @@ The *IT asset lifecycle* source (`asset_lifecycle`, see [IT asset management](AS
 The first three are polled by the dispatcher leader every
 `ASSET_NOTIFICATION_POLL_SECONDS` (1 hour). Events link to the asset page and
 carry `asset_type` = `it_<type>` (e.g. `it_laptop`) for the asset type filter.
+
+## Device tracking events
+
+The *Device tracking* source (`device_tracking`, [device tracking alerts](DEVICE_TRACKING.md#alerts), module
+Endpoints & servers) raises one event per alert, with the alert as rule id and event type, grouped per computer and
+alert for throttling, linking to the computer's page. Text holds a city and country only, never an internet address.
+
+| Event type | Severity | When |
+|---|---|---|
+| `outside_countries` | high | a computer connects from a country that is not on the allowed list ("FIN-LT-021 connected from Accra, Ghana") |
+| `auto_lost_mode` | high | lost mode was turned on automatically after the above |
+| `not_seen` | medium | no check-in for the configured number of days (once per absence) |
+| `after_hours` | medium | a computer is away from offices during the after-hours window (once per night) |
+| `hardware_changed` | medium | serial number / model changed, memory decreased, disk removed or resized |
+| `agent_stopped` | medium | the agent was polling every minute and went silent for over 2 hours |
+
+Each alert has its own switch under Settings > Device tracking > Alerts; nothing is raised while tracking is off.
 
 ## Device approval events
 
