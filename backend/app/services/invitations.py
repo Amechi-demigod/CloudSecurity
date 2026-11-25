@@ -20,7 +20,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import config, mailer, tenancy
+from .. import config, mailer, modules, tenancy
 from ..models import ROLES, Organization, OrganizationInvitation, User, utcnow
 from . import invitation_email
 from .invitation_email import Inviter
@@ -72,8 +72,10 @@ def _issue_token(inv: OrganizationInvitation, now: datetime) -> str:
 
 def _send(org: Organization, inv: OrganizationInvitation, url: str, inviter: Inviter | None, now: datetime) -> Issued:
     subject, text, body_html = invitation_email.render(org_name=org.name, role=inv.role, link=url,
-                                                       ttl_hours=config.settings.invite_ttl_hours, inviter=inviter)
-    res = mailer.send(inv.email, subject, text, body_html)
+                                                       ttl_hours=config.settings.invite_ttl_hours, inviter=inviter,
+                                                       org_kind=org.kind, max_clients=org.max_clients,
+                                                       enabled_modules=modules.enabled_modules(org))
+    res = mailer.send(inv.email, subject, text, body_html, inline_images=[invitation_email.logo_image()])
     inv.last_sent_at = now
     inv.sent_count = (inv.sent_count or 0) + 1
     return Issued(inv, url, res.sent, res.error)

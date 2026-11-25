@@ -340,6 +340,7 @@ def render_webhook(msg: dict[str, Any], delivery_id: str) -> dict[str, Any]:
 Rendered = tuple[str, str, str]
 # Platform mail only (app/mailer.py): (file name, media type, content).
 Attachment = tuple[str, str, bytes]
+InlineImage = tuple[str, str, bytes]  # (content id, media type, bytes), referenced as cid: in the HTML
 
 
 def _header_safe(s: str) -> str:
@@ -449,7 +450,8 @@ ACS_PATH = "/emails:send?api-version=2023-03-31"
 
 
 def send_acs(config: dict[str, Any], secrets: dict[str, str], msg: dict[str, Any], delivery_id: str,
-             *, rendered: Rendered | None = None, attachments: list[Attachment] | None = None) -> SendResult:
+             *, rendered: Rendered | None = None, attachments: list[Attachment] | None = None,
+             inline_images: list[InlineImage] | None = None) -> SendResult:
     endpoint, key = parse_connection_string(secrets.get("connection_string", ""))
     subject, text, body_html = rendered or render_email(msg)
     payload = {"senderAddress": config["sender_address"],
@@ -462,6 +464,11 @@ def send_acs(config: dict[str, Any], secrets: dict[str, str], msg: dict[str, Any
         payload["attachments"] = [{"name": _header_safe(name), "contentType": ctype,
                                    "contentInBase64": base64.b64encode(data).decode()}
                                   for name, ctype, data in attachments]
+    if inline_images:
+        payload.setdefault("attachments", []).extend(
+            {"name": f"{_header_safe(cid)}.{ctype.partition('/')[2] or 'bin'}", "contentType": ctype,
+             "contentInBase64": base64.b64encode(data).decode(), "contentId": _header_safe(cid)}
+            for cid, ctype, data in inline_images)
     body = json.dumps(payload, separators=(",", ":")).encode()
     headers = acs_headers(endpoint, key, ACS_PATH, body, formatdate(usegmt=True))
     # Idempotent retries: ACS de-duplicates on the operation id.
@@ -518,7 +525,8 @@ def _smtp_target(host: str, port: int) -> str:
 
 
 def send_smtp(config: dict[str, Any], secrets: dict[str, str], msg: dict[str, Any], delivery_id: str,
-              *, rendered: Rendered | None = None, attachments: list[Attachment] | None = None) -> SendResult:
+              *, rendered: Rendered | None = None, attachments: list[Attachment] | None = None,
+             inline_images: list[InlineImage] | None = None) -> SendResult:
     s = nsettings.get()
     host, port, security = config["host"], int(config.get("port") or 587), config.get("security", "starttls")
     ip = _smtp_target(host, port)
@@ -534,6 +542,10 @@ def send_smtp(config: dict[str, Any], secrets: dict[str, str], msg: dict[str, An
     em["X-CNAPP-Delivery"] = delivery_id
     em.set_content(text)
     em.add_alternative(body_html, subtype="html")
+    for cid, ctype, data in inline_images or []:
+        maintype, _, subtype = ctype.partition("/")
+        em.get_payload()[-1].add_related(data, maintype=maintype, subtype=subtype or "octet-stream",
+                                         cid=f"<{_header_safe(cid)}>", disposition="inline")
     for name, ctype, data in attachments or []:
         maintype, _, subtype = ctype.partition("/")
         em.add_attachment(data, maintype=maintype, subtype=subtype or "octet-stream", filename=_header_safe(name))
@@ -578,13 +590,14 @@ def send_smtp(config: dict[str, Any], secrets: dict[str, str], msg: dict[str, An
 
 
 def send(ctype: str, config: dict[str, Any], secrets: dict[str, str], msg: dict[str, Any],
-         delivery_id: str, *, rendered: Rendered | None = None, attachments: list[Attachment] | None = None
-         ) -> SendResult:
+         delivery_id: str, *, rendered: Rendered | None = None, attachments: list[Attachment] | None = None,
+         inline_images: list[InlineImage] | None = None) -> SendResult:
     """Deliver `msg`. Raises PermanentError / TransientError on failure.
 
     `rendered` (email only): a ready (subject, text, html) used instead of the
     alert layout of `render_email`, for platform transactional mail
-    (app/mailer.py, e.g. invitations); `attachments` likewise (compliance reports)."""
+    (app/mailer.py, e.g. invitations); `attachments` likewise (compliance reports); `inline_images`
+    are embedded by content id (multipart/related), so no remote image is ever fetched."""
     try:
         if ctype == "teams":
             return _post_json(secrets["webhook_url"], render_teams(msg), "teams")
@@ -594,8 +607,10 @@ def send(ctype: str, config: dict[str, Any], secrets: dict[str, str], msg: dict[
             return send_webhook(secrets, msg, delivery_id)
         if ctype == "email":
             if config.get("provider") == "acs":
-                return send_acs(config, secrets, msg, delivery_id, rendered=rendered, attachments=attachments)
-            return send_smtp(config, secrets, msg, delivery_id, rendered=rendered, attachments=attachments)
+                return send_acs(config, secrets, msg, delivery_id, rendered=rendered, attachments=attachments,
+                                inline_images=inline_images)
+            return send_smtp(config, secrets, msg, delivery_id, rendered=rendered, attachments=attachments,
+                                inline_images=inline_images)
     except KeyError as exc:
         raise PermanentError(f"channel is missing required setting {exc}") from None
     except ChannelConfigError as exc:

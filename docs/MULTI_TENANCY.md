@@ -282,11 +282,24 @@ is still created and the console shows the link** for the inviter to copy and
 pass on securely.
 
 The invitation is a plain transactional email (`app/services/invitation_email.py`,
-plain text and HTML, no images or tracking), not the alert layout of
-notifications. Invitations sent from the platform console name only the brand
-(`BRAND_NAME`): "You've been invited to join {organisation} on {brand}".
-Invitations sent by an organisation admin name that admin (display name and
-email address): "You have been invited to join {organisation} on {brand}".
+plain text and HTML, no tracking, no remote images), not the alert layout of
+notifications. All variants share one look: the logo on a white band under a navy stripe
+(embedded in the message as an inline `cid:` image, `app/static/email/`, so the
+mail client never fetches anything), a white card, a button and a details box.
+
+* **Partner** (the platform invites into an MSP organisation): "Your {brand}
+  partner account is ready"; lists what a partner account can do, the client
+  limit (when set) and the console address.
+* **Customer** (the platform or the customer's MSP invites a customer admin):
+  "Your {brand} security console for {organisation} is ready"; lists the
+  enabled modules and three getting-started steps. Brand only: never the MSP.
+* **Teammate** (an organisation admin invites a teammate): names that admin
+  (display name and email address): "You have been invited to join
+  {organisation} on {brand}".
+
+`mailer.send(..., inline_images=[(cid, mime, bytes)])` sends the inline images
+(multipart/related for SMTP, `contentId` attachments for ACS); callers that
+pass none are unchanged.
 
 ## Upgrading an existing installation
 

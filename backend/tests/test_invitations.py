@@ -94,10 +94,15 @@ def test_create_organisation_and_accept_the_invitation(platform):
 @pytest.fixture()
 def outbox(monkeypatch):
     """Platform mail configured, delivery faked: [(cfg, secrets, (subject, text, html))]."""
-    sent = []
+    class Outbox(list):
+        images: list = []
 
-    def fake_send(ctype, cfg, secrets, msg, delivery_id, *, rendered=None):
+    sent = Outbox()
+    sent.images = []
+
+    def fake_send(ctype, cfg, secrets, msg, delivery_id, *, rendered=None, inline_images=None):
         assert ctype == "email" and rendered is not None
+        sent.images.append(inline_images)
         sent.append((cfg, secrets, rendered))
         return channels.SendResult(250, "accepted")
 
@@ -125,12 +130,14 @@ def test_invitation_email_is_sent_when_mail_is_configured(platform, outbox):
     cfg, secrets, (subject, text, body_html) = outbox[0]
     assert cfg["to_addresses"] == ["boss@acme.test"] and cfg["host"] == "smtp.example.com"
     assert secrets == {"password": "smtp-pass"}
-    # Platform variant: a transactional email from the brand, not an alert, and no person named.
-    assert subject == "You've been invited to join Acme Ltd on Acme Security"
+    # Customer variant: a transactional email from the brand, not an alert, and no person named.
+    assert subject == "Your Acme Security security console for Acme Ltd is ready"
+    assert outbox.images[0][0][0] == "sentrigis-logo" and outbox.images[0][0][1] == "image/png"
     assert "[CNAPP]" not in subject and "INFO" not in subject
     link = link_of(text)
     assert link.startswith("https://cnapp.example.com/invite#token=cnv_")
-    assert "Acme Security invited you as admin to join Acme Ltd." in text
+    assert "You've been invited as administrator of Acme Ltd on Acme Security." in text
+    assert "Console: cnapp.example.com" in text
     assert f'href="{link}"' in body_html and "Accept invitation" in body_html
     assert "expires in 72 hours" in text and "ignore this email" in text and "please don't reply" in text
     for part in (text, body_html):
@@ -246,3 +253,15 @@ def test_org_admin_edits_profile(platform):
     assert r.status_code == 200 and r.json()["name"] == "Acme Holdings"
     assert boss.patch("/api/organization", json={"logo_url": "javascript:alert(1)"}).status_code == 422
     assert platform.get("/api/organization").json()["name"] != "Acme Holdings"
+
+
+def test_platform_invite_into_an_msp_sends_the_partner_variant(platform, outbox):
+    create_org(platform, name="Zeta Managed Services", admin_email="boss@zeta.test", kind="msp", max_clients=12)
+    _, _, (subject, text, body_html) = outbox[0]
+    assert subject == "Your Acme Security partner account is ready"
+    assert "PARTNER ACCOUNT" in text and "Client limit: 12 clients" in text
+    assert "Welcome to Acme Security, Zeta Managed Services" in text
+    assert "Set your password and sign in" in body_html
+    assert 'src="cid:sentrigis-logo"' in body_html and outbox.images[0]
+    create_org(platform, name="Unlimited MSP", admin_email="boss@unl.test", kind="msp")
+    assert "Client limit" not in outbox[1][2][1]
