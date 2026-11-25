@@ -232,6 +232,9 @@ class Settings:
     # scheduled-report thread in this process (tests drive it explicitly).
     compliance_report_worker_enabled: bool = field(
         default_factory=lambda: _bool("COMPLIANCE_REPORT_WORKER_ENABLED", True))
+    # Scheduled executive report emails (docs/EXECUTIVE_REPORT.md; leader-elected, tests drive it explicitly).
+    executive_report_worker_enabled: bool = field(
+        default_factory=lambda: _bool("EXECUTIVE_REPORT_WORKER_ENABLED", True))
     # A generated PDF larger than this is not emailed (the failing items listed
     # per check are already capped; this guards very large estates).
     compliance_report_max_bytes: int = field(

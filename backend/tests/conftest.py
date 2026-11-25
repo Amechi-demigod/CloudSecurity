@@ -43,6 +43,7 @@ os.environ.update({
     "DASHBOARD_SNAPSHOT_WORKER_ENABLED": "false",
     # Scheduled compliance reports: tests drive the runner explicitly.
     "COMPLIANCE_REPORT_WORKER_ENABLED": "false",
+    "EXECUTIVE_REPORT_WORKER_ENABLED": "false",
     # Purge of removed cloud assets: tests drive the job explicitly.
     "CLOUD_PURGE_WORKER_ENABLED": "false",
     # Attack surface scans: tests drive the scheduler explicitly (never any scan traffic).

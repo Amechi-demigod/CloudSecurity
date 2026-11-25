@@ -25,6 +25,7 @@ import NetworkScans from "./pages/network/NetworkScans";
 import Offboarding from "./pages/assets/Offboarding";
 import AttackPaths from "./pages/AttackPaths";
 import Compliance from "./pages/Compliance";
+import ExecutiveReport from "./pages/ExecutiveReport";
 import Connectors from "./pages/Connectors";
 import AgentUpdates from "./pages/devices/AgentUpdates";
 import DeviceDetail from "./pages/devices/DeviceDetail";
@@ -98,7 +99,15 @@ const NAV: NavTop[] = [
     ],
   },
   { key: "surface", label: "Attack surface", icon: Radar, to: "/attack-surface", module: "external" },
-  { key: "compliance", label: "Compliance & reports", icon: ShieldCheck, to: "/compliance" },
+  {
+    key: "compliance",
+    label: "Compliance & reports",
+    icon: ShieldCheck,
+    children: [
+      { to: "/compliance", label: "Compliance" },
+      { to: "/executive-report", label: "Executive report" },
+    ],
+  },
   {
     key: "settings",
     label: "Settings",
@@ -430,6 +439,7 @@ function Shell() {
           <Routes>
             <Route path="/" element={mspHome ? <Clients /> : <DashboardPage />} />
             <Route path="/compliance" element={<Compliance />} />
+            <Route path="/executive-report" element={<ExecutiveReport />} />
             <Route path="/inventory" element={<RequireModule module="cloud"><Inventory /></RequireModule>} />
             <Route path="/findings" element={<RequireModule module="cloud"><Findings /></RequireModule>} />
             <Route path="/findings/:id" element={<RequireModule module="cloud"><FindingDetail /></RequireModule>} />

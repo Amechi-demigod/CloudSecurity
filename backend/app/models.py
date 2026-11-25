@@ -1242,6 +1242,7 @@ class OidcAuthRequest(Base):
 from .asset_lifecycle import models as _asset_lifecycle_models  # noqa: E402, F401
 from .compliance import models as _compliance_models  # noqa: E402, F401
 from .directory import models as _directory_models  # noqa: E402, F401
+from .executive import models as _executive_models  # noqa: E402, F401
 from .network import models as _network_models  # noqa: E402, F401
 from .notifications import models as _notification_models  # noqa: E402, F401
 
