@@ -65,7 +65,10 @@ Module switches apply inside the client exactly as for its own users (`403 modul
 * While acting in a client, MSP staff use a **stand-in identity**: the real user id (so "different person"
   rules such as approvals work) but a neutral display name, `Managed security team`. Every place that stores
   an actor name or email (created_by, requested_by, invited_by, scan triggered_by, ...) shows that label, never
-  the person. Invitations sent by the MSP have no inviter name; the email names the brand only.
+  the person. Invitations sent by the MSP have no inviter name; the email names the brand only. Client
+  invitations use the customer layout ("Your {brand} security console for {client} is ready"); it contains
+  nothing about who set the account up, so the MSP's name, branding or the word "partner" never appears in
+  the subject, text or HTML (the partner layout is only for invitations into an MSP organisation itself).
 * The client's own API never returns `kind` / `partner_org_id`; `PATCH /api/organization` rejects them.
 * Client admins cannot change or remove the partnership: only `/api/platform/*` can, and it is owner-only.
 

@@ -40,10 +40,12 @@ def _channel() -> tuple[dict, dict]:
 
 
 def send(to: str, subject: str, text: str, html: str, *, reply_to: str | None = None,
-         attachments: list[tuple[str, str, bytes]] | None = None) -> MailResult:
+         attachments: list[tuple[str, str, bytes]] | None = None,
+         inline_images: list[tuple[str, str, bytes]] | None = None) -> MailResult:
     """Send one transactional email (plain text + HTML alternative), not the
     alert layout of the notification channel. `reply_to`: one plain address
-    (validated by the caller; CR/LF never reach a header). `attachments`:
+    (validated by the caller; CR/LF never reach a header). `inline_images`: (content id, media
+    type, bytes) embedded in the HTML as `cid:` (no remote fetch). `attachments`:
     (file name, media type, bytes), e.g. a compliance report PDF. Never raises."""
     from .notifications import channels as ch
 
@@ -54,7 +56,9 @@ def send(to: str, subject: str, text: str, html: str, *, reply_to: str | None = 
     if reply_to:
         cfg["reply_to"] = reply_to
     try:
-        extra = {"attachments": attachments} if attachments else {}
+        extra: dict = {"attachments": attachments} if attachments else {}
+        if inline_images:
+            extra["inline_images"] = inline_images
         ch.send("email", cfg, secrets, {}, uuid.uuid4().hex, rendered=(subject, text, html), **extra)
         return MailResult(True)
     except (ch.PermanentError, ch.TransientError) as e:

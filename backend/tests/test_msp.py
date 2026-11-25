@@ -426,3 +426,32 @@ def test_csrf_unchanged_for_switch(w):
     login(c, "admin@msp1.test", PW)
     del c.headers["X-CSRF-Token"]
     assert c.post("/api/msp/switch", json={"organization_id": w.client_id}).status_code == 403
+
+
+def test_client_invitations_never_name_the_msp(w, monkeypatch):
+    """The client-facing mail is brand only: no MSP name, in the first admin's or a later admin's invitation."""
+    from app import mailer
+
+    set_org_fields(w.msp_id, name="Zebratech Managed Services")
+    sent = []
+
+    def fake_send(to, subject, text, html, *, reply_to=None, attachments=None, inline_images=None):
+        sent.append((to, subject, text, html, inline_images))
+        return mailer.MailResult(True)
+
+    monkeypatch.setattr(mailer, "send", fake_send)
+    r = w.admin.post("/api/msp/clients", json={"name": "Client Two", "contact_email": "it@client2.test",
+                                               "admin_email": "boss@client2.test", "modules": ["endpoints", "cloud"]})
+    assert r.status_code == 201, r.text
+    r = w.admin.post(f"/api/msp/clients/{w.client_id}/invitations", json={"email": "second@client1.test"})
+    assert r.status_code == 201
+    inv_id = r.json()["invitation"]["id"]
+    assert w.admin.post(f"/api/msp/clients/{w.client_id}/invitations/{inv_id}/resend").status_code in (200, 201)
+    assert len(sent) == 3
+    for to, subject, text, body_html, images in sent:
+        assert subject.startswith("Your ") and subject.endswith(" is ready") and "partner account" not in subject
+        for part in (subject, text, body_html):
+            assert "zebratech" not in part.lower() and "managed services" not in part.lower()
+        assert images and images[0][0] == "sentrigis-logo"
+    first = next(m for m in sent if m[0] == "boss@client2.test")
+    assert "What's included: Cloud security, Endpoints & servers" in first[2]
