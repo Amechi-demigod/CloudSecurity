@@ -2,7 +2,7 @@
 the notification channel (no "[CNAPP]" tags, severity or "notifications" footer,
 which made invitations from a new sending domain look like phishing).
 
-Three variants, one look (navy header bar with the logo, white card, button,
+Three variants, one look (logo on a white band under a navy stripe, white card, button,
 details box):
 
 * partner: the platform invites someone into an organisation of kind 'msp'
@@ -199,7 +199,9 @@ def render(*, org_name: str, role: str, link: str, ttl_hours: float, inviter: In
         "style=\"background:#f4f5f7\"><tr><td align=\"center\" style=\"padding:24px 12px\">"
         "<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" "
         "style=\"max-width:560px;background:#ffffff;border:1px solid #e5e7eb;border-radius:8px\">"
-        f"<tr><td bgcolor=\"{NAVY}\" style=\"background:{NAVY};padding:20px 32px;border-radius:8px 8px 0 0\">"
+        # White band under a navy stripe: the logo PNG has a white background, so it cannot sit on navy.
+        f"<tr><td bgcolor=\"#ffffff\" style=\"background:#ffffff;padding:20px 32px 16px;border-top:6px solid {NAVY};"
+        "border-bottom:1px solid #eef0f4;border-radius:8px 8px 0 0\">"
         f"<img src=\"cid:{LOGO_CID}\" alt=\"{e(brand, quote=True)}\" width=\"{LOGO_WIDTH}\" height=\"{LOGO_HEIGHT}\" "
         f"style=\"display:block;border:0;width:{LOGO_WIDTH}px;height:{LOGO_HEIGHT}px\"></td></tr>"
         f"<tr><td style=\"padding:32px;{FONT};font-size:15px;line-height:22px;color:{TEXT}\">"

@@ -283,7 +283,7 @@ pass on securely.
 
 The invitation is a plain transactional email (`app/services/invitation_email.py`,
 plain text and HTML, no tracking, no remote images), not the alert layout of
-notifications. All variants share one look: a navy header bar with the logo
+notifications. All variants share one look: the logo on a white band under a navy stripe
 (embedded in the message as an inline `cid:` image, `app/static/email/`, so the
 mail client never fetches anything), a white card, a button and a details box.
 
