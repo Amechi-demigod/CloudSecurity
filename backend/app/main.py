@@ -43,6 +43,8 @@ from .directory import api as directory_api
 from .directory import collector_api
 from .directory import deploy_api as directory_deploy_api
 from .directory.scheduler import DirectoryScheduler
+from .executive import api as executive_api
+from .executive.delivery import ExecReportWorker
 from .external import api as external_api
 from .external.reputation import api as reputation_api
 from .external.scheduler import ExternalScheduler
@@ -125,6 +127,11 @@ async def lifespan(app: FastAPI):
     if s.compliance_report_worker_enabled:
         app.state.compliance_reports = ComplianceReportWorker()
         app.state.compliance_reports.start()
+    # Scheduled executive report emails (leader-elected).
+    app.state.exec_reports = None
+    if s.executive_report_worker_enabled:
+        app.state.exec_reports = ExecReportWorker()
+        app.state.exec_reports.start()
     # Vulnerability (CVE) matching: feeds, debounced re-matching, KEV / EPSS
     # (leader-elected; never runs inside a request).
     app.state.vuln_worker = None
@@ -149,6 +156,8 @@ async def lifespan(app: FastAPI):
         app.state.cloud_purge.stop()
     if app.state.compliance_reports:
         app.state.compliance_reports.stop()
+    if app.state.exec_reports:
+        app.state.exec_reports.stop()
     if app.state.simulator:
         app.state.simulator.stop()
     if app.state.notifier:
@@ -261,6 +270,8 @@ def create_app() -> FastAPI:
     app.include_router(reputation_api.router)  # /api/external/reputation/*: before the generic external routes
     app.include_router(external_api.router)  # /api/external/*: the Attack surface & pre-ASV module
     app.include_router(external_api.platform_router)  # /api/platform/external/*: approvals and dispute reviews
+    app.include_router(executive_api.public_router)  # /api/reports/executive/unsubscribe: the signed link is the credential
+    app.include_router(executive_api.router)  # /api/reports/executive/*: viewer reads / downloads, admin schedules
     app.include_router(compliance_api.router)  # /api/compliance/*: viewer reads / exports, admin schedules
     app.include_router(agent_updates_api.router)  # /api/updates/*: viewer reads, admin writes (all audited)
     app.include_router(approvals_api.router)  # /api/approvals/*: admin only (two-person rule)

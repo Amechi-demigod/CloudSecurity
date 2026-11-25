@@ -103,6 +103,7 @@ docs/NOTIFICATIONS.md    alert notifications: Teams, Slack, email, signed webhoo
 docs/ASSET_MANAGEMENT.md IT asset lifecycle: asset records, custody, offboarding, disposal, CSV, notifications
 docs/DIRECTORY_DISCOVERY.md directory discovery: AD collectors, auth, ports, matching, discovery issues
 docs/COMPLIANCE.md       compliance reports: framework mappings, scoring, exports, scheduled reports
+docs/EXECUTIVE_REPORT.md  executive report: plain-language summary, PDF, scheduled emails to leaders
 docs/AUTH.md             MFA (TOTP) and Microsoft Entra ID sign-in, break-glass accounts
 docs/VULNERABILITIES.md  CVE matching: sources, CPE mapping table, limits, egress, adding mappings
 docs/MULTI_TENANCY.md    organisations: data model, isolation guarantees, machine credentials, platform owners
