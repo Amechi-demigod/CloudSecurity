@@ -282,3 +282,83 @@ export const externalApi = {
   decideDispute: (id: string, approve: boolean, note: string) =>
     request<ExtDispute>(`/api/platform/external/disputes/${id}/decide`, { method: "POST", ...j({ approve, note }) }),
 };
+
+// ---- Reputation checks (backend app/external/reputation, docs/REPUTATION.md) ----
+export type RepCategory = "email" | "lookalike" | "blocklist" | "certificate";
+export type RepGrade = "A" | "B" | "C" | "D" | "F";
+
+export interface RepLookalike {
+  domain: string;
+  technique: string;
+  a: string[];
+  aaaa: string[];
+  mx: string[];
+}
+export interface RepCert {
+  issuer: string;
+  names: string[];
+  name_count: number;
+  wildcard: boolean;
+  not_before: string;
+  not_after: string | null;
+}
+export interface RepDetails {
+  email?: { spf?: string | null; spf_lookups?: number; dmarc?: string | null; dmarc_policy?: string | null; dkim_selectors?: string[]; mx?: string[]; mta_sts?: boolean; tls_rpt?: boolean };
+  lookalikes?: { candidates: number; registered: RepLookalike[]; note?: string };
+  blocklists?: { enabled: boolean; zones: string[]; listings: unknown[] };
+  certificates?: { enabled: boolean; days?: number; count?: number; issuers?: string[]; recent?: RepCert[]; error?: string };
+}
+export interface RepDomain {
+  domain: string;
+  score: number | null;
+  grade: RepGrade | null;
+  counts: Partial<Record<ExtSeverity, number>>;
+  last_run_at: string | null;
+  last_run_id: string | null;
+  details?: RepDetails;
+}
+export interface RepRun {
+  id: string;
+  trigger: string;
+  status: "running" | "succeeded" | "failed" | "partial";
+  started_at: string;
+  finished_at: string | null;
+  started_by: string | null;
+  domains: string[];
+  findings_open: number;
+  message: string;
+}
+export interface RepSummary {
+  domains: RepDomain[];
+  last_run: RepRun | null;
+  cooldown_seconds_left: number;
+  checks: { blocklists_enabled: boolean; certificate_transparency_enabled: boolean };
+}
+export interface RepFinding {
+  id: string;
+  ref: string;
+  check_id: string;
+  category: RepCategory;
+  domain: string;
+  title: string;
+  severity: ExtSeverity;
+  status: "open" | "resolved" | "accepted";
+  first_seen: string;
+  last_seen: string;
+  resolved_at: string | null;
+  description: string | null;
+  fix: string | null;
+  evidence?: Record<string, unknown>;
+  status_note?: string | null;
+  status_by?: string | null;
+}
+
+export const reputationApi = {
+  summary: () => request<RepSummary>("/api/external/reputation/domains"),
+  domain: (d: string) => request<RepDomain>(`/api/external/reputation/domains/${encodeURIComponent(d)}`),
+  findings: (p: { status?: string; domain?: string; category?: string } = {}) => request<RepFinding[]>(`/api/external/reputation/findings${qs(p)}`),
+  finding: (id: string) => request<RepFinding>(`/api/external/reputation/findings/${encodeURIComponent(id)}`),
+  acceptRisk: (id: string, reason: string) => request<RepFinding>(`/api/external/reputation/findings/${encodeURIComponent(id)}/accept-risk`, { method: "POST", ...j({ reason }) }),
+  reopen: (id: string) => request<RepFinding>(`/api/external/reputation/findings/${encodeURIComponent(id)}/reopen`, { method: "POST" }),
+  run: (domain?: string) => request<RepRun>("/api/external/reputation/runs", { method: "POST", ...j(domain ? { domain } : {}) }),
+};

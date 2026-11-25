@@ -5,6 +5,7 @@ import { useAuth } from "../../auth/context";
 import { CodeBlock } from "../../components/FixTabs";
 import { NotAsvBanner, ResultBadge, ScopeModal } from "../../components/external";
 import { OverflowMenu } from "../../components/OverflowMenu";
+import ReputationPanel from "./Reputation";
 import { FindingsPanel } from "./ExternalFindings";
 import { errMsg, inputCls } from "../../lib/externalUi";
 import { Button, Card, Empty, ErrorNote, Modal, NameCell, None, NumCell, PageHeader, Pill, PillRow, Table, TextCell, type PillTone } from "../../components/ui";
@@ -176,6 +177,7 @@ const TABS = [
   { key: "results", label: "Scan results" },
   { key: "systems", label: "Systems found" },
   { key: "targets", label: "Domains & IPs" },
+  { key: "reputation", label: "Reputation" },
 ] as const;
 type TabKey = (typeof TABS)[number]["key"];
 
@@ -394,7 +396,7 @@ export default function AttackSurface() {
           </button>
         ))}
       </div>
-      {tab !== "overview" && <NotAsvBanner />}
+      {tab !== "overview" && tab !== "reputation" && <NotAsvBanner />}
       <ErrorNote error={err ?? ov.error ?? targets.error} />
 
       {tab === "overview" && (
@@ -431,6 +433,8 @@ export default function AttackSurface() {
           </section>
         </div>
       )}
+
+      {tab === "reputation" && <ReputationPanel />}
 
       {tab === "results" && <FindingsPanel />}
 

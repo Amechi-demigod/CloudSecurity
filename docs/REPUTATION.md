@@ -3,7 +3,7 @@
 Part of the `external` module ("Attack surface & pre-ASV", [ATTACK_SURFACE.md](ATTACK_SURFACE.md)). For every
 **verified domain** of an organisation it reports how the domain looks to the outside world: email security,
 look-alike domains, blocklists and recently issued certificates. Code: `backend/app/external/reputation/`.
-Migration `0037_reputation`. Backend only in part 1 (the console pages follow).
+Migration `0037_reputation`. Part 1 is the backend; part 2 adds the console screens (Attack surface > Reputation tab and a page per domain).
 
 > **Passive only.** DNS look-ups and one certificate-transparency query per domain. No port is connected to, no web
 > page is fetched, nothing is sent to a look-alike or third-party host, and an unverified domain is never assessed
@@ -104,4 +104,4 @@ findings, so a key must not be placed there.
 
 * **Risk score**: reputation findings do not feed the overall risk score. External findings do not feed it
   today either, so a consistent hook does not exist yet (TODO once the external findings are included).
-* Console pages, PDF report section and look-alike WHOIS age are later parts.
+* PDF report section, look-alike WHOIS age and listing reputation findings in the Internet-facing findings list are later parts.
