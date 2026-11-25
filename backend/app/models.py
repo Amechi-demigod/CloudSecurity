@@ -1424,3 +1424,62 @@ class ExternalReport(TenantMixin, Base):
     generated_by: Mapped[str | None] = mapped_column(String(320), nullable=True)
     result: Mapped[str] = mapped_column(String(8))
     data: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class ReputationRun(TenantMixin, Base):
+    """One run of the reputation checks over one or more verified domains (app/external/reputation)."""
+
+    __tablename__ = "reputation_runs"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    trigger: Mapped[str] = mapped_column(String(12), default="manual")  # manual | scheduled
+    status: Mapped[str] = mapped_column(String(12), default="running")  # running | succeeded | partial | failed
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    started_by: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    domains: Mapped[list] = mapped_column(JSON, default=list)
+    findings_open: Mapped[int] = mapped_column(Integer, default=0)
+    message: Mapped[str] = mapped_column(Text, default="")
+
+
+class ReputationDomain(TenantMixin, Base):
+    """Latest reputation summary of one verified domain: grade, counts and the data behind them."""
+
+    __tablename__ = "reputation_domains"
+    __table_args__ = (UniqueConstraint("organization_id", "domain", name="uq_reputation_domains_org_domain"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    domain: Mapped[str] = mapped_column(String(255))
+    score: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 0-100
+    grade: Mapped[str | None] = mapped_column(String(2), nullable=True)  # A-F
+    counts: Mapped[dict] = mapped_column(JSON, default=dict)  # open findings by severity
+    details: Mapped[dict] = mapped_column(JSON, default=dict)  # email, lookalikes, certificates, blocklists
+    known_issuers: Mapped[dict] = mapped_column(JSON, default=dict)  # certificate issuer -> first seen (ISO date)
+    last_run_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class ReputationFinding(TenantMixin, Base):
+    """Same lifecycle as ExternalFinding: open, resolved automatically when a later run no longer sees it, accepted."""
+
+    __tablename__ = "reputation_findings"
+    __table_args__ = (UniqueConstraint("organization_id", "seq", name="uq_reputation_findings_org_seq"),
+                      UniqueConstraint("organization_id", "key", name="uq_reputation_findings_org_key"))
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    seq: Mapped[int] = mapped_column(Integer)  # REP-0001 per organisation
+    key: Mapped[str] = mapped_column(String(400))  # check | domain | subject (one finding per key)
+    check_id: Mapped[str] = mapped_column(String(48), index=True)
+    category: Mapped[str] = mapped_column(String(16), index=True)  # email | lookalike | blocklist | certificate
+    domain: Mapped[str] = mapped_column(String(255), index=True)
+    title: Mapped[str] = mapped_column(String(255))
+    severity: Mapped[str] = mapped_column(String(12), index=True)
+    detail: Mapped[dict] = mapped_column(JSON, default=dict)  # description, fix
+    evidence: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(16), default="open", index=True)  # open | resolved | accepted
+    status_note: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    status_by: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    first_seen: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_seen: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_run_id: Mapped[str | None] = mapped_column(String(32), nullable=True)

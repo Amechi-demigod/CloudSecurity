@@ -200,6 +200,24 @@ class Settings:
     external_max_hosts_per_scan: int = field(default_factory=lambda: int(os.getenv("EXTERNAL_MAX_HOSTS_PER_SCAN", "512") or 512))
     external_crtsh_enabled: bool = field(default_factory=lambda: _bool("EXTERNAL_CRTSH_ENABLED", True))
 
+    # Reputation checks (app/external/reputation, docs/REPUTATION.md): passive DNS / certificate-transparency checks of
+    # verified domains. Blocklist (DNSBL) zones are EMPTY by default: commercial-use terms differ per list.
+    reputation_dnsbl_zones: list[str] = field(default_factory=lambda: _list("REPUTATION_DNSBL_ZONES"))  # IP lists
+    reputation_dnsbl_domain_zones: list[str] = field(default_factory=lambda: _list("REPUTATION_DNSBL_DOMAIN_ZONES"))
+    reputation_ct_enabled: bool = field(default_factory=lambda: _bool("REPUTATION_CT_ENABLED", True))
+    reputation_ct_url: str = field(default_factory=lambda: os.getenv("REPUTATION_CT_URL", "https://crt.sh/").strip())
+    reputation_ct_days: int = field(default_factory=lambda: max(1, int(os.getenv("REPUTATION_CT_DAYS") or 90)))
+    reputation_ct_max_certs: int = field(default_factory=lambda: max(1, int(os.getenv("REPUTATION_CT_MAX_CERTS") or 200)))
+    reputation_ct_cache_seconds: int = field(
+        default_factory=lambda: max(0, int(os.getenv("REPUTATION_CT_CACHE_SECONDS") or 21600)))
+    reputation_ct_timeout: float = field(default_factory=lambda: float(os.getenv("REPUTATION_CT_TIMEOUT") or 20))
+    reputation_lookalike_max: int = field(
+        default_factory=lambda: min(500, max(10, int(os.getenv("REPUTATION_LOOKALIKE_MAX") or 300))))
+    # DNS queries per second of look-alike / blocklist look-ups (0 = unlimited)
+    reputation_dns_rate: float = field(default_factory=lambda: float(os.getenv("REPUTATION_DNS_RATE") or 10))
+    reputation_cooldown_seconds: int = field(
+        default_factory=lambda: max(0, int(os.getenv("REPUTATION_COOLDOWN_SECONDS") or 900)))
+
     # Dashboards (app/services/dashboards.py). Remediation SLA targets in days
     # for the "Mean time to resolve" tile's "SLA met" share: a critical / high
     # finding resolved within this many days of first being seen meets its SLA.
