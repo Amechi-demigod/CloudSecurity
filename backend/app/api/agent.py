@@ -38,6 +38,7 @@ from ..schemas_devices import (
 )
 from ..services import agent_updates, approvals, endpoint_actions, remote_sessions
 from ..services import devices as svc
+from ..tracking import service as tracking
 
 log = logging.getLogger(__name__)
 _FEATURE_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
@@ -232,6 +233,7 @@ def fetch_commands(device: Device = Depends(current_device), db: Session = Depen
     else:
         # Assets & identity only: no remote actions or scripts, but directory syncs still run.
         cmds = svc.deliver_pending(db, device, {directory_svc.COMMAND_TYPE})
+    tracking.observe(db, device)  # where the device is now (no-op unless the organisation turned tracking on)
     out = []
     for c in cmds:
         params = c.params or {}

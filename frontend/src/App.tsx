@@ -14,6 +14,7 @@ import { useApi } from "./lib/useApi";
 import Approvals from "./pages/Approvals";
 import AssetDetail from "./pages/assets/AssetDetail";
 import Assets from "./pages/assets/Assets";
+import DeviceTracking from "./pages/devices/DeviceTracking";
 import AssetSettings from "./pages/assets/AssetSettings";
 import DeployAgent from "./pages/assets/DeployAgent";
 import DeploymentDetail from "./pages/assets/DeploymentDetail";
@@ -115,6 +116,7 @@ const NAV: NavTop[] = [
     children: [
       { to: "/connectors", label: "Connections" },
       { to: "/devices/updates", label: "Agents & updates", module: "endpoints" },
+      { to: "/admin/device-tracking", label: "Device tracking", module: "endpoints", admin: true },
       { to: "/notifications", label: "Notifications", role: "analyst" },
       { to: "/admin/users", label: "People & approvals", also: ["/approvals", "/admin/organization"], admin: true, badge: "approvals" },
       { to: "/admin/audit-log", label: "Audit log", admin: true },
@@ -452,6 +454,7 @@ function Shell() {
             <Route path="/devices" element={<RequireModule module="endpoints"><Devices /></RequireModule>} />
             <Route path="/devices/enrollment" element={<RequireModule module={["endpoints", "assets"]}><RequireRole role="admin"><Enrollment /></RequireRole></RequireModule>} />
             <Route path="/devices/updates" element={<RequireModule module="endpoints"><AgentUpdates /></RequireModule>} />
+            <Route path="/admin/device-tracking" element={<RequireModule module="endpoints"><RequireRole role="admin"><DeviceTracking /></RequireRole></RequireModule>} />
             <Route path="/devices/scripts" element={<RequireModule module="endpoints"><Scripts /></RequireModule>} />
             <Route path="/devices/:id" element={<RequireModule module="endpoints"><DeviceDetail /></RequireModule>} />
             <Route path="/devices/:id/remote/:sid" element={<RequireModule module="endpoints"><RequireRole role="analyst"><RemoteViewer /></RequireRole></RequireModule>} />

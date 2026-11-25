@@ -122,10 +122,15 @@ services:
       HTTPS_PROXY: ${HTTPS_PROXY:-}
       HTTP_PROXY: ${HTTP_PROXY:-}
       NO_PROXY: localhost,127.0.0.1,::1,backend,frontend,postgres${NO_PROXY:+,}${NO_PROXY:-}
+      # Device tracking: DB-IP Lite databases, downloaded monthly into the geoip volume
+      # (the container filesystem is read-only). docs/DEVICE_TRACKING.md.
+      GEOIP_CITY_DB: /data/geoip/dbip-city-lite.mmdb
+      GEOIP_ASN_DB: /data/geoip/dbip-asn-lite.mmdb
     read_only: true
     tmpfs:
       - /tmp:size=64m
     volumes:
+      - geoip:/data/geoip
       # GCP connector key (cnapp-ctl gcp-key install): /opt/cnapp/secrets/gcp is
       # 0700 and the key 0600, both owned by the backend user (10001); read-only
       # here. GCP_CREDENTIALS_FILE=/run/secrets/gcp/credentials.json in cnapp.env.
@@ -273,3 +278,4 @@ networks:
 
 volumes:
   pgdata:
+  geoip:

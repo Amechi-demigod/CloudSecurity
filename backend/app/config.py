@@ -235,6 +235,19 @@ class Settings:
     # Scheduled executive report emails (docs/EXECUTIVE_REPORT.md; leader-elected, tests drive it explicitly).
     executive_report_worker_enabled: bool = field(
         default_factory=lambda: _bool("EXECUTIVE_REPORT_WORKER_ENABLED", True))
+    # Device tracking (docs/DEVICE_TRACKING.md): city-level location from a device's public internet address.
+    device_location_retention_days: int = field(
+        default_factory=lambda: max(1, int(os.getenv("DEVICE_LOCATION_RETENTION_DAYS") or 90)))
+    # Map tiles shown in the console (the frontend's Content-Security-Policy must allow this host for images).
+    map_tile_url: str = field(default_factory=lambda: (
+        os.getenv("MAP_TILE_URL") or "https://tile.openstreetmap.org/{z}/{x}/{y}.png").strip())
+    # DB-IP "IP to City Lite" / "IP to ASN Lite" (MMDB, CC BY 4.0). Missing files only mean "Not available yet".
+    geoip_city_db: str = field(default_factory=lambda: os.getenv("GEOIP_CITY_DB") or str(
+        __import__("pathlib").Path(__file__).resolve().parents[1] / "data" / "dbip-city-lite.mmdb"))
+    geoip_asn_db: str = field(default_factory=lambda: os.getenv("GEOIP_ASN_DB") or str(
+        __import__("pathlib").Path(__file__).resolve().parents[1] / "data" / "dbip-asn-lite.mmdb"))
+    # Monthly download of both databases (leader-elected background job; tests switch it off).
+    geoip_auto_update: bool = field(default_factory=lambda: _bool("GEOIP_AUTO_UPDATE", True))
     # A generated PDF larger than this is not emailed (the failing items listed
     # per check are already capped; this guards very large estates).
     compliance_report_max_bytes: int = field(

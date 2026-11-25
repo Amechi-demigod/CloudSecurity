@@ -48,6 +48,7 @@ from .executive.delivery import ExecReportWorker
 from .external import api as external_api
 from .external.reputation import api as reputation_api
 from .external.scheduler import ExternalScheduler
+from .geoip.update import GeoipUpdater
 from .network import api as network_api
 from .notifications import api as notifications_api
 from .notifications import settings as notification_settings
@@ -58,6 +59,7 @@ from .services.cloud_lifecycle import CloudPurgeWorker
 from .services.dashboard_snapshots import DashboardSnapshotWorker
 from .services.scan_schedule import ScanScheduler
 from .services.simulation import RuntimeSimulator, seed_if_empty
+from .tracking import api as tracking_api
 from .vulnmatch import worker as vuln_worker
 
 log = logging.getLogger("cnapp")
@@ -132,6 +134,11 @@ async def lifespan(app: FastAPI):
     if s.executive_report_worker_enabled:
         app.state.exec_reports = ExecReportWorker()
         app.state.exec_reports.start()
+    # Monthly refresh of the DB-IP location databases for device tracking (leader-elected).
+    app.state.geoip_updater = None
+    if s.geoip_auto_update:
+        app.state.geoip_updater = GeoipUpdater()
+        app.state.geoip_updater.start()
     # Vulnerability (CVE) matching: feeds, debounced re-matching, KEV / EPSS
     # (leader-elected; never runs inside a request).
     app.state.vuln_worker = None
@@ -158,6 +165,8 @@ async def lifespan(app: FastAPI):
         app.state.compliance_reports.stop()
     if app.state.exec_reports:
         app.state.exec_reports.stop()
+    if app.state.geoip_updater:
+        app.state.geoip_updater.stop()
     if app.state.simulator:
         app.state.simulator.stop()
     if app.state.notifier:
@@ -254,6 +263,8 @@ def create_app() -> FastAPI:
     # Remote-session WebSockets (own authentication: device credential + single-use
     # token, or session cookie + Origin). Served only with REMOTE_RELAY_MODE=all|relay.
     app.include_router(remote_relay_api.router)
+    app.include_router(tracking_api.router, dependencies=session_required)  # /api/device-tracking/*
+    app.include_router(tracking_api.device_router, dependencies=session_required)  # /api/devices/{id}/location
     app.include_router(exposure_api.router, dependencies=session_required + cloud)  # /api/exposure: any signed-in user
     app.include_router(dashboards_api.router, dependencies=session_required)  # /api/dashboards/*: any signed-in user
     app.include_router(dashboard_layout_api.router, dependencies=session_required)  # /api/dashboard/layout: viewer / admin
