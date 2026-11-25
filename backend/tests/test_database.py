@@ -294,6 +294,21 @@ def test_leader_lock_lost_when_connection_dies(session):
         other.release()
 
 
+@pytest.mark.skipif(not IS_POSTGRES, reason="PostgreSQL only")
+def test_leader_locks_do_not_use_the_shared_pool(session):
+    # More leader-elected jobs than the pool has connections must not starve requests (25 Nov outage).
+    pool = db.engine.pool
+    held = [locks.LeaderLock(f"t-pool-{i}") for i in range(pool.size() + db.engine.pool._max_overflow + 2)]
+    try:
+        assert all(lk.try_acquire() for lk in held) and all(lk.held() for lk in held)
+        assert pool.checkedout() <= 1  # only the test's own session, if any
+        with db.get_session(unscoped=True) as s:
+            assert s.execute(text("SELECT 1")).scalar() == 1
+    finally:
+        for lk in held:
+            lk.release()
+
+
 # --- multi-tenancy upgrade (0013_organizations) ---------------------------------------------
 
 def _fill(conn, table: str, **values):

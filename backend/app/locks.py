@@ -2,7 +2,7 @@
 or gunicorn workers can share one database safely.
 
 * PostgreSQL: session-level advisory locks (`pg_advisory_lock`), held on a
-  dedicated connection. They are released automatically if the process dies
+  dedicated connection outside the shared pool. They are released automatically if the process dies
   or its connection drops, so a new leader takes over.
 * SQLite file database: an `flock` on a lock file next to the database (all
   processes sharing a SQLite file are on the same host).
@@ -41,6 +41,23 @@ def _thread_lock(name: str) -> threading.Lock:
         return _thread_locks.setdefault(name, threading.Lock())
 
 
+_lock_engines: dict[int, Any] = {}
+
+
+def _lock_engine(eng: Any) -> Any:
+    """An unpooled engine on the same database for leader locks. Each leader lock holds its connection
+    for as long as the job runs, so taking it from the shared pool would starve requests and other jobs
+    once there are more leader-elected jobs than the pool has connections."""
+    with _thread_locks_guard:
+        le = _lock_engines.get(id(eng))
+        if le is None or le.url != eng.url:
+            from sqlalchemy import create_engine
+            from sqlalchemy.pool import NullPool
+
+            le = _lock_engines[id(eng)] = create_engine(eng.url, poolclass=NullPool)
+        return le
+
+
 def _sqlite_lock_path(name: str) -> str | None:
     eng = dbmod.engine
     path = eng.url.database if eng is not None else None
@@ -71,7 +88,7 @@ class LeaderLock:
         eng = dbmod.engine
         assert eng is not None, "init_engine() not called"
         if eng.dialect.name == "postgresql":
-            conn = eng.connect()
+            conn = _lock_engine(eng).connect()
             try:
                 fn = "pg_advisory_lock" if blocking else "pg_try_advisory_lock"
                 from sqlalchemy import text
