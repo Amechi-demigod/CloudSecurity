@@ -21,6 +21,7 @@ Linux is not supported yet. The code is split so it can be added later: see [Add
 - [Device class](#device-class) (workstation / server / domain controller, virtual machines, cloud VMs)
 - [Device health and issues](#device-health-and-issues)
 - [Missing OS updates (Windows)](PATCHING.md) (read-only Windows Update report, agent 1.4.0+)
+- [Device tracking](DEVICE_TRACKING.md) (approximate city-level location from the internet address; off by default)
 - [Remote actions](#remote-actions)
 - [Two-person approval](#two-person-approval)
 - [Lost mode](#lost-mode)

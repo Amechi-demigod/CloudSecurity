@@ -192,6 +192,9 @@ def apply_checkin(db: Session, device: Device, body: CheckinRequest, ip: str | N
                                  software_count=device.software_count if body.software is not None else None))
     db.flush()
     _prune_history(db, device.id, s.device_history_limit)
+    from ..tracking import service as tracking  # (imports this module)
+
+    tracking.observe(db, device, now)
     return issues
 
 

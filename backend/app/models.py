@@ -663,6 +663,9 @@ class Device(TenantMixin, Base):
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
     last_checkin_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Device tracking: the newest device_locations row (docs/DEVICE_TRACKING.md); no foreign key on purpose (the
+    # history is pruned independently and the link is cleared first).
+    location_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     check_in_interval_seconds: Mapped[int] = mapped_column(Integer, default=900)
     # Latest full inventory (hardware/OS/network/users) and posture checks, as sent by the agent.
     inventory: Mapped[dict] = mapped_column(JSON, default=dict)
@@ -1245,6 +1248,7 @@ from .directory import models as _directory_models  # noqa: E402, F401
 from .executive import models as _executive_models  # noqa: E402, F401
 from .network import models as _network_models  # noqa: E402, F401
 from .notifications import models as _notification_models  # noqa: E402, F401
+from .tracking import models as _tracking_models  # noqa: E402, F401
 
 # --- Attack surface & pre-ASV (app/external, docs/ATTACK_SURFACE.md) ---------------------------
 

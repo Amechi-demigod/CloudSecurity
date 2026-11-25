@@ -23,9 +23,11 @@ import { IsolationCard, LostModeDialog, LostWipeCard, SuspendSignInDialog, WipeD
 import { RemoteSessionButton, RemoteSessionsCard } from "./RemoteSessions";
 import { RunScriptDialog } from "./RunScriptDialog";
 import { PendingUpdateView, UpdateNowButton } from "./UpdateAutomation";
+import { LocationPill, LocationTab } from "./LocationTab";
+import { trackingApi } from "../../trackingApi";
 
 // "Updates" is the agent's own version / rollout; "OS updates" the Windows Update report (Windows only).
-const TABS = ["Overview", "Posture", "Software", "Services", "Vulnerabilities", "OS updates", "History", "Actions", "Commands", "Updates"] as const;
+const TABS = ["Overview", "Posture", "Software", "Services", "Vulnerabilities", "OS updates", "History", "Actions", "Commands", "Updates", "Location"] as const;
 type TabName = (typeof TABS)[number];
 
 const ACTIONS: { type: CommandType; label: string; role: Role; help: string; danger?: boolean }[] = [
@@ -927,6 +929,7 @@ export default function DeviceDetail() {
   const [scriptOpen, setScriptOpen] = useState(false);
   const { data: device, error, reload } = useApi(() => api.device(id), [id], 30000);
   const cmds = useApi(() => api.deviceCommands(id), [id], 10000);
+  const location = useApi(() => trackingApi.location(id), [id], 60000);
 
   if (!device) return <ErrorNote error={error} />;
   function afterAction() {
@@ -937,7 +940,9 @@ export default function DeviceDetail() {
   const active = device.status === "active";
   const linux = device.os_family === "linux";
   // Linux servers: no Windows Update tab, no endpoint actions (the agent is read-only there).
-  const tabs = TABS.filter((t) => (t !== "OS updates" || device.os_family === "windows") && !(linux && t === "Actions"));
+  // Location: Windows / macOS laptops and desktops only (never Linux or servers).
+  const locatable = device.os_family !== "linux" && device.device_class !== "server" && device.device_class !== "domain_controller";
+  const tabs = TABS.filter((t) => (t !== "OS updates" || device.os_family === "windows") && !(linux && t === "Actions") && (t !== "Location" || locatable));
   const tabId = (t: TabName) => `device-tab-${t.replace(" ", "-")}`;
   const suspendSignInBlockedReason = !device.isolation.supported
     ? "Not supported by this agent version"
@@ -962,6 +967,7 @@ export default function DeviceDetail() {
             {device.device_state === "wipe_pending" && <Tag tone="critical">Wipe pending</Tag>}
             {device.device_state === "isolated" && <Tag tone="warn">Sign-in suspended</Tag>}
             {device.usb_storage === "blocked" && <Tag tone="warn">USB storage blocked</Tag>}
+            {locatable && <LocationPill loc={location.data} />}
             <ConnectivityTag value={device.connectivity} />
             <AssetRecordLink deviceId={device.id} />
           </div>
@@ -1156,6 +1162,7 @@ export default function DeviceDetail() {
       )}
       {tab === "Updates" && <UpdatesTab id={device.id} admin={can("admin") && active} analyst={can("analyst") && active} />}
       {tab === "Actions" && <ActionsTab device={device} commands={cmds.data} error={cmds.error} reload={() => { cmds.reload(); reload(); }} />}
+      {tab === "Location" && <LocationTab deviceId={device.id} loc={location.data} error={location.error} reload={location.reload} active={active} />}
       {tab === "Commands" && <CommandsTab device={device} commands={cmds.data} error={cmds.error} reload={cmds.reload} />}
       {tab === "Commands" && can("admin") && <DeviceApprovals id={device.id} onChanged={() => { cmds.reload(); reload(); }} />}
       </div>

@@ -44,6 +44,10 @@ os.environ.update({
     # Scheduled compliance reports: tests drive the runner explicitly.
     "COMPLIANCE_REPORT_WORKER_ENABLED": "false",
     "EXECUTIVE_REPORT_WORKER_ENABLED": "false",
+    # Device tracking: never download the location databases in tests.
+    "GEOIP_AUTO_UPDATE": "false",
+    "GEOIP_CITY_DB": "/nonexistent/dbip-city-lite.mmdb",
+    "GEOIP_ASN_DB": "/nonexistent/dbip-asn-lite.mmdb",
     # Purge of removed cloud assets: tests drive the job explicitly.
     "CLOUD_PURGE_WORKER_ENABLED": "false",
     # Attack surface scans: tests drive the scheduler explicitly (never any scan traffic).
