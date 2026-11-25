@@ -1,7 +1,7 @@
 """Device tracking alerts: alert events, per-device alert state, automatic lost mode contact phone.
 
-Revision ID: 0040_device_tracking_alerts
-Revises: 0039_device_tracking
+Revision ID: 0041_device_tracking_alerts
+Revises: 0040_missing_devices
 Create Date: 2026-11-26 09:00:00.000000
 """
 from __future__ import annotations
@@ -11,8 +11,8 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '0040_device_tracking_alerts'
-down_revision: str | None = '0039_device_tracking'
+revision: str = '0041_device_tracking_alerts'
+down_revision: str | None = '0040_missing_devices'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

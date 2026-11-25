@@ -131,9 +131,13 @@ def test_fleet_aggregation_tiles_and_filters(admin, device, seen_ip):  # noqa: F
     assert {x["hostname"] for x in admin.get(FLEET + "?status=active").json()["devices"]} == {
         "LAPTOP-001", "FIN-LT-021"}
     assert admin.get(FLEET + "?status=bogus").status_code == 422
-    # Lost mode counts as missing (until the missing-device mode exists).
+    # Lost mode alone is not "missing"; missing-device mode is.
     with db.get_session("default") as s:
         s.get(Device, d2).lost_mode_status = "active"
+        s.commit()
+    assert admin.get(FLEET).json()["tiles"]["missing"] == 0
+    with db.get_session("default") as s:
+        s.get(Device, d2).missing_since = utcnow()
         s.commit()
     assert admin.get(FLEET).json()["tiles"]["missing"] == 1
 

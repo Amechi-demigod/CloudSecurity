@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from .. import config, geoip
 from ..models import Device, utcnow
 from ..services import devices as dev_svc
-from . import alerts, service
+from . import alerts, missing, service
 from .models import DeviceLocation
 
 MAX_DEVICES = 5000
@@ -25,13 +25,8 @@ STATUSES = ("active", "stale", "inactive")
 
 
 def missing_count(devices: list[Device]) -> int:
-    """The "Missing" tile.
-
-    TODO(PR C #150, missing-device mode): once C is merged, replace the body with
-    `sum(1 for d in devices if missing.is_missing(d))` (missing_since set and missing_recovered_at null).
-    For now: computers in lost mode.
-    """
-    return sum(1 for d in devices if d.lost_mode_status in ("enabling", "active"))
+    """The "Missing" tile: computers in missing-device mode (app/tracking/missing.py)."""
+    return sum(1 for d in devices if missing.is_missing(d))
 
 
 def _status(d: Device, now: datetime) -> str:

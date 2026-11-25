@@ -419,6 +419,7 @@ def summarize(device: Device, now: datetime | None = None) -> dict[str, Any]:
         "device_group": device.device_group,
         "health": health_from_issues(device, issues), "connectivity": connectivity(device, now), "issues": issues,
         "device_state": device_state(device), "usb_storage": usb_storage_state(device),
+        "missing": device.missing_since is not None and device.missing_recovered_at is None,
         "os_updates": os_updates.summary(device, now) or _linux_patching(device),
         **device_class.summary(device),
     }
@@ -540,6 +541,7 @@ def fleet_summary(db: Session) -> dict[str, Any]:
     return {
         "total": len(active), "revoked": len(devices) - len(active), "by_os": by_os, "by_class": by_class,
         "virtual": virtual, "by_health": by_health,
+        "missing": sum(1 for d in active if d.missing_since is not None and d.missing_recovered_at is None),
         "connectivity": conn_counts, "issues": issue_counts,
         "encrypted_percent": pct(enc), "firewall_percent": pct(fw),
         "encryption_known": enc["known"], "firewall_known": fw["known"],

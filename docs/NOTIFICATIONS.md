@@ -288,6 +288,7 @@ The *Endpoint device* source ([device management](DEVICE_MANAGEMENT.md)) raises:
 | `os_critical_updates_missing`, `windows_update_disabled` / `os_security_updates_missing`, `os_reboot_pending`, `os_update_scan_stale` | high / medium | same, from the Windows Update report of agents 1.4.0+ ([PATCHING.md](PATCHING.md#issues-and-notifications)); raised with the check-in after the report |
 | `stale` / `inactive` | medium / high | a device stops checking in (polled every 5 minutes by the dispatcher leader; the first poll only records a baseline). Notifies again if the device comes back and later goes quiet again |
 | `command_succeeded` / `command_failed` / `command_rejected` | low / medium / medium | the agent reports the result of a remote action (lock device, collect logs, ...) |
+| `missing_device_online` | high | a device marked missing connects again after more than an hour without contact ([DEVICE_TRACKING.md](DEVICE_TRACKING.md#missing-device-mode)); the text names the approximate city and country, never the address |
 
 Each event links to the device page, uses the issue code (or the command type)
 as its rule id, so the *rule ids* filter works too (e.g. `firewall_*`,

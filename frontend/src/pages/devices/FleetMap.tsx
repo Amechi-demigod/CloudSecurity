@@ -142,8 +142,7 @@ export default function FleetMap() {
         <Stat label="Away from offices" value={t.away} sub="anywhere else" />
         <Stat label="Outside allowed countries" value={t.outside_countries}
           sub={t.outside_countries > 0 ? "needs a look" : "none"} hint="Computers in a country that is not on the allowed list" />
-        {/* TODO(PR C, missing-device mode): this counts lost mode for now; see app/tracking/fleet.py missing_count(). */}
-        <Stat label="Missing" value={t.missing} sub="lost mode on" />
+        <Stat label="Missing" value={t.missing} sub="marked missing" />
       </div>
       <div className="mb-3 flex flex-wrap items-center gap-2">
         {data.groups.length > 0 && (

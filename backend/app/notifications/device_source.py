@@ -42,7 +42,9 @@ CHECKIN_ISSUES = (
 )
 CONNECTIVITY_ISSUES = ("stale", "inactive")
 COMMAND_RESULTS = {"succeeded": "command_succeeded", "failed": "command_failed", "rejected": "command_rejected"}
-EVENT_TYPES = CHECKIN_ISSUES + CONNECTIVITY_ISSUES + tuple(COMMAND_RESULTS.values())
+# A device marked missing connects again after more than an hour offline (app/tracking/missing.py).
+MISSING_DEVICE_ONLINE = "missing_device_online"
+EVENT_TYPES = CHECKIN_ISSUES + CONNECTIVITY_ISSUES + tuple(COMMAND_RESULTS.values()) + (MISSING_DEVICE_ONLINE,)
 # Human-facing override for command types whose internal name must never
 # appear in user-visible text (isolate_host/restore_host are "Suspend sign-in"
 # / "Restore sign-in" - see endpoint-agent/internal/signin).

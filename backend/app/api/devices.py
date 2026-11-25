@@ -97,7 +97,7 @@ DEVICE_SORT = {
 
 
 def _filtered_devices(db: Session, *, q, os, health, issue, connectivity, status, group, device_class, virtual,
-                      usb, updates, limit, sort, dir) -> list[tuple[Device, dict]]:
+                      usb, updates, limit, sort, dir, missing=None) -> list[tuple[Device, dict]]:
     """The Computers & servers page's query: (device, summary) pairs, filtered, sorted, then limited."""
     stmt = select(Device)
     if device_class == "unknown":
@@ -130,6 +130,8 @@ def _filtered_devices(db: Session, *, q, os, health, issue, connectivity, status
             continue
         if usb and (sm["usb_storage"] or "unknown") != usb:
             continue
+        if missing is not None and sm["missing"] != missing:
+            continue
         if updates and not os_updates.matches_filter(d, updates):
             continue
         out.append((d, sm))
@@ -155,12 +157,14 @@ def list_devices(db: Session = Depends(get_db),
                                          description="USB mass storage as last reported (Windows, agent 1.4.0+)"),
                  updates: str | None = Query(None, pattern="^(security|any|none|unknown)$",
                                              description="missing OS updates (Windows Update report)"),
+                 missing: bool | None = Query(None, description="true: devices marked missing only"),
                  limit: int = Query(500, ge=1, le=5000),
                  sort: str | None = Query(None, description="name|os|class|user|health|issues|seen|agent|usb|updates"),
                  dir: str = Query("asc", pattern="^(asc|desc)$")):
     return [sm for _, sm in _filtered_devices(
         db, q=q, os=os, health=health, issue=issue, connectivity=connectivity, status=status, group=group,
-        device_class=device_class, virtual=virtual, usb=usb, updates=updates, limit=limit, sort=sort, dir=dir)]
+        device_class=device_class, virtual=virtual, usb=usb, updates=updates, limit=limit, sort=sort, dir=dir,
+        missing=missing)]
 
 
 DEVICE_EXPORT_COLUMNS = ["name", "hostname", "class", "virtual", "os", "os_name", "os_version", "user", "health",

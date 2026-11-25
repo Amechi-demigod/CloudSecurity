@@ -71,3 +71,5 @@ class DeviceLocation(TenantMixin, Base):
     office_id: Mapped[str | None] = mapped_column(
         String(32), ForeignKey("tracking_offices.id", ondelete="SET NULL"), nullable=True, index=True)
     is_private: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Signed-in user(s) from the latest check-in; only recorded while the device is marked missing.
+    signed_in: Mapped[str | None] = mapped_column(String(255), nullable=True)
