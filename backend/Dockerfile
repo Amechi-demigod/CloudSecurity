@@ -20,7 +20,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     WEB_CONCURRENCY=2
 RUN groupadd --gid 10001 cnapp \
     && useradd --uid 10001 --gid cnapp --no-create-home --shell /usr/sbin/nologin cnapp \
-    && mkdir -p /data && chown cnapp:cnapp /data
+    && mkdir -p /data/geoip && chown -R cnapp:cnapp /data
 WORKDIR /app
 COPY --from=build /opt/venv /opt/venv
 COPY --chown=root:root alembic.ini gunicorn.conf.py ./
