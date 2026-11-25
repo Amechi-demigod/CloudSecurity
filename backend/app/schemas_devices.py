@@ -374,6 +374,8 @@ class DeviceSummaryOut(ORM):
     issues: list[DeviceIssue]
     # active | lost | wipe_pending | revoked (for asset / lifecycle views)
     device_state: str = "active"
+    # Marked missing (docs/DEVICE_TRACKING.md#missing-device-mode); it stays a flag next to the state.
+    missing: bool = False
     # workstation | server | domain_controller | None; class_source agent | inferred.
     device_class: str | None = None
     class_source: str | None = None

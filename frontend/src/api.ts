@@ -514,6 +514,8 @@ export interface DeviceSummary {
   status: "active" | "revoked";
   /** lifecycle state including lost mode / pending wipe */
   device_state: DeviceState;
+  /** Marked missing (device tracking, missing-device mode) */
+  missing?: boolean;
   enrolled_at: string;
   last_seen_at: string | null;
   last_checkin_at: string | null;
@@ -741,6 +743,8 @@ export interface DeviceFleetSummary {
   by_os: Record<string, number>;
   by_class?: Record<DeviceClass | "unknown", number>;
   virtual?: number;
+  /** Devices marked missing */
+  missing?: number;
   by_health: Record<DeviceHealth, number>;
   connectivity: Record<Connectivity, number>;
   issues: Record<string, number>;

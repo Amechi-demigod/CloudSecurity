@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from .. import config, device_class, geoip, modules, tenancy
 from ..models import Device, utcnow
+from . import missing
 from .models import DeviceLocation, DeviceTrackingSettings, TrackingOffice
 
 log = logging.getLogger(__name__)
@@ -120,7 +121,9 @@ def observe(db: Session, device: Device, now: datetime | None = None) -> None:
         geo = geoip.lookup(device.last_ip)
         with db.begin_nested():
             _record(db, device, geo, now)
+            missing.stamp_signed_in(db, device)
             _maybe_prune(db, org_id, now)
+        missing.on_contact(db, device, now)  # missing-device mode: reconnect alert (no-op otherwise)
     except Exception:
         log.exception("device tracking failed for device %s (ignored)", getattr(device, "id", "?"))
 

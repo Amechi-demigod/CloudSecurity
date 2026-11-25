@@ -693,6 +693,19 @@ class Device(TenantMixin, Base):
     lost_mode_phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
     lost_mode_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     lost_mode_by: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    # Missing-device mode (docs/DEVICE_TRACKING.md#missing-device-mode): the device is missing while missing_since is
+    # set and missing_recovered_at is not. The *_label columns hold the display name ("Managed security team" for MSP
+    # staff); the baseline is the hardware seen when it was marked, to spot changes later.
+    missing_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    missing_by_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    missing_by_label: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    missing_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    missing_previous_check_in_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    missing_recovered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    missing_recovered_by_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    missing_recovered_by_label: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    missing_last_contact_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    missing_baseline: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # Remote wipe (Windows only): queued (approved command waiting for the
     # device) | acknowledged (the agent confirmed it is about to wipe) | started
     # (the OS accepted the wipe) | failed | expired | None.
