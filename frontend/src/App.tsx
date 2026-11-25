@@ -53,6 +53,7 @@ import ExternalReview from "./pages/platform/ExternalReview";
 import AttackSurface from "./pages/external/AttackSurface";
 import ExternalFindings from "./pages/external/ExternalFindings";
 import ExternalFindingDetail from "./pages/external/ExternalFindingDetail";
+import ReputationDomain from "./pages/external/ReputationDomain";
 import ExternalReports from "./pages/external/ExternalReports";
 
 type NavChild = {
@@ -458,6 +459,7 @@ function Shell() {
             <Route path="/attack-surface" element={<RequireModule module="external"><AttackSurface /></RequireModule>} />
             <Route path="/attack-surface/findings" element={<RequireModule module="external"><ExternalFindings /></RequireModule>} />
             <Route path="/attack-surface/findings/:id" element={<RequireModule module="external"><ExternalFindingDetail /></RequireModule>} />
+            <Route path="/attack-surface/reputation/:domain" element={<RequireModule module="external"><ReputationDomain /></RequireModule>} />
             <Route path="/attack-surface/reports" element={<RequireModule module="external"><ExternalReports /></RequireModule>} />
             <Route path="/platform/attack-surface" element={<RequirePlatformAdmin><ExternalReview /></RequirePlatformAdmin>} />
             <Route path="/notifications" element={<RequireRole role="analyst"><Notifications /></RequireRole>} />
