@@ -21,12 +21,16 @@ import { OsUpdatesTab } from "./OsUpdates";
 import { VulnerabilityFixes } from "./VulnerabilityFixes";
 import { IsolationCard, LostModeDialog, LostWipeCard, SuspendSignInDialog, WipeDialog } from "./LostWipe";
 import { RemoteSessionButton, RemoteSessionsCard } from "./RemoteSessions";
-import { RunScriptDialog } from "./RunScriptDialog";
 import { PendingUpdateView, UpdateNowButton } from "./UpdateAutomation";
 
 // "Updates" is the agent's own version / rollout; "OS updates" the Windows Update report (Windows only).
 const TABS = ["Overview", "Posture", "Software", "Services", "Vulnerabilities", "OS updates", "History", "Actions", "Commands", "Updates"] as const;
 type TabName = (typeof TABS)[number];
+
+// Not offered in the console (product decision 25 Nov 2026: customers see only actionable, working actions).
+// The API still accepts them; they stay in ACTIONS so past commands keep their labels.
+const HIDDEN_ACTIONS: CommandType[] = ["collect_logs", "lock_device"];
+const shown = (a: { type: CommandType }) => !HIDDEN_ACTIONS.includes(a.type);
 
 const ACTIONS: { type: CommandType; label: string; role: Role; help: string; danger?: boolean }[] = [
   { type: "recheck_posture", label: "Re-check posture", role: "analyst", help: "Ask the agent for an immediate full inventory and posture check-in." },
@@ -919,12 +923,10 @@ export default function DeviceDetail() {
   const tab: TabName = (TABS as readonly string[]).includes(tabParam) ? (tabParam as TabName) : "Overview";
   const setTab = (t: TabName) => setTabParam(t);
   const [action, setAction] = useState<(typeof ACTIONS)[number] | null>(null);
-  const [revokeOpen, setRevokeOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [lostOpen, setLostOpen] = useState(false);
   const [wipeOpen, setWipeOpen] = useState(false);
   const [signInOpen, setSignInOpen] = useState(false);
-  const [scriptOpen, setScriptOpen] = useState(false);
   const { data: device, error, reload } = useApi(() => api.device(id), [id], 30000);
   const cmds = useApi(() => api.deviceCommands(id), [id], 10000);
 
@@ -999,16 +1001,11 @@ export default function DeviceDetail() {
       </dl>
       {active && can("analyst") && linux && (
         <div className="mb-4 flex flex-wrap items-center gap-2" role="toolbar" aria-label="Remote actions">
-          {ACTIONS.filter((a) => can(a.role) && LINUX_COMMANDS.includes(a.type)).map((a) => (
+          {ACTIONS.filter((a) => shown(a) && can(a.role) && LINUX_COMMANDS.includes(a.type)).map((a) => (
             <Button key={a.type} onClick={() => setAction(a)} title={a.help}>
               {a.label}
             </Button>
           ))}
-          {can("admin") && (
-            <Button variant="danger" onClick={() => setRevokeOpen(true)} title="Invalidate the device credential">
-              Revoke
-            </Button>
-          )}
           <p className="basis-full text-xs text-ink-3">
             Linux servers are read-only: the agent reads and reports. Lock, remote wipe, lost mode, scripts, service control, USB blocking,
             remote sessions and OS update install are not available.
@@ -1017,20 +1014,15 @@ export default function DeviceDetail() {
       )}
       {active && can("analyst") && !linux && (
         <div className="mb-4 flex flex-wrap items-center gap-2" role="toolbar" aria-label="Remote actions">
-          {ACTIONS.filter((a) => can(a.role) && !a.danger).map((a) => (
+          {ACTIONS.filter((a) => shown(a) && can(a.role) && !a.danger).map((a) => (
             <Button key={a.type} onClick={() => setAction(a)} title={a.help}>
               {a.label}
             </Button>
           ))}
           <RemoteSessionButton device={device} />
-          {can("admin") && (
-            <Button onClick={() => setScriptOpen(true)} title="Run a script from the signed library">
-              Run script
-            </Button>
-          )}
           <span aria-hidden className="mx-1 hidden h-6 w-px bg-line sm:block" />
           <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">Security</span>
-          {ACTIONS.filter((a) => can(a.role) && a.danger).map((a) => (
+          {ACTIONS.filter((a) => shown(a) && can(a.role) && a.danger).map((a) => (
             <Button key={a.type} variant="danger" onClick={() => setAction(a)} title={a.help}>
               {a.label}
             </Button>
@@ -1077,9 +1069,6 @@ export default function DeviceDetail() {
                   </Button>
                 </span>
               )}
-              <Button variant="danger" onClick={() => setRevokeOpen(true)} title="Invalidate the device credential">
-                Revoke
-              </Button>
             </>
           )}
         </div>
@@ -1175,16 +1164,8 @@ export default function DeviceDetail() {
           {device.os_family === "windows" && (
             <WipeDialog device={device} open={wipeOpen} onClose={() => setWipeOpen(false)} onDone={reload} />
           )}
-          <RunScriptDialog device={device} open={scriptOpen} onClose={() => setScriptOpen(false)} onDone={() => { cmds.reload(); reload(); }} />
         </>
       )}
-      <ReasonDialog open={revokeOpen} title={`Revoke ${device.hostname}`} cta="Revoke device"
-        help="The device credential stops working immediately and pending actions are cancelled. The agent keeps running but is rejected until someone re-enrolls it with a new enrollment token."
-        onClose={() => setRevokeOpen(false)}
-        onSubmit={async (reason) => {
-          await api.revokeDevice(device.id, reason);
-          reload();
-        }} />
       <ReasonDialog open={deleteOpen} title={`Delete ${device.hostname}`} cta="Delete permanently"
         help="Removes the device with its posture history, software inventory, actions and log bundles. This cannot be undone."
         onClose={() => setDeleteOpen(false)}
