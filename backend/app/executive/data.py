@@ -141,22 +141,25 @@ def _candidates(db: Session, on: list[str], metrics: dict[str, Any], ep: dict[st
                                    "malware and theft of data.",
                             "who": WHO["endpoints"] + " should switch the protection back on."})
     if modules.EXTERNAL in on:
+        # min(id), not min(detail): Postgres has no min() for JSON, so the detail of one row is loaded separately.
         rows = db.execute(select(ExternalFinding.title, ExternalFinding.severity, func.count(),
-                                 func.min(ExternalFinding.detail))
+                                 func.min(ExternalFinding.id))
                           .where(ExternalFinding.status == "open", ExternalFinding.severity.in_(("critical", "high")))
                           .group_by(ExternalFinding.title, ExternalFinding.severity)).all()
-        for title, sev, n, detail in rows:
+        for title, sev, n, first_id in rows:
+            detail = db.scalar(select(ExternalFinding.detail).where(ExternalFinding.id == first_id))
             impact = (detail or {}).get("impact") if isinstance(detail, dict) else None
             out.append({"area": "external", "severity": sev, "rank": SEV_WEIGHT[sev] + 5 + min(n, 5),
                         "title": _clip(f"{title} ({_plural(n, 'place')} on the internet)", 110),
                         "why": _sentence(impact or "This is visible to anyone on the internet, including attackers."),
                         "who": WHO["external"] + " should fix it."})
         rrows = db.execute(select(ReputationFinding.title, ReputationFinding.severity, func.count(),
-                                  func.min(ReputationFinding.detail))
+                                  func.min(ReputationFinding.id))
                            .where(ReputationFinding.status == "open",
                                   ReputationFinding.severity.in_(("critical", "high")))
                            .group_by(ReputationFinding.title, ReputationFinding.severity)).all()
-        for title, sev, n, detail in rrows:
+        for title, sev, n, first_id in rrows:
+            detail = db.scalar(select(ReputationFinding.detail).where(ReputationFinding.id == first_id))
             desc = (detail or {}).get("description") if isinstance(detail, dict) else None
             out.append({"area": "reputation", "severity": sev, "rank": SEV_WEIGHT[sev] + min(n, 5) - 10,
                         "title": _clip(title if n == 1 else f"{title} ({n} domains or addresses)", 110),
