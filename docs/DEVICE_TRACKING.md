@@ -86,6 +86,22 @@ empty state that points admins to Settings > Device tracking.
   (at most 5000, `truncated` says when more exist). Computers with no location yet or on a private network count in
   the tiles ("no location yet") but have no marker.
 
+### Recent alerts
+
+The Map view has a **Recent alerts** panel beside the map (below it on narrow screens): every tracking alert of the
+last 7 days across all computers, newest first, with the number raised in the last 24 hours, filter chips (All,
+Outside countries, Not seen, Hardware, Locked) and a link per row to the computer's Location tab. When no enabled
+notification rule sends the **Device tracking** source to at least one enabled channel, the panel says "These alerts
+are not sent anywhere yet." and administrators get a link to Notifications. A rule with an empty source list does not
+count here.
+
+`GET /api/device-tracking/alerts?days=&group=&limit=` (any role, Endpoints & servers module). `days` 1 to 90 (default
+7, capped to the retention), `group` is one of `outside_countries`, `not_seen`, `hardware`, `locked`, `after_hours`,
+`agent_stopped`, `limit` 1 to 200 (default 20). Returns `enabled` (false while tracking is off, with no items),
+`detail`, `count_24h` (all types), `total` (matching the filter), `notified` and `items` (id, kind, severity, title,
+detail_line, at, device_id, hostname, city, country). Items never hold an address, coordinates or provider, for any
+role. Code: `backend/app/tracking/feed.py`.
+
 ## Alerts
 
 Each alert has a switch in **Settings > Device tracking > Alerts**, is off by default, and runs only while tracking
@@ -223,6 +239,7 @@ Module-gated (Endpoints & servers) and scoped to the session's organisation.
 | --- | --- | --- |
 | `GET /api/device-tracking/settings` | analyst | Settings, retention, tile URL, whether the database is present |
 | `PUT /api/device-tracking/settings` | admin | Partial update, including the alert settings (audited as `device_tracking_settings_changed`) |
+| `GET /api/device-tracking/alerts` | viewer | Recent alerts across all computers (newest first), `count_24h`, `notified` |
 | `GET /api/device-tracking/countries` | any | ISO country list |
 | `GET/POST /api/device-tracking/offices` | admin | List (with computers there now) / create |
 | `PATCH/DELETE /api/device-tracking/offices/{id}` | admin | Edit / delete (audited) |

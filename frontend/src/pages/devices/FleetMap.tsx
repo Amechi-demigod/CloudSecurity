@@ -9,6 +9,7 @@ import { fmtAgo } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
 import { useUrlState } from "../../lib/useUrlState";
 import { trackingApi, type Fleet, type FleetCity, type FleetDevice } from "../../trackingApi";
+import RecentAlerts from "./RecentAlerts";
 
 const BLUE = "#2563eb";
 const ORANGE = "#f97316";
@@ -166,7 +167,10 @@ export default function FleetMap() {
         {t.unlocated > 0 && <span className="text-xs text-ink-3">{t.unlocated} {t.unlocated === 1 ? "computer has" : "computers have"} no location yet</span>}
       </div>
       {cities.length === 0 ? (
-        <Card><Empty icon={MapPin} title="No computers to show">No computer matches these filters, or none has reported a location yet.</Empty></Card>
+        <div className="grid gap-4 lg:grid-cols-2">
+          <Card><Empty icon={MapPin} title="No computers to show">No computer matches these filters, or none has reported a location yet.</Empty></Card>
+          <RecentAlerts />
+        </div>
       ) : full ? (
         <div className="grid gap-4 lg:grid-cols-3">
           <div className="lg:col-span-2">
@@ -176,9 +180,13 @@ export default function FleetMap() {
               Locations are approximate (city level), from each computer&apos;s internet address.
             </p>
           </div>
-          <Card title="Computers"><CityPanel fleet={data} cityKeyValue={selected} /></Card>
+          <div className="space-y-4">
+            <RecentAlerts />
+            <Card title="Computers"><CityPanel fleet={data} cityKeyValue={selected} /></Card>
+          </div>
         </div>
       ) : (
+        <div className="grid gap-4 lg:grid-cols-2">
         <Card title="Where computers are">
           <p className="mb-3 text-xs text-ink-3">The map is shown to analysts and administrators. Cities and countries only.</p>
           <ul className="space-y-4">
@@ -187,6 +195,8 @@ export default function FleetMap() {
             ))}
           </ul>
         </Card>
+        <RecentAlerts />
+        </div>
       )}
       {data.truncated && <p className="mt-2 text-xs text-ink-3">Showing the first computers only; narrow the filters to see the rest.</p>}
     </div>
