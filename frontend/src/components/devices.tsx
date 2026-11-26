@@ -25,9 +25,11 @@ const STATUS_STYLE: Record<CheckStatus, { cls: string; icon: string; label: stri
   unknown: { cls: "border-line text-ink-3", icon: "?", label: "Unknown" },
   info: { cls: "border-accent/60 text-accent", icon: "i", label: "Info" },
 };
+const WARN_STYLE = { cls: "border-sev-high/60 text-sev-high", icon: "!", label: "Review" };
 
-export function CheckBadge({ status }: { status: CheckStatus }) {
-  const s = STATUS_STYLE[status] ?? STATUS_STYLE.unknown;
+/** `warn`: the check passed but an issue still applies to it (e.g. outdated antivirus signatures). */
+export function CheckBadge({ status, warn = false }: { status: CheckStatus; warn?: boolean }) {
+  const s = warn && status !== "fail" ? WARN_STYLE : STATUS_STYLE[status] ?? STATUS_STYLE.unknown;
   return (
     <span className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-xs font-medium ${s.cls}`}>
       <span aria-hidden>{s.icon}</span>
