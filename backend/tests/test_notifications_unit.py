@@ -368,7 +368,7 @@ def test_channel_validation(monkeypatch):
         ("email", {"provider": "smtp", "to_addresses": "a@example.com\r\nBcc: z@evil.com", "host": "smtp.example.com",
                    "from_address": "x@example.com"}, {}, "invalid email"),
         ("email", {"provider": "acs", "to_addresses": ["a@example.com"], "sender_address": "s@example.com"},
-         {"connection_string": "endpoint=https://evil.example.com/;accesskey=a2V5"}, "allowlist"),
+         {"connection_string": "endpoint=https://evil.example.com/;accesskey=a2V5"}, "unknown field"),
         ("teams", {"bogus": 1}, {"webhook_url": URL_TEAMS}, "unknown field"),
     ]
     for ctype, cfg, sec, why in bad:
@@ -464,8 +464,11 @@ def test_pinned_smtp_keeps_server_name_for_tls(monkeypatch):
 
 # --- rules --------------------------------------------------------------------------
 
+ALL_AREAS = ("runtime_alert", "device", "posture_finding", "scan")
+
+
 def rule(**over):
-    base = dict(enabled=True, sources=[], event_types=[], min_severity="high", subscription_ids=[], asset_ids=[],
+    base = dict(enabled=True, sources=list(ALL_AREAS), event_types=[], min_severity="high", subscription_ids=[], asset_ids=[],
                 asset_types=[], tags={}, rule_ids=[], mitre_techniques=[], include_status_changes=False,
                 quiet_start=None, quiet_end=None, timezone="UTC", quiet_bypass_severity=None, digest_hour=8,
                 last_digest_at=None)

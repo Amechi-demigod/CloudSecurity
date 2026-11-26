@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ..schemas import UTCDateTime
 from .events import SEVERITIES
@@ -50,9 +50,10 @@ class ChannelOut(BaseModel):
 
 
 class RuleIn(BaseModel):
+    require_area: ClassVar[bool] = True
     name: str = Field(min_length=1, max_length=128)
     enabled: bool = True
-    sources: list[str] = _SHORT
+    sources: list[str] = Field(default_factory=list, max_length=200, validate_default=True)
     event_types: list[str] = _SHORT
     min_severity: Sev = "high"
     subscription_ids: list[str] = _SHORT
@@ -81,6 +82,13 @@ class RuleIn(BaseModel):
             if s and len(s) <= 512 and s not in out:
                 out.append(s)
         return out
+
+    @field_validator("sources")
+    @classmethod
+    def _need_source(cls, v: list[str]) -> list[str]:
+        if not v and cls.require_area:
+            raise ValueError("Pick at least one area")
+        return v
 
     @field_validator("mitre_techniques")
     @classmethod
@@ -118,12 +126,22 @@ class RuleIn(BaseModel):
 class RuleOut(RuleIn):
     model_config = ConfigDict(from_attributes=True)
 
+    # Legacy rules saved with no area (it used to mean "all"): listed as needing an area; they match nothing.
+    require_area: ClassVar[bool] = False
+    sources: list[str] = Field(default_factory=list)
+    needs_area: bool = False
+
     id: str
     channel_ids: list[str]
     last_digest_at: UTCDateTime | None = None
     created_by: str | None = None
     created_at: UTCDateTime
     updated_at: UTCDateTime
+
+    @model_validator(mode="after")
+    def _flag(self):
+        self.needs_area = not self.sources
+        return self
 
 
 class DeliveryOut(BaseModel):
@@ -148,6 +166,28 @@ class DeliveryOut(BaseModel):
     response_status: int | None
     last_error: str | None
     link: str | None = None
+
+
+class RuleTestChannel(BaseModel):
+    channel_id: str | None
+    channel_name: str
+    ok: bool
+    status: str
+    error: str | None = None
+
+
+class RuleTestResult(BaseModel):
+    ok: bool
+    results: list[RuleTestChannel]
+
+
+class RecommendedIn(BaseModel):
+    channel_ids: list[str] = Field(min_length=1, max_length=20)
+
+
+class RecommendedOut(BaseModel):
+    created: list[RuleOut]
+    skipped: list[str]
 
 
 class ChannelTestResult(BaseModel):

@@ -2,7 +2,8 @@
 
 * teams   - Microsoft Teams incoming webhook or Workflows (Power Automate) webhook; Adaptive Card.
 * slack   - Slack incoming webhook; Block Kit.
-* email   - SMTP (STARTTLS or implicit TLS) or Azure Communication Services Email (REST, HMAC auth).
+* email   - the Sentrigis sender (platform mail server, daily limit) or the customer's own SMTP server
+            (STARTTLS or implicit TLS). Azure Communication Services is only used by platform mail (app/mailer.py).
 * webhook - generic JSON POST, signed with HMAC-SHA256 + timestamp (see signing.py).
 
 All text that can come from monitored workloads (alert titles, command lines,
@@ -48,6 +49,10 @@ class PermanentError(Exception):
     def __init__(self, message: str, status: int | None = None):
         super().__init__(message)
         self.status = status
+
+
+class LimitReached(Exception):
+    """Not sent because a daily limit was reached; not retried (delivery status "skipped")."""
 
 
 class TransientError(Exception):
@@ -96,21 +101,20 @@ CHANNEL_TYPES: dict[str, dict[str, Any]] = {
     },
     "email": {
         "label": "Email",
-        "description": "SMTP with STARTTLS/TLS, or Azure Communication Services Email.",
+        "description": "Sent by Sentrigis (no setup) or through your own mail server (SMTP).",
         "fields": [
-            FieldSpec("provider", "Provider", "select", options=["smtp", "acs"], default="smtp", required=True),
+            FieldSpec("provider", "Send with", "select", options=["sentrigis", "smtp"], default="sentrigis",
+                      required=True, help="Sentrigis: no setup, sent from no-reply@sentrigis.com. "
+                                          "SMTP: send from your own domain."),
             FieldSpec("to_addresses", "Recipients", "list", required=True, help="Comma-separated email addresses."),
-            FieldSpec("from_address", "From address", "email", provider="smtp", help="Sender, e.g. cnapp@example.com"),
-            FieldSpec("host", "SMTP host", "text", provider="smtp"),
-            FieldSpec("port", "SMTP port", "int", provider="smtp", default=587),
-            FieldSpec("security", "Transport security", "select", provider="smtp", options=["starttls", "tls"],
+            FieldSpec("from_address", "From address", "email", provider="smtp",
+                      help="A mailbox on your mail server."),
+            FieldSpec("host", "SMTP server", "text", provider="smtp"),
+            FieldSpec("port", "Port", "int", provider="smtp", default=587),
+            FieldSpec("security", "Security", "select", provider="smtp", options=["starttls", "tls"],
                       default="starttls", help="starttls (port 587) or implicit tls (port 465)."),
-            FieldSpec("username", "SMTP username", "text", provider="smtp"),
-            FieldSpec("password", "SMTP password", "text", secret=True, provider="smtp"),
-            FieldSpec("sender_address", "Sender address", "email", provider="acs",
-                      help="A MailFrom address of a domain connected to your ACS Email resource."),
-            FieldSpec("connection_string", "ACS connection string", "text", secret=True, provider="acs",
-                      mask="connection_string", help="endpoint=https://<name>.communication.azure.com/;accesskey=..."),
+            FieldSpec("username", "Username", "text", provider="smtp"),
+            FieldSpec("password", "Password", "text", secret=True, provider="smtp"),
         ],
     },
     "webhook": {
@@ -208,20 +212,20 @@ def validate(ctype: str, config: dict[str, Any], secrets: dict[str, str]) -> tup
             raise ChannelConfigError(f"signing_secret must be at least {signing.MIN_SECRET_LENGTH} characters")
         return {}, secrets
     # email
-    provider = (config.get("provider") or "smtp").strip().lower()
-    if provider not in ("smtp", "acs"):
-        raise ChannelConfigError("provider must be smtp or acs")
+    provider = (config.get("provider") or "sentrigis").strip().lower()
+    if provider not in ("sentrigis", "smtp"):
+        raise ChannelConfigError("provider must be sentrigis or smtp")
     to = _emails(config.get("to_addresses"), "to_addresses")
     if not to:
         raise ChannelConfigError("at least one recipient is required")
-    if provider == "acs":
-        sender = (config.get("sender_address") or "").strip()
-        if not EMAIL_RE.match(sender):
-            raise ChannelConfigError("sender_address must be an email address")
-        endpoint, _ = parse_connection_string(secrets.get("connection_string", ""))
-        _check_url_field(endpoint + "/emails:send", "acs", "connection_string endpoint")
-        return ({"provider": "acs", "to_addresses": to, "sender_address": sender},
-                {"connection_string": secrets["connection_string"]})
+    if provider == "sentrigis":
+        from .. import mailer
+
+        if not mailer.configured():
+            raise ChannelConfigError(
+                "Sending with Sentrigis is not available on this server: the platform mail sender is not set up. "
+                "Use your own mail server (SMTP) instead.")
+        return {"provider": "sentrigis", "to_addresses": to}, {}
     host = (config.get("host") or "").strip().lower().rstrip(".")
     if not host or not re.match(r"^[a-z0-9.-]+$|^\[?[0-9a-f:.]+\]?$", host):
         raise ChannelConfigError("host must be a hostname")
@@ -589,6 +593,19 @@ def send_smtp(config: dict[str, Any], secrets: dict[str, str], msg: dict[str, An
     return SendResult(250, "accepted")
 
 
+def send_sentrigis(config: dict[str, Any], msg: dict[str, Any], delivery_id: str) -> SendResult:
+    """Alert email through the platform mail sender (the one app/mailer.py uses), normal alert layout."""
+    from .. import mailer
+
+    if not mailer.configured():
+        raise PermanentError("Sending with Sentrigis is not available: the platform mail sender is not set up")
+    cfg, secrets = mailer.platform_channel()
+    cfg["to_addresses"] = list(config.get("to_addresses") or [])
+    if cfg.get("provider") == "acs":
+        return send_acs(cfg, secrets, msg, delivery_id)
+    return send_smtp(cfg, secrets, msg, delivery_id)
+
+
 def send(ctype: str, config: dict[str, Any], secrets: dict[str, str], msg: dict[str, Any],
          delivery_id: str, *, rendered: Rendered | None = None, attachments: list[Attachment] | None = None,
          inline_images: list[InlineImage] | None = None) -> SendResult:
@@ -606,7 +623,9 @@ def send(ctype: str, config: dict[str, Any], secrets: dict[str, str], msg: dict[
         if ctype == "webhook":
             return send_webhook(secrets, msg, delivery_id)
         if ctype == "email":
-            if config.get("provider") == "acs":
+            if config.get("provider") == "sentrigis":
+                return send_sentrigis(config, msg, delivery_id)
+            if config.get("provider") == "acs":  # legacy channels only; new ones cannot choose it
                 return send_acs(config, secrets, msg, delivery_id, rendered=rendered, attachments=attachments,
                                 inline_images=inline_images)
             return send_smtp(config, secrets, msg, delivery_id, rendered=rendered, attachments=attachments,

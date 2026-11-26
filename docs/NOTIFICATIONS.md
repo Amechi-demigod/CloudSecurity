@@ -7,7 +7,7 @@ analysts can see them (secrets masked) and the delivery log; viewers cannot.
 
 - [How it works](#how-it-works)
 - [Configuration (env vars)](#configuration)
-- [Microsoft Teams](#microsoft-teams) · [Slack](#slack) · [Email: SMTP](#email-smtp) · [Email: Azure Communication Services](#email-azure-communication-services) · [Signed webhooks](#signed-webhooks)
+- [Microsoft Teams](#microsoft-teams) · [Slack](#slack) · [Email](#email) · [Signed webhooks](#signed-webhooks)
 - [Rules: matching, throttling, quiet hours, digests](#rules)
 - [Security](#security)
 - [Endpoint device events](#endpoint-device-events) · [Device tracking events](#device-tracking-events)
@@ -28,7 +28,7 @@ attack-path poller ───────────┘             (inbox)     
                                notification_deliveries (outbox + delivery log)
                                               │  retries with exponential backoff,
                                               ▼  dead-letter after N attempts
-                               Teams · Slack · SMTP / ACS · signed webhook
+                               Teams · Slack · email (Sentrigis sender / own SMTP) · signed webhook
 ```
 
 * **Producers never wait for the network.** Detection, posture evaluation,
@@ -67,7 +67,8 @@ attack-path poller ───────────┘             (inbox)     
 | `NOTIFICATIONS_ATTACK_PATH_POLL_MINUTES` | `10` | Attack-path poll interval. |
 | `NOTIFICATIONS_CONNECT_TIMEOUT` / `_READ_TIMEOUT` | `5` / `10` | Seconds, per request. |
 | `NOTIFICATIONS_MAX_RESPONSE_BYTES` | `65536` | Larger responses are truncated (never buffered whole). |
-| `NOTIFICATIONS_ALLOWED_HOSTS_<TYPE>` | see below | Host allowlist per type: `TEAMS`, `SLACK`, `WEBHOOK`, `ACS`. Comma-separated, `*.` = any subdomain, `*` = no allowlist. |
+| `NOTIFY_SENTRIGIS_DAILY_LIMIT` | `30` | Alert emails per organisation per day (UTC) through the Sentrigis sender. Own-SMTP channels are not limited. |
+| `NOTIFICATIONS_ALLOWED_HOSTS_<TYPE>` | see below | Host allowlist per type: `TEAMS`, `SLACK`, `WEBHOOK`, `ACS` (the platform sender). Comma-separated, `*.` = any subdomain, `*` = no allowlist. |
 | `NOTIFICATIONS_SMTP_ALLOW_PRIVATE` | `false` | Allow an SMTP relay on a private (RFC 1918) address. |
 | `NOTIFICATIONS_ALLOW_INSECURE_DEV` | `false` | **Development only** (ignored in production): allow `http://` and loopback/private targets, e.g. a local test receiver. |
 
@@ -109,14 +110,38 @@ subscription, rule, MITRE technique and an **Open in Sentrigis** button.
 Messages use Block Kit (header, fields, button). Text from monitored
 workloads is escaped, so it cannot `@channel` or inject links.
 
-## Email: SMTP
+## Email
 
-Add channel → Email → provider **smtp**:
+Add channel → Email → **Send with** one of two choices:
+
+* **Sentrigis** (default, recommended). No setup: you only enter the recipients
+  (max 20). Alert emails are sent from the platform sender (for example
+  `no-reply@sentrigis.com`), the same one invitations use: `PLATFORM_SMTP_*`
+  first, otherwise `PLATFORM_ACS_*` (see `docs/MULTI_TENANCY.md`). If the server
+  has no platform sender, a Sentrigis channel cannot be created and existing ones
+  fail with a clear error; use your own mail server instead.
+* **Your own mail server (SMTP)**, described below. No daily limit.
+
+Azure Communication Services is no longer offered for channels. Platform mail
+still uses `PLATFORM_ACS_*`.
+
+**Daily limit.** A Sentrigis email channel sends at most 30 alert emails a day
+for the whole organisation (`NOTIFY_SENTRIGIS_DAILY_LIMIT`, day = UTC calendar
+day). One delivery to a channel counts as one email, however many recipients it
+has; test emails count too. Over the limit nothing is sent and the delivery is
+logged as **Not sent** with "daily limit of 30 Sentrigis emails reached (resets
+at midnight UTC)"; it is not retried, and the alert still appears in the console
+and the delivery log.
+
+**Send a test email.** The channel form has a *Send a test email* button (it
+saves the channel first); the channel list has *Send test*.
+
+### Own SMTP server
 
 | Field | Example |
 |---|---|
-| SMTP host / port | `smtp.office365.com` / `587` |
-| Transport security | `starttls` (587) or `tls` (implicit TLS, 465). Plain SMTP is not allowed. |
+| SMTP server / port | `smtp.office365.com` / `587` |
+| Security | `starttls` (587) or `tls` (implicit TLS, 465). Plain SMTP is not allowed. |
 | Username / password | the mailbox or SMTP relay credentials (password stored encrypted) |
 | From / Recipients | `cnapp@contoso.com` / `soc@contoso.com, oncall@contoso.com` (max 20) |
 
@@ -124,18 +149,6 @@ Certificates are verified against the hostname. Microsoft 365 needs SMTP AUTH
 enabled for the sending mailbox; Gmail/Google Workspace needs an app password
 (`smtp.gmail.com:587`). For an internal relay on a private IP set
 `NOTIFICATIONS_SMTP_ALLOW_PRIVATE=true`.
-
-## Email: Azure Communication Services
-
-1. Create an **Email Communication Service** with an Azure-managed or custom
-   domain, and a **Communication Service** resource; connect the domain to it.
-2. Communication Service → **Keys** → copy the connection string
-   (`endpoint=https://<name>.communication.azure.com/;accesskey=…`).
-3. Add channel → Email → provider **acs**: sender `DoNotReply@<domain>`,
-   recipients, connection string → **Send test**.
-
-Requests are signed with ACS HMAC-SHA256 authentication; the delivery id is
-sent as `Operation-Id`, so retries are idempotent.
 
 ## Signed webhooks
 
@@ -234,7 +247,9 @@ A rule selects events and routes them to one or more channels. Nothing is
 sent until at least one rule exists. A rule applies to events raised after it was
 created (creating a rule never replays older alerts into a channel).
 
-* **Match:** sources (empty = all), minimum severity, subscriptions, resource
+* **What to send:** at least one area (source) must be picked; a rule with no
+  area matches nothing (rules saved before this change with no area are listed
+  as *Needs an area*). Then minimum severity, subscriptions, resource
   types, tags (`key=value`, `key=*` = present), detection/posture rule ids
   (wildcards, e.g. `CDR-00*`), MITRE techniques (`T1059` matches `T1059.004`).
   Events without a resource can carry `subscription_id`, `asset_type` and
@@ -250,6 +265,16 @@ created (creating a rule never replays older alerts into a channel).
   the next message says how many were suppressed.
 * **Quiet hours:** e.g. 22:00–07:00 in `Europe/London`; messages are held (not
   dropped) until the window ends, except severities at/above the bypass level.
+* **Send a test alert:** on a saved rule (admin). Sends one sample alert titled
+  `Test alert: <rule name>` through the rule's channels, ignoring severity, quiet
+  hours and throttling; the result per channel is shown and logged. Limited to 10
+  per rule per 10 minutes. Test alerts to a Sentrigis email channel count toward
+  its daily limit.
+* **Use recommended rules:** (admin, needs at least one channel) creates
+  *High alerts – straight away* (High and above, immediate) and *Daily summary*
+  (Medium and above, digest at 08:00 in the organisation's device-tracking time
+  zone, else UTC), both covering every area the organisation's modules include,
+  to the channels you pick. Existing rules with these names are left alone.
 * **Daily digest:** instead of immediate messages, collect matches and send one
   summary per channel at the digest hour (rule time zone), worst first (top 50).
   Good for low/medium severity.
@@ -399,7 +424,8 @@ pass `poll=` / `poll_interval=` (see `poll_attack_paths` in
 | Teams `HTTP 400`/`404` | The workflow/connector was deleted or the URL is incomplete; recreate it. Workflows need a card payload: use the "Post to a channel when a webhook request is received" template. |
 | Slack `invalid_token` / `no_service` | The webhook was revoked; create a new one. |
 | SMTP *authentication failed* | Wrong credentials, SMTP AUTH disabled (Microsoft 365), or an app password required (Google). |
-| ACS `HTTP 401` | Wrong access key, or the sender domain is not connected to the Communication Service. |
+| ACS `HTTP 401` (platform sender) | Wrong access key, or the sender domain is not connected to the Communication Service. |
+| *Not sent: daily limit of N Sentrigis emails reached* | The organisation used its daily Sentrigis email allowance; it resets at midnight UTC. Use your own SMTP channel for more. |
 | *cannot be decrypted with the configured key(s)* | `NOTIFICATIONS_ENCRYPTION_KEY` changed. Restore the old key (append it after the new one to rotate), or re-enter the channel secrets. |
 | `503 NOTIFICATIONS_ENCRYPTION_KEY is not configured` | Production without a key: set it (Key Vault on Azure). |
 | Messages have no links | Set `PUBLIC_BASE_URL` (https). |
