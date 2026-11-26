@@ -8,19 +8,21 @@ Every configuration change is written to the audit log (never secret values).
 from __future__ import annotations
 
 from dataclasses import asdict
+from datetime import timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from .. import mailer, modules
 from ..auth import audit, client_ip, require_admin, require_analyst
 from ..db import get_db
 from ..models import User, utcnow
 from . import channels as ch
 from . import crypto, dispatcher, messages
 from . import settings as nsettings
-from .events import SEVERITIES, sources
+from .events import SEVERITIES, SOURCE_MODULES, sources
 from .models import NotificationChannel, NotificationDelivery, NotificationEvent, NotificationRule
 from .schemas import (
     ChannelIn,
@@ -28,11 +30,16 @@ from .schemas import (
     ChannelTestResult,
     ChannelUpdate,
     DeliveryOut,
+    RecommendedIn,
+    RecommendedOut,
     RuleIn,
     RuleOut,
+    RuleTestChannel,
+    RuleTestResult,
 )
 from .worker import get_worker
 
+TEST_ALERT_LIMIT = 10  # test alerts per rule per 10 minutes
 router = APIRouter(prefix="/api/notifications", tags=["notifications"], dependencies=[Depends(require_analyst)])
 
 
@@ -61,8 +68,14 @@ def _get_rule(db: Session, rid: str) -> NotificationRule:
 
 # --- metadata / status ------------------------------------------------------------
 
+def visible_sources(db: Session):
+    """Event sources this organisation can see: those of a product module it does not have are left out."""
+    return [src for src in sources()
+            if not SOURCE_MODULES.get(src.name) or modules.has_module(db, SOURCE_MODULES[src.name])]
+
+
 @router.get("/meta")
-def meta():
+def meta(db: Session = Depends(get_db)):
     """Channel types and their fields, event sources and severities (for the UI)."""
     s = nsettings.get()
     return {
@@ -71,10 +84,12 @@ def meta():
                            "allowed_hosts": s.allowed_hosts("acs" if t == "email" else t)}
                           for t, spec in ch.CHANNEL_TYPES.items()],
         "sources": [{"name": src.name, "label": src.label, "event_types": list(src.event_types),
-                     "description": src.description} for src in sources()],
+                     "description": src.description} for src in visible_sources(db)],
         "severities": list(SEVERITIES),
         "public_base_url": s.public_base_url or None,
         "encryption_configured": bool(s.encryption_keys),
+        "sentrigis_email": {"available": mailer.configured(), "sender": mailer.sender_address(),
+                            "daily_limit": s.sentrigis_daily_limit},
     }
 
 
@@ -260,6 +275,80 @@ def delete_rule(rule_id: str, request: Request, admin: User = Depends(require_ad
     audit(db, "notification_rule_deleted", actor=admin, target=r.id, ip=client_ip(request), name=r.name)
     db.delete(r)
     db.commit()
+
+
+@router.post("/rules/{rule_id}/test", response_model=RuleTestResult)
+def test_rule(rule_id: str, request: Request, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    """Send one sample alert ("Test alert: <rule>") through the rule's channels right now, ignoring severity,
+    quiet hours and throttling. Single attempt per channel; results are in the delivery log."""
+    r = _get_rule(db, rule_id)
+    now = utcnow()
+    recent = db.scalar(select(func.count()).select_from(NotificationDelivery).where(
+        NotificationDelivery.rule_id == r.id, NotificationDelivery.kind == "test",
+        NotificationDelivery.created_at >= now - timedelta(minutes=10))) or 0
+    if recent >= TEST_ALERT_LIMIT:
+        raise HTTPException(429, "Too many test alerts for this rule. Wait a few minutes and try again.")
+    chans = [c for cid in (r.channel_ids or []) if (c := db.get(NotificationChannel, cid)) is not None]
+    if not chans:
+        raise HTTPException(409, "This rule has no channel to send to. Pick a channel first.")
+    msg = messages.test_alert_message(r.name, admin.email, now)
+    rows = []
+    for c in chans:
+        d = NotificationDelivery(channel_id=c.id, channel_name=c.name, channel_type=c.type, rule_id=r.id,
+                                 rule_name=r.name, kind="test", severity="info", title=msg["title"], message=msg,
+                                 status="pending", next_attempt_at=now, created_at=now)
+        db.add(d)
+        rows.append(d)
+    audit(db, "notification_rule_tested", actor=admin, target=r.id, ip=client_ip(request), name=r.name,
+          channels=[c.name for c in chans])
+    db.commit()
+    results = []
+    for d in rows:
+        dispatcher.attempt(db, d, now)
+        results.append(RuleTestChannel(channel_id=d.channel_id, channel_name=d.channel_name, ok=d.status == "sent",
+                                       status=d.status, error=d.last_error))
+    return RuleTestResult(ok=all(x.ok for x in results), results=results)
+
+
+RECOMMENDED = (
+    ("High alerts – straight away", "high", "immediate"),
+    ("Daily summary", "medium", "digest"),
+)
+
+
+@router.post("/rules/recommended", response_model=RecommendedOut, status_code=201)
+def create_recommended_rules(body: RecommendedIn, request: Request, admin: User = Depends(require_admin),
+                             db: Session = Depends(get_db)):
+    """Create the two recommended rules over every area the organisation can see. Rules that already exist
+    by name are left alone (reported in `skipped`)."""
+    from ..tracking import service as tracking
+
+    channel_ids = list(dict.fromkeys(body.channel_ids))
+    known = {c for (c,) in db.execute(select(NotificationChannel.id).where(NotificationChannel.id.in_(channel_ids)))}
+    missing = [c for c in channel_ids if c not in known]
+    if missing:
+        raise HTTPException(422, f"unknown channel id(s): {', '.join(missing)}")
+    areas = [s.name for s in visible_sources(db)]
+    if not areas:
+        raise HTTPException(409, "No areas are available to this organisation yet.")
+    st = tracking.get_settings(db, create=False)
+    tz = st.timezone if st and st.timezone else "UTC"
+    existing = {n for (n,) in db.execute(select(NotificationRule.name))}
+    created, skipped = [], []
+    for name, severity, mode in RECOMMENDED:
+        if name in existing:
+            skipped.append(name)
+            continue
+        r = NotificationRule(name=name, sources=areas, min_severity=severity, mode=mode, digest_hour=8,
+                             timezone=tz if mode == "digest" else "UTC", channel_ids=channel_ids,
+                             created_by=admin.email)
+        db.add(r)
+        db.flush()
+        audit(db, "notification_rule_created", actor=admin, target=r.id, ip=client_ip(request), name=r.name,
+              recommended=True, sources=areas)
+        created.append(r)
+    db.commit()
+    return RecommendedOut(created=[RuleOut.model_validate(r) for r in created], skipped=skipped)
 
 
 # --- delivery log -----------------------------------------------------------------
