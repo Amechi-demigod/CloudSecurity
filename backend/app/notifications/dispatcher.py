@@ -191,6 +191,30 @@ def _load_secrets(channel: NotificationChannel) -> dict[str, str]:
         raise ch.PermanentError(str(exc)) from None
 
 
+def _with_organisation(db: Session, message: dict[str, Any]) -> dict[str, Any]:
+    """The message plus the display name of the organisation the delivery belongs to (the session's: for an
+    MSP's client that is the client, never the partner), named in alert emails."""
+    org = tenancy.get_org(db, tenancy.org_id(db)) if tenancy.org_id(db) else None
+    return {**message, "organisation": org.name} if org is not None and org.name else message
+
+
+def sentrigis_sent_today(db: Session, now: datetime) -> int:
+    """Alert emails already sent today (UTC) through this organisation's Sentrigis email channels.
+    One delivery = one email (a delivery goes to all of a channel's recipients together)."""
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    return db.scalar(select(func.count()).select_from(NotificationDelivery).where(
+        NotificationDelivery.via_sentrigis.is_(True), NotificationDelivery.status == "sent",
+        NotificationDelivery.sent_at >= start)) or 0
+
+
+def _check_daily_limit(db: Session, channel: NotificationChannel, now: datetime) -> None:
+    if channel.type != "email" or (channel.config or {}).get("provider") != "sentrigis":
+        return
+    limit = nsettings.get().sentrigis_daily_limit
+    if sentrigis_sent_today(db, now) >= limit:
+        raise ch.LimitReached(f"Not sent: daily limit of {limit} Sentrigis emails reached (resets at midnight UTC)")
+
+
 def attempt(db: Session, d: NotificationDelivery, now: datetime | None = None) -> NotificationDelivery:
     """Make one delivery attempt and record the outcome (commits)."""
     s = nsettings.get()
@@ -204,9 +228,14 @@ def attempt(db: Session, d: NotificationDelivery, now: datetime | None = None) -
             raise ch.PermanentError("channel was deleted")
         if not channel.enabled and d.kind != "test":
             raise ch.PermanentError("channel is disabled")
+        _check_daily_limit(db, channel, now)
         secrets = _load_secrets(channel)
-        result = ch.send(channel.type, channel.config or {}, secrets, d.message or {}, d.id)
+        result = ch.send(channel.type, channel.config or {}, secrets, _with_organisation(db, d.message or {}),
+                         d.id, channel_name=channel.name)
+        d.via_sentrigis = channel.type == "email" and (channel.config or {}).get("provider") == "sentrigis"
         d.status, d.sent_at, d.response_status, d.last_error = "sent", utcnow(), result.status, None
+    except ch.LimitReached as exc:
+        d.status, d.last_error = "skipped", str(exc)  # final: not retried; the alert is still in the console
     except ch.TransientError as exc:
         d.response_status = exc.status
         d.last_error = crypto.redact(str(exc), secrets)[:1000]
@@ -254,7 +283,7 @@ def cleanup(db: Session, now: datetime | None = None) -> None:
     now = now or utcnow()
     cutoff = now - timedelta(days=nsettings.get().retention_days)
     db.execute(delete(NotificationEvent).where(NotificationEvent.processed_at < cutoff))
-    db.execute(delete(NotificationDelivery).where(NotificationDelivery.status.in_(("sent", "dead")),
+    db.execute(delete(NotificationDelivery).where(NotificationDelivery.status.in_(("sent", "dead", "skipped")),
                                                   NotificationDelivery.created_at < cutoff))
     db.execute(delete(NotificationThrottle).where(
         NotificationThrottle.last_sent_at < now - timedelta(minutes=MAX_THROTTLE_MINUTES)))
@@ -269,7 +298,7 @@ def queue_stats(db: Session) -> dict[str, Any]:
         NotificationDelivery.status == "sent", NotificationDelivery.sent_at >= since)) or 0
     backlog = db.scalar(select(func.count()).select_from(NotificationEvent)
                         .where(NotificationEvent.processed_at.is_(None))) or 0
-    return {"deliveries": {k: counts.get(k, 0) for k in ("pending", "sending", "sent", "dead")},
+    return {"deliveries": {k: counts.get(k, 0) for k in ("pending", "sending", "sent", "dead", "skipped")},
             "sent_24h": sent_24h, "event_backlog": backlog}
 
 

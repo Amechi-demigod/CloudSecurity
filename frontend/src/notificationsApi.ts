@@ -21,13 +21,14 @@ export interface NotificationMeta {
   severities: Severity[];
   public_base_url: string | null;
   encryption_configured: boolean;
+  sentrigis_email: { available: boolean; sender: string | null; daily_limit: number };
 }
 
 export interface NotificationStatus {
   worker_running: boolean;
   worker_leader: boolean;
   last_tick_at: string | null;
-  deliveries: { pending: number; sending: number; sent: number; dead: number };
+  deliveries: { pending: number; sending: number; sent: number; dead: number; skipped: number };
   sent_24h: number;
   event_backlog: number;
 }
@@ -79,6 +80,8 @@ export interface RuleInput {
 
 export interface Rule extends RuleInput {
   id: string;
+  /** A legacy rule saved with no area: it sends nothing until one is picked. */
+  needs_area: boolean;
   last_digest_at: string | null;
   created_by: string | null;
   created_at: string;
@@ -97,7 +100,7 @@ export interface Delivery {
   kind: "event" | "digest" | "test";
   severity: Severity;
   title: string;
-  status: "pending" | "sending" | "sent" | "dead";
+  status: "pending" | "sending" | "sent" | "dead" | "skipped";
   attempts: number;
   next_attempt_at: string;
   last_attempt_at: string | null;
@@ -105,6 +108,16 @@ export interface Delivery {
   response_status: number | null;
   last_error: string | null;
   link: string | null;
+}
+
+export interface RuleTestResult {
+  ok: boolean;
+  results: { channel_id: string | null; channel_name: string; ok: boolean; status: string; error: string | null }[];
+}
+
+export interface RecommendedResult {
+  created: Rule[];
+  skipped: string[];
 }
 
 const BASE = "/api/notifications";
@@ -122,6 +135,9 @@ export const notificationsApi = {
   rules: () => request<Rule[]>(`${BASE}/rules`),
   createRule: (r: RuleInput) => request<Rule>(`${BASE}/rules`, json("POST", r)),
   updateRule: (id: string, r: RuleInput) => request<Rule>(`${BASE}/rules/${id}`, json("PUT", r)),
+  testRule: (id: string) => request<RuleTestResult>(`${BASE}/rules/${id}/test`, json("POST")),
+  createRecommended: (channel_ids: string[]) =>
+    request<RecommendedResult>(`${BASE}/rules/recommended`, json("POST", { channel_ids })),
   deleteRule: (id: string) => request<void>(`${BASE}/rules/${id}`, json("DELETE")),
   deliveries: (f: { status?: string; kind?: string; channel_id?: string; limit?: number } = {}) =>
     request<Delivery[]>(`${BASE}/deliveries${qs(f)}`),

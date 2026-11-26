@@ -28,7 +28,16 @@ def configured() -> bool:
                 or (s.platform_acs_connection_string and s.platform_acs_sender))
 
 
-def _channel() -> tuple[dict, dict]:
+def sender_address() -> str | None:
+    """The From address the platform mail goes out with (None when nothing is configured)."""
+    if not configured():
+        return None
+    cfg, _ = platform_channel()
+    return cfg.get("from_address") or cfg.get("sender_address")
+
+
+def platform_channel() -> tuple[dict, dict]:
+    """The platform sender as a (config, secrets) email channel: SMTP first, else ACS."""
     s = config.settings
     if s.platform_smtp_host and s.platform_smtp_from:
         cfg = {"provider": "smtp", "host": s.platform_smtp_host, "port": s.platform_smtp_port,
@@ -51,7 +60,7 @@ def send(to: str, subject: str, text: str, html: str, *, reply_to: str | None = 
 
     if not configured():
         return MailResult(False, "no platform mail server configured (PLATFORM_SMTP_HOST)")
-    cfg, secrets = _channel()
+    cfg, secrets = platform_channel()
     cfg["to_addresses"] = [to]
     if reply_to:
         cfg["reply_to"] = reply_to

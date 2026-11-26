@@ -84,6 +84,10 @@ class NotificationSettings:
     # mail relay. Loopback, link-local and cloud metadata stay blocked.
     smtp_allow_private: bool = field(default_factory=lambda: _bool("NOTIFICATIONS_SMTP_ALLOW_PRIVATE", False))
 
+    # Alert emails per organisation per day (UTC) through the Sentrigis sender (email channels with provider
+    # "sentrigis"). Own-SMTP channels are not limited.
+    sentrigis_daily_limit: int = field(default_factory=lambda: max(0, _int("NOTIFY_SENTRIGIS_DAILY_LIMIT", 30)))
+
     @property
     def insecure_dev(self) -> bool:
         return self.allow_insecure_dev and not app_config.settings.is_production

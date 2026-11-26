@@ -4,7 +4,7 @@ import { Switch } from "../../components/Switch";
 import { Button, Card, Empty, ErrorNote, Field, Modal, PageHeader, Table } from "../../components/ui";
 import TrackingAlerts from "./TrackingAlerts";
 import { useApi } from "../../lib/useApi";
-import { trackingApi, timeZones, type Country, type TrackingOffice } from "../../trackingApi";
+import { trackingApi, timeZones, type Country, type TrackingOffice, type TrackingSettingsPatch } from "../../trackingApi";
 
 function OfficeDialog({ office, open, onClose, onSaved, zones }: {
   office: TrackingOffice | null; open: boolean; onClose: () => void; onSaved: () => void; zones: string[];
@@ -113,7 +113,8 @@ export default function DeviceTracking() {
   const offices = useApi(() => trackingApi.offices(), []);
   const countries = useApi(() => trackingApi.countries(), []);
   const zones = useMemo(() => timeZones(), []);
-  const [draft, setDraft] = useState<{ enabled?: boolean; timezone?: string; allowed_countries?: string[] }>({});
+  // One draft and one Save bar for the whole page (the Alerts card edits the same draft).
+  const [draft, setDraft] = useState<TrackingSettingsPatch>({});
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dialog, setDialog] = useState<{ office: TrackingOffice | null } | null>(null);
@@ -123,9 +124,10 @@ export default function DeviceTracking() {
   const enabled = draft.enabled ?? s.enabled;
   const timezone = draft.timezone ?? s.timezone;
   const allowed = draft.allowed_countries ?? s.allowed_countries;
-  const changes = (draft.enabled !== undefined && draft.enabled !== s.enabled ? 1 : 0)
-    + (draft.timezone !== undefined && draft.timezone !== s.timezone ? 1 : 0)
-    + (draft.allowed_countries !== undefined && draft.allowed_countries.join() !== s.allowed_countries.join() ? 1 : 0);
+  const changes = (Object.keys(draft) as (keyof TrackingSettingsPatch)[]).filter(
+    (k) => JSON.stringify(draft[k]) !== JSON.stringify(s[k]),
+  ).length;
+  const set = (p: TrackingSettingsPatch) => setDraft((d) => ({ ...d, ...p }));
 
   async function save() {
     setSaving(true);
@@ -193,14 +195,15 @@ export default function DeviceTracking() {
         </select>
       </Card>
 
-      <TrackingAlerts s={s} onSaved={() => settings.reload()} />
+      <TrackingAlerts s={s} draft={draft} set={set} />
 
       <p className="mb-4 text-xs text-ink-3">
         IP geolocation by <a className="text-accent hover:underline" href="https://db-ip.com" target="_blank" rel="noopener noreferrer">DB-IP</a>.
         Map data &copy; OpenStreetMap contributors.
       </p>
 
-      <SaveBar count={changes} saving={saving} onSave={save} onDiscard={() => setDraft({})} />
+      {error && changes > 0 && <p role="alert" className="mb-2 text-sm text-sev-critical">{error}</p>}
+      <SaveBar count={changes} saving={saving} onSave={save} onDiscard={() => { setDraft({}); setError(null); }} />
       {dialog && (
         <OfficeDialog key={dialog.office?.id ?? "new"} office={dialog.office} open zones={zones}
           onClose={() => setDialog(null)} onSaved={() => offices.reload()} />

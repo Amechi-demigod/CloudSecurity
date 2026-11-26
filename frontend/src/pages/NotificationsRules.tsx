@@ -5,7 +5,8 @@ import { Switch } from "../components/Switch";
 import { Button, Card, Empty, ErrorNote, Field, Modal, NameCell, Pill, PillRow, Table, Tag, TextCell, type PillTone } from "../components/ui";
 import { useApi } from "../lib/useApi";
 import { SEV_RANK, useSort } from "../lib/useSort";
-import { notificationsApi, type Channel, type NotificationMeta, type Rule, type RuleInput } from "../notificationsApi";
+import { Link } from "react-router-dom";
+import { notificationsApi, type Channel, type NotificationMeta, type Rule, type RuleInput, type RuleTestResult } from "../notificationsApi";
 
 const inputCls =
   "block w-full rounded border border-line bg-surface-2 px-3 py-1.5 text-sm text-ink focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/40";
@@ -58,6 +59,12 @@ function errMsg(e: unknown) {
   return e instanceof ApiError || e instanceof Error ? e.message : String(e);
 }
 
+/** One line per channel for the result of "Send a test alert". */
+function describeTest(r: RuleTestResult): { ok: boolean; text: string } {
+  const parts = r.results.map((x) => (x.ok ? `${x.channel_name}: sent` : `${x.channel_name}: not sent (${x.error ?? x.status})`));
+  return { ok: r.ok, text: `Test alert: ${parts.join("; ")}.` };
+}
+
 function Group({ title, children }: { title: string; children: ReactNode }) {
   return (
     <fieldset className="space-y-2 rounded border border-line p-3">
@@ -92,6 +99,7 @@ function RuleDialog({
   const [quiet, setQuiet] = useState(!!rule?.quiet_start);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [testNote, setTestNote] = useState<{ ok: boolean; text: string } | null>(null);
   const set = <K extends keyof RuleInput>(k: K, v: RuleInput[K]) => setR((prev) => ({ ...prev, [k]: v }));
   const toggle = (k: "sources" | "channel_ids" | "event_types", v: string) =>
     setR((prev) => {
@@ -150,8 +158,8 @@ function RuleDialog({
         <label className="flex items-center gap-2 text-sm">
           <input type="checkbox" checked={r.enabled} onChange={(e) => set("enabled", e.target.checked)} /> On
         </label>
-        <Group title="When">
-          <div className="text-sm text-ink-2">Sources (none selected = all)</div>
+        <Group title="What to send">
+          <div className="text-sm text-ink-2" id="rule-areas-hint">Pick at least one area.</div>
           <div className="grid grid-cols-1 gap-1 sm:grid-cols-2">
             {meta.sources.map((s) => (
               <label key={s.name} className="flex items-center gap-2 text-sm" title={s.description}>
@@ -255,9 +263,30 @@ function RuleDialog({
             </div>
           )}
         </Group>
-        <div className="flex justify-end gap-2 pt-1">
+        {testNote && (
+          <div role="status" className={`rounded border px-3 py-2 text-sm ${testNote.ok ? "border-good/60 bg-good/10" : "border-sev-critical/60 bg-sev-critical/10"}`}>
+            {testNote.text}
+          </div>
+        )}
+        <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
+          {rule && (
+            <Button
+              disabled={busy}
+              onClick={async () => {
+                setTestNote(null);
+                try {
+                  setTestNote(describeTest(await notificationsApi.testRule(rule.id)));
+                } catch (err) {
+                  setTestNote({ ok: false, text: errMsg(err) });
+                }
+              }}
+            >
+              Send a test alert
+            </Button>
+          )}
+          <div className="flex-1" />
           <Button onClick={onClose}>Cancel</Button>
-          <Button type="submit" variant="primary" disabled={busy || !r.name.trim() || r.channel_ids.length === 0}>
+          <Button type="submit" variant="primary" disabled={busy || !r.name.trim() || r.channel_ids.length === 0 || r.sources.length === 0}>
             {busy ? "Saving…" : "Save rule"}
           </Button>
         </div>
@@ -266,10 +295,90 @@ function RuleDialog({
   );
 }
 
+function RecommendedDialog({ channels, onClose, onDone }: { channels: Channel[]; onClose: () => void; onDone: (msg: string) => void }) {
+  const [picked, setPicked] = useState<string[]>(() => channels.filter((c) => c.enabled).slice(0, 1).map((c) => c.id));
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function create() {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await notificationsApi.createRecommended(picked);
+      const made = res.created.map((r) => `"${r.name}"`).join(" and ");
+      const skipped = res.skipped.map((n) => `"${n}"`).join(" and ");
+      onDone(
+        [made ? `Created ${made}.` : "", skipped ? `${skipped} already ${res.skipped.length === 1 ? "exists" : "exist"}, so nothing was added for ${res.skipped.length === 1 ? "it" : "them"}.` : ""]
+          .filter(Boolean)
+          .join(" "),
+      );
+      onClose();
+    } catch (e) {
+      setError(errMsg(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal open onClose={onClose} title="Use recommended rules">
+      {channels.length === 0 ? (
+        <div className="space-y-3 text-sm">
+          <p>You need somewhere to send alerts first. Add an email, Teams or Slack channel, then come back.</p>
+          <div className="flex justify-end gap-2">
+            <Button onClick={onClose}>Cancel</Button>
+            <Link to="/notifications?tab=channels" className="inline-flex items-center rounded bg-accent px-3 py-1.5 text-sm font-medium text-white hover:opacity-90">
+              Go to Channels
+            </Link>
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-3 text-sm">
+          {error && (
+            <div role="alert" className="rounded border border-sev-critical/60 bg-sev-critical/10 px-3 py-2">
+              {error}
+            </div>
+          )}
+          <p>This adds two rules, both covering every area your organisation has:</p>
+          <ul className="list-disc space-y-1 pl-5 text-ink-2">
+            <li>
+              <b className="text-ink">High alerts – straight away:</b> High and Critical alerts, sent as they happen.
+            </li>
+            <li>
+              <b className="text-ink">Daily summary:</b> Medium and above, in one message each morning at 08:00.
+            </li>
+          </ul>
+          <fieldset className="space-y-1">
+            <legend className="mb-1 font-medium text-ink-2">Send them to</legend>
+            {channels.map((c) => (
+              <label key={c.id} className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={picked.includes(c.id)}
+                  onChange={() => setPicked((p) => (p.includes(c.id) ? p.filter((x) => x !== c.id) : [...p, c.id]))}
+                />
+                {c.name} <span className="text-xs text-ink-3">({c.type})</span>
+                {!c.enabled && <Tag>disabled</Tag>}
+              </label>
+            ))}
+          </fieldset>
+          <p className="text-xs text-ink-3">Rules that already exist with these names are left as they are.</p>
+          <div className="flex justify-end gap-2">
+            <Button onClick={onClose}>Cancel</Button>
+            <Button variant="primary" disabled={busy || picked.length === 0} onClick={() => void create()}>
+              {busy ? "Adding…" : "Add the two rules"}
+            </Button>
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
 const SEV_TONE: Record<string, PillTone> = { critical: "critical", high: "high", medium: "medium", low: "neutral" };
 
 function describe(r: Rule, meta: NotificationMeta): string {
-  const parts = [r.sources.length ? r.sources.map((s) => meta.sources.find((x) => x.name === s)?.label ?? s).join(", ") : "All sources"];
+  const parts = [r.sources.length ? r.sources.map((s) => meta.sources.find((x) => x.name === s)?.label ?? s).join(", ") : "Needs an area"];
   if (r.event_types.length) parts.push(r.event_types.map(humanize).join(", "));
   if (r.subscription_ids.length) parts.push(`${r.subscription_ids.length} subscription(s)`);
   if (r.asset_types.length) parts.push(r.asset_types.join("/"));
@@ -287,6 +396,8 @@ export default function NotificationsRules({ meta, isAdmin }: { meta: Notificati
   const [actionError, setActionError] = useState<string | null>(null);
   const [pending, setPending] = useState<Record<string, boolean>>({});
   const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState<string | null>(null);
+  const [recommending, setRecommending] = useState(false);
   const isOn = (r: Rule) => (r.id in pending ? pending[r.id] : r.enabled);
   const changed = (rules.data ?? []).filter((r) => r.id in pending && pending[r.id] !== r.enabled);
   async function saveSwitches() {
@@ -341,14 +452,19 @@ export default function NotificationsRules({ meta, isAdmin }: { meta: Notificati
         title="Rules"
         actions={
           isAdmin && (
-            <Button variant="primary" onClick={() => setEditing("new")} disabled={!channels.data?.length}>
-              New rule
-            </Button>
+            <div className="flex gap-2">
+              <Button onClick={() => setRecommending(true)} disabled={!channels.data}>
+                Use recommended rules
+              </Button>
+              <Button variant="primary" onClick={() => setEditing("new")} disabled={!channels.data?.length}>
+                New rule
+              </Button>
+            </div>
           )
         }
       >
         {rules.data && rules.data.length === 0 ? (
-          <Empty>No rules yet. Nothing is sent until you add one.</Empty>
+          <Empty>No rules yet. Nothing is sent until you add one.{isAdmin ? " \"Use recommended rules\" sets up a good starting point." : ""}</Empty>
         ) : (
           <Table
             tableId="notifications-rules"
@@ -359,7 +475,7 @@ export default function NotificationsRules({ meta, isAdmin }: { meta: Notificati
               { label: "Channels", sort: "channels", w: 220 },
               { label: "Delivery", sort: "delivery", w: 140 },
               { label: "On", sort: "status", w: 80 },
-              ...(isAdmin ? [{ label: "Actions", srOnly: true, w: 150 }] : []),
+              ...(isAdmin ? [{ label: "Actions", srOnly: true, w: 300 }] : []),
             ]}
             sort={sorted.sort}
             onSort={sorted.onSort}
@@ -390,6 +506,25 @@ export default function NotificationsRules({ meta, isAdmin }: { meta: Notificati
                 {isAdmin && (
                   <td className="px-3 py-2">
                     <div className="flex gap-2">
+                      <Button
+                        disabled={testing === r.id || r.channel_ids.length === 0}
+                        onClick={async () => {
+                          setTesting(r.id);
+                          setActionError(null);
+                          setNotice(null);
+                          try {
+                            const res = describeTest(await notificationsApi.testRule(r.id));
+                            if (res.ok) setNotice(res.text);
+                            else setActionError(res.text);
+                          } catch (e) {
+                            setActionError(errMsg(e));
+                          } finally {
+                            setTesting(null);
+                          }
+                        }}
+                      >
+                        {testing === r.id ? "Sending…" : "Send a test alert"}
+                      </Button>
                       <Button onClick={() => setEditing(r)}>Edit</Button>
                       <Button
                         variant="danger"
@@ -408,6 +543,16 @@ export default function NotificationsRules({ meta, isAdmin }: { meta: Notificati
         )}
       </Card>
       <SaveBar count={changed.length} saving={saving} onDiscard={() => setPending({})} onSave={() => void saveSwitches()} />
+      {recommending && channels.data && (
+        <RecommendedDialog
+          channels={channels.data}
+          onClose={() => setRecommending(false)}
+          onDone={(m) => {
+            setNotice(m);
+            rules.reload();
+          }}
+        />
+      )}
       {editing && channels.data && (
         <RuleDialog
           meta={meta}

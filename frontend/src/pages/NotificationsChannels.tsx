@@ -31,6 +31,42 @@ function initialValues(fields: FieldSpec[], channel: Channel | null): Record<str
   return v;
 }
 
+/** "Sentrigis <no-reply@sentrigis.com>" -> "no-reply@sentrigis.com" */
+function senderAddress(from: string) {
+  return /<([^>]+)>/.exec(from)?.[1] ?? from;
+}
+
+function ProviderCard({
+  selected,
+  disabled,
+  onSelect,
+  title,
+  badge,
+  text,
+}: {
+  selected: boolean;
+  disabled?: boolean;
+  onSelect: () => void;
+  title: string;
+  badge?: string;
+  text: string;
+}) {
+  return (
+    <label
+      className={`flex cursor-pointer items-start gap-2 rounded border p-3 text-sm ${selected ? "border-accent bg-accent/10" : "border-line"} ${disabled ? "cursor-not-allowed opacity-60" : ""}`}
+    >
+      <input type="radio" name="ch-provider" className="mt-1" checked={selected} disabled={disabled} onChange={onSelect} />
+      <span className="min-w-0">
+        <span className="flex flex-wrap items-center gap-2 font-medium text-ink">
+          {title}
+          {badge && <Pill tone="good">{badge}</Pill>}
+        </span>
+        <span className="mt-0.5 block text-xs text-ink-3">{text}</span>
+      </span>
+    </label>
+  );
+}
+
 function ChannelDialog({
   meta,
   channel,
@@ -51,17 +87,23 @@ function ChannelDialog({
   const [generated, setGenerated] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const provider = values.provider || "smtp";
-  const visible = spec.fields.filter((f) => !f.provider || f.provider === provider);
+  const [savedId, setSavedId] = useState<string | null>(channel?.id ?? null);
+  const [testNote, setTestNote] = useState<{ ok: boolean; text: string } | null>(null);
+  const provider = values.provider || "sentrigis";
+  const isEmail = type === "email";
+  const limit = meta.sentrigis_email.daily_limit;
+  // The provider is chosen with the two cards below, not as a drop-down.
+  const visible = spec.fields.filter((f) => (!f.provider || f.provider === provider) && !(isEmail && f.name === "provider"));
 
   function changeType(t: ChannelType) {
     setType(t);
     setValues(initialValues(meta.channel_types.find((x) => x.type === t)!.fields, null));
     setGenerated(null);
+    setTestNote(null);
   }
 
-  async function submit(e: FormEvent) {
-    e.preventDefault();
+  /** Create the channel, or update it once it exists. Returns its id, or null when it could not be saved. */
+  async function save(): Promise<string | null> {
     setBusy(true);
     setError(null);
     const config: Record<string, unknown> = {};
@@ -74,21 +116,49 @@ function ChannelDialog({
       else if (f.kind === "int") config[f.name] = v ? Number(v) : undefined;
       else config[f.name] = v;
     }
+    if (isEmail) config.provider = provider;
     try {
-      if (channel) {
-        await notificationsApi.updateChannel(channel.id, {
+      if (savedId) {
+        await notificationsApi.updateChannel(savedId, {
           name: name.trim(),
           config: Object.keys(config).length ? config : undefined,
           secrets,
         });
         onSaved(`Channel "${name}" updated.`);
-      } else {
-        await notificationsApi.createChannel({ name: name.trim(), type, config, secrets });
-        onSaved(`Channel "${name}" created. Use "Send test" to verify it.`);
+        return savedId;
       }
-      onClose();
+      const created = await notificationsApi.createChannel({ name: name.trim(), type, config, secrets });
+      setSavedId(created.id);
+      onSaved(`Channel "${name}" created. Use "Send test" to verify it.`);
+      return created.id;
     } catch (err) {
       setError(errMsg(err));
+      return null;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    if (await save()) onClose();
+  }
+
+  /** Save (the test goes to the saved channel), then send one test email and show the result here. */
+  async function sendTest() {
+    setTestNote(null);
+    const id = await save();
+    if (!id) return;
+    setBusy(true);
+    try {
+      const r = await notificationsApi.testChannel(id);
+      setTestNote(
+        r.ok
+          ? { ok: true, text: "Test email sent. Check the inbox of the recipients (and the spam folder)." }
+          : { ok: false, text: `Test email not sent: ${r.delivery.last_error ?? "unknown error"}` },
+      );
+    } catch (err) {
+      setTestNote({ ok: false, text: errMsg(err) });
     } finally {
       setBusy(false);
     }
@@ -118,6 +188,33 @@ function ChannelDialog({
           </div>
         )}
         <Field label="Name" id="ch-name" required maxLength={128} value={name} onChange={(e) => setName(e.target.value)} />
+        {isEmail && (
+          <fieldset>
+            <legend className="mb-1 block text-sm font-medium text-ink-2">Send with</legend>
+            {provider !== "sentrigis" && provider !== "smtp" && (
+              <p className="mb-2 text-xs text-sev-medium">This channel uses an older setup that is no longer offered. Choose one of the two options below.</p>
+            )}
+            <div className="grid gap-2 sm:grid-cols-2">
+              <ProviderCard
+                selected={provider === "sentrigis"}
+                disabled={!meta.sentrigis_email.available}
+                onSelect={() => setValues({ ...values, provider: "sentrigis" })}
+                title="Sentrigis"
+                badge="Recommended"
+                text={`No setup. Sent from ${meta.sentrigis_email.sender ? senderAddress(meta.sentrigis_email.sender) : "no-reply@sentrigis.com"}.`}
+              />
+              <ProviderCard
+                selected={provider === "smtp"}
+                onSelect={() => setValues({ ...values, provider: "smtp" })}
+                title="Your own mail server (SMTP)"
+                text="Send from your own domain, e.g. alerts@yourcompany.com. Needs server details."
+              />
+            </div>
+            {!meta.sentrigis_email.available && (
+              <p className="mt-1 text-xs text-sev-medium">Sending with Sentrigis is not available on this server. Use your own mail server.</p>
+            )}
+          </fieldset>
+        )}
         {visible.map((f) => {
           const id = `ch-${f.name}`;
           const saved = channel?.secret_hints[f.name];
@@ -149,6 +246,10 @@ function ChannelDialog({
                 placeholder={saved ? `Saved: ${saved} (leave blank to keep)` : undefined}
                 hint={
                   f.help +
+                  (isEmail && provider === "sentrigis" && f.name === "to_addresses"
+                    ? ` Up to ${limit} alert emails a day for your organisation. Alerts over the limit still appear in the console and the notification log.`
+                    : "") +
+                  (f.name === "password" ? " Microsoft 365: turn on authenticated SMTP for this mailbox first." : "") +
                   (f.kind === "url" && spec.allowed_hosts.length ? ` Allowed hosts: ${spec.allowed_hosts.join(", ")}.` : "") +
                   (f.secret ? " Stored encrypted; never shown again after saving." : "")
                 }
@@ -177,10 +278,24 @@ function ChannelDialog({
           );
         })}
         {generated && <p className="text-xs text-sev-medium">Copy the signing secret to your receiver now: it cannot be displayed after saving.</p>}
-        <div className="flex justify-end gap-2 pt-2">
-          <Button onClick={onClose}>Cancel</Button>
+        {testNote && (
+          <div
+            role="status"
+            className={`rounded border px-3 py-2 text-sm ${testNote.ok ? "border-good/60 bg-good/10" : "border-sev-critical/60 bg-sev-critical/10"}`}
+          >
+            {testNote.text}
+          </div>
+        )}
+        <div className="flex flex-wrap items-center justify-end gap-2 pt-2">
+          {isEmail && (
+            <Button onClick={() => void sendTest()} disabled={busy || !name.trim()}>
+              Send a test email
+            </Button>
+          )}
+          <div className="flex-1" />
+          <Button onClick={onClose}>{savedId && !channel ? "Close" : "Cancel"}</Button>
           <Button type="submit" variant="primary" disabled={busy || !name.trim()}>
-            {busy ? "Saving…" : channel ? "Save" : "Create channel"}
+            {busy ? "Saving…" : savedId ? "Save" : "Create channel"}
           </Button>
         </div>
       </form>
@@ -192,7 +307,7 @@ function destination(c: Channel): string {
   const hints = Object.values(c.secret_hints).filter((h) => h.startsWith("http"));
   if (c.type === "email") {
     const to = (c.config.to_addresses as string[] | undefined) ?? [];
-    return `${String(c.config.provider ?? "smtp").toUpperCase()} → ${to.join(", ")}`;
+    return `${c.config.provider === "sentrigis" ? "Sentrigis" : "SMTP"} → ${to.join(", ")}`;
   }
   return hints[0] ?? "••••••";
 }

@@ -130,6 +130,8 @@ class NotificationDelivery(TenantMixin, Base):
     last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     response_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Sent through the Sentrigis email sender (counts toward the daily limit, even if the channel is deleted later).
+    via_sentrigis: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     # Secrets are redacted before this is stored.
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 

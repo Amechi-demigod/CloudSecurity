@@ -219,12 +219,22 @@ function ReasonDialog({ open, title, help, cta, onClose, onSubmit }: {
   );
 }
 
+// Issues that belong to a check which itself passed: the card shows "Review" and the issue's detail.
+const ISSUE_CHECK: Record<string, string> = { av_signatures_outdated: "antivirus" };
+
 function PostureCards({ device }: { device: Device }) {
   const entries = Object.entries(device.posture);
-  if (entries.length === 0) return <Empty>No posture data yet. It arrives with the first check-in.</Empty>;
+  const toReview = device.issues.length > 0 && (
+    <Card title={`To review (${device.issues.length})`} className="mb-3">
+      <IssueList issues={device.issues} />
+    </Card>
+  );
+  if (entries.length === 0) return <>{toReview}<Empty>No posture data yet. It arrives with the first check-in.</Empty></>;
   const order = Object.keys(CHECK_LABEL);
   entries.sort(([a], [b]) => (order.indexOf(a) + 1 || 99) - (order.indexOf(b) + 1 || 99));
   return (
+    <>
+    {toReview}
     <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
       {entries.map(([name, c]) => {
         // Linux server checks (agent 1.7.0+) carry "evidence": the values the check decided on, shown as is.
@@ -234,13 +244,17 @@ function PostureCards({ device }: { device: Device }) {
           : Object.entries(c.data ?? {}).filter(([k]) => k !== "accounts" && k !== "pending_titles" && k !== "products" && k !== "profiles");
         const accounts = (c.data?.accounts as string[] | undefined) ?? null;
         const titles = (c.data?.pending_titles as string[] | undefined) ?? null;
+        const extra = device.issues.filter((i) => ISSUE_CHECK[i.code] === name);
         return (
           <section key={name} className="rounded-lg border border-line bg-surface-1 p-3">
             <header className="flex items-center justify-between gap-2">
               <h3 className="text-sm font-semibold">{CHECK_LABEL[name] ?? name}</h3>
-              <CheckBadge status={c.status} />
+              <CheckBadge status={c.status} warn={extra.length > 0} />
             </header>
             <p className="mt-1 text-sm text-ink-2">{c.detail || "—"}</p>
+            {extra.map((i) => (
+              <p key={i.code} className="mt-1 text-sm text-sev-high">{i.title}{i.detail ? `: ${i.detail}` : ""}</p>
+            ))}
             {c.error && <p className="mt-1 break-words text-xs text-sev-high">Error: {c.error}</p>}
             {evidence && evidence.length > 0 && (
               <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words rounded border border-line bg-surface-0 p-2 font-mono text-[11px] leading-5 text-ink-2">
@@ -279,6 +293,7 @@ function PostureCards({ device }: { device: Device }) {
         );
       })}
     </div>
+    </>
   );
 }
 
