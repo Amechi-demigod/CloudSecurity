@@ -314,6 +314,7 @@ function ModulesEditor({ modules, busy, onSave }: { modules: ModuleKey[]; busy: 
         ))}
       </ul>
       <SaveBar
+        placement="inline"
         count={changes.length}
         saving={busy}
         onDiscard={() => setPending({})}

@@ -108,7 +108,7 @@ export default function TrackingAlerts({ s, onSaved }: { s: TrackingSettings; on
         </label>
       </Row>
       {error && <p role="alert" className="mt-2 text-sm text-sev-critical">{error}</p>}
-      <SaveBar count={changes} saving={saving} onSave={save} onDiscard={() => { setDraft({}); setError(null); }} />
+      <SaveBar placement="inline" count={changes} saving={saving} onSave={save} onDiscard={() => { setDraft({}); setError(null); }} />
     </Card>
   );
 }

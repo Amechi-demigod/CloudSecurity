@@ -118,7 +118,7 @@ export default function Security() {
   }
 
   return (
-    <div className="max-w-3xl">
+    <div className="mx-auto max-w-3xl">
       <PageHeader title="Security" subtitle="Protect your account with two-step verification (an authenticator app)." />
       <ErrorNote error={error ?? actionError} />
       {notice && (
