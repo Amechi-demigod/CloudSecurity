@@ -20,6 +20,7 @@ from ..db import get_db
 from ..geoip.countries import COUNTRIES
 from ..models import Device, User
 from ..services import devices as dev_svc
+from . import feed as feed_svc
 from . import fleet as fleet_svc
 from . import service
 from .models import DeviceLocation, DeviceTrackingSettings, TrackingOffice
@@ -167,6 +168,16 @@ def fleet(group: str | None = Query(None, max_length=64), status: str | None = Q
     """Computers per city for the Map view; viewers get city and country only (no coordinates)."""
     full = ROLE_RANK.get(user.role, -1) >= ROLE_RANK["analyst"]
     return fleet_svc.fleet(db, full=full, group=group, status=status, not_seen=not_seen)
+
+
+@router.get("/alerts")
+def recent_alerts(days: int = Query(feed_svc.DEFAULT_DAYS, ge=1, le=90),
+                  group: str | None = Query(None, pattern="^(" + "|".join(feed_svc.KIND_GROUPS) + ")$"),
+                  limit: int = Query(20, ge=1, le=feed_svc.MAX_LIMIT), user: User = Depends(current_user),
+                  db: Session = Depends(get_db)):
+    """Recent tracking alerts across all computers (newest first) for the Map view. City and country only."""
+    full = ROLE_RANK.get(user.role, -1) >= ROLE_RANK["analyst"]
+    return feed_svc.recent(db, full=full, days=days, group=group, limit=limit)
 
 
 @router.get("/countries")
