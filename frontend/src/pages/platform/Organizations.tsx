@@ -61,6 +61,7 @@ function ModulesSection({ orgId, modules, busy, onSave }: { orgId: string; modul
         ))}
       </ul>
       <SaveBar
+        placement="inline"
         count={changes.length}
         saving={busy}
         onDiscard={() => setPending({})}
@@ -90,7 +91,7 @@ function PartnershipSection({ org, msps, busy, onSavePartner, onSaveMax }: {
         <p className="mb-2 text-xs text-ink-3">This organisation is an MSP and manages {org.clients} {org.clients === 1 ? "client" : "clients"}.</p>
         <Field label="Maximum clients" id="pm-max" inputMode="numeric" value={max} placeholder="No limit" disabled={busy}
           error={bad ? "Enter a whole number, or leave it empty for no limit." : null} onChange={(e) => setMax(e.target.value)} />
-        <SaveBar count={changed ? 1 : 0} saving={busy} onDiscard={() => setMax(org.max_clients == null ? "" : String(org.max_clients))}
+        <SaveBar placement="inline" count={changed ? 1 : 0} saving={busy} onDiscard={() => setMax(org.max_clients == null ? "" : String(org.max_clients))}
           onSave={() => void onSaveMax(next)} />
       </section>
     );
@@ -112,7 +113,7 @@ function PartnershipSection({ org, msps, busy, onSavePartner, onSaveMax }: {
         {current ? `${current.name}'s staff can open this organisation and work in it.` : "An MSP's staff can open it and work in it. The organisation's own users never see this."}
         {partner === "" && org.partner_org_id && " Removing the partner ends the MSP's access at once."}
       </p>
-      <SaveBar count={changed ? 1 : 0} saving={busy} onDiscard={() => setPartner(org.partner_org_id ?? "")}
+      <SaveBar placement="inline" count={changed ? 1 : 0} saving={busy} onDiscard={() => setPartner(org.partner_org_id ?? "")}
         onSave={() => void onSavePartner(partner || null)} />
     </section>
   );

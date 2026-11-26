@@ -144,7 +144,7 @@ export default function DeviceTracking() {
   }
 
   return (
-    <div className="max-w-4xl">
+    <div className="mx-auto max-w-4xl">
       <PageHeader title="Device tracking"
         subtitle="See roughly where company laptops and desktops are, from their internet address. Windows and macOS only; servers are never tracked." />
       <ErrorNote error={error} />
