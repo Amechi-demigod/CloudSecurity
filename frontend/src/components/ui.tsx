@@ -175,10 +175,11 @@ export function InfoTip({ info }: { info: PageInfo }) {
 
 export function PageHeader({ title, subtitle, actions, info }: { title: string; subtitle?: string; actions?: ReactNode; info?: PageInfo }) {
   const slotRef = useRef<HTMLDivElement>(null);
-  // SaveBar portals its content into this slot, so unsaved-change controls live in the title row.
+  // SaveBar portals its content into this slot, so unsaved-change controls sit in the title row and scroll with
+  // the page (nothing is pinned on screen).
   useEffect(() => (slotRef.current ? registerSaveSlot(slotRef.current) : undefined), []);
   return (
-    <div className="-mt-3 mb-5 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-transparent bg-surface-0 py-3 has-[[data-savebar]]:sticky has-[[data-savebar]]:top-0 has-[[data-savebar]]:z-20 has-[[data-savebar]]:border-line">
+    <div className="mb-5 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
       <div className="min-w-0">
         <div className="flex items-center gap-1.5">
           <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
