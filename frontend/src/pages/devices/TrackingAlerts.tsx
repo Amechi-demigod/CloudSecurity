@@ -1,8 +1,6 @@
-import { useState } from "react";
-import { SaveBar } from "../../components/SaveBar";
 import { Switch } from "../../components/Switch";
 import { Card } from "../../components/ui";
-import { trackingApi, type TrackingSettings, type TrackingSettingsPatch } from "../../trackingApi";
+import type { TrackingSettings, TrackingSettingsPatch } from "../../trackingApi";
 
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const inputCls = "rounded border border-line bg-surface-2 px-2 py-1 text-sm text-ink focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/40";
@@ -24,32 +22,14 @@ function Row({ title, hint, on, label, onChange, children }: {
   );
 }
 
-/** Settings > Device tracking > Alerts. Has its own Save bar; the alerts only run while tracking is on. */
-export default function TrackingAlerts({ s, onSaved }: { s: TrackingSettings; onSaved: () => void }) {
-  const [draft, setDraft] = useState<TrackingSettingsPatch>({});
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+/** Settings > Device tracking > Alerts. Edits the page's draft (saved by the page's single Save bar); the alerts
+ * only run while tracking is on. */
+export default function TrackingAlerts({ s, draft, set }: {
+  s: TrackingSettings; draft: TrackingSettingsPatch; set: (p: TrackingSettingsPatch) => void;
+}) {
   const v = { ...s, ...draft } as TrackingSettings;
-  const set = (p: TrackingSettingsPatch) => setDraft((d) => ({ ...d, ...p }));
-  const changes = (Object.keys(draft) as (keyof TrackingSettingsPatch)[]).filter(
-    (k) => JSON.stringify(draft[k]) !== JSON.stringify(s[k]),
-  ).length;
   const notSeenOn = v.alert_not_seen_days != null;
   const weekdays = v.after_hours_weekdays;
-
-  async function save() {
-    setSaving(true);
-    setError(null);
-    try {
-      await trackingApi.saveSettings(draft);
-      setDraft({});
-      onSaved();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setSaving(false);
-    }
-  }
 
   return (
     <Card title="Alerts" className="mb-4">
@@ -107,8 +87,6 @@ export default function TrackingAlerts({ s, onSaved }: { s: TrackingSettings; on
             placeholder="itsupport@yourcompany.com" onChange={(e) => set({ auto_lost_mode_email: e.target.value || null })} />
         </label>
       </Row>
-      {error && <p role="alert" className="mt-2 text-sm text-sev-critical">{error}</p>}
-      <SaveBar count={changes} saving={saving} onSave={save} onDiscard={() => { setDraft({}); setError(null); }} />
     </Card>
   );
 }
