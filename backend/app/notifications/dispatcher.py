@@ -191,6 +191,13 @@ def _load_secrets(channel: NotificationChannel) -> dict[str, str]:
         raise ch.PermanentError(str(exc)) from None
 
 
+def _with_organisation(db: Session, message: dict[str, Any]) -> dict[str, Any]:
+    """The message plus the display name of the organisation the delivery belongs to (the session's: for an
+    MSP's client that is the client, never the partner), named in alert emails."""
+    org = tenancy.get_org(db, tenancy.org_id(db)) if tenancy.org_id(db) else None
+    return {**message, "organisation": org.name} if org is not None and org.name else message
+
+
 def sentrigis_sent_today(db: Session, now: datetime) -> int:
     """Alert emails already sent today (UTC) through this organisation's Sentrigis email channels.
     One delivery = one email (a delivery goes to all of a channel's recipients together)."""
@@ -223,8 +230,8 @@ def attempt(db: Session, d: NotificationDelivery, now: datetime | None = None) -
             raise ch.PermanentError("channel is disabled")
         _check_daily_limit(db, channel, now)
         secrets = _load_secrets(channel)
-        result = ch.send(channel.type, channel.config or {}, secrets, d.message or {}, d.id,
-                         channel_name=channel.name)
+        result = ch.send(channel.type, channel.config or {}, secrets, _with_organisation(db, d.message or {}),
+                         d.id, channel_name=channel.name)
         d.via_sentrigis = channel.type == "email" and (channel.config or {}).get("provider") == "sentrigis"
         d.status, d.sent_at, d.response_status, d.last_error = "sent", utcnow(), result.status, None
     except ch.LimitReached as exc:
