@@ -21,7 +21,6 @@ import { OsUpdatesTab } from "./OsUpdates";
 import { VulnerabilityFixes } from "./VulnerabilityFixes";
 import { IsolationCard, LostModeDialog, LostWipeCard, SuspendSignInDialog, WipeDialog } from "./LostWipe";
 import { RemoteSessionButton, RemoteSessionsCard } from "./RemoteSessions";
-import { RunScriptDialog } from "./RunScriptDialog";
 import { PendingUpdateView, UpdateNowButton } from "./UpdateAutomation";
 import { LocationPill, LocationTab } from "./LocationTab";
 import { trackingApi } from "../../trackingApi";
@@ -30,6 +29,12 @@ import { MarkMissingDialog, MissingPanel, MissingPill } from "./MissingDevice";
 // "Updates" is the agent's own version / rollout; "OS updates" the Windows Update report (Windows only).
 const TABS = ["Overview", "Posture", "Software", "Services", "Vulnerabilities", "OS updates", "History", "Actions", "Commands", "Updates", "Location"] as const;
 type TabName = (typeof TABS)[number];
+
+// Not offered in the console (product decision 25 Nov 2026: customers see only actionable, working actions;
+// Run script is gone from the toolbar too).
+// The API still accepts them; they stay in ACTIONS so past commands keep their labels.
+const HIDDEN_ACTIONS: CommandType[] = ["collect_logs", "lock_device"];
+const shown = (a: { type: CommandType }) => !HIDDEN_ACTIONS.includes(a.type);
 
 const ACTIONS: { type: CommandType; label: string; role: Role; help: string; danger?: boolean }[] = [
   { type: "recheck_posture", label: "Re-check posture", role: "analyst", help: "Ask the agent for an immediate full inventory and posture check-in." },
@@ -928,7 +933,6 @@ export default function DeviceDetail() {
   const [missingOpen, setMissingOpen] = useState(false);
   const [wipeOpen, setWipeOpen] = useState(false);
   const [signInOpen, setSignInOpen] = useState(false);
-  const [scriptOpen, setScriptOpen] = useState(false);
   const { data: device, error, reload } = useApi(() => api.device(id), [id], 30000);
   const cmds = useApi(() => api.deviceCommands(id), [id], 10000);
   const location = useApi(() => trackingApi.location(id), [id], 60000);
@@ -1008,7 +1012,7 @@ export default function DeviceDetail() {
       </dl>
       {active && can("analyst") && linux && (
         <div className="mb-4 flex flex-wrap items-center gap-2" role="toolbar" aria-label="Remote actions">
-          {ACTIONS.filter((a) => can(a.role) && LINUX_COMMANDS.includes(a.type)).map((a) => (
+          {ACTIONS.filter((a) => shown(a) && can(a.role) && LINUX_COMMANDS.includes(a.type)).map((a) => (
             <Button key={a.type} onClick={() => setAction(a)} title={a.help}>
               {a.label}
             </Button>
@@ -1026,20 +1030,15 @@ export default function DeviceDetail() {
       )}
       {active && can("analyst") && !linux && (
         <div className="mb-4 flex flex-wrap items-center gap-2" role="toolbar" aria-label="Remote actions">
-          {ACTIONS.filter((a) => can(a.role) && !a.danger).map((a) => (
+          {ACTIONS.filter((a) => shown(a) && can(a.role) && !a.danger).map((a) => (
             <Button key={a.type} onClick={() => setAction(a)} title={a.help}>
               {a.label}
             </Button>
           ))}
           <RemoteSessionButton device={device} />
-          {can("admin") && (
-            <Button onClick={() => setScriptOpen(true)} title="Run a script from the signed library">
-              Run script
-            </Button>
-          )}
           <span aria-hidden className="mx-1 hidden h-6 w-px bg-line sm:block" />
           <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">Security</span>
-          {ACTIONS.filter((a) => can(a.role) && a.danger).map((a) => (
+          {ACTIONS.filter((a) => shown(a) && can(a.role) && a.danger).map((a) => (
             <Button key={a.type} variant="danger" onClick={() => setAction(a)} title={a.help}>
               {a.label}
             </Button>
@@ -1197,7 +1196,6 @@ export default function DeviceDetail() {
           )}
           <MarkMissingDialog device={device} lostModeOn={device.lost_mode.status === "active"} open={missingOpen}
             onClose={() => setMissingOpen(false)} onDone={() => { afterAction(); location.reload(); }} />
-          <RunScriptDialog device={device} open={scriptOpen} onClose={() => setScriptOpen(false)} onDone={() => { cmds.reload(); reload(); }} />
         </>
       )}
       <ReasonDialog open={revokeOpen} title={`Revoke ${device.hostname}`} cta="Revoke device"

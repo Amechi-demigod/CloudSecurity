@@ -219,7 +219,6 @@ export default function Devices() {
             <MoreMenu
               items={[
                 { label: "Agent updates", to: "/devices/updates" },
-                { label: "Scripts", to: "/devices/scripts" },
               ]}
             />
             <ExportMenu noun="computers" count={data && data.length < 500 ? data.length : undefined} buildUrl={(format) => `/api/devices/export${qs({ ...filters, format })}`} />

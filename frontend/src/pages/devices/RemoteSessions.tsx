@@ -47,7 +47,7 @@ export function RemoteSessionButton({ device }: { device: DeviceDetail }) {
     return (
       <Button onClick={() => navigate(`/devices/${device.id}/remote/${a.open_session_id}`)}
         title="A remote session with this device is open">
-        Open remote session
+        Open remote session<span className="ml-1.5 rounded bg-accent/15 px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide text-accent">Beta</span>
       </Button>
     );
   }
@@ -60,7 +60,7 @@ export function RemoteSessionButton({ device }: { device: DeviceDetail }) {
     <>
       <span title={reason ?? "View (or, as an admin, control) the signed-in user's screen after they allow it"}>
         <Button onClick={() => setOpen(true)} disabled={!a || !!reason}>
-          Remote session
+          Remote session<span className="ml-1.5 rounded bg-accent/15 px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide text-accent">Beta</span>
         </Button>
       </span>
       {a && a.available && (
