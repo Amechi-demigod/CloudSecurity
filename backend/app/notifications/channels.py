@@ -2,7 +2,8 @@
 
 * teams   - Microsoft Teams incoming webhook or Workflows (Power Automate) webhook; Adaptive Card.
 * slack   - Slack incoming webhook; Block Kit.
-* email   - SMTP (STARTTLS or implicit TLS) or Azure Communication Services Email (REST, HMAC auth).
+* email   - the Sentrigis sender (platform mail server, daily limit) or the customer's own SMTP server
+            (STARTTLS or implicit TLS). Azure Communication Services is only used by platform mail (app/mailer.py).
 * webhook - generic JSON POST, signed with HMAC-SHA256 + timestamp (see signing.py).
 
 All text that can come from monitored workloads (alert titles, command lines,
@@ -48,6 +49,10 @@ class PermanentError(Exception):
     def __init__(self, message: str, status: int | None = None):
         super().__init__(message)
         self.status = status
+
+
+class LimitReached(Exception):
+    """Not sent because a daily limit was reached; not retried (delivery status "skipped")."""
 
 
 class TransientError(Exception):
@@ -96,21 +101,20 @@ CHANNEL_TYPES: dict[str, dict[str, Any]] = {
     },
     "email": {
         "label": "Email",
-        "description": "SMTP with STARTTLS/TLS, or Azure Communication Services Email.",
+        "description": "Sent by Sentrigis (no setup) or through your own mail server (SMTP).",
         "fields": [
-            FieldSpec("provider", "Provider", "select", options=["smtp", "acs"], default="smtp", required=True),
+            FieldSpec("provider", "Send with", "select", options=["sentrigis", "smtp"], default="sentrigis",
+                      required=True, help="Sentrigis: no setup, sent from no-reply@sentrigis.com. "
+                                          "SMTP: send from your own domain."),
             FieldSpec("to_addresses", "Recipients", "list", required=True, help="Comma-separated email addresses."),
-            FieldSpec("from_address", "From address", "email", provider="smtp", help="Sender, e.g. cnapp@example.com"),
-            FieldSpec("host", "SMTP host", "text", provider="smtp"),
-            FieldSpec("port", "SMTP port", "int", provider="smtp", default=587),
-            FieldSpec("security", "Transport security", "select", provider="smtp", options=["starttls", "tls"],
+            FieldSpec("from_address", "From address", "email", provider="smtp",
+                      help="A mailbox on your mail server."),
+            FieldSpec("host", "SMTP server", "text", provider="smtp"),
+            FieldSpec("port", "Port", "int", provider="smtp", default=587),
+            FieldSpec("security", "Security", "select", provider="smtp", options=["starttls", "tls"],
                       default="starttls", help="starttls (port 587) or implicit tls (port 465)."),
-            FieldSpec("username", "SMTP username", "text", provider="smtp"),
-            FieldSpec("password", "SMTP password", "text", secret=True, provider="smtp"),
-            FieldSpec("sender_address", "Sender address", "email", provider="acs",
-                      help="A MailFrom address of a domain connected to your ACS Email resource."),
-            FieldSpec("connection_string", "ACS connection string", "text", secret=True, provider="acs",
-                      mask="connection_string", help="endpoint=https://<name>.communication.azure.com/;accesskey=..."),
+            FieldSpec("username", "Username", "text", provider="smtp"),
+            FieldSpec("password", "Password", "text", secret=True, provider="smtp"),
         ],
     },
     "webhook": {
@@ -208,20 +212,20 @@ def validate(ctype: str, config: dict[str, Any], secrets: dict[str, str]) -> tup
             raise ChannelConfigError(f"signing_secret must be at least {signing.MIN_SECRET_LENGTH} characters")
         return {}, secrets
     # email
-    provider = (config.get("provider") or "smtp").strip().lower()
-    if provider not in ("smtp", "acs"):
-        raise ChannelConfigError("provider must be smtp or acs")
+    provider = (config.get("provider") or "sentrigis").strip().lower()
+    if provider not in ("sentrigis", "smtp"):
+        raise ChannelConfigError("provider must be sentrigis or smtp")
     to = _emails(config.get("to_addresses"), "to_addresses")
     if not to:
         raise ChannelConfigError("at least one recipient is required")
-    if provider == "acs":
-        sender = (config.get("sender_address") or "").strip()
-        if not EMAIL_RE.match(sender):
-            raise ChannelConfigError("sender_address must be an email address")
-        endpoint, _ = parse_connection_string(secrets.get("connection_string", ""))
-        _check_url_field(endpoint + "/emails:send", "acs", "connection_string endpoint")
-        return ({"provider": "acs", "to_addresses": to, "sender_address": sender},
-                {"connection_string": secrets["connection_string"]})
+    if provider == "sentrigis":
+        from .. import mailer
+
+        if not mailer.configured():
+            raise ChannelConfigError(
+                "Sending with Sentrigis is not available on this server: the platform mail sender is not set up. "
+                "Use your own mail server (SMTP) instead.")
+        return {"provider": "sentrigis", "to_addresses": to}, {}
     host = (config.get("host") or "").strip().lower().rstrip(".")
     if not host or not re.match(r"^[a-z0-9.-]+$|^\[?[0-9a-f:.]+\]?$", host):
         raise ChannelConfigError("host must be a hostname")
@@ -347,39 +351,80 @@ def _header_safe(s: str) -> str:
     return re.sub(r"[\r\n\t]+", " ", s or "").strip()
 
 
-def render_email(msg: dict[str, Any]) -> tuple[str, str, str]:
+def _footer(msg: dict[str, Any], channel_name: str) -> str:
+    brand = _header_safe(config.settings.brand_name)
+    name = _header_safe(channel_name)
+    why = (f"You get this because you are on the \"{name}\" email channel in {brand}." if name
+           else f"You get this because of a notification rule in {brand}.")
+    if msg.get("source") == "device_tracking":
+        why += " Location is approximate, from the computer's internet address."
+    return why
+
+
+def render_email(msg: dict[str, Any], channel_name: str = "") -> tuple[str, str, str]:
+    """Alert email (subject, plain text, html): Sentrigis header (white band under a navy stripe, inline
+    `cid:` logo, see `alert_email`), "Severity · source", title, details, button and footer.
+    Every value is escaped in the HTML and kept on one line in the subject."""
+    from ..services import invitation_email as brand_mail
+
     sev = msg.get("severity", "info")
-    subject = _clip(_header_safe(f"[CNAPP][{sev.upper()}] {msg.get('title', '')}"), 200)
-    lines = [msg.get("title", ""), "", msg.get("summary", ""), ""]
-    lines += [f"{k}: {v}" for k, v in msg.get("facts", [])]
+    brand = _header_safe(config.settings.brand_name)
+    subject = _clip(_header_safe(f"[{sev.capitalize()}] {msg.get('title', '')}"), 200)
+    label = f"{sev.capitalize()} \u00b7 {msg.get('source_label', '')}"
+    facts = [(str(k), str(v)) for k, v in msg.get("facts", []) if k not in ("Severity", "Source")]
+    if msg.get("organisation"):
+        facts.append(("Organisation", _header_safe(str(msg["organisation"]))))
+    footer = _footer(msg, channel_name)
+    lines = [label, msg.get("title", ""), "", msg.get("summary", ""), ""]
+    lines += [f"{k}: {v}" for k, v in facts]
     for it in msg.get("items") or []:
         lines.append(f"- [{it['severity'].upper()}] {it['title']}" + (f"  {it['link']}" if it.get("link") else ""))
     if msg.get("link"):
-        lines += ["", f"Open in {config.settings.brand_name}: {msg['link']}"]
+        lines += ["", f"Open in {brand}: {msg['link']}"]
+    lines += ["", footer]
     text = "\n".join(lines).strip() + "\n"
     e = html.escape
     color = EMAIL_COLOR.get(sev, "#6b7280")
-    facts = "".join(f"<tr><td style=\"padding:2px 12px 2px 0;color:#6b7280\">{e(str(k))}</td>"
-                    f"<td style=\"padding:2px 0\">{e(str(v))}</td></tr>" for k, v in msg.get("facts", []))
+    navy, font = brand_mail.NAVY, brand_mail.FONT
+    rows = "".join(f"<tr><td style=\"padding:2px 16px 2px 0;color:#6b7280;vertical-align:top\">{e(k)}</td>"
+                   f"<td style=\"padding:2px 0;font-weight:bold\">{e(v)}</td></tr>" for k, v in facts)
     items = "".join(
         f"<li><b style=\"color:{EMAIL_COLOR.get(it['severity'], '#6b7280')}\">{e(it['severity'].upper())}</b> "
         + (f"<a href=\"{e(it['link'], quote=True)}\">{e(it['title'])}</a>" if it.get("link") else e(it["title"]))
         + "</li>" for it in msg.get("items") or [])
-    button = (f"<p><a href=\"{e(msg['link'], quote=True)}\" style=\"display:inline-block;background:#2563eb;"
-              f"color:#fff;padding:8px 14px;border-radius:4px;text-decoration:none\">"
-              f"Open in {e(config.settings.brand_name)}</a></p>"
-              if msg.get("link") else "")
+    button = (f"<p style=\"margin:16px 0\"><a href=\"{e(msg['link'], quote=True)}\" style=\"display:inline-block;"
+              f"background:#2563eb;color:#ffffff;padding:10px 20px;border-radius:6px;text-decoration:none;"
+              f"font-weight:bold\">Open in {e(brand)}</a></p>" if msg.get("link") else "")
+    summary = (f"<p style=\"margin:0 0 12px;white-space:pre-wrap\">{e(msg['summary'])}</p>" if msg.get("summary") else "")
     body_html = (
-        "<!doctype html><html><body style=\"font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#111\">"
-        f"<div style=\"border-left:4px solid {color};padding:4px 12px\">"
-        f"<div style=\"color:{color};font-weight:600\">{e(sev.upper())} · {e(msg.get('source_label', ''))}</div>"
-        f"<h2 style=\"margin:4px 0 8px\">{e(msg.get('title', ''))}</h2>"
-        f"<p style=\"white-space:pre-wrap\">{e(msg.get('summary', ''))}</p>"
-        f"<table style=\"border-collapse:collapse;font-size:13px\">{facts}</table>"
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+        f"<title>{e(subject)}</title></head><body style=\"margin:0;padding:0;background:#f4f5f7\">"
+        "<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" "
+        "style=\"background:#f4f5f7\"><tr><td align=\"center\" style=\"padding:24px 12px\">"
+        "<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" "
+        "style=\"max-width:600px;background:#ffffff;border:1px solid #e5e7eb;border-radius:8px\">"
+        f"<tr><td bgcolor=\"#ffffff\" style=\"background:#ffffff;padding:20px 32px 16px;border-top:6px solid {navy};"
+        "border-bottom:1px solid #eef0f4;border-radius:8px 8px 0 0\">"
+        f"<img src=\"cid:{brand_mail.LOGO_CID}\" alt=\"{e(brand, quote=True)}\" width=\"{brand_mail.LOGO_WIDTH}\" "
+        f"height=\"{brand_mail.LOGO_HEIGHT}\" style=\"display:block;border:0;width:{brand_mail.LOGO_WIDTH}px;"
+        f"height:{brand_mail.LOGO_HEIGHT}px\"></td></tr>"
+        f"<tr><td style=\"padding:28px 32px;{font};font-size:14px;line-height:21px;color:#111827\">"
+        f"<div style=\"color:{color};font-weight:bold;font-size:13px;margin:0 0 6px\">{e(label)}</div>"
+        f"<h1 style=\"margin:0 0 14px;font-size:21px;line-height:28px\">{e(msg.get('title', ''))}</h1>"
+        f"{summary}"
+        f"<table style=\"border-collapse:collapse;font-size:13px\">{rows}</table>"
         + (f"<ul>{items}</ul>" if items else "") + button +
-        f"</div><p style=\"color:#9ca3af;font-size:12px\">Sent by {e(config.settings.brand_name)} notifications.</p>"
-        "</body></html>")
+        "</td></tr></table>"
+        f"<p style=\"margin:16px 0 0;{font};font-size:12px;line-height:18px;color:#6b7280;max-width:600px\">"
+        f"{e(footer)}</p></td></tr></table></body></html>")
     return subject, text, body_html
+
+
+def alert_email(msg: dict[str, Any], channel_name: str = "") -> tuple[Rendered, list[InlineImage]]:
+    """`render_email` plus the inline logo it references (sent as multipart/related, never fetched remotely)."""
+    from ..services import invitation_email as brand_mail
+
+    return render_email(msg, channel_name), [brand_mail.logo_image()]
 
 
 def render_preview(ctype: str, msg: dict[str, Any]) -> Any:
@@ -589,16 +634,34 @@ def send_smtp(config: dict[str, Any], secrets: dict[str, str], msg: dict[str, An
     return SendResult(250, "accepted")
 
 
+def send_sentrigis(config: dict[str, Any], msg: dict[str, Any], delivery_id: str, *,
+                   rendered: Rendered | None = None, inline_images: list[InlineImage] | None = None) -> SendResult:
+    """Alert email through the platform mail sender (the one app/mailer.py uses), normal alert layout."""
+    from .. import mailer
+
+    if not mailer.configured():
+        raise PermanentError("Sending with Sentrigis is not available: the platform mail sender is not set up")
+    cfg, secrets = mailer.platform_channel()
+    cfg["to_addresses"] = list(config.get("to_addresses") or [])
+    if cfg.get("provider") == "acs":
+        return send_acs(cfg, secrets, msg, delivery_id, rendered=rendered, inline_images=inline_images)
+    return send_smtp(cfg, secrets, msg, delivery_id, rendered=rendered, inline_images=inline_images)
+
+
 def send(ctype: str, config: dict[str, Any], secrets: dict[str, str], msg: dict[str, Any],
          delivery_id: str, *, rendered: Rendered | None = None, attachments: list[Attachment] | None = None,
-         inline_images: list[InlineImage] | None = None) -> SendResult:
+         inline_images: list[InlineImage] | None = None, channel_name: str = "") -> SendResult:
     """Deliver `msg`. Raises PermanentError / TransientError on failure.
 
     `rendered` (email only): a ready (subject, text, html) used instead of the
     alert layout of `render_email`, for platform transactional mail
     (app/mailer.py, e.g. invitations); `attachments` likewise (compliance reports); `inline_images`
-    are embedded by content id (multipart/related), so no remote image is ever fetched."""
+    are embedded by content id (multipart/related), so no remote image is ever fetched. `channel_name` is
+    named in the footer of alert emails."""
     try:
+        if ctype == "email" and rendered is None:
+            rendered, logo = alert_email(msg, channel_name)
+            inline_images = [*(inline_images or []), *logo]
         if ctype == "teams":
             return _post_json(secrets["webhook_url"], render_teams(msg), "teams")
         if ctype == "slack":
@@ -606,7 +669,9 @@ def send(ctype: str, config: dict[str, Any], secrets: dict[str, str], msg: dict[
         if ctype == "webhook":
             return send_webhook(secrets, msg, delivery_id)
         if ctype == "email":
-            if config.get("provider") == "acs":
+            if config.get("provider") == "sentrigis":
+                return send_sentrigis(config, msg, delivery_id, rendered=rendered, inline_images=inline_images)
+            if config.get("provider") == "acs":  # legacy channels only; new ones cannot choose it
                 return send_acs(config, secrets, msg, delivery_id, rendered=rendered, attachments=attachments,
                                 inline_images=inline_images)
             return send_smtp(config, secrets, msg, delivery_id, rendered=rendered, attachments=attachments,

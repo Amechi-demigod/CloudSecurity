@@ -71,7 +71,7 @@ MIGRATION_CHAIN = ["0001_baseline", "0002_device_management", "0003_notification
                    "0031_org_modules", "0032_attack_surface", "0033_cloud_resource_lifecycle", "0034_dashboard_layouts",
                    "0035_table_preferences", "0036_msp_partners", "0037_reputation",
                    "0038_executive_reports", "0039_device_tracking", "0040_missing_devices",
-                   "0041_device_tracking_alerts", "0042_lost_mode_support_email"]
+                   "0041_device_tracking_alerts", "0042_lost_mode_support_email", "0043_delivery_via_sentrigis"]
 
 
 def test_migration_history_is_linear():

@@ -60,7 +60,8 @@ def matches(rule, ctx: EventContext) -> bool:
     """Does notification rule `rule` select this event?"""
     if not rule.enabled:
         return False
-    if rule.sources and ctx.source not in rule.sources:
+    # No area picked matches nothing (never "all"): a rule must name the areas it sends.
+    if not rule.sources or ctx.source not in rule.sources:
         return False
     if ctx.event_type == STATUS_CHANGED:
         if not rule.include_status_changes:

@@ -108,3 +108,21 @@ def test_message(channel_name: str, actor: str | None, now: datetime) -> dict[st
         "event": {"id": None, "source": "test", "type": "test", "severity": "info",
                   "title": "Test notification", "occurred_at": iso(now)},
     }
+
+
+def test_alert_message(rule_name: str, actor: str | None, now: datetime) -> dict[str, Any]:
+    """A clearly labelled sample alert for "Send a test alert" on a rule."""
+    return {
+        "kind": "test",
+        "title": f"Test alert: {rule_name}",
+        "summary": "This is a sample alert to show what this rule sends. Nothing is wrong."
+        + (f" Sent by {actor}." if actor else ""),
+        "severity": "info",
+        "source": "test",
+        "source_label": "Test alert",
+        "event_type": "test",
+        "facts": [["Rule", rule_name], ["Time", iso(now) or ""]],
+        "link": deep_link("/notifications"),
+        "event": {"id": None, "source": "test", "type": "test", "severity": "info",
+                  "title": f"Test alert: {rule_name}", "occurred_at": iso(now)},
+    }

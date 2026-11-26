@@ -19,6 +19,7 @@ from app import config, db
 from app.models import AuditLog, utcnow
 from app.notifications import Event, crypto, dispatcher, emit, ssrf
 from app.notifications import channels as ch
+from app.notifications.events import sources
 from app.notifications.models import (
     NotificationChannel,
     NotificationDelivery,
@@ -68,7 +69,8 @@ def add_channel(s, name="SOC Slack", ctype="slack", secrets=None, enabled=True):
 
 
 def add_rule(s, channel_ids, **over):
-    fields = dict(name="High+", sources=[], event_types=[], min_severity="high", subscription_ids=[], asset_ids=[],
+    fields = dict(name="High+", sources=[s.name for s in sources()],
+                  event_types=[], min_severity="high", subscription_ids=[], asset_ids=[],
                   asset_types=[], tags={}, rule_ids=[], mitre_techniques=[], channel_ids=channel_ids,
                   throttle_minutes=60, mode="immediate", digest_hour=8, timezone="UTC",
                   created_at=T0 - timedelta(days=1))
@@ -487,7 +489,7 @@ def test_test_send_and_delivery_log(client, transport):
 def test_rule_crud_validation_and_channel_delete(client, transport):
     c = client.post("/api/notifications/channels", json={"name": "SOC", "type": "slack",
                                                           "secrets": {"webhook_url": SLACK_URL}}).json()
-    base = {"name": "Crit", "min_severity": "critical", "channel_ids": [c["id"]]}
+    base = {"name": "Crit", "min_severity": "critical", "channel_ids": [c["id"]], "sources": ["runtime_alert"]}
     for bad in ({**base, "channel_ids": ["nope"]}, {**base, "sources": ["nope"]},
                 {**base, "mitre_techniques": ["X1"]}, {**base, "quiet_start": "25:00", "quiet_end": "07:00"},
                 {**base, "quiet_start": "22:00"}, {**base, "timezone": "Mars/Base"}, {**base, "channel_ids": []},
@@ -516,7 +518,7 @@ def test_rbac(client, transport):
     make_user(client, "analyst")
     c = client.post("/api/notifications/channels", json={"name": "SOC", "type": "slack",
                                                           "secrets": {"webhook_url": SLACK_URL}}).json()
-    rule = client.post("/api/notifications/rules", json={"name": "r", "channel_ids": [c["id"]]}).json()
+    rule = client.post("/api/notifications/rules", json={"name": "r", "sources": ["device"], "channel_ids": [c["id"]]}).json()
     reads = ["/api/notifications/meta", "/api/notifications/status", "/api/notifications/channels",
              f"/api/notifications/channels/{c['id']}", "/api/notifications/rules", "/api/notifications/deliveries",
              "/api/notifications/preview?channel_type=teams"]
@@ -525,8 +527,8 @@ def test_rbac(client, transport):
               ("PATCH", f"/api/notifications/channels/{c['id']}", {"name": "y"}),
               ("DELETE", f"/api/notifications/channels/{c['id']}", None),
               ("POST", f"/api/notifications/channels/{c['id']}/test", None),
-              ("POST", "/api/notifications/rules", {"name": "x", "channel_ids": [c["id"]]}),
-              ("PUT", f"/api/notifications/rules/{rule['id']}", {"name": "x", "channel_ids": [c["id"]]}),
+              ("POST", "/api/notifications/rules", {"name": "x", "sources": ["device"], "channel_ids": [c["id"]]}),
+              ("PUT", f"/api/notifications/rules/{rule['id']}", {"name": "x", "sources": ["device"], "channel_ids": [c["id"]]}),
               ("DELETE", f"/api/notifications/rules/{rule['id']}", None),
               ("POST", "/api/notifications/deliveries/x/retry", None)]
     viewer = TestClient(client.app, base_url=BASE_URL)

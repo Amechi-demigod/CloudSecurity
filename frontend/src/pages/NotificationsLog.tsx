@@ -19,7 +19,7 @@ export default function NotificationsLog({ isAdmin, onChange }: { isAdmin: boole
     [status, kind],
     10000,
   );
-  const statusRank = rankOf(["dead", "pending", "sending", "sent"]);
+  const statusRank = rankOf(["dead", "skipped", "pending", "sending", "sent"]);
   const sorted = useSort(
     data,
     {
@@ -48,11 +48,11 @@ export default function NotificationsLog({ isAdmin, onChange }: { isAdmin: boole
     <div>
       <ErrorNote error={error ?? actionError} />
       <FilterBar count={data ? `${data.length} sent` : undefined}>
-        <FilterSelect label="Status" value={status} onChange={setStatus} options={[{ value: "", label: "All" }, { value: "pending", label: "Waiting" }, { value: "sent", label: "Sent" }, { value: "dead", label: "Failed" }]} />
+        <FilterSelect label="Status" value={status} onChange={setStatus} options={[{ value: "", label: "All" }, { value: "pending", label: "Waiting" }, { value: "sent", label: "Sent" }, { value: "dead", label: "Failed" }, { value: "skipped", label: "Not sent" }]} />
         <FilterSelect label="Kind" value={kind} onChange={setKind} options={[{ value: "", label: "All" }, { value: "event", label: "Events" }, { value: "digest", label: "Digests" }, { value: "test", label: "Tests" }]} />
       </FilterBar>
       <FilterChips
-        chips={[status && { label: "Status", value: status === "dead" ? "Failed" : status, onRemove: () => setStatus("") }, kind && { label: "Kind", value: kind, onRemove: () => setKind("") }].filter((c): c is { label: string; value: string; onRemove: () => void } => !!c)}
+        chips={[status && { label: "Status", value: status === "dead" ? "Failed" : status === "skipped" ? "Not sent" : status, onRemove: () => setStatus("") }, kind && { label: "Kind", value: kind, onRemove: () => setKind("") }].filter((c): c is { label: string; value: string; onRemove: () => void } => !!c)}
         onClearAll={() => {
           setStatus("");
           setKind("");
@@ -93,7 +93,7 @@ export default function NotificationsLog({ isAdmin, onChange }: { isAdmin: boole
                 </td>
                 <td className="px-3 py-2">
                   <PillRow>
-                    <Pill tone={d.status === "dead" ? "high" : d.status === "sent" ? "good" : "info"}>{d.status === "dead" ? "Failed" : d.status === "pending" ? "Waiting" : statusLabel(d.status)}</Pill>
+                    <Pill tone={d.status === "dead" ? "high" : d.status === "skipped" ? "medium" : d.status === "sent" ? "good" : "info"}>{d.status === "dead" ? "Failed" : d.status === "skipped" ? "Not sent" : d.status === "pending" ? "Waiting" : statusLabel(d.status)}</Pill>
                   </PillRow>
                 </td>
                 <td className="px-3 py-2"><NumCell value={d.attempts} /></td>

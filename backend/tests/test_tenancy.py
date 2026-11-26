@@ -236,7 +236,8 @@ def test_objects_of_another_organisation_are_not_found(tenants):
     chan = d.post("/api/notifications/channels", json={"name": "SOC", "type": "slack",
                                                       "secrets": {"webhook_url": "https://hooks.slack.com/x/y/z"}})
     chan = chan.json()
-    rule = d.post("/api/notifications/rules", json={"name": "All", "channel_ids": [chan["id"]]}).json()
+    rule = d.post("/api/notifications/rules", json={"name": "All", "sources": ["device"],
+                                                    "channel_ids": [chan["id"]]}).json()
     it = d.post("/api/it-assets", json={"asset_tag": "WK-9", "asset_type": "laptop"}).json()
     tok = d.post("/api/devices/enrollment-tokens", json={"name": "t", "max_uses": 1, "expires_in_hours": 1}).json()
     ring = _items(d.get("/api/updates/rings"))[0]
@@ -271,6 +272,7 @@ def test_objects_of_another_organisation_are_not_found(tenants):
         a.delete(f"/api/notifications/channels/{chan['id']}"),
         a.put(f"/api/notifications/rules/{rule['id']}", json={"name": "pwned", "channel_ids": []}),
         a.delete(f"/api/notifications/rules/{rule['id']}"),
+        a.post(f"/api/notifications/rules/{rule['id']}/test"),
         a.get(f"/api/it-assets/{it['id']}"),
         a.patch(f"/api/it-assets/{it['id']}", json={"notes": "pwned"}),
         a.delete(f"/api/it-assets/{it['id']}"),
@@ -405,7 +407,7 @@ def test_notification_worker_keeps_events_in_their_organisation(tenants, monkeyp
             s.flush()
             from app.notifications.models import NotificationRule
 
-            s.add(NotificationRule(name="all", sources=[], event_types=[], min_severity="low", subscription_ids=[],
+            s.add(NotificationRule(name="all", sources=["scan"], event_types=[], min_severity="low", subscription_ids=[],
                                    asset_ids=[], asset_types=[], tags={}, rule_ids=[], mitre_techniques=[],
                                    channel_ids=[ch.id], throttle_minutes=0, mode="immediate", digest_hour=8,
                                    timezone="UTC", created_at=utcnow() - timedelta(days=1)))
