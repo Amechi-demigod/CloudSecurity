@@ -372,6 +372,8 @@ def render_email(msg: dict[str, Any], channel_name: str = "") -> tuple[str, str,
     subject = _clip(_header_safe(f"[{sev.capitalize()}] {msg.get('title', '')}"), 200)
     label = f"{sev.capitalize()} \u00b7 {msg.get('source_label', '')}"
     facts = [(str(k), str(v)) for k, v in msg.get("facts", []) if k not in ("Severity", "Source")]
+    if msg.get("organisation"):
+        facts.append(("Organisation", _header_safe(str(msg["organisation"]))))
     footer = _footer(msg, channel_name)
     lines = [label, msg.get("title", ""), "", msg.get("summary", ""), ""]
     lines += [f"{k}: {v}" for k, v in facts]

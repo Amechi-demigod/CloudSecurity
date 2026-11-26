@@ -423,6 +423,10 @@ def test_alert_email_matches_the_approved_layout(env):
     assert footer in text and footer.replace("\"", "&quot;") in body
     assert "Location is approximate, from the computer's internet address." in text
     assert "Computer: FIN-LT-021" in text and "Severity:" not in text
+    assert "Organisation" not in text  # only when the dispatcher supplies it
+    _, text, body = ch.render_email(_msg(organisation="Your Company Ltd <b>"), "Ops")
+    assert "Organisation: Your Company Ltd <b>" in text
+    assert "Your Company Ltd &lt;b&gt;" in body and "<b>" not in body
     other = ch.render_email(_msg(source="scan", source_label="Cloud scans"), "Ops")[1]
     assert "Location is approximate" not in other
     assert "Open in" not in ch.render_email(_msg(link=None), "Ops")[1]
@@ -468,3 +472,17 @@ def test_daily_count_survives_a_deleted_channel(client, env, monkeypatch):
     assert stats["sent"] == 0 and len(env.smtp) == 2
     own = smtp_channel(client)
     assert client.post(f"/api/notifications/channels/{own['id']}/test").json()["ok"] is True
+
+
+def test_dispatch_names_the_organisation_in_the_email(client, env):
+    c = sentrigis_channel(client)
+    assert client.post(f"/api/notifications/channels/{c['id']}/test").json()["ok"] is True
+    with db.get_session("default") as s:
+        name = s.get(Organization, "default").name
+    _, text, body = env.smtp[-1]["rendered"]
+    assert f"Organisation: {name}" in text and name in body
+    # a delivery queued by the worker (event email) carries it too
+    queue_delivery(c["id"], c["name"], title="evt")
+    with db.get_session("default") as s:
+        dispatcher.send_due(s, utcnow(), limit=100)
+    assert f"Organisation: {name}" in env.smtp[-1]["rendered"][1]
