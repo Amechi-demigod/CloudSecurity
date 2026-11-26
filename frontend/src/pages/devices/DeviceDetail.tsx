@@ -24,6 +24,7 @@ import { RemoteSessionButton, RemoteSessionsCard } from "./RemoteSessions";
 import { PendingUpdateView, UpdateNowButton } from "./UpdateAutomation";
 import { LocationPill, LocationTab } from "./LocationTab";
 import { trackingApi } from "../../trackingApi";
+import { MarkMissingDialog, MissingPanel, MissingPill } from "./MissingDevice";
 
 // "Updates" is the agent's own version / rollout; "OS updates" the Windows Update report (Windows only).
 const TABS = ["Overview", "Posture", "Software", "Services", "Vulnerabilities", "OS updates", "History", "Actions", "Commands", "Updates", "Location"] as const;
@@ -929,6 +930,7 @@ export default function DeviceDetail() {
   const [revokeOpen, setRevokeOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [lostOpen, setLostOpen] = useState(false);
+  const [missingOpen, setMissingOpen] = useState(false);
   const [wipeOpen, setWipeOpen] = useState(false);
   const [signInOpen, setSignInOpen] = useState(false);
   const { data: device, error, reload } = useApi(() => api.device(id), [id], 30000);
@@ -966,6 +968,7 @@ export default function DeviceDetail() {
         actions={
           <div className="flex flex-wrap items-center gap-2">
             {active ? <HealthBadge health={device.health} /> : <Tag tone="warn">Removed</Tag>}
+            {device.missing && <MissingPill />}
             {device.device_state === "lost" && <Tag tone="warn">Lost</Tag>}
             {device.device_class && device.device_class !== "workstation" && <DeviceClassTag device={device} />}
             {device.device_state === "wipe_pending" && <Tag tone="critical">Wipe pending</Tag>}
@@ -1071,6 +1074,12 @@ export default function DeviceDetail() {
               >
                 {device.lost_mode.status ? "Exit lost mode" : "Lost mode"}
               </Button>
+              {locatable && !device.missing && (
+                <Button variant="danger" onClick={() => setMissingOpen(true)} disabled={!location.data?.enabled || device.lost_mode.status === "enabling" || device.lost_mode.status === "disabling"}
+                  title={location.data?.enabled ? "Ask the computer to report every 5 minutes, turn on lost mode and record where it is seen" : "Turn on device tracking in Settings first"}>
+                  Mark missing
+                </Button>
+              )}
               {device.os_family === "windows" ? (
                 <Button variant="danger" onClick={() => setWipeOpen(true)} title="Erase the device (needs a second admin's approval)">
                   Remote wipe
@@ -1101,6 +1110,10 @@ export default function DeviceDetail() {
             Delete device
           </Button>
         </div>
+      )}
+      {device.missing && locatable && (
+        <MissingPanel device={device} onSuspend={can("analyst") ? () => setSignInOpen(true) : undefined}
+          onWipe={can("admin") ? () => setWipeOpen(true) : undefined} onChanged={() => { cmds.reload(); reload(); }} />
       )}
       <div
         role="tablist"
@@ -1181,6 +1194,8 @@ export default function DeviceDetail() {
           {device.os_family === "windows" && (
             <WipeDialog device={device} open={wipeOpen} onClose={() => setWipeOpen(false)} onDone={reload} />
           )}
+          <MarkMissingDialog device={device} lostModeOn={device.lost_mode.status === "active"} open={missingOpen}
+            onClose={() => setMissingOpen(false)} onDone={() => { afterAction(); location.reload(); }} />
         </>
       )}
       <ReasonDialog open={revokeOpen} title={`Revoke ${device.hostname}`} cta="Revoke device"

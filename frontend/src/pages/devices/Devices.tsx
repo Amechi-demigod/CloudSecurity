@@ -33,6 +33,7 @@ import { useApi } from "../../lib/useApi";
 import { useSortState } from "../../lib/useSort";
 import { useUrlState } from "../../lib/useUrlState";
 import { BulkActionsBar } from "./BulkActions";
+import FleetMap from "./FleetMap";
 import { PAGE_INFO } from "../../lib/pageInfo";
 
 const HEALTH_PILL: Record<DeviceHealth, { tone: PillTone; label: string }> = {
@@ -90,15 +91,18 @@ export default function Devices() {
   const [deviceClass, setDeviceClass] = useUrlState("class");
   const [virtual, setVirtual] = useUrlState("virtual");
   const [usb, setUsb] = useUrlState("usb");
+  const [missingFilter, setMissingFilter] = useUrlState("missing");
   // Missing OS updates (Windows Update report): security | any | none | unknown
   const [updates, setUpdates] = useUrlState("updates");
   const [selected, setSelected] = useState<string[]>([]);
+  // List | Map (device tracking, docs/DEVICE_TRACKING.md#map-view)
+  const [view, setView] = useUrlState("view");
   // The server sorts the whole result (the list is capped), so the sort goes to the API.
   const sorted = useSortState(["name", "os", "class", "user", "health", "issues", "seen", "agent", "usb", "updates"], { key: "name", dir: "asc" }, { health: "desc", issues: "desc", seen: "desc", updates: "desc" });
-  const filters = { sort: sorted.sort.key, dir: sorted.sort.dir, q: q.trim() || undefined, os, health, issue, connectivity, status, usb, updates, device_class: deviceClass || undefined, virtual: virtual || undefined };
-  const { data, error, loading, reload } = useApi(() => api.devices(filters), [q, os, health, issue, connectivity, status, usb, updates, deviceClass, virtual, sorted.sort.key, sorted.sort.dir], 30000);
+  const filters = { sort: sorted.sort.key, dir: sorted.sort.dir, q: q.trim() || undefined, os, health, issue, connectivity, status, usb, updates, device_class: deviceClass || undefined, virtual: virtual || undefined, missing: missingFilter || undefined };
+  const { data, error, loading, reload } = useApi(() => api.devices(filters), [q, os, health, issue, connectivity, status, usb, updates, deviceClass, virtual, missingFilter, sorted.sort.key, sorted.sort.dir], 30000);
   const { data: summary } = useApi(api.deviceSummary, [], 30000);
-  const filtered = !!(q || os || health || issue || connectivity || usb || updates || deviceClass || virtual) || status !== "active";
+  const filtered = !!(q || os || health || issue || connectivity || usb || updates || deviceClass || virtual || missingFilter) || status !== "active";
   // Bulk endpoint actions (admins): the selection is limited to the rows shown.
   const bulk = can("admin");
   const shown = new Set((data ?? []).map((d) => d.id));
@@ -120,6 +124,7 @@ export default function Devices() {
     setDeviceClass("");
     setVirtual("");
     setUsb("");
+    setMissingFilter("");
     setUpdates("");
   };
   const opt = (list: { value: string; label: string }[], v: string) => list.find((o) => o.value === v)?.label ?? v;
@@ -149,6 +154,7 @@ export default function Devices() {
     { value: "none", label: "Up to date" },
     { value: "unknown", label: "Not reported" },
   ];
+  const MISSING_OPTS = [{ value: "", label: "All" }, { value: "true", label: "Missing" }];
   const STATUS_OPTS = [{ value: "active", label: "Enrolled" }, { value: "revoked", label: "Removed" }, { value: "all", label: "All" }];
   const chips: FilterChip[] = [
     q && { label: "Search", value: q, onRemove: () => setQ("") },
@@ -160,9 +166,10 @@ export default function Devices() {
     connectivity && { label: "Last seen", value: opt(SEEN_OPTS, connectivity), onRemove: () => setConnectivity("") },
     usb && { label: "USB storage", value: opt(USB_OPTS, usb), onRemove: () => setUsb("") },
     updates && { label: "Updates", value: opt(UPDATE_OPTS, updates), onRemove: () => setUpdates("") },
+    missingFilter && { label: "Missing", value: opt(MISSING_OPTS, missingFilter), onRemove: () => setMissingFilter("") },
     status !== "active" && { label: "Status", value: opt(STATUS_OPTS, status), onRemove: () => setStatus("active") },
   ].filter((c): c is FilterChip => !!c);
-  const moreActive = [deviceClass, virtual, issue, usb, updates, status !== "active" ? status : ""].filter(Boolean).length;
+  const moreActive = [deviceClass, virtual, issue, usb, updates, missingFilter, status !== "active" ? status : ""].filter(Boolean).length;
 
   // "Needs attention": the most common issues across the fleet (summary endpoint), worst first, then offline computers.
   const offline = summary ? summary.connectivity.stale + summary.connectivity.inactive : 0;
@@ -201,6 +208,14 @@ export default function Devices() {
         subtitle="Are your laptops, desktops and servers updated and protected?"
         actions={
           <div className="flex items-center gap-2">
+            <div role="group" aria-label="View" className="flex overflow-hidden rounded border border-line text-sm">
+              {(["", "map"] as const).map((v) => (
+                <button key={v || "list"} type="button" aria-pressed={view === v} onClick={() => setView(v)}
+                  className={`px-3 py-1.5 ${view === v ? "bg-accent text-white" : "text-ink-2 hover:bg-surface-2"}`}>
+                  {v ? "Map" : "List"}
+                </button>
+              ))}
+            </div>
             <MoreMenu
               items={[
                 { label: "Agent updates", to: "/devices/updates" },
@@ -215,6 +230,7 @@ export default function Devices() {
           </div>
         }
       />
+      {view === "map" ? <FleetMap /> : <>
       {summary && (
         <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
           <Stat
@@ -248,6 +264,7 @@ export default function Devices() {
               <FilterSelect label="Issue" value={issue} onChange={setIssue} options={ISSUE_OPTS} />
               <FilterSelect label="USB storage" value={usb} onChange={setUsb} options={USB_OPTS} />
               <FilterSelect label="Updates" value={updates} onChange={setUpdates} options={UPDATE_OPTS} />
+              <FilterSelect label="Missing" value={missingFilter} onChange={setMissingFilter} options={MISSING_OPTS} />
               <FilterSelect label="Status" value={status} onChange={setStatus} options={STATUS_OPTS} />
             </>
           }
@@ -335,6 +352,10 @@ export default function Devices() {
                   <PillRow>
                     {d.status === "revoked" ? (
                       <Pill>Removed</Pill>
+                    ) : d.missing ? (
+                      <Pill tone="critical" title="Marked missing">
+                        Missing
+                      </Pill>
                     ) : d.device_state === "wipe_pending" ? (
                       <Pill tone="critical">Wiping</Pill>
                     ) : d.device_state === "lost" ? (
@@ -367,6 +388,7 @@ export default function Devices() {
           })}
         </Table>
       </div>
+      </>}
     </div>
   );
 }

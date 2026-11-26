@@ -7,6 +7,9 @@ import { Button, Card, Field, Modal, Tag } from "../../components/ui";
 import { fmtAgo, fmtTime } from "../../lib/format";
 
 const PHONE_RE = /^[0-9+][0-9 ()./+-]{2,31}$/;
+const EMAIL_RE = /^[^\s@]{1,64}@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$/;
+// The optional email is added to the message as its last line (the agent shows a message and a phone number).
+const EMAIL_LINE = "IT support email: ";
 const MESSAGE_MAX = 300;
 // Mirrors the backend's INCIDENT_ID_RE (app/services/devices.py) and the
 // agent's incidentIDRe (endpoint-agent/internal/commands/commands.go).
@@ -58,6 +61,7 @@ export function LostModeDialog({ device, open, onClose, onDone }: { device: Devi
   const enabling = device.lost_mode.status === null;
   const [message, setMessage] = useState("This device has been reported lost. Please contact the IT helpdesk to return it.");
   const [phone, setPhone] = useState("");
+  const [email, setEmail] = useState("");
   const [reason, setReason] = useState("");
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -71,9 +75,12 @@ export function LostModeDialog({ device, open, onClose, onDone }: { device: Devi
   }
 
   const msg = message.trim();
-  const msgOk = msg.length >= 1 && msg.length <= MESSAGE_MAX && msg.split("\n").length <= 6;
+  const mail = email.trim();
+  const shown = mail ? `${msg}\n${EMAIL_LINE}${mail}` : msg;
+  const msgOk = msg.length >= 1 && shown.length <= MESSAGE_MAX && shown.split("\n").length <= 6;
   const phoneOk = PHONE_RE.test(phone.trim());
-  const valid = reason.trim().length >= 3 && (!enabling || (msgOk && phoneOk && nameMatches(device, confirm)));
+  const emailOk = !mail || (mail.length <= 100 && EMAIL_RE.test(mail));
+  const valid = reason.trim().length >= 3 && (!enabling || (msgOk && phoneOk && emailOk && nameMatches(device, confirm)));
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -84,7 +91,7 @@ export function LostModeDialog({ device, open, onClose, onDone }: { device: Devi
         await api.queueCommand(device.id, {
           type: "enable_lost_mode",
           reason: reason.trim(),
-          params: { message: msg, phone: phone.trim() },
+          params: { message: msg, phone: phone.trim(), ...(mail ? { email: mail } : {}) },
           confirm_hostname: confirm.trim(),
         });
       } else {
@@ -128,11 +135,13 @@ export function LostModeDialog({ device, open, onClose, onDone }: { device: Devi
                 className="block w-full rounded border border-line bg-surface-2 px-3 py-1.5 text-sm text-ink focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/40"
               />
               <p id="lm-message-hint" className={`mt-1 text-xs ${msgOk || !msg ? "text-ink-3" : "text-sev-high"}`}>
-                {msg.length}/{MESSAGE_MAX} characters, at most 6 lines.
+                {shown.length}/{MESSAGE_MAX} characters{mail ? " with the email line" : ""}, at most 6 lines.
               </p>
             </div>
             <Field label="Contact phone number" id="lm-phone" required maxLength={32} value={phone} placeholder="+234 1 234 5678"
               onChange={(e) => setPhone(e.target.value)} hint="3-32 characters: digits, spaces and + ( ) . / -" />
+            <Field label="IT support email (optional)" id="lm-email" type="email" maxLength={100} value={email} placeholder="itsupport@yourcompany.com"
+              onChange={(e) => setEmail(e.target.value)} hint={emailOk ? "Shown under the message on the device." : "Enter a valid email address."} />
           </>
         )}
         <Field label="Reason (recorded in the audit log)" id="lm-reason" required minLength={3} maxLength={500} value={reason}

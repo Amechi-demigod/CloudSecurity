@@ -419,6 +419,7 @@ def summarize(device: Device, now: datetime | None = None) -> dict[str, Any]:
         "device_group": device.device_group,
         "health": health_from_issues(device, issues), "connectivity": connectivity(device, now), "issues": issues,
         "device_state": device_state(device), "usb_storage": usb_storage_state(device),
+        "missing": device.missing_since is not None and device.missing_recovered_at is None,
         "os_updates": os_updates.summary(device, now) or _linux_patching(device),
         **device_class.summary(device),
     }
@@ -540,6 +541,7 @@ def fleet_summary(db: Session) -> dict[str, Any]:
     return {
         "total": len(active), "revoked": len(devices) - len(active), "by_os": by_os, "by_class": by_class,
         "virtual": virtual, "by_health": by_health,
+        "missing": sum(1 for d in active if d.missing_since is not None and d.missing_recovered_at is None),
         "connectivity": conn_counts, "issues": issue_counts,
         "encrypted_percent": pct(enc), "firewall_percent": pct(fw),
         "encryption_known": enc["known"], "firewall_known": fw["known"],
@@ -550,6 +552,20 @@ def fleet_summary(db: Session) -> dict[str, Any]:
 _CTRL = re.compile(r"[\x00-\x09\x0b-\x1f\x7f]")
 PHONE_RE = re.compile(r"^[0-9+][0-9 ()./+-]{2,31}$")
 LOST_MESSAGE_MAX = 300
+# Optional IT support email: added to the message as its last line, because the agent accepts only a
+# message and a phone number (so it works on every agent version) and caps the message at 300 characters.
+EMAIL_RE = re.compile(r"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]{1,64}@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+                      r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$")
+LOST_EMAIL_MAX = 100
+LOST_EMAIL_LINE = "IT support email: "
+
+
+def valid_support_email(v: str) -> bool:
+    return len(v) <= LOST_EMAIL_MAX and bool(EMAIL_RE.match(v))
+
+
+def with_support_email(message: str, email: str | None) -> str:
+    return f"{message}\n{LOST_EMAIL_LINE}{email}" if email else message
 # Mirrors the agent's incidentIDRe (endpoint-agent/internal/commands/commands.go).
 INCIDENT_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
 
@@ -557,13 +573,20 @@ INCIDENT_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
 def validate_params(cmd_type: str, params: dict[str, Any]) -> dict[str, Any]:
     """Server-side allowlist of parameters per command type."""
     if cmd_type == "enable_lost_mode":
-        msg, phone = params.get("message"), params.get("phone")
-        if set(params) != {"message", "phone"} or not isinstance(msg, str) or not isinstance(phone, str):
-            raise ValueError("params must be {'message': text, 'phone': text}")
-        msg, phone = msg.strip().replace("\r\n", "\n"), phone.strip()
-        if not 1 <= len(msg) <= LOST_MESSAGE_MAX or _CTRL.search(msg) or msg.count("\n") > 5:
+        msg, phone, email = params.get("message"), params.get("phone"), params.get("email") or ""
+        if set(params) - {"email"} != {"message", "phone"} or not isinstance(msg, str) \
+                or not isinstance(phone, str) or not isinstance(email, str):
+            raise ValueError("params must be {'message': text, 'phone': text, 'email': text (optional)}")
+        msg, phone, email = msg.strip().replace("\r\n", "\n"), phone.strip(), email.strip()
+        if email and not valid_support_email(email):
+            raise ValueError(f"email must be a valid address of at most {LOST_EMAIL_MAX} characters")
+        if not msg or _CTRL.search(msg):
             raise ValueError(f"message must be 1-{LOST_MESSAGE_MAX} characters, at most 6 lines, "
                              "no control characters")
+        msg = with_support_email(msg, email)
+        if len(msg) > LOST_MESSAGE_MAX or msg.count("\n") > 5:
+            raise ValueError(f"message must be 1-{LOST_MESSAGE_MAX} characters, at most 6 lines, "
+                             "no control characters" + (" (the email line counts too)" if email else ""))
         if not PHONE_RE.match(phone):
             raise ValueError("phone must be 3-32 characters: digits, spaces and + ( ) . / -")
         return {"message": msg, "phone": phone}
