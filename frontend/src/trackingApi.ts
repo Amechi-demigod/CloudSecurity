@@ -147,6 +147,33 @@ export interface DeviceLocation {
   history: (LocationEvent | AlertEvent)[];
 }
 
+export type AlertGroup = "outside_countries" | "not_seen" | "hardware" | "locked";
+
+export interface RecentAlert {
+  id: string;
+  kind: string;
+  severity: "critical" | "high" | "medium" | "low";
+  title: string;
+  detail_line: string;
+  at: string;
+  device_id: string;
+  hostname: string;
+  city: string | null;
+  country: string | null;
+  country_code: string | null;
+}
+
+export interface RecentAlerts {
+  enabled: boolean;
+  detail: "full" | "basic";
+  days: number;
+  group: string | null;
+  count_24h: number;
+  total: number;
+  notified: boolean;
+  items: RecentAlert[];
+}
+
 export const trackingApi = {
   settings: () => request<TrackingSettings>("/api/device-tracking/settings"),
   saveSettings: (body: TrackingSettingsPatch) =>
@@ -158,6 +185,14 @@ export const trackingApi = {
     if (f.notSeen) q.set("not_seen", "true");
     const qs = q.toString();
     return request<Fleet>(`/api/device-tracking/fleet${qs ? `?${qs}` : ""}`);
+  },
+  recentAlerts: (f: { group?: AlertGroup | ""; limit?: number; days?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (f.group) q.set("group", f.group);
+    if (f.limit) q.set("limit", String(f.limit));
+    if (f.days) q.set("days", String(f.days));
+    const qs = q.toString();
+    return request<RecentAlerts>(`/api/device-tracking/alerts${qs ? `?${qs}` : ""}`);
   },
   countries: () => request<Country[]>("/api/device-tracking/countries"),
   offices: () => request<TrackingOffice[]>("/api/device-tracking/offices"),
