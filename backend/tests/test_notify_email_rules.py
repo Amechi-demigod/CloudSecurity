@@ -45,7 +45,8 @@ def env(monkeypatch):
     smtp: list[dict] = []
 
     def fake_smtp(config_, secrets, msg, delivery_id, **kw):
-        smtp.append({"config": config_, "secrets": secrets, "msg": msg, "rendered": kw.get("rendered")})
+        smtp.append({"config": config_, "secrets": secrets, "msg": msg, "rendered": kw.get("rendered"),
+                     "inline_images": kw.get("inline_images")})
         return ch.SendResult(250, "accepted")
 
     monkeypatch.setattr(ch, "send_smtp", fake_smtp)
@@ -133,7 +134,10 @@ def test_sentrigis_sends_the_alert_layout_through_the_platform_sender(client, en
     sent = env.smtp[-1]
     assert sent["config"]["from_address"] == "Sentrigis <no-reply@sentrigis.com>"
     assert sent["config"]["host"] == "smtp.example.com" and sent["config"]["to_addresses"] == ["soc@example.com"]
-    assert sent["rendered"] is None and sent["msg"]["kind"] == "test"  # the alert layout, not transactional mail
+    assert sent["msg"]["kind"] == "test"
+    subject, text, body = sent["rendered"]  # the alert layout, with the inline logo
+    assert subject.startswith("[Info] ") and 'on the "Team email" email channel in Sentrigis.' in text
+    assert "cid:sentrigis-logo" in body and sent["inline_images"][0][0] == "sentrigis-logo"
     assert env.requests == []
 
 
@@ -396,3 +400,71 @@ def test_recommended_rules_route_events_end_to_end(client, env):
         rows = s.scalars(select(NotificationDelivery)).all()
         assert len(rows) == 1 and rows[0].rule_name.startswith("High alerts")  # the summary rule queues a digest item
         assert s.scalars(select(NotificationChannel)).first() is not None
+
+
+# --- the alert email layout ----------------------------------------------------------------------------
+
+def _msg(**over):
+    base = {"kind": "event", "title": "FIN-LT-021 connected from outside your allowed countries", "summary": "",
+            "severity": "high", "source": "device_tracking", "source_label": "Device tracking",
+            "facts": [["Severity", "High"], ["Source", "Device tracking"], ["Computer", "FIN-LT-021 (Windows laptop)"],
+                      ["Where", "Dubai, United Arab Emirates (approximate)"]],
+            "link": "https://cnapp.example.com/devices/1"}
+    base.update(over)
+    return base
+
+
+def test_alert_email_matches_the_approved_layout(env):
+    subject, text, body = ch.render_email(_msg(), "IT security team")
+    assert subject == "[High] FIN-LT-021 connected from outside your allowed countries"
+    assert "High \u00b7 Device tracking" in body and "border-top:6px solid #0f1d3a" in body
+    assert "cid:sentrigis-logo" in body and "Open in Sentrigis" in body and "https://cnapp.example.com/devices/1" in body
+    footer = 'You get this because you are on the "IT security team" email channel in Sentrigis.'
+    assert footer in text and footer.replace("\"", "&quot;") in body
+    assert "Location is approximate, from the computer's internet address." in text
+    assert "Computer: FIN-LT-021" in text and "Severity:" not in text
+    other = ch.render_email(_msg(source="scan", source_label="Cloud scans"), "Ops")[1]
+    assert "Location is approximate" not in other
+    assert "Open in" not in ch.render_email(_msg(link=None), "Ops")[1]
+
+
+def test_alert_email_escapes_and_is_header_safe(env):
+    subject, text, body = ch.render_email(_msg(title="a\r\nBcc: x@evil.com <script>"), 'Ops "<b>"')
+    assert "\n" not in subject and "\r" not in subject
+    assert "<script>" not in body and "&lt;script&gt;" in body and "<b>" not in body
+
+
+def test_digest_email_uses_the_same_layout(env):
+    msg = {"kind": "digest", "title": "Daily digest: 2 notification(s)", "summary": "1 high, 1 low",
+           "severity": "high", "source": "digest", "source_label": "Digest", "facts": [],
+           "items": [{"severity": "high", "title": "A", "link": "https://x.example.com/a"},
+                     {"severity": "low", "title": "B"}], "link": "https://x.example.com/"}
+    subject, text, body = ch.render_email(msg, "Team")
+    assert subject.startswith("[High] ") and "cid:sentrigis-logo" in body and "<li>" in body
+    assert "- [HIGH] A" in text and 'on the "Team" email channel' in text
+
+
+def test_smtp_channel_gets_the_same_email_with_the_logo(client, env):
+    c = smtp_channel(client)
+    assert client.post(f"/api/notifications/channels/{c['id']}/test").json()["ok"] is True
+    sent = env.smtp[-1]
+    assert sent["rendered"][0].startswith("[Info] ") and 'on the "Own SMTP" email channel' in sent["rendered"][1]
+    assert sent["inline_images"][0][0] == "sentrigis-logo"
+
+
+def test_daily_count_survives_a_deleted_channel(client, env, monkeypatch):
+    monkeypatch.setenv("NOTIFY_SENTRIGIS_DAILY_LIMIT", "2")
+    c = sentrigis_channel(client)
+    for i in range(2):
+        queue_delivery(c["id"], c["name"], title=f"a{i}")
+    with db.get_session("default") as s:
+        assert dispatcher.send_due(s, utcnow(), limit=100)["sent"] == 2
+    assert client.delete(f"/api/notifications/channels/{c['id']}").status_code == 204
+    c2 = sentrigis_channel(client, name="Again")
+    queue_delivery(c2["id"], c2["name"])
+    with db.get_session("default") as s:
+        stats = dispatcher.send_due(s, utcnow(), limit=100)
+        assert dispatcher.sentrigis_sent_today(s, utcnow()) == 2
+    assert stats["sent"] == 0 and len(env.smtp) == 2
+    own = smtp_channel(client)
+    assert client.post(f"/api/notifications/channels/{own['id']}/test").json()["ok"] is True

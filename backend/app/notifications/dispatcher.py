@@ -194,13 +194,9 @@ def _load_secrets(channel: NotificationChannel) -> dict[str, str]:
 def sentrigis_sent_today(db: Session, now: datetime) -> int:
     """Alert emails already sent today (UTC) through this organisation's Sentrigis email channels.
     One delivery = one email (a delivery goes to all of a channel's recipients together)."""
-    ids = [c.id for c in db.scalars(select(NotificationChannel).where(NotificationChannel.type == "email"))
-           if (c.config or {}).get("provider") == "sentrigis"]
-    if not ids:
-        return 0
     start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     return db.scalar(select(func.count()).select_from(NotificationDelivery).where(
-        NotificationDelivery.channel_id.in_(ids), NotificationDelivery.status == "sent",
+        NotificationDelivery.via_sentrigis.is_(True), NotificationDelivery.status == "sent",
         NotificationDelivery.sent_at >= start)) or 0
 
 
@@ -227,7 +223,9 @@ def attempt(db: Session, d: NotificationDelivery, now: datetime | None = None) -
             raise ch.PermanentError("channel is disabled")
         _check_daily_limit(db, channel, now)
         secrets = _load_secrets(channel)
-        result = ch.send(channel.type, channel.config or {}, secrets, d.message or {}, d.id)
+        result = ch.send(channel.type, channel.config or {}, secrets, d.message or {}, d.id,
+                         channel_name=channel.name)
+        d.via_sentrigis = channel.type == "email" and (channel.config or {}).get("provider") == "sentrigis"
         d.status, d.sent_at, d.response_status, d.last_error = "sent", utcnow(), result.status, None
     except ch.LimitReached as exc:
         d.status, d.last_error = "skipped", str(exc)  # final: not retried; the alert is still in the console
