@@ -2,6 +2,7 @@ import { ChevronRight, Info, Inbox, type LucideIcon } from "lucide-react";
 import { useEffect, useId, useRef, useState, type InputHTMLAttributes, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { SEV_COLOR } from "../lib/format";
+import { registerSaveSlot } from "../lib/saveSlot";
 
 const SEV_ICON: Record<string, string> = { critical: "!!", high: "!", medium: "~", low: "-", info: "i" };
 
@@ -173,16 +174,23 @@ export function InfoTip({ info }: { info: PageInfo }) {
 }
 
 export function PageHeader({ title, subtitle, actions, info }: { title: string; subtitle?: string; actions?: ReactNode; info?: PageInfo }) {
+  const slotRef = useRef<HTMLDivElement>(null);
+  // SaveBar portals its content into this slot, so unsaved-change controls sit in the title row and scroll with
+  // the page (nothing is pinned on screen).
+  useEffect(() => (slotRef.current ? registerSaveSlot(slotRef.current) : undefined), []);
   return (
-    <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
-      <div>
+    <div className="mb-5 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+      <div className="min-w-0">
         <div className="flex items-center gap-1.5">
           <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
           {info && <InfoTip info={info} />}
         </div>
         {subtitle && <p className="mt-1 text-sm text-ink-2">{subtitle}</p>}
       </div>
-      {actions && <div className="flex items-center gap-2">{actions}</div>}
+      <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-2">
+        {actions && <div className="flex items-center gap-2">{actions}</div>}
+        <div ref={slotRef} className="contents" />
+      </div>
     </div>
   );
 }
