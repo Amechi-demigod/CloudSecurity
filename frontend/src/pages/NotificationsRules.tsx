@@ -268,9 +268,15 @@ function RuleDialog({
     return saved;
   }
 
-  async function submit(e: FormEvent) {
+  // Enter in the form: steps 1-2 go to the next step, step 3 never saves by keyboard alone.
+  function onFormSubmit(e: FormEvent) {
     e.preventDefault();
-    if (step < 2) return;
+    if (step === 0 && step1Ok) go(1);
+    else if (step === 1 && step2Ok) go(2);
+  }
+
+  async function create() {
+    if (step !== 2) return;
     setBusy(true);
     setError(null);
     try {
@@ -311,7 +317,7 @@ function RuleDialog({
 
   return (
     <Modal open onClose={close} title={rule ? `Edit rule: ${rule.name}` : "New notification rule"} size="lg">
-      <form className="space-y-4" onSubmit={submit}>
+      <form className="space-y-4" onSubmit={onFormSubmit}>
         <ol className="flex flex-wrap gap-x-4 gap-y-1 text-sm" aria-label="Steps">
           {STEPS.map((s, i) => (
             <li key={s} aria-current={i === step ? "step" : undefined}>
@@ -474,11 +480,11 @@ function RuleDialog({
           {step > 0 && <Button onClick={() => go(step - 1)}>Back</Button>}
           <Button onClick={close}>Cancel</Button>
           {step < 2 ? (
-            <Button variant="primary" disabled={step === 0 ? !step1Ok : !step2Ok} onClick={() => go(step + 1)}>
+            <Button key="next" variant="primary" disabled={step === 0 ? !step1Ok : !step2Ok} onClick={() => go(step + 1)}>
               Next
             </Button>
           ) : (
-            <Button type="submit" variant="primary" disabled={busy || !r.name.trim() || !step1Ok || !step2Ok}>
+            <Button key="save" variant="primary" onClick={() => void create()} disabled={busy || !r.name.trim() || !step1Ok || !step2Ok}>
               {busy ? "Saving…" : rule ? "Save changes" : "Create rule"}
             </Button>
           )}
@@ -571,7 +577,7 @@ function RecommendedDialog({ channels, onClose, onDone }: { channels: Channel[];
 const SEV_TONE: Record<string, PillTone> = { critical: "critical", high: "high", medium: "medium", low: "neutral" };
 
 function describe(r: Rule, meta: NotificationMeta): string {
-  const parts = [r.sources.length ? r.sources.map((s) => meta.sources.find((x) => x.name === s)?.label ?? s).join(", ") : "Needs an area"];
+  const parts = [r.sources.length ? r.sources.map((s) => areaLabel(meta, s)).join(", ") : "Needs an area"];
   if (r.event_types.length) parts.push(r.event_types.map(humanize).join(", "));
   if (r.subscription_ids.length) parts.push(`${r.subscription_ids.length} subscription(s)`);
   if (r.asset_types.length) parts.push(r.asset_types.join("/"));
