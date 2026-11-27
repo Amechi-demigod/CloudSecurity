@@ -19,6 +19,8 @@ export interface NotificationMeta {
   channel_types: { type: ChannelType; label: string; description: string; fields: FieldSpec[]; allowed_hosts: string[] }[];
   sources: { name: string; label: string; event_types: string[]; description: string }[];
   severities: Severity[];
+  /** The organisation's time zone (device tracking settings), else UTC; used for daily rules. */
+  default_timezone?: string;
   public_base_url: string | null;
   encryption_configured: boolean;
   sentrigis_email: { available: boolean; sender: string | null; daily_limit: number };

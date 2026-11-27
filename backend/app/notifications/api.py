@@ -77,8 +77,12 @@ def visible_sources(db: Session):
 @router.get("/meta")
 def meta(db: Session = Depends(get_db)):
     """Channel types and their fields, event sources and severities (for the UI)."""
+    from ..tracking import service as tracking
+
     s = nsettings.get()
+    st = tracking.get_settings(db, create=False)
     return {
+        "default_timezone": st.timezone if st and st.timezone else "UTC",
         "channel_types": [{"type": t, "label": spec["label"], "description": spec["description"],
                            "fields": [asdict(f) for f in spec["fields"]],
                            "allowed_hosts": s.allowed_hosts("acs" if t == "email" else t)}
