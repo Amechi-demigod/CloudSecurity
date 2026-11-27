@@ -247,6 +247,21 @@ A rule selects events and routes them to one or more channels. Nothing is
 sent until at least one rule exists. A rule applies to events raised after it was
 created (creating a rule never replays older alerts into a channel).
 
+* **The rule wizard (console):** *New rule* and *Edit* open a three-step dialog.
+  1. *Where and when*: pick one or more channels and *Immediately* or *Daily*.
+  *Daily* is a digest at 08:00 in the organisation's time zone (device tracking
+  setting, else UTC; `GET /api/notifications/meta` returns it as
+  `default_timezone`). There is no time-zone field.
+  2. *What*: areas as pills in groups (Computers & servers, Cloud,
+  Internet-facing, Assets & platform), only those the organisation's modules
+  include. 3. *How serious*: *Medium and above*, *High and above* (default) or
+  *Critical only*, with examples of what is and is not sent, the rule name
+  (filled from the picks until edited), a summary and *Turn the rule on now*.
+  The wizard does not show quiet hours, throttle, time zone or the optional
+  filters; new rules use the defaults and editing a rule sends back the values it
+  already has. A rule saved earlier with Low or Info shows no level selected and
+  keeps its stored level until one is picked. *Send a test alert* saves the rule
+  first when it is new.
 * **What to send:** at least one area (source) must be picked; a rule with no
   area matches nothing (rules saved before this change with no area are listed
   as *Needs an area*). Then minimum severity, subscriptions, resource
